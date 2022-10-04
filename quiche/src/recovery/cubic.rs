@@ -472,7 +472,7 @@ mod tests {
         let now = Instant::now();
 
         let p = recovery::Sent {
-            pkt_num: 0,
+            pkt_num: recovery::SpacedPktNum(0, 0),
             frames: smallvec![],
             time_sent: now,
             time_acked: None,
@@ -520,7 +520,7 @@ mod tests {
         let now = Instant::now();
 
         let p = recovery::Sent {
-            pkt_num: 0,
+            pkt_num: recovery::SpacedPktNum(0, 0),
             frames: smallvec![],
             time_sent: now,
             time_acked: None,
@@ -643,7 +643,7 @@ mod tests {
         // 5 ACKs to increase cwnd by 1 MSS.
         for _ in 0..5 {
             let acked = vec![Acked {
-                pkt_num: 0,
+                pkt_num: recovery::SpacedPktNum(0, 0),
                 time_sent: now,
                 size: r.max_datagram_size,
                 delivered: 0,
@@ -687,7 +687,7 @@ mod tests {
         );
 
         let acked = vec![Acked {
-            pkt_num: 0,
+            pkt_num: recovery::SpacedPktNum(0, 0),
             // To exit from recovery
             time_sent: now + Duration::from_millis(1),
             size: r.max_datagram_size,
@@ -718,7 +718,7 @@ mod tests {
         let epoch = packet::Epoch::Application;
 
         let p = recovery::Sent {
-            pkt_num: 0,
+            pkt_num: recovery::SpacedPktNum(0, 0),
             frames: smallvec![],
             time_sent: now,
             time_acked: None,
@@ -735,18 +735,19 @@ mod tests {
 
         // 1st round.
         let n_rtt_sample = hystart::N_RTT_SAMPLE;
-        let mut send_pn = 0;
-        let mut ack_pn = 0;
+        let mut send_pn = recovery::SpacedPktNum(0, 0);
+        let mut ack_pn = recovery::SpacedPktNum(0, 0);
 
         let rtt_1st = Duration::from_millis(50);
 
         // Send 1st round packets.
         for _ in 0..n_rtt_sample {
             r.on_packet_sent_cc(p.size, now);
-            send_pn += 1;
+            send_pn.1 += 1;
         }
 
-        r.hystart.start_round(send_pn - 1);
+        r.hystart
+            .start_round(recovery::SpacedPktNum(send_pn.0, send_pn.1 - 1));
 
         // Receiving Acks.
         let now = now + rtt_1st;
@@ -765,7 +766,7 @@ mod tests {
             }];
 
             r.on_packets_acked(acked, epoch, now);
-            ack_pn += 1;
+            ack_pn.1 += 1;
         }
 
         // Not in CSS yet.
@@ -778,9 +779,10 @@ mod tests {
         // Send 2nd round packets.
         for _ in 0..n_rtt_sample {
             r.on_packet_sent_cc(p.size, now);
-            send_pn += 1;
+            send_pn.1 += 1;
         }
-        r.hystart.start_round(send_pn - 1);
+        r.hystart
+            .start_round(recovery::SpacedPktNum(send_pn.0, send_pn.1 - 1));
 
         // Receiving Acks.
         // Last ack will cause to exit to CSS.
@@ -802,7 +804,7 @@ mod tests {
             }];
 
             r.on_packets_acked(acked, epoch, now);
-            ack_pn += 1;
+            ack_pn.1 += 1;
 
             // Keep increasing RTT so that hystart exits to CSS.
             rtt_2nd += rtt_2nd.saturating_add(Duration::from_millis(4));
@@ -821,9 +823,10 @@ mod tests {
         // Send 3nd round packets.
         for _ in 0..n_rtt_sample {
             r.on_packet_sent_cc(p.size, now);
-            send_pn += 1;
+            send_pn.1 += 1;
         }
-        r.hystart.start_round(send_pn - 1);
+        r.hystart
+            .start_round(recovery::SpacedPktNum(send_pn.0, send_pn.1 - 1));
 
         // Receiving Acks.
         // Last ack will cause to exit to SS.
@@ -842,7 +845,7 @@ mod tests {
             }];
 
             r.on_packets_acked(acked, epoch, now);
-            ack_pn += 1;
+            ack_pn.1 += 1;
         }
 
         // Now we are back in Slow Start.
@@ -866,7 +869,7 @@ mod tests {
         let epoch = packet::Epoch::Application;
 
         let p = recovery::Sent {
-            pkt_num: 0,
+            pkt_num: recovery::SpacedPktNum(0, 0),
             frames: smallvec![],
             time_sent: now,
             time_acked: None,
@@ -883,18 +886,19 @@ mod tests {
 
         // 1st round.
         let n_rtt_sample = hystart::N_RTT_SAMPLE;
-        let mut send_pn = 0;
-        let mut ack_pn = 0;
+        let mut send_pn = recovery::SpacedPktNum(0, 0);
+        let mut ack_pn = recovery::SpacedPktNum(0, 0);
 
         let rtt_1st = Duration::from_millis(50);
 
         // Send 1st round packets.
         for _ in 0..n_rtt_sample {
             r.on_packet_sent_cc(p.size, now);
-            send_pn += 1;
+            send_pn.1 += 1;
         }
 
-        r.hystart.start_round(send_pn - 1);
+        r.hystart
+            .start_round(recovery::SpacedPktNum(send_pn.0, send_pn.1 - 1));
 
         // Receiving Acks.
         let now = now + rtt_1st;
@@ -913,7 +917,7 @@ mod tests {
             }];
 
             r.on_packets_acked(acked, epoch, now);
-            ack_pn += 1;
+            ack_pn.1 += 1;
         }
 
         // Not in CSS yet.
@@ -926,9 +930,10 @@ mod tests {
         // Send 2nd round packets.
         for _ in 0..n_rtt_sample {
             r.on_packet_sent_cc(p.size, now);
-            send_pn += 1;
+            send_pn.1 += 1;
         }
-        r.hystart.start_round(send_pn - 1);
+        r.hystart
+            .start_round(recovery::SpacedPktNum(send_pn.0, send_pn.1 - 1));
 
         // Receiving Acks.
         // Last ack will cause to exit to CSS.
@@ -950,7 +955,7 @@ mod tests {
             }];
 
             r.on_packets_acked(acked, epoch, now);
-            ack_pn += 1;
+            ack_pn.1 += 1;
 
             // Keep increasing RTT so that hystart exits to CSS.
             rtt_2nd += rtt_2nd.saturating_add(Duration::from_millis(4));
@@ -968,9 +973,10 @@ mod tests {
             // Send a round of packets.
             for _ in 0..n_rtt_sample {
                 r.on_packet_sent_cc(p.size, now);
-                send_pn += 1;
+                send_pn.1 += 1;
             }
-            r.hystart.start_round(send_pn - 1);
+            r.hystart
+                .start_round(recovery::SpacedPktNum(send_pn.0, send_pn.1 - 1));
 
             // Receiving Acks.
             for _ in 0..n_rtt_sample {
@@ -988,7 +994,7 @@ mod tests {
                 }];
 
                 r.on_packets_acked(acked, epoch, now);
-                ack_pn += 1;
+                ack_pn.1 += 1;
             }
         }
 
@@ -1025,7 +1031,7 @@ mod tests {
         let rtt = Duration::from_millis(100);
 
         let acked = vec![Acked {
-            pkt_num: 0,
+            pkt_num: recovery::SpacedPktNum(0, 0),
             // To exit from recovery
             time_sent: now + rtt,
             size: r.max_datagram_size,
@@ -1067,7 +1073,7 @@ mod tests {
         let rtt = Duration::from_millis(100);
 
         let acked = vec![Acked {
-            pkt_num: 0,
+            pkt_num: recovery::SpacedPktNum(0, 0),
             // To exit from recovery
             time_sent: now + rtt,
             size: r.max_datagram_size,
@@ -1132,7 +1138,7 @@ mod tests {
         // 5 ACKs to increase cwnd by 1 MSS.
         for _ in 0..5 {
             let acked = vec![Acked {
-                pkt_num: 0,
+                pkt_num: recovery::SpacedPktNum(0, 0),
                 time_sent: now,
                 size: r.max_datagram_size,
                 delivered: 0,
