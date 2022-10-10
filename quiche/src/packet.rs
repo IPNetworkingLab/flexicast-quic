@@ -1038,6 +1038,10 @@ impl PktNumSpaceMap {
         &mut self.pkt_num_space_crypto[epoch]
     }
 
+    pub fn application_data_space_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.application_pkt_num_spaces.keys().copied()
+    }
+
     pub fn clear(&mut self, epoch: Epoch) {
         self.get_mut(epoch, 0).map(|pns| pns.clear()).ok();
         self.crypto_mut(epoch).clear();

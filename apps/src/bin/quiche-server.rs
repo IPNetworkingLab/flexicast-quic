@@ -117,6 +117,7 @@ fn main() {
     config.set_initial_max_streams_uni(conn_args.max_streams_uni);
     config.set_disable_active_migration(!conn_args.enable_active_migration);
     config.set_active_connection_id_limit(conn_args.max_active_cids);
+    config.set_multipath(conn_args.multipath);
 
     config.set_max_connection_window(conn_args.max_window);
     config.set_max_stream_window(conn_args.max_stream_window);
@@ -708,7 +709,8 @@ fn handle_path_events(client: &mut Client) {
                 client
                     .conn
                     .probe_path(local_addr, peer_addr)
-                    .expect("cannot probe");
+                    .map_err(|e| error!("cannot probe: {}", e))
+                    .ok();
             },
 
             quiche::PathEvent::Validated(local_addr, peer_addr) => {
@@ -718,6 +720,13 @@ fn handle_path_events(client: &mut Client) {
                     local_addr,
                     peer_addr
                 );
+                if client.conn.is_multipath_enabled() {
+                    client
+                        .conn
+                        .set_active(local_addr, peer_addr, true)
+                        .map_err(|e| error!("cannot set path active: {}", e))
+                        .ok();
+                }
             },
 
             quiche::PathEvent::FailedValidation(local_addr, peer_addr) => {
@@ -729,12 +738,14 @@ fn handle_path_events(client: &mut Client) {
                 );
             },
 
-            quiche::PathEvent::Closed(local_addr, peer_addr, _err, _reason) => {
+            quiche::PathEvent::Closed(local_addr, peer_addr, err, reason) => {
                 info!(
-                    "{} Path ({}, {}) is now closed and unusable",
+                    "{} Path ({}, {}) is now closed and unusable; err = {} reason = {:?}",
                     client.conn.trace_id(),
                     local_addr,
-                    peer_addr
+                    peer_addr,
+                    err,
+                    reason,
                 );
             },
 
@@ -755,6 +766,15 @@ fn handle_path_events(client: &mut Client) {
                     local_addr,
                     peer_addr
                 );
+            },
+
+            quiche::PathEvent::PeerPathStatus(addr, path_status) => {
+                info!("Peer asks status {:?} for {:?}", path_status, addr,);
+                client
+                    .conn
+                    .set_path_status(addr.0, addr.1, path_status, false)
+                    .map_err(|e| error!("cannot follow status request: {}", e))
+                    .ok();
             },
         }
     }
