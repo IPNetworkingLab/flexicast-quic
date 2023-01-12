@@ -490,9 +490,8 @@ impl Recovery {
                 // Check if acked packet was already declared lost.
                 if unacked.time_lost.is_some() {
                     // Calculate new packet reordering threshold.
-                    let pkt_thresh = (self.largest_acked_pkt[epoch].1 -
-                        unacked.pkt_num.1 +
-                        1) as u64;
+                    let pkt_thresh =
+                        self.largest_acked_pkt[epoch].1 - unacked.pkt_num.1 + 1;
                     let pkt_thresh = cmp::min(MAX_PACKET_THRESHOLD, pkt_thresh);
 
                     self.pkt_thresh = cmp::max(self.pkt_thresh, pkt_thresh);

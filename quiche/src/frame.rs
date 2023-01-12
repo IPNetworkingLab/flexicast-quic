@@ -627,7 +627,7 @@ impl Frame {
             } => {
                 b.put_varint(0xbaba05)?;
 
-                b.put_varint(*identifier_type as u64)?;
+                b.put_varint(*identifier_type)?;
                 if let Some(path_identifier) = path_identifier {
                     b.put_varint(*path_identifier)?;
                 }
@@ -644,7 +644,7 @@ impl Frame {
             } => {
                 b.put_varint(0xbaba06)?;
 
-                b.put_varint(*identifier_type as u64)?;
+                b.put_varint(*identifier_type)?;
                 if let Some(path_identifier) = path_identifier {
                     b.put_varint(*path_identifier)?;
                 }
