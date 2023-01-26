@@ -7594,7 +7594,7 @@ impl Connection {
                                     self.paths
                                         .get(pid)
                                         .ok()
-                                        .and_then(|p| p.active().then(|| pid))
+                                        .and_then(|p| p.active().then_some(pid))
                                 })
                             })
                         })
