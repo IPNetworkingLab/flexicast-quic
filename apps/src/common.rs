@@ -1444,12 +1444,12 @@ impl HttpConn for Http3Conn {
                             );
                         }
 
-                        match conn.close(true, 0x00, b"kthxbye") {
-                            // Already closed.
-                            Ok(_) | Err(quiche::Error::Done) => (),
+                        // match conn.close(true, 0x00, b"kthxbye") {
+                        //     // Already closed.
+                        //     Ok(_) | Err(quiche::Error::Done) => (),
 
-                            Err(e) => panic!("error closing conn: {:?}", e),
-                        }
+                        //     Err(e) => panic!("error closing conn: {:?}", e),
+                        // }
 
                         break;
                     }
