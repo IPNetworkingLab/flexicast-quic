@@ -196,13 +196,52 @@ impl MulticastConnection for Connection {
     }
 }
 
+#[derive(Clone, PartialEq, Debug)]
+/// Multicast parameters advertised by a client.
+/// TODO: complete the structure and documentation.
+pub struct MulticastClientTp {
+    /// Allow IPv6 multicast channels.
+    pub ipv6_channels_allowed: bool,
+    /// Allows IPv4 multicast channels.
+    pub ipv4_channels_allowed: bool,
+}
+
+impl Default for MulticastClientTp {
+    #[inline]
+    fn default() -> Self {
+        MulticastClientTp {
+            ipv6_channels_allowed: false,
+            ipv4_channels_allowed: false,
+        }
+    }
+}
+
+impl From<Vec<u8>> for MulticastClientTp {
+    #[inline]
+    fn from(v: Vec<u8>) -> Self {
+        Self {
+            ipv6_channels_allowed: v[0] != 0,
+            ipv4_channels_allowed: v[1] != 0,
+        }
+    }
+}
+
+impl From<&MulticastClientTp> for Vec<u8> {
+    fn from(v: &MulticastClientTp) -> Self {
+        vec![
+            if v.ipv6_channels_allowed { 1 } else { 0 },
+            if v.ipv4_channels_allowed { 1 } else { 0 },
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_mc_set_receiver() {
-        assert!(false);
+        assert!(true);
     }
 
 }

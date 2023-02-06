@@ -1160,6 +1160,23 @@ impl Config {
     pub fn set_disable_dcid_reuse(&mut self, v: bool) {
         self.disable_dcid_reuse = v;
     }
+
+    /// Sets the `multicast_server_params` transport parameter.
+    ///
+    /// The default value is `false`.
+    pub fn set_enable_server_multicast(&mut self, v: bool) {
+        self.local_transport_params.multicast_server_params = v;
+    }
+
+    /// Sets the `multicast_client_params` transport parameter.
+    /// Clones the transport parameter values given as argument.
+    ///
+    /// The default value is `None`.
+    pub fn set_enable_client_multicast(
+        &mut self, v: &Option<multicast::MulticastClientTp>,
+    ) {
+        self.local_transport_params.multicast_client_params = v.clone();
+    }
 }
 
 /// A QUIC connection.
@@ -7999,6 +8016,8 @@ struct TransportParams {
     pub retry_source_connection_id: Option<ConnectionId<'static>>,
     pub max_datagram_frame_size: Option<u64>,
     pub enable_multipath: Option<u64>,
+    pub multicast_server_params: bool,
+    pub multicast_client_params: Option<multicast::MulticastClientTp>,
 }
 
 impl Default for TransportParams {
@@ -8022,6 +8041,8 @@ impl Default for TransportParams {
             retry_source_connection_id: None,
             max_datagram_frame_size: None,
             enable_multipath: None,
+            multicast_server_params: false,
+            multicast_client_params: None,
         }
     }
 }
@@ -8174,6 +8195,33 @@ impl TransportParams {
 
                 0xbabf => {
                     tp.enable_multipath = Some(val.get_varint()?);
+                },
+
+                0x00f3 => {
+                    debug!("Received a multicast_server_params TP");
+                    // Should not receive a multicast_server_params if it is the server.
+                    if is_server {
+                        error!("Should not receive a multicast_server_params if it is a server");
+                        return Err(Error::InvalidTransportParam);
+                    }
+
+                    // This is the client.
+                    // Store information stating that the server is willing to use multicast.
+                    tp.multicast_server_params = true;
+                },
+
+                0x00f5 => {
+                    debug!("Received a multicast_client_params TP");
+                    if !is_server {
+                        error!("Should not receive a multicast_client_params if it is a client");
+                        return Err(Error::InvalidTransportParam);
+                    }
+
+                    // This is the server.
+                    // Store information about the client.
+                    // MC-TODO: maybe an error is possible here, should use a Result.
+                    tp.multicast_client_params = Some(val.to_vec().into());
+                    debug!("The multicast client params: {:?}", tp.multicast_client_params);
                 },
 
                 // Ignore unknown parameters.
@@ -8345,6 +8393,22 @@ impl TransportParams {
                 octets::varint_len(enable_multipath),
             )?;
             b.put_varint(enable_multipath)?;
+        }
+
+        if is_server {
+            if tp.multicast_server_params {
+                TransportParams::encode_param(&mut b, 0x00f3, 0)?;
+            }
+        } else {
+            // MC-TODO: discuss if we keep the following reasoning.
+            // Send the multicast_client_params (if any) if the server stated that it is willing
+            // to use multicast communication.
+            if let Some(mc_client_params) = &tp.multicast_client_params {
+                TransportParams::encode_param(&mut b, 0x00f5, 2)?;
+                let tmp_buf: Vec<u8> = mc_client_params.into();
+                b.put_bytes(&tmp_buf[..])?;
+            }
+
         }
 
         let out_len = b.off();
@@ -8893,6 +8957,8 @@ mod tests {
             retry_source_connection_id: Some(b"retry".to_vec().into()),
             max_datagram_frame_size: Some(32),
             enable_multipath: Some(1),
+            multicast_server_params: false,
+            multicast_client_params: None,
         };
 
         let mut raw_params = [42; 256];
@@ -8924,6 +8990,8 @@ mod tests {
             retry_source_connection_id: None,
             max_datagram_frame_size: Some(32),
             enable_multipath: Some(1),
+            multicast_server_params: false,
+            multicast_client_params: None,
         };
 
         let mut raw_params = [42; 256];
