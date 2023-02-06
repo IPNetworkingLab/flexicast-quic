@@ -1349,6 +1349,9 @@ pub struct Connection {
 
     /// Structure used when coping with abandoned paths in multipath.
     wire_pids_to_close: VecDeque<(u64, Option<u64>)>,
+
+    /// Multicast extension-related attributes.
+    multicast: Option<multicast::MulticastAttributes>,
 }
 
 /// Creates a new server-side connection.
@@ -1781,6 +1784,8 @@ impl Connection {
             disable_dcid_reuse: config.disable_dcid_reuse,
 
             wire_pids_to_close: VecDeque::new(),
+
+            multicast: None,
         };
 
         // Don't support multipath with zero-length CIDs.
