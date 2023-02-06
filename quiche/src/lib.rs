@@ -530,6 +530,9 @@ pub enum Error {
 
     /// Compliance error with the multipath extensions.
     MultiPathViolation,
+
+    /// Multicast extension errors.
+    Multicast(multicast::MulticastError),
 }
 
 impl Error {
@@ -2405,6 +2408,7 @@ impl Connection {
         // Select packet number space epoch based on the received packet's type.
         let epoch = hdr.ty.to_epoch()?;
 
+        // MC-TODO: use here our crypto aead if this is a multicast path.
         // Select AEAD context used to open incoming packet.
         let aead = if hdr.ty == packet::Type::ZeroRTT {
             // Only use 0-RTT key if incoming packet is 0-RTT.
@@ -4343,6 +4347,7 @@ impl Connection {
             }
         });
 
+        // MC-TODO: Here if it is a multicast path then we use the multicast crypto seal.
         let aead = match self.pkt_num_spaces.crypto(epoch).crypto_seal {
             Some(ref v) => v,
             None => return Err(Error::InvalidState),
@@ -16115,3 +16120,4 @@ mod ranges;
 mod recovery;
 mod stream;
 mod tls;
+pub mod multicast;
