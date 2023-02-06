@@ -8957,20 +8957,24 @@ mod tests {
             retry_source_connection_id: Some(b"retry".to_vec().into()),
             max_datagram_frame_size: Some(32),
             enable_multipath: Some(1),
-            multicast_server_params: false,
-            multicast_client_params: None,
+            multicast_server_params: true,
+            multicast_client_params: None, // Server should not send client TP for multicast.
         };
 
         let mut raw_params = [42; 256];
         let raw_params =
             TransportParams::encode(&tp, true, &mut raw_params).unwrap();
-        assert_eq!(raw_params.len(), 100);
+        assert_eq!(raw_params.len(), 103);
 
         let new_tp = TransportParams::decode(raw_params, false).unwrap();
 
         assert_eq!(new_tp, tp);
 
         // Client encodes, server decodes.
+        let mc_client_params = multicast::MulticastClientTp {
+            ipv4_channels_allowed: true,
+            ipv6_channels_allowed: false,
+        };
         let tp = TransportParams {
             original_destination_connection_id: None,
             max_idle_timeout: 30,
@@ -8991,13 +8995,13 @@ mod tests {
             max_datagram_frame_size: Some(32),
             enable_multipath: Some(1),
             multicast_server_params: false,
-            multicast_client_params: None,
+            multicast_client_params: Some(mc_client_params),
         };
 
         let mut raw_params = [42; 256];
         let raw_params =
             TransportParams::encode(&tp, false, &mut raw_params).unwrap();
-        assert_eq!(raw_params.len(), 75);
+        assert_eq!(raw_params.len(), 80);
 
         let new_tp = TransportParams::decode(raw_params, true).unwrap();
 
