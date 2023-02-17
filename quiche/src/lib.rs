@@ -1173,9 +1173,9 @@ impl Config {
     ///
     /// The default value is `None`.
     pub fn set_enable_client_multicast(
-        &mut self, v: &Option<multicast::MulticastClientTp>,
+        &mut self, v: Option<&multicast::MulticastClientTp>,
     ) {
-        self.local_transport_params.multicast_client_params = v.clone();
+        self.local_transport_params.multicast_client_params = v.cloned();
     }
 }
 
@@ -4369,7 +4369,8 @@ impl Connection {
             }
         });
 
-        // MC-TODO: Here if it is a multicast path then we use the multicast crypto seal.
+        // MC-TODO: Here if it is a multicast path then we use the multicast
+        // crypto seal.
         let aead = match self.pkt_num_spaces.crypto(epoch).crypto_seal {
             Some(ref v) => v,
             None => return Err(Error::InvalidState),
@@ -7609,24 +7610,23 @@ impl Connection {
         // When using multiple packet number spaces, let's force ACK_MP sending
         // on their corresponding paths.
         if self.is_multipath_enabled() {
-            if let Some(pid) = self
-                .pkt_num_spaces
-                .application_data_space_ids()
-                .find_map(|seq| {
-                    self.pkt_num_spaces
-                        .is_ready(packet::Epoch::Application, Some(seq))
-                        .then(|| {
-                            self.ids.get_scid(seq).ok().and_then(|e| {
-                                e.path_id.and_then(|pid| {
-                                    self.paths
-                                        .get(pid)
-                                        .ok()
-                                        .and_then(|p| p.active().then_some(pid))
+            if let Some(pid) =
+                self.pkt_num_spaces
+                    .application_data_space_ids()
+                    .find_map(|seq| {
+                        self.pkt_num_spaces
+                            .is_ready(packet::Epoch::Application, Some(seq))
+                            .then(|| {
+                                self.ids.get_scid(seq).ok().and_then(|e| {
+                                    e.path_id.and_then(|pid| {
+                                        self.paths.get(pid).ok().and_then(|p| {
+                                            p.active().then_some(pid)
+                                        })
+                                    })
                                 })
                             })
-                        })
-                        .flatten()
-                })
+                            .flatten()
+                    })
             {
                 return Ok(pid);
             }
@@ -8199,14 +8199,16 @@ impl TransportParams {
 
                 0x00f3 => {
                     debug!("Received a multicast_server_params TP");
-                    // Should not receive a multicast_server_params if it is the server.
+                    // Should not receive a multicast_server_params if it is the
+                    // server.
                     if is_server {
                         error!("Should not receive a multicast_server_params if it is a server");
                         return Err(Error::InvalidTransportParam);
                     }
 
                     // This is the client.
-                    // Store information stating that the server is willing to use multicast.
+                    // Store information stating that the server is willing to use
+                    // multicast.
                     tp.multicast_server_params = true;
                 },
 
@@ -8219,9 +8221,13 @@ impl TransportParams {
 
                     // This is the server.
                     // Store information about the client.
-                    // MC-TODO: maybe an error is possible here, should use a Result.
+                    // MC-TODO: maybe an error is possible here, should use a
+                    // Result.
                     tp.multicast_client_params = Some(val.to_vec().into());
-                    debug!("The multicast client params: {:?}", tp.multicast_client_params);
+                    debug!(
+                        "The multicast client params: {:?}",
+                        tp.multicast_client_params
+                    );
                 },
 
                 // Ignore unknown parameters.
@@ -8401,14 +8407,13 @@ impl TransportParams {
             }
         } else {
             // MC-TODO: discuss if we keep the following reasoning.
-            // Send the multicast_client_params (if any) if the server stated that it is willing
-            // to use multicast communication.
+            // Send the multicast_client_params (if any) if the server stated that
+            // it is willing to use multicast communication.
             if let Some(mc_client_params) = &tp.multicast_client_params {
                 TransportParams::encode_param(&mut b, 0x00f5, 2)?;
                 let tmp_buf: Vec<u8> = mc_client_params.into();
                 b.put_bytes(&tmp_buf[..])?;
             }
-
         }
 
         let out_len = b.off();
@@ -8958,7 +8963,8 @@ mod tests {
             max_datagram_frame_size: Some(32),
             enable_multipath: Some(1),
             multicast_server_params: true,
-            multicast_client_params: None, // Server should not send client TP for multicast.
+            multicast_client_params: None, /* Server should not send client TP
+                                            * for multicast. */
         };
 
         let mut raw_params = [42; 256];
@@ -16190,6 +16196,7 @@ mod flowcontrol;
 mod frame;
 pub mod h3;
 mod minmax;
+pub mod multicast;
 mod packet;
 mod path;
 mod rand;
@@ -16197,4 +16204,3 @@ mod ranges;
 mod recovery;
 mod stream;
 mod tls;
-pub mod multicast;
