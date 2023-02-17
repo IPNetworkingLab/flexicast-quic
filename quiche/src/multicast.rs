@@ -3,9 +3,7 @@
 use crate::crypto::Algorithm;
 use crate::crypto::Open;
 use crate::crypto::Seal;
-use crate::Config;
 use crate::Connection;
-use crate::ConnectionId;
 use crate::Error;
 use crate::Result;
 
@@ -44,8 +42,6 @@ pub const MC_ANNOUNCE_CODE: u64 = 0xf3;
 pub const MC_STATE_CODE: u64 = 0xf4;
 /// MC_KEY frame type.
 pub const MC_KEY_CODE: u64 = 0xf5;
-/// MC_ACK frame type.
-pub const MC_ACK_CODE: u64 = 0xf6;
 
 /// Role of the connection
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +95,26 @@ pub struct MulticastAttributes {
     mc_key_up_to_date: bool,
 }
 
+impl MulticastAttributes {
+    /// Returns a reference to the MC_ANNOUNCE data.
+    pub fn get_mc_announce_data(&self) -> Option<&McAnnounceData> {
+        self.mc_announce_data.as_ref()
+    }
+
+    /// Sets the processed state of the MC_ANNOUNCE data.
+    /// If set to true, means that the last data has been processed on the host.
+    /// Returns an Error if attempting to setting to true whereas no MC_ANNOUNCE
+    /// data is found.
+    pub fn set_mc_announce_processed(&mut self, val: bool) -> Result<()> {
+        if self.mc_announce_data.is_some() {
+            self.mc_announce_is_processed = val;
+            Ok(())
+        } else {
+            Err(Error::Multicast(MulticastError::McAnnounce))
+        }
+    }
+}
+
 impl Default for MulticastAttributes {
     fn default() -> Self {
         Self {
@@ -118,7 +134,7 @@ impl Default for MulticastAttributes {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McAnnounceData {
     /// Replaces the Connection ID for multicast.
-    pub channel_id: Vec<u8>,
+    pub channel_id: u64,
 
     /// Set to `true` if it is an IPv6 multicast group, `false` for IPv4.
     pub is_ipv6: bool,
@@ -169,9 +185,9 @@ pub trait MulticastConnection {
     fn mc_should_send_mc_announce(&mut self) -> bool;
 
     /// Sets the MC_ANNOUNCE data on the server.
-    /// Always returns an Err if it is a client.
+    /// Returns an Error if multicast is not supported.
     fn mc_set_mc_announce_data(
-        &mut self, mc_announce_data: &McAnnounceData,
+        &mut self, mc_announce_data: &McAnnounceData, mc_role: MulticastRole,
     ) -> Result<()>;
 
     /// Sets the symetric keys from the secrets. Only used in multicast.
@@ -193,6 +209,7 @@ impl MulticastConnection for Connection {
         }
 
         if let Some(multicast) = self.multicast.as_ref() {
+            multicast.mc_role == MulticastRole::ServerUnicast &&
             multicast.mc_announce_data.is_some() &&
                 !multicast.mc_announce_is_processed
         } else {
@@ -229,19 +246,25 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_set_mc_announce_data(
-        &mut self, mc_announce_data: &McAnnounceData,
+        &mut self, mc_announce_data: &McAnnounceData, mc_role: MulticastRole,
     ) -> Result<()> {
-        if !self.is_server {
-            return Err(Error::Multicast(MulticastError::McInvalidRole));
+        if !(self.local_transport_params.multicast_server_params &&
+            self.peer_transport_params.multicast_client_params.is_some())
+        {
+            return Err(Error::Multicast(MulticastError::McDisabled));
         }
 
         if let Some(multicast) = self.multicast.as_mut() {
             multicast.mc_announce_data = Some(mc_announce_data.clone());
+            multicast.mc_announce_is_processed = false; // New data!
         } else {
             // Multicast structure does not exist yet.
+            // The client considers the MC_ANNOUNCE as processed because it
+            // received it.
             self.multicast = Some(MulticastAttributes {
-                mc_role: MulticastRole::ServerUnicast,
+                mc_role,
                 mc_announce_data: Some(mc_announce_data.clone()),
+                mc_announce_is_processed: mc_role == MulticastRole::Client,
                 ..Default::default()
             });
         }
@@ -292,6 +315,7 @@ impl From<&MulticastClientTp> for Vec<u8> {
 #[cfg(test)]
 mod tests {
     use crate::testing;
+    use crate::Config;
 
     use super::*;
 
@@ -327,7 +351,7 @@ mod tests {
     /// Simple McAnnounceData for testing the multicast extension only.
     fn get_test_mc_announce_data() -> McAnnounceData {
         McAnnounceData {
-            channel_id: [1; crate::MAX_CONN_ID_LEN].to_vec(),
+            channel_id: 0xfefefd,
             is_ipv6: false,
             source_ip: std::net::Ipv4Addr::new(127, 0, 0, 1).octets(),
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
@@ -338,10 +362,10 @@ mod tests {
     }
 
     #[test]
-    /// The client and server negociate succesfully the multicast extension.
+    /// The server adds MC_ANNOUNCE data and should send it to the client.
     /// Both added the multicast extension in their transport parameters.
     /// The sharing of the transport parameters are already tested in lib.rs.
-    fn mc_announce_data() {
+    fn mc_announce_data_init() {
         let mc_client_tp = MulticastClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
         let mut config = get_simple_mc_config(true, Some(&mc_client_tp));
@@ -355,12 +379,11 @@ mod tests {
         assert!(!pipe.client.mc_should_send_mc_announce());
 
         assert!(pipe
-            .client
-            .mc_set_mc_announce_data(&mc_announce_data)
-            .is_err());
-        assert!(pipe
             .server
-            .mc_set_mc_announce_data(&mc_announce_data)
+            .mc_set_mc_announce_data(
+                &mc_announce_data,
+                MulticastRole::ServerUnicast
+            )
             .is_ok());
 
         assert!(pipe.server.multicast.is_some());
@@ -375,7 +398,104 @@ mod tests {
             &mc_announce_data
         );
 
+        assert_eq!(
+            pipe.server.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::ServerUnicast
+        );
         assert!(pipe.server.mc_should_send_mc_announce());
+    }
+
+    #[test]
+    /// Setting of the MC_ANNOUNCE processed.
+    fn set_mc_announce_processed() {
+        let mut mc_attributes = MulticastAttributes::default();
+
+        assert_eq!(
+            mc_attributes.set_mc_announce_processed(true).unwrap_err(),
+            Error::Multicast(MulticastError::McAnnounce)
+        );
+        assert_eq!(
+            mc_attributes.set_mc_announce_processed(false).unwrap_err(),
+            Error::Multicast(MulticastError::McAnnounce)
+        );
+
+        let mc_announce_data = get_test_mc_announce_data();
+        mc_attributes.mc_announce_data = Some(mc_announce_data);
+
+        assert!(mc_attributes.set_mc_announce_processed(true).is_ok());
+        assert!(mc_attributes.set_mc_announce_processed(false).is_ok());
+    }
+
+    #[test]
+    /// Exchange of the MC_ANNOUNCE data betweent the client and the server.
+    fn mc_announce_data_exchange() {
+        let mc_client_tp = MulticastClientTp::default();
+        let mc_announce_data = get_test_mc_announce_data();
+        let mut config = get_simple_mc_config(true, Some(&mc_client_tp));
+
+        let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+        pipe.server
+            .mc_set_mc_announce_data(
+                &mc_announce_data,
+                MulticastRole::ServerUnicast,
+            )
+            .unwrap();
+
+        println!(
+            "Avatn {} {}",
+            pipe.server
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_announce_data
+                .is_some(),
+            pipe
+                .server
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_announce_is_processed
+        );
+
+        assert!(pipe.server.mc_should_send_mc_announce());
+        assert_eq!(pipe.server.stream_send(1, b"aaaaa", false), Ok(5));
+        assert_eq!(pipe.advance(), Ok(()));
+
+        println!(
+            "Apres {} {}",
+            pipe.server
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_announce_data
+                .is_some(),
+            pipe
+                .server
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_announce_is_processed
+        );
+        // MC_ANNOUNCE sent.
+        // The client has the data, and the server should not send it anymore.
+        assert!(!pipe.server.mc_should_send_mc_announce());
+        // The reception created a MulticastAttributes in for client.
+        assert!(pipe.client.multicast.is_some());
+        assert_eq!(
+            pipe.client
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_announce_data
+                .as_ref(),
+            Some(&mc_announce_data)
+        );
+        // The client has the role Client.
+        assert_eq!(
+            pipe.client.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::Client
+        );
     }
 
     #[test]

@@ -29,6 +29,7 @@ use std::convert::TryInto;
 use crate::Error;
 use crate::Result;
 
+use crate::multicast::MC_ANNOUNCE_CODE;
 use crate::packet;
 use crate::ranges;
 use crate::stream;
@@ -198,6 +199,16 @@ pub enum Frame {
         seq_num: u64,
         status: u64,
     },
+
+    McAnnounce {
+        channel_id: u64,
+        is_ipv6: u8,
+        source_ip: [u8; 4],
+        group_ip: [u8; 4],
+        udp_port: u16,
+        ttl_data: u64, // In ms
+        public_key: Vec<u8>,
+    },
 }
 
 impl Frame {
@@ -362,6 +373,28 @@ impl Frame {
                     seq_num,
                     status,
                 }
+            },
+
+            MC_ANNOUNCE_CODE => Frame::McAnnounce {
+                channel_id: b.get_varint()?,
+                is_ipv6: b.get_u8()?,
+                source_ip: b
+                    .get_bytes(4)?
+                    .buf()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?,
+                group_ip: b
+                    .get_bytes(4)?
+                    .buf()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?,
+                udp_port: b.get_u16()?,
+                ttl_data: b.get_u64()?,
+                public_key: b
+                    .get_bytes(32)?
+                    .buf()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?,
             },
 
             _ => return Err(Error::InvalidFrame),
@@ -651,6 +684,28 @@ impl Frame {
                 b.put_varint(*seq_num)?;
                 b.put_varint(*status)?;
             },
+
+            Frame::McAnnounce {
+                channel_id,
+                is_ipv6,
+                source_ip,
+                group_ip,
+                udp_port,
+                ttl_data,
+                public_key,
+            } => {
+                debug!("Going to encode the MC_ANNOUNCE frame");
+                debug!("Before putting the frame: {}", b.off());
+                b.put_varint(MC_ANNOUNCE_CODE)?;
+                b.put_varint(*channel_id)?;
+                b.put_u8(*is_ipv6)?;
+                b.put_bytes(source_ip)?;
+                b.put_bytes(group_ip)?;
+                b.put_u16(*udp_port)?;
+                b.put_u64(*ttl_data)?;
+                b.put_bytes(public_key)?;
+                debug!("After putting the frame: {}", b.off());
+            },
         }
 
         Ok(before - b.cap())
@@ -879,6 +934,26 @@ impl Frame {
                 path_identifier_size +
                 octets::varint_len(*seq_num) +
                 octets::varint_len(*status)
+            },
+
+            Frame::McAnnounce {
+                channel_id,
+                is_ipv6: _,
+                source_ip: _,
+                group_ip: _,
+                udp_port: _,
+                ttl_data: _,
+                public_key,
+            } => {
+                let channel_id_size = octets::varint_len(*channel_id);
+                1 + // frame type
+                channel_id_size +
+                1 + // is_ipv6
+                4 + // source_ip
+                4 + // group_ip
+                2 + // udp_port
+                8 + // ttl_data
+                public_key.len()
             },
         }
     }
@@ -1144,6 +1219,14 @@ impl Frame {
                 seq_num: *seq_num,
                 status: *status,
             },
+
+            Frame::McAnnounce {
+                ..
+            } => QuicFrame::Unknown {
+                raw_frame_type: MC_ANNOUNCE_CODE,
+                raw_length: Some(10),
+                raw: Some("100".to_string()),
+            },
         }
     }
 }
@@ -1349,6 +1432,18 @@ impl std::fmt::Debug for Frame {
                     "PATH_STATUS id_type={} path_id={:x?} seq_num={:x} status={:x}",
                     identifier_type, path_identifier, seq_num, status,
                 )?;
+            },
+
+            Frame::McAnnounce {
+                channel_id,
+                is_ipv6,
+                source_ip,
+                group_ip,
+                udp_port,
+                ttl_data,
+                public_key: _,
+            } => {
+                write!(f, "MC_ANNOUNCE channel ID={}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}, ttl_data={}", channel_id, is_ipv6, source_ip, group_ip, udp_port, ttl_data)?;
             },
         }
 

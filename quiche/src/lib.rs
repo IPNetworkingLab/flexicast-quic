@@ -3074,6 +3074,7 @@ impl Connection {
         }
 
         if self.is_closed() || self.is_draining() {
+            println!("Coup dur 1");
             return Err(Error::Done);
         }
 
@@ -3092,6 +3093,7 @@ impl Connection {
         // There's no point in trying to send a packet if the Initial secrets
         // have not been derived yet, so return early.
         if !self.derived_initial_secrets {
+            println!("Coup dur 2");
             return Err(Error::Done);
         }
 
@@ -3111,6 +3113,7 @@ impl Connection {
 
             _ => self.get_send_path_id(from, to)?,
         };
+        println!("Coup dur passé 2");
 
         let send_path = self.paths.get_mut(send_pid)?;
 
@@ -3122,6 +3125,7 @@ impl Connection {
 
         // Generate coalesced packets.
         while left > 0 {
+            println!("Coup dur 4 passe");
             let (ty, written) = match self.send_single(
                 &mut out[done..done + left],
                 send_pid,
@@ -3129,10 +3133,15 @@ impl Connection {
             ) {
                 Ok(v) => v,
 
-                Err(Error::BufferTooShort) | Err(Error::Done) => break,
+                Err(Error::BufferTooShort) | Err(Error::Done) => {
+                    println!("MAIS OUI OUI OUI");
+                    break
+                },
 
                 Err(e) => return Err(e),
             };
+
+            println!("Coup dur passe parce que ecrit");
 
             done += written;
             left -= written;
@@ -3164,6 +3173,8 @@ impl Connection {
 
         if done == 0 {
             self.last_tx_data = self.tx_data;
+
+            println!("Coup dur parce que rien n'est ecrit");
 
             return Err(Error::Done);
         }
@@ -3201,16 +3212,25 @@ impl Connection {
         }
 
         if self.is_draining() {
+            println!("TT1");
             return Err(Error::Done);
         }
+
+        println!("T0");
 
         let is_closing = self.local_error.is_some();
 
         let mut b = octets::OctetsMut::with_slice(out);
 
+        println!("T005");
+
         let pkt_type = self.write_pkt_type(send_pid)?;
 
+        println!("T01: {:?}", pkt_type);
+
         let epoch = pkt_type.to_epoch()?;
+
+        println!("T1");
 
         let multiple_application_data_pkt_num_spaces =
             self.use_path_pkt_num_space(epoch);
@@ -3922,6 +3942,43 @@ impl Connection {
                 } else {
                     break;
                 }
+            }
+        }
+
+        println!("T2");
+
+        // Create MC_ANNOUNCE frame.
+        println!("SHould send mc announce? {} is server {}", self.mc_should_send_mc_announce(), self.is_server);
+        if self.is_server {
+            println!("MC? {:?}", self.multicast.is_some());
+        }
+        if let Some(multicast) = self.multicast.as_ref() {
+            println!("MC announcce data: {:?} and other", multicast.get_mc_announce_data());
+        }
+        if self.mc_should_send_mc_announce() {
+            println!("SEND MC ANNOUNCE");
+            let multicast = self
+                .multicast
+                .as_mut()
+                .ok_or(Error::Multicast(multicast::MulticastError::McDisabled))?;
+            let mc_announce_data = multicast
+                .get_mc_announce_data()
+                .ok_or(Error::Multicast(multicast::MulticastError::McDisabled))?;
+            let frame = frame::Frame::McAnnounce {
+                channel_id: mc_announce_data.channel_id,
+                is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
+                source_ip: mc_announce_data.source_ip,
+                group_ip: mc_announce_data.group_ip,
+                udp_port: mc_announce_data.udp_port,
+                ttl_data: mc_announce_data.ttl_data,
+                public_key: mc_announce_data.public_key.clone(),
+            };
+
+            if push_frame_to_pkt!(b, frames, frame, left) {
+                multicast.set_mc_announce_processed(true)?;
+
+                ack_eliciting = true;
+                in_flight = true;
             }
         }
 
@@ -6664,7 +6721,7 @@ impl Connection {
             if !self.is_server && self.is_in_early_data() {
                 return Ok(packet::Type::ZeroRTT);
             }
-
+            println!("Stream c'est ici");
             return Ok(packet::Type::Short);
         }
 
@@ -7299,6 +7356,37 @@ impl Connection {
                     true,
                 )?;
                 self.paths.on_path_status_received(pid, seq_num, status);
+            },
+
+            frame::Frame::McAnnounce {
+                channel_id,
+                is_ipv6,
+                source_ip,
+                group_ip,
+                udp_port,
+                ttl_data,
+                public_key,
+            } => {
+                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, is_ipv6, source_ip, group_ip, udp_port);
+                if self.is_server {
+                    error!("The server should not receive an MC_ANNOUNCE frame!");
+                    return Err(Error::InvalidFrame);
+                }
+
+                let mc_announce_data = multicast::McAnnounceData {
+                    channel_id,
+                    is_ipv6: is_ipv6 == 1,
+                    source_ip,
+                    group_ip,
+                    udp_port,
+                    public_key,
+                    ttl_data,
+                };
+
+                self.mc_set_mc_announce_data(
+                    &mc_announce_data,
+                    multicast::MulticastRole::Client,
+                )?;
             },
         };
         Ok(())
@@ -8662,6 +8750,8 @@ pub mod testing {
         pub fn advance(&mut self) -> Result<()> {
             let mut client_done = false;
             let mut server_done = false;
+
+            println!("T1 {}", self.server.multicast.is_some());
 
             while !client_done || !server_done {
                 match emit_flight(&mut self.client) {
@@ -16174,6 +16264,7 @@ mod tests {
     }
 }
 
+use crate::multicast::MulticastConnection;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;
 pub use crate::packet::Type;
