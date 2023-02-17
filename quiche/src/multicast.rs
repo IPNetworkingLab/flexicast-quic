@@ -1,7 +1,13 @@
 //! Multicast extension for QUIC.
 
-use crate::{Config, Connection, ConnectionId, Error, Result};
-use crate::crypto::{Seal, Open, Algorithm};
+use crate::crypto::Algorithm;
+use crate::crypto::Open;
+use crate::crypto::Seal;
+use crate::Config;
+use crate::Connection;
+use crate::ConnectionId;
+use crate::Error;
+use crate::Result;
 
 /// Multicast extension errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +76,7 @@ pub struct MulticastAttributes {
     /// This is an option because it may be null initially (for example
     /// the client did not receive the MC_ANNOUNCE yet).
     /// MC-TODO: multiple MC channels => vector instead of single value.
-    mc_announce_data: Option<MulticastChannelAnnounce>,
+    mc_announce_data: Option<McAnnounceData>,
 
     /// Whether the MC_ANNOUNCE frame has been processed.
     /// Server-side: it is sent.
@@ -109,8 +115,8 @@ impl Default for MulticastAttributes {
 }
 
 /// Multicast channel announcement information.
-#[derive(Clone, Debug)]
-pub struct MulticastChannelAnnounce {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McAnnounceData {
     /// Replaces the Connection ID for multicast.
     pub channel_id: Vec<u8>,
 
@@ -156,30 +162,57 @@ pub enum MulticastClientStatus {
     JoinedAndKey,
 }
 
+/// Multicast extension behaviour for the QUIC connection.
 pub trait MulticastConnection {
+    /// Whether the server should send MC_ANNOUNCE data to the client.
+    /// Always false for a client.
+    fn mc_should_send_mc_announce(&mut self) -> bool;
+
+    /// Sets the MC_ANNOUNCE data on the server.
+    /// Always returns an Err if it is a client.
+    fn mc_set_mc_announce_data(
+        &mut self, mc_announce_data: &McAnnounceData,
+    ) -> Result<()>;
+
     /// Sets the symetric keys from the secrets. Only used in multicast.
-    fn set_multicast_receiver(&mut self, secret: &[u8]) -> Result<()>;
+    /// Updates the MC_ANNOUNCE data if it exists, or adds a new structure.
+    /// Creates the multicast structure if it does not exist.
+    fn mc_set_multicast_receiver(&mut self, secret: &[u8]) -> Result<()>;
 }
 
 impl MulticastConnection for Connection {
-    fn set_multicast_receiver(&mut self, secret: &[u8]) -> Result<()> {
+    fn mc_should_send_mc_announce(&mut self) -> bool {
+        if !self.is_server {
+            return false;
+        }
+
+        if !(self.local_transport_params.multicast_server_params &&
+            self.peer_transport_params.multicast_client_params.is_some())
+        {
+            return false;
+        }
+
+        if let Some(multicast) = self.multicast.as_ref() {
+            multicast.mc_announce_data.is_some() &&
+                !multicast.mc_announce_is_processed
+        } else {
+            false
+        }
+    }
+
+    fn mc_set_multicast_receiver(&mut self, secret: &[u8]) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             match multicast.mc_role {
                 MulticastRole::Client => {
-                    // Do not perform the handshake because we already have the key.
+                    // Do not perform the handshake because we already have the
+                    // key.
                     self.handshake_completed = true;
 
                     // Derive the keys from the secret shared by the receiver.
-                    let aead_open = Open::from_secret(
-                        Algorithm::AES128_GCM,
-                        secret,
-                    )
-                    .unwrap();
-                    let aead_seal = Seal::from_secret(
-                        Algorithm::AES128_GCM,
-                        secret,
-                    )
-                    .unwrap();
+                    let aead_open =
+                        Open::from_secret(Algorithm::AES128_GCM, secret).unwrap();
+                    let aead_seal =
+                        Seal::from_secret(Algorithm::AES128_GCM, secret).unwrap();
 
                     // Do not change the global context.
                     // We will use this crypto when needed by manually getting it.
@@ -193,6 +226,27 @@ impl MulticastConnection for Connection {
         } else {
             Err(Error::Multicast(MulticastError::McDisabled))
         }
+    }
+
+    fn mc_set_mc_announce_data(
+        &mut self, mc_announce_data: &McAnnounceData,
+    ) -> Result<()> {
+        if !self.is_server {
+            return Err(Error::Multicast(MulticastError::McInvalidRole));
+        }
+
+        if let Some(multicast) = self.multicast.as_mut() {
+            multicast.mc_announce_data = Some(mc_announce_data.clone());
+        } else {
+            // Multicast structure does not exist yet.
+            self.multicast = Some(MulticastAttributes {
+                mc_role: MulticastRole::ServerUnicast,
+                mc_announce_data: Some(mc_announce_data.clone()),
+                ..Default::default()
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -210,8 +264,8 @@ impl Default for MulticastClientTp {
     #[inline]
     fn default() -> Self {
         MulticastClientTp {
-            ipv6_channels_allowed: false,
-            ipv4_channels_allowed: false,
+            ipv6_channels_allowed: true,
+            ipv4_channels_allowed: true,
         }
     }
 }
@@ -237,11 +291,95 @@ impl From<&MulticastClientTp> for Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use crate::testing;
+
     use super::*;
+
+    /// Simple config used for testing the multicast extension only.
+    pub fn get_simple_mc_config(
+        mc_server: bool, mc_client: Option<&MulticastClientTp>,
+    ) -> Config {
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.set_max_idle_timeout(5000);
+        config.set_max_recv_udp_payload_size(1350);
+        config.set_max_send_udp_payload_size(1350);
+        config.set_initial_max_data(10_000_000);
+        config.set_initial_max_stream_data_bidi_local(1_000_000);
+        config.set_initial_max_stream_data_bidi_remote(1_000_000);
+        config.set_initial_max_stream_data_uni(1_000_000);
+        config.set_initial_max_streams_bidi(100);
+        config.set_initial_max_streams_uni(100);
+        config.set_disable_active_migration(true);
+        config.set_enable_server_multicast(mc_server);
+        config.set_enable_client_multicast(mc_client);
+        config
+    }
+
+    /// Simple McAnnounceData for testing the multicast extension only.
+    fn get_test_mc_announce_data() -> McAnnounceData {
+        McAnnounceData {
+            channel_id: [1; crate::MAX_CONN_ID_LEN].to_vec(),
+            is_ipv6: false,
+            source_ip: std::net::Ipv4Addr::new(127, 0, 0, 1).octets(),
+            group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
+            udp_port: 7676,
+            public_key: vec![1; 32],
+            ttl_data: 1_000_000,
+        }
+    }
+
+    #[test]
+    /// The client and server negociate succesfully the multicast extension.
+    /// Both added the multicast extension in their transport parameters.
+    /// The sharing of the transport parameters are already tested in lib.rs.
+    fn mc_announce_data() {
+        let mc_client_tp = MulticastClientTp::default();
+        let mc_announce_data = get_test_mc_announce_data();
+        let mut config = get_simple_mc_config(true, Some(&mc_client_tp));
+
+        let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        assert!(pipe.server.multicast.is_none());
+        assert!(pipe.client.multicast.is_none());
+        assert!(!pipe.server.mc_should_send_mc_announce());
+        assert!(!pipe.client.mc_should_send_mc_announce());
+
+        assert!(pipe
+            .client
+            .mc_set_mc_announce_data(&mc_announce_data)
+            .is_err());
+        assert!(pipe
+            .server
+            .mc_set_mc_announce_data(&mc_announce_data)
+            .is_ok());
+
+        assert!(pipe.server.multicast.is_some());
+        assert_eq!(
+            pipe.server
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_announce_data
+                .as_ref()
+                .unwrap(),
+            &mc_announce_data
+        );
+
+        assert!(pipe.server.mc_should_send_mc_announce());
+    }
 
     #[test]
     fn test_mc_set_receiver() {
         assert!(true);
     }
-
 }
