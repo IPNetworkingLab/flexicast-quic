@@ -69,6 +69,9 @@ pub enum MulticastClientStatus {
 
     /// The client is not aware of the multicast channel.
     Unaware,
+
+    /// This is used when the status is of no importance.
+    Unspecified,
 }
 
 /// Actions of multicast client in the finite state machine.
@@ -238,11 +241,9 @@ impl MulticastAttributes {
     /// True if the client application explicitly asked to join the channel.
     pub fn should_send_mc_state(&self) -> bool {
         match self.mc_role {
-            MulticastRole::Client(status) => {
-                match status {
-                    MulticastClientStatus::WaitingToJoin => true,
-                    _ => false,
-                }
+            MulticastRole::Client(status) => match status {
+                MulticastClientStatus::WaitingToJoin => true,
+                _ => false,
             },
 
             _ => false,

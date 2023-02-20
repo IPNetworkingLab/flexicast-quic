@@ -3959,7 +3959,12 @@ impl Connection {
         if let Some(multicast) = self.multicast.as_mut() {
             if multicast.should_send_mc_state() {
                 let frame = frame::Frame::McState {
-                    channel_id: multicast.get_mc_announce_data().ok_or(Error::Multicast(multicast::MulticastError::McAnnounce))?.channel_id,
+                    channel_id: multicast
+                        .get_mc_announce_data()
+                        .ok_or(Error::Multicast(
+                            multicast::MulticastError::McAnnounce,
+                        ))?
+                        .channel_id,
                     action: multicast::MulticastClientAction::Join.try_into()?,
                 };
 
@@ -7398,6 +7403,24 @@ impl Connection {
                                 multicast::MulticastError::McDisabled,
                             )),
                     }
+                }
+            },
+
+            frame::Frame::McKey { channel_id, key } => {
+                debug!(
+                    "Received an MC_KEY frame! channel ID: {}, key: {:?}",
+                    channel_id, key
+                );
+                if self.is_server {
+                    return Err(Error::Multicast(
+                        multicast::MulticastError::McInvalidRole(
+                            multicast::MulticastRole::ServerUnicast(
+                                multicast::MulticastClientStatus::Unspecified,
+                            ),
+                        ),
+                    ));
+                } else {
+                    println!("TODO: receives an MC_KEY");
                 }
             },
         };

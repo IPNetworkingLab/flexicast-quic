@@ -30,6 +30,7 @@ use crate::Error;
 use crate::Result;
 
 use crate::multicast::MC_ANNOUNCE_CODE;
+use crate::multicast::MC_KEY_CODE;
 use crate::multicast::MC_STATE_CODE;
 use crate::packet;
 use crate::ranges;
@@ -217,6 +218,11 @@ pub enum Frame {
         action: u64,
         // MC-TODO: reason code?
     },
+
+    McKey {
+        channel_id: u64,
+        key: Vec<u8>,
+    },
 }
 
 impl Frame {
@@ -383,32 +389,54 @@ impl Frame {
                 }
             },
 
-            MC_ANNOUNCE_CODE => Frame::McAnnounce {
-                channel_id: b.get_varint()?,
-                is_ipv6: b.get_u8()?,
-                source_ip: b
-                    .get_bytes(4)?
-                    .buf()
-                    .try_into()
-                    .map_err(|_| Error::BufferTooShort)?,
-                group_ip: b
-                    .get_bytes(4)?
-                    .buf()
-                    .try_into()
-                    .map_err(|_| Error::BufferTooShort)?,
-                udp_port: b.get_u16()?,
-                ttl_data: b.get_u64()?,
-                public_key: b
-                    .get_bytes(32)?
-                    .buf()
-                    .try_into()
-                    .map_err(|_| Error::BufferTooShort)?,
+            MC_ANNOUNCE_CODE => {
+                let channel_id = b.get_varint()?;
+                let is_ipv6 = b.get_u8()?;
+                let source_ip = b.get_bytes(4)?
+                .buf()
+                .try_into()
+                .map_err(|_| Error::BufferTooShort)?;
+                let group_ip = b
+                .get_bytes(4)?
+                .buf()
+                .try_into()
+                .map_err(|_| Error::BufferTooShort)?;
+                let udp_port = b.get_u16()?;
+                let ttl_data = b.get_u64()?;
+                let key_len = b.get_varint()? as usize;
+                let public_key = b.get_bytes(key_len)?
+                                          .buf()
+                                          .try_into()
+                                          .map_err(|_| Error::BufferTooShort)?;
+
+                Frame::McAnnounce {
+                    channel_id,
+                    is_ipv6,
+                    source_ip,
+                    group_ip,
+                    udp_port,
+                    ttl_data,
+                    public_key,
+                }
             },
 
             MC_STATE_CODE => Frame::McState {
                 channel_id: b.get_varint()?,
                 action: b.get_varint()?,
             },
+
+            MC_KEY_CODE => {
+                let channel_id = b.get_varint()?;
+                let key_len = b.get_varint()?;
+                let key = b.get_bytes(key_len as usize)?
+                                   .buf()
+                                   .try_into()
+                                   .map_err(|_| Error::BufferTooShort)?;
+                Frame::McKey {
+                    channel_id,
+                    key,
+                }
+            }
 
             _ => return Err(Error::InvalidFrame),
         };
@@ -716,6 +744,7 @@ impl Frame {
                 b.put_bytes(group_ip)?;
                 b.put_u16(*udp_port)?;
                 b.put_u64(*ttl_data)?;
+                b.put_varint(public_key.len() as u64)?;
                 b.put_bytes(public_key)?;
                 debug!("After putting the frame: {}", b.off());
             },
@@ -726,6 +755,14 @@ impl Frame {
                 b.put_varint(*channel_id)?;
                 b.put_varint(*action)?;
             },
+
+            Frame::McKey { channel_id, key } => {
+                debug!("Going to encode the MC_KEY frame");
+                b.put_varint(MC_KEY_CODE)?;
+                b.put_varint(*channel_id)?;
+                b.put_varint(key.len() as u64)?;
+                b.put_bytes(key)?;
+            }
         }
 
         Ok(before - b.cap())
@@ -966,6 +1003,7 @@ impl Frame {
                 public_key,
             } => {
                 let channel_id_size = octets::varint_len(*channel_id);
+                let public_key_len_size = octets::varint_len(public_key.len() as u64);
                 1 + // frame type
                 channel_id_size +
                 1 + // is_ipv6
@@ -973,6 +1011,7 @@ impl Frame {
                 4 + // group_ip
                 2 + // udp_port
                 8 + // ttl_data
+                public_key_len_size + 
                 public_key.len()
             },
 
@@ -983,6 +1022,16 @@ impl Frame {
                 channel_id_size +
                 state_size
             },
+
+            Frame::McKey { channel_id, key } => {
+                let channel_id_size = octets::varint_len(*channel_id);
+                let key_len_size = octets::varint_len(key.len() as u64);
+                1 + // frame type
+                channel_id_size +
+                key_len_size +
+                key.len()
+
+            }
         }
     }
 
@@ -1259,6 +1308,11 @@ impl Frame {
                 raw_length: Some(11),
                 raw: Some("101".to_string()),
             },
+
+            Frame::McKey { .. } => QuicFrame::Unknown { raw_frame_type: MC_KEY_CODE,
+                raw_length: Some(12),
+                raw: Some("102".to_string()),
+            }
         }
     }
 }
@@ -1481,6 +1535,10 @@ impl std::fmt::Debug for Frame {
             Frame::McState { channel_id, action } => {
                 write!(f, "MC_STATE channel ID={}, state={}", channel_id, action)?;
             },
+
+            Frame::McKey { channel_id, key } => {
+                write!(f, "MC_KEY channel ID={}, key={:?}", channel_id, key)?;
+            }
         }
 
         Ok(())
@@ -2695,7 +2753,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 61);
+        assert_eq!(wire_len, 62);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
@@ -2728,6 +2786,38 @@ mod tests {
         };
 
         assert_eq!(wire_len, 11);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
+
+    #[test]
+    fn mc_key() {
+        let mut d = [42; 128];
+
+        let frame = Frame::McKey {
+            channel_id: 0xffddeeaabb3366,
+            key: vec![1; 32],
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 43);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
