@@ -2639,4 +2639,41 @@ mod tests {
         let mut b = octets::Octets::with_slice(&d);
         assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
     }
+
+    #[test]
+    fn mc_announce() {
+        let mut d = [42; 128];
+
+        let frame = Frame::McAnnounce {
+            channel_id: 0xffddeeaabb3366,
+            is_ipv6: 1,
+            source_ip: [127, 0, 0, 1],
+            group_ip: [244, 1, 1, 255],
+            udp_port: 1,
+            ttl_data: 123_456_789,
+            public_key: vec![41; 32],
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 61);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
 }

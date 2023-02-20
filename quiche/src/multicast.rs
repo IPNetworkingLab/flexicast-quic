@@ -437,6 +437,8 @@ mod tests {
 
     #[test]
     /// Exchange of the MC_ANNOUNCE data between the client and the server.
+    /// The client receives the MC_ANNOUNCE.
+    /// It creates a multicast state on the client.
     fn mc_announce_data_exchange() {
         let mc_client_tp = MulticastClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
