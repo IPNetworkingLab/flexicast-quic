@@ -182,7 +182,7 @@ pub enum MulticastClientStatus {
 pub trait MulticastConnection {
     /// Whether the server should send MC_ANNOUNCE data to the client.
     /// Always false for a client.
-    fn mc_should_send_mc_announce(&mut self) -> bool;
+    fn mc_should_send_mc_announce(&self) -> bool;
 
     /// Sets the MC_ANNOUNCE data on the server.
     /// Returns an Error if multicast is not supported.
@@ -194,10 +194,13 @@ pub trait MulticastConnection {
     /// Updates the MC_ANNOUNCE data if it exists, or adds a new structure.
     /// Creates the multicast structure if it does not exist.
     fn mc_set_multicast_receiver(&mut self, secret: &[u8]) -> Result<()>;
+
+    /// Returns true if the multicast extension has control data to send.
+    fn mc_has_control_data(&self) -> bool;
 }
 
 impl MulticastConnection for Connection {
-    fn mc_should_send_mc_announce(&mut self) -> bool {
+    fn mc_should_send_mc_announce(&self) -> bool {
         if !self.is_server {
             return false;
         }
@@ -248,8 +251,9 @@ impl MulticastConnection for Connection {
     fn mc_set_mc_announce_data(
         &mut self, mc_announce_data: &McAnnounceData, mc_role: MulticastRole,
     ) -> Result<()> {
-        if !(self.local_transport_params.multicast_server_params &&
-            self.peer_transport_params.multicast_client_params.is_some())
+        if (self.is_server && !(self.local_transport_params.multicast_server_params &&
+            self.peer_transport_params.multicast_client_params.is_some())) || (!self.is_server && !(self.peer_transport_params.multicast_server_params &&
+                self.local_transport_params.multicast_client_params.is_some()))
         {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -270,6 +274,11 @@ impl MulticastConnection for Connection {
         }
 
         Ok(())
+    }
+
+    fn mc_has_control_data(&self) -> bool {
+        // MC-TODO: complete
+        self.mc_should_send_mc_announce()
     }
 }
 
@@ -427,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    /// Exchange of the MC_ANNOUNCE data betweent the client and the server.
+    /// Exchange of the MC_ANNOUNCE data between the client and the server.
     fn mc_announce_data_exchange() {
         let mc_client_tp = MulticastClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
@@ -442,41 +451,9 @@ mod tests {
             )
             .unwrap();
 
-        println!(
-            "Avatn {} {}",
-            pipe.server
-                .multicast
-                .as_ref()
-                .unwrap()
-                .mc_announce_data
-                .is_some(),
-            pipe
-                .server
-                .multicast
-                .as_ref()
-                .unwrap()
-                .mc_announce_is_processed
-        );
-
         assert!(pipe.server.mc_should_send_mc_announce());
-        assert_eq!(pipe.server.stream_send(1, b"aaaaa", false), Ok(5));
         assert_eq!(pipe.advance(), Ok(()));
 
-        println!(
-            "Apres {} {}",
-            pipe.server
-                .multicast
-                .as_ref()
-                .unwrap()
-                .mc_announce_data
-                .is_some(),
-            pipe
-                .server
-                .multicast
-                .as_ref()
-                .unwrap()
-                .mc_announce_is_processed
-        );
         // MC_ANNOUNCE sent.
         // The client has the data, and the server should not send it anymore.
         assert!(!pipe.server.mc_should_send_mc_announce());

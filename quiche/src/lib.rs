@@ -3074,7 +3074,6 @@ impl Connection {
         }
 
         if self.is_closed() || self.is_draining() {
-            println!("Coup dur 1");
             return Err(Error::Done);
         }
 
@@ -3093,7 +3092,6 @@ impl Connection {
         // There's no point in trying to send a packet if the Initial secrets
         // have not been derived yet, so return early.
         if !self.derived_initial_secrets {
-            println!("Coup dur 2");
             return Err(Error::Done);
         }
 
@@ -3113,7 +3111,6 @@ impl Connection {
 
             _ => self.get_send_path_id(from, to)?,
         };
-        println!("Coup dur passé 2");
 
         let send_path = self.paths.get_mut(send_pid)?;
 
@@ -3125,7 +3122,6 @@ impl Connection {
 
         // Generate coalesced packets.
         while left > 0 {
-            println!("Coup dur 4 passe");
             let (ty, written) = match self.send_single(
                 &mut out[done..done + left],
                 send_pid,
@@ -3134,14 +3130,11 @@ impl Connection {
                 Ok(v) => v,
 
                 Err(Error::BufferTooShort) | Err(Error::Done) => {
-                    println!("MAIS OUI OUI OUI");
                     break
                 },
 
                 Err(e) => return Err(e),
             };
-
-            println!("Coup dur passe parce que ecrit");
 
             done += written;
             left -= written;
@@ -3173,8 +3166,6 @@ impl Connection {
 
         if done == 0 {
             self.last_tx_data = self.tx_data;
-
-            println!("Coup dur parce que rien n'est ecrit");
 
             return Err(Error::Done);
         }
@@ -3212,25 +3203,16 @@ impl Connection {
         }
 
         if self.is_draining() {
-            println!("TT1");
             return Err(Error::Done);
         }
-
-        println!("T0");
 
         let is_closing = self.local_error.is_some();
 
         let mut b = octets::OctetsMut::with_slice(out);
 
-        println!("T005");
-
         let pkt_type = self.write_pkt_type(send_pid)?;
 
-        println!("T01: {:?}", pkt_type);
-
         let epoch = pkt_type.to_epoch()?;
-
-        println!("T1");
 
         let multiple_application_data_pkt_num_spaces =
             self.use_path_pkt_num_space(epoch);
@@ -3945,18 +3927,8 @@ impl Connection {
             }
         }
 
-        println!("T2");
-
         // Create MC_ANNOUNCE frame.
-        println!("SHould send mc announce? {} is server {}", self.mc_should_send_mc_announce(), self.is_server);
-        if self.is_server {
-            println!("MC? {:?}", self.multicast.is_some());
-        }
-        if let Some(multicast) = self.multicast.as_ref() {
-            println!("MC announcce data: {:?} and other", multicast.get_mc_announce_data());
-        }
         if self.mc_should_send_mc_announce() {
-            println!("SEND MC ANNOUNCE");
             let multicast = self
                 .multicast
                 .as_mut()
@@ -6715,13 +6687,13 @@ impl Connection {
                 self.paths.has_path_abandon() ||
                 self.paths.has_path_status() ||
                 send_path.needs_ack_eliciting ||
-                send_path.probing_required())
+                send_path.probing_required()) ||
+                self.mc_has_control_data()
         {
             // Only clients can send 0-RTT packets.
             if !self.is_server && self.is_in_early_data() {
                 return Ok(packet::Type::ZeroRTT);
             }
-            println!("Stream c'est ici");
             return Ok(packet::Type::Short);
         }
 
@@ -8750,8 +8722,6 @@ pub mod testing {
         pub fn advance(&mut self) -> Result<()> {
             let mut client_done = false;
             let mut server_done = false;
-
-            println!("T1 {}", self.server.multicast.is_some());
 
             while !client_done || !server_done {
                 match emit_flight(&mut self.client) {
