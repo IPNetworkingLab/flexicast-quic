@@ -1,5 +1,8 @@
 //! Multicast extension for QUIC.
 
+use std::convert::TryFrom;
+use std::convert::TryInto;
+
 use crate::crypto::Algorithm;
 use crate::crypto::Open;
 use crate::crypto::Seal;
@@ -21,10 +24,7 @@ pub enum MulticastError {
 
     /// Attempts to perform server-specific function if a client
     /// and conversely.
-    McInvalidRole,
-
-    /// Client already joined a multicast channel.
-    McAlreadyJoin,
+    McInvalidRole(MulticastRole),
 
     /// Multicast is disabled.
     McDisabled,
@@ -34,6 +34,9 @@ pub enum MulticastError {
 
     /// Invalid asymetric signature.
     McInvalidSign,
+
+    /// Invalid status state machine move for the client.
+    McInvalidAction,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -43,6 +46,74 @@ pub const MC_STATE_CODE: u64 = 0xf4;
 /// MC_KEY frame type.
 pub const MC_KEY_CODE: u64 = 0xf5;
 
+/// States of a multicast client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd)]
+pub enum MulticastClientStatus {
+    /// Left the multicast channel.
+    Left,
+
+    /// Refused to join the multicast channel.
+    DeclinedJoin,
+
+    /// Joined the multicast channel, but does not have the key yet.
+    JoinedNoKey,
+
+    /// Aware of a multicast channel but not joined.
+    AwareUnjoined,
+
+    /// Sent information to join the multicast channel but not confirmed yet.
+    WaitingToJoin,
+
+    /// Joined and got the decryption key.
+    JoinedAndKey,
+
+    /// The client is not aware of the multicast channel.
+    Unaware,
+}
+
+/// Actions of multicast client in the finite state machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd)]
+pub enum MulticastClientAction {
+    /// Knows the existence of the multicast channel.
+    Notify,
+
+    /// Joins the multicast channel.
+    Join,
+
+    /// Leaves the multicast channel.
+    Leave,
+
+    /// Receives the decryption key.
+    DecryptionKey,
+}
+
+impl TryFrom<u64> for MulticastClientAction {
+    type Error = crate::Error;
+
+    fn try_from(value: u64) -> std::result::Result<Self, Self::Error> {
+        Ok(match value {
+            0 => MulticastClientAction::Notify,
+            1 => MulticastClientAction::Join,
+            2 => MulticastClientAction::Leave,
+            3 => MulticastClientAction::DecryptionKey,
+            _ => return Err(Error::Multicast(MulticastError::McInvalidAction)),
+        })
+    }
+}
+
+impl TryInto<u64> for MulticastClientAction {
+    type Error = crate::Error;
+
+    fn try_into(self) -> std::result::Result<u64, Self::Error> {
+        Ok(match self {
+            MulticastClientAction::Notify => 0,
+            MulticastClientAction::Join => 1,
+            MulticastClientAction::Leave => 2,
+            MulticastClientAction::DecryptionKey => 3,
+        })
+    }
+}
+
 /// Role of the connection
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MulticastRole {
@@ -51,10 +122,10 @@ pub enum MulticastRole {
     ServerMulticast,
 
     /// Server unicast channel. Directly connected to its client.
-    ServerUnicast,
+    ServerUnicast(MulticastClientStatus),
 
     /// Receiver. As it uses multipath, it uses both unicast and multicast.
-    Client,
+    Client(MulticastClientStatus),
 
     /// Undefined role. Used for debugging and as temporary value.
     Undefined,
@@ -88,9 +159,6 @@ pub struct MulticastAttributes {
     /// Multicast crypto Open. Used for the multicast channel only.
     mc_crypto_seal: Option<Seal>,
 
-    /// Client (receiver) status. None if server.
-    mc_client_status: Option<MulticastClientStatus>,
-
     /// Whether the key is up to date.
     mc_key_up_to_date: bool,
 }
@@ -113,6 +181,73 @@ impl MulticastAttributes {
             Err(Error::Multicast(MulticastError::McAnnounce))
         }
     }
+
+    /// Sets the client status following the state machine.
+    /// Returns an error if the client would do an invalid move in the state
+    /// machine. MC-TODO: complete the finite state machine.
+    pub fn update_client_state(
+        &mut self, action: MulticastClientAction,
+    ) -> Result<MulticastClientStatus> {
+        let (is_server, current_status) = match self.mc_role {
+            MulticastRole::Client(status) => (false, status),
+            MulticastRole::ServerUnicast(status) => (true, status),
+            _ =>
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    self.mc_role,
+                ))),
+        };
+
+        let new_status = match (current_status, action) {
+            (MulticastClientStatus::Unaware, MulticastClientAction::Notify) =>
+                MulticastClientStatus::AwareUnjoined,
+            (
+                MulticastClientStatus::AwareUnjoined,
+                MulticastClientAction::Join,
+            ) if !is_server => MulticastClientStatus::WaitingToJoin,
+            (
+                MulticastClientStatus::AwareUnjoined,
+                MulticastClientAction::Join,
+            ) if is_server => MulticastClientStatus::JoinedNoKey,
+            (
+                MulticastClientStatus::WaitingToJoin,
+                MulticastClientAction::Join,
+            ) => MulticastClientStatus::JoinedNoKey,
+            (
+                MulticastClientStatus::JoinedNoKey,
+                MulticastClientAction::DecryptionKey,
+            ) => MulticastClientStatus::JoinedAndKey,
+            (
+                MulticastClientStatus::JoinedAndKey,
+                MulticastClientAction::Leave,
+            ) => MulticastClientStatus::Left,
+            _ => return Err(Error::Multicast(MulticastError::McInvalidAction)),
+        };
+
+        self.mc_role = match self.mc_role {
+            MulticastRole::Client(_) => MulticastRole::Client(new_status),
+            MulticastRole::ServerUnicast(_) =>
+                MulticastRole::ServerUnicast(new_status),
+            other => other,
+        };
+
+        Ok(new_status)
+    }
+
+    /// Returns whether the client should send an MC_STATE to join the channel.
+    /// Always false for a server.
+    /// True if the client application explicitly asked to join the channel.
+    pub fn should_send_mc_state(&self) -> bool {
+        match self.mc_role {
+            MulticastRole::Client(status) => {
+                match status {
+                    MulticastClientStatus::WaitingToJoin => true,
+                    _ => false,
+                }
+            },
+
+            _ => false,
+        }
+    }
 }
 
 impl Default for MulticastAttributes {
@@ -124,7 +259,6 @@ impl Default for MulticastAttributes {
             mc_channel_key: None,
             mc_crypto_open: None,
             mc_crypto_seal: None,
-            mc_client_status: None,
             mc_key_up_to_date: false,
         }
     }
@@ -156,38 +290,24 @@ pub struct McAnnounceData {
     pub ttl_data: u64,
 }
 
-/// States of a multicast client.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MulticastClientStatus {
-    /// Left the multicast channel.
-    Left,
-
-    /// Refused to join the multicast channel.
-    DeclinedJoin,
-
-    /// Joined the multicast channel, but does not have the key yet.
-    JoinedNoKey,
-
-    /// Aware of a multicast channel but not joined.
-    Unjoined,
-
-    /// Sent information to join the multicast channel but not confirmed yet.
-    WaitingToJoin,
-
-    /// Joined and got the decryption key.
-    JoinedAndKey,
-}
-
 /// Multicast extension behaviour for the QUIC connection.
 pub trait MulticastConnection {
     /// Whether the server should send MC_ANNOUNCE data to the client.
     /// Always false for a client.
     fn mc_should_send_mc_announce(&self) -> bool;
 
-    /// Sets the MC_ANNOUNCE data on the server.
+    /// Sets the MC_ANNOUNCE data on the server and the client.
+    /// Creates the multicast extension attributes if it does not exist yet.
     /// Returns an Error if multicast is not supported.
+    ///
+    /// MC-TODO: currently if there is a new MC_ANNOUNCE sent by the server,
+    /// the client will move again in the AwareUnjoined role
+    /// without notifying the application. This is not currently handled.
+    /// However, it is a nice feature because we want to be sure that the client
+    /// can control its willing to listen to the multicast channel if the
+    /// MC_ANNOUNCE data changes during the communication.
     fn mc_set_mc_announce_data(
-        &mut self, mc_announce_data: &McAnnounceData, mc_role: MulticastRole,
+        &mut self, mc_announce_data: &McAnnounceData,
     ) -> Result<()>;
 
     /// Sets the symetric keys from the secrets. Only used in multicast.
@@ -197,6 +317,13 @@ pub trait MulticastConnection {
 
     /// Returns true if the multicast extension has control data to send.
     fn mc_has_control_data(&self) -> bool;
+
+    /// Joins a multicast channel advertised by a server.
+    /// Returns an Error if:
+    /// * This is not a client
+    /// * There is no multicast state with valid MC_ANNOUNCE data
+    /// * The status is not AwareUnjoined
+    fn mc_join_channel(&mut self) -> Result<MulticastClientStatus>;
 }
 
 impl MulticastConnection for Connection {
@@ -212,8 +339,9 @@ impl MulticastConnection for Connection {
         }
 
         if let Some(multicast) = self.multicast.as_ref() {
-            multicast.mc_role == MulticastRole::ServerUnicast &&
-            multicast.mc_announce_data.is_some() &&
+            multicast.mc_role ==
+                MulticastRole::ServerUnicast(MulticastClientStatus::Unaware) &&
+                multicast.mc_announce_data.is_some() &&
                 !multicast.mc_announce_is_processed
         } else {
             false
@@ -223,7 +351,7 @@ impl MulticastConnection for Connection {
     fn mc_set_multicast_receiver(&mut self, secret: &[u8]) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             match multicast.mc_role {
-                MulticastRole::Client => {
+                MulticastRole::Client(MulticastClientStatus::WaitingToJoin) => {
                     // Do not perform the handshake because we already have the
                     // key.
                     self.handshake_completed = true;
@@ -241,7 +369,9 @@ impl MulticastConnection for Connection {
 
                     Ok(())
                 },
-                _ => Err(Error::Multicast(MulticastError::McInvalidRole)),
+                _ => Err(Error::Multicast(MulticastError::McInvalidRole(
+                    multicast.mc_role,
+                ))),
             }
         } else {
             Err(Error::Multicast(MulticastError::McDisabled))
@@ -249,26 +379,43 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_set_mc_announce_data(
-        &mut self, mc_announce_data: &McAnnounceData, mc_role: MulticastRole,
+        &mut self, mc_announce_data: &McAnnounceData,
     ) -> Result<()> {
-        if (self.is_server && !(self.local_transport_params.multicast_server_params &&
-            self.peer_transport_params.multicast_client_params.is_some())) || (!self.is_server && !(self.peer_transport_params.multicast_server_params &&
-                self.local_transport_params.multicast_client_params.is_some()))
+        if (self.is_server &&
+            !(self.local_transport_params.multicast_server_params &&
+                self.peer_transport_params
+                    .multicast_client_params
+                    .is_some())) ||
+            (!self.is_server &&
+                !(self.peer_transport_params.multicast_server_params &&
+                    self.local_transport_params
+                        .multicast_client_params
+                        .is_some()))
         {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
 
         if let Some(multicast) = self.multicast.as_mut() {
+            if multicast.mc_role == MulticastRole::ServerMulticast {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    multicast.mc_role,
+                )));
+            }
             multicast.mc_announce_data = Some(mc_announce_data.clone());
             multicast.mc_announce_is_processed = false; // New data!
         } else {
             // Multicast structure does not exist yet.
             // The client considers the MC_ANNOUNCE as processed because it
             // received it.
+            let mc_role = if self.is_server {
+                MulticastRole::ServerUnicast(MulticastClientStatus::Unaware)
+            } else {
+                MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+            };
             self.multicast = Some(MulticastAttributes {
                 mc_role,
                 mc_announce_data: Some(mc_announce_data.clone()),
-                mc_announce_is_processed: mc_role == MulticastRole::Client,
+                mc_announce_is_processed: !self.is_server,
                 ..Default::default()
             });
         }
@@ -278,7 +425,26 @@ impl MulticastConnection for Connection {
 
     fn mc_has_control_data(&self) -> bool {
         // MC-TODO: complete
-        self.mc_should_send_mc_announce()
+        self.mc_should_send_mc_announce() ||
+            match self.multicast.as_ref() {
+                None => false,
+                Some(multicast) => multicast.should_send_mc_state(),
+            }
+    }
+
+    fn mc_join_channel(&mut self) -> Result<MulticastClientStatus> {
+        let multicast = match self.multicast.as_mut() {
+            None => return Err(Error::Multicast(MulticastError::McDisabled)),
+            Some(multicast) => match multicast.mc_role {
+                MulticastRole::Client(MulticastClientStatus::AwareUnjoined) =>
+                    multicast,
+                _ =>
+                    return Err(Error::Multicast(MulticastError::McInvalidRole(
+                        multicast.mc_role,
+                    ))),
+            },
+        };
+        multicast.update_client_state(MulticastClientAction::Join)
     }
 }
 
@@ -329,7 +495,7 @@ mod tests {
     use super::*;
 
     /// Simple config used for testing the multicast extension only.
-    pub fn get_simple_mc_config(
+    pub fn get_test_mc_config(
         mc_server: bool, mc_client: Option<&MulticastClientTp>,
     ) -> Config {
         let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
@@ -377,7 +543,7 @@ mod tests {
     fn mc_announce_data_init() {
         let mc_client_tp = MulticastClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
-        let mut config = get_simple_mc_config(true, Some(&mc_client_tp));
+        let mut config = get_test_mc_config(true, Some(&mc_client_tp));
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -389,10 +555,7 @@ mod tests {
 
         assert!(pipe
             .server
-            .mc_set_mc_announce_data(
-                &mc_announce_data,
-                MulticastRole::ServerUnicast
-            )
+            .mc_set_mc_announce_data(&mc_announce_data)
             .is_ok());
 
         assert!(pipe.server.multicast.is_some());
@@ -409,7 +572,7 @@ mod tests {
 
         assert_eq!(
             pipe.server.multicast.as_ref().unwrap().mc_role,
-            MulticastRole::ServerUnicast
+            MulticastRole::ServerUnicast(MulticastClientStatus::Unaware)
         );
         assert!(pipe.server.mc_should_send_mc_announce());
     }
@@ -442,18 +605,19 @@ mod tests {
     fn mc_announce_data_exchange() {
         let mc_client_tp = MulticastClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
-        let mut config = get_simple_mc_config(true, Some(&mc_client_tp));
+        let mut config = get_test_mc_config(true, Some(&mc_client_tp));
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
         pipe.server
-            .mc_set_mc_announce_data(
-                &mc_announce_data,
-                MulticastRole::ServerUnicast,
-            )
+            .mc_set_mc_announce_data(&mc_announce_data)
             .unwrap();
 
         assert!(pipe.server.mc_should_send_mc_announce());
+        assert_eq!(
+            pipe.server.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::ServerUnicast(MulticastClientStatus::Unaware)
+        );
         assert_eq!(pipe.advance(), Ok(()));
 
         // MC_ANNOUNCE sent.
@@ -473,7 +637,58 @@ mod tests {
         // The client has the role Client.
         assert_eq!(
             pipe.client.multicast.as_ref().unwrap().mc_role,
-            MulticastRole::Client
+            MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+        );
+        // The server updates the role of the client because now the frame is
+        // sent.
+        assert_eq!(
+            pipe.server.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::ServerUnicast(MulticastClientStatus::AwareUnjoined)
+        );
+    }
+
+    #[test]
+    /// The client sends an MC_STATE to join the multicast channel
+    /// advertised by the server.
+    /// This is triggered when the client receives the channel information
+    /// through the MC_ANNOUNCE frame and it accepts to join this channel.
+    ///
+    /// MC-TODO: also test when the client refuses to join the channel.
+    fn client_join_mc_channel() {
+        let mc_client_tp = MulticastClientTp::default();
+        let mc_announce_data = get_test_mc_announce_data();
+        let mut config = get_test_mc_config(true, Some(&mc_client_tp));
+
+        let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+        pipe.server
+            .mc_set_mc_announce_data(&mc_announce_data)
+            .unwrap();
+
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // Client joins the multicast channel.
+        // It changes its status to WaitingToJoin.
+        // It sends an MC_STATE with a JOIN notification to the server.
+        let res = pipe.client.mc_join_channel();
+        assert!(res.is_ok());
+        assert_eq!(
+            pipe.client.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::Client(MulticastClientStatus::WaitingToJoin)
+        );
+
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // The client sent its willing to join.
+        // It will listen to the multicast channel once it has the key.
+        assert_eq!(
+            pipe.client.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::Client(MulticastClientStatus::JoinedNoKey)
+        );
+        // Server received the MC_STATE frame from the client. Its state changed.
+        assert_eq!(
+            pipe.server.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey)
         );
     }
 

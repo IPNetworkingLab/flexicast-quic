@@ -3129,9 +3129,7 @@ impl Connection {
             ) {
                 Ok(v) => v,
 
-                Err(Error::BufferTooShort) | Err(Error::Done) => {
-                    break
-                },
+                Err(Error::BufferTooShort) | Err(Error::Done) => break,
 
                 Err(e) => return Err(e),
             };
@@ -3948,9 +3946,31 @@ impl Connection {
 
             if push_frame_to_pkt!(b, frames, frame, left) {
                 multicast.set_mc_announce_processed(true)?;
+                multicast.update_client_state(
+                    multicast::MulticastClientAction::Notify,
+                )?;
 
                 ack_eliciting = true;
                 in_flight = true;
+            }
+        }
+
+        // Create MC_STATE frame.
+        if let Some(multicast) = self.multicast.as_mut() {
+            if multicast.should_send_mc_state() {
+                let frame = frame::Frame::McState {
+                    channel_id: multicast.get_mc_announce_data().ok_or(Error::Multicast(multicast::MulticastError::McAnnounce))?.channel_id,
+                    action: multicast::MulticastClientAction::Join.try_into()?,
+                };
+
+                if push_frame_to_pkt!(b, frames, frame, left) {
+                    multicast.update_client_state(
+                        multicast::MulticastClientAction::Join,
+                    )?;
+
+                    ack_eliciting = true;
+                    in_flight = true;
+                }
             }
         }
 
@@ -6688,7 +6708,7 @@ impl Connection {
                 self.paths.has_path_status() ||
                 send_path.needs_ack_eliciting ||
                 send_path.probing_required()) ||
-                self.mc_has_control_data()
+            self.mc_has_control_data()
         {
             // Only clients can send 0-RTT packets.
             if !self.is_server && self.is_in_early_data() {
@@ -7339,7 +7359,7 @@ impl Connection {
                 ttl_data,
                 public_key,
             } => {
-                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, is_ipv6, source_ip, group_ip, udp_port);
+                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, is_ipv6, source_ip, group_ip, udp_port);
                 if self.is_server {
                     error!("The server should not receive an MC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -7355,10 +7375,30 @@ impl Connection {
                     ttl_data,
                 };
 
-                self.mc_set_mc_announce_data(
-                    &mc_announce_data,
-                    multicast::MulticastRole::Client,
-                )?;
+                self.mc_set_mc_announce_data(&mc_announce_data)?;
+            },
+
+            frame::Frame::McState { channel_id, action } => {
+                debug!(
+                    "Received an MC_STATE frame! channel ID: {}, state: {}",
+                    channel_id, action
+                );
+                // The client can also receive an MC_STATE.
+                // It can be used to request for a channel leave.
+                // MC-TODO: implement this mechanism.
+                if !self.is_server {
+                    debug!("TODO: implement mechanism client receives MC_STATE");
+                } else {
+                    match self.multicast.as_mut() {
+                        Some(multicast) =>
+                            _ = multicast
+                                .update_client_state(action.try_into()?)?,
+                        None =>
+                            return Err(Error::Multicast(
+                                multicast::MulticastError::McDisabled,
+                            )),
+                    }
+                }
             },
         };
         Ok(())

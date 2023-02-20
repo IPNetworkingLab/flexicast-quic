@@ -30,6 +30,7 @@ use crate::Error;
 use crate::Result;
 
 use crate::multicast::MC_ANNOUNCE_CODE;
+use crate::multicast::MC_STATE_CODE;
 use crate::packet;
 use crate::ranges;
 use crate::stream;
@@ -208,6 +209,13 @@ pub enum Frame {
         udp_port: u16,
         ttl_data: u64, // In ms
         public_key: Vec<u8>,
+    },
+
+    McState {
+        channel_id: u64,
+        // MC-TODO: sequence number?
+        action: u64,
+        // MC-TODO: reason code?
     },
 }
 
@@ -395,6 +403,11 @@ impl Frame {
                     .buf()
                     .try_into()
                     .map_err(|_| Error::BufferTooShort)?,
+            },
+
+            MC_STATE_CODE => Frame::McState {
+                channel_id: b.get_varint()?,
+                action: b.get_varint()?,
             },
 
             _ => return Err(Error::InvalidFrame),
@@ -706,6 +719,13 @@ impl Frame {
                 b.put_bytes(public_key)?;
                 debug!("After putting the frame: {}", b.off());
             },
+
+            Frame::McState { channel_id, action } => {
+                debug!("Going to encode the MC_STATE frame");
+                b.put_varint(MC_STATE_CODE)?;
+                b.put_varint(*channel_id)?;
+                b.put_varint(*action)?;
+            },
         }
 
         Ok(before - b.cap())
@@ -954,6 +974,14 @@ impl Frame {
                 2 + // udp_port
                 8 + // ttl_data
                 public_key.len()
+            },
+
+            Frame::McState { channel_id, action } => {
+                let channel_id_size = octets::varint_len(*channel_id);
+                let state_size = octets::varint_len(*action);
+                1 + // frame type
+                channel_id_size +
+                state_size
             },
         }
     }
@@ -1220,12 +1248,16 @@ impl Frame {
                 status: *status,
             },
 
-            Frame::McAnnounce {
-                ..
-            } => QuicFrame::Unknown {
+            Frame::McAnnounce { .. } => QuicFrame::Unknown {
                 raw_frame_type: MC_ANNOUNCE_CODE,
                 raw_length: Some(10),
                 raw: Some("100".to_string()),
+            },
+
+            Frame::McState { .. } => QuicFrame::Unknown {
+                raw_frame_type: MC_STATE_CODE,
+                raw_length: Some(11),
+                raw: Some("101".to_string()),
             },
         }
     }
@@ -1444,6 +1476,10 @@ impl std::fmt::Debug for Frame {
                 public_key: _,
             } => {
                 write!(f, "MC_ANNOUNCE channel ID={}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}, ttl_data={}", channel_id, is_ipv6, source_ip, group_ip, udp_port, ttl_data)?;
+            },
+
+            Frame::McState { channel_id, action } => {
+                write!(f, "MC_STATE channel ID={}, state={}", channel_id, action)?;
             },
         }
 
@@ -2660,6 +2696,38 @@ mod tests {
         };
 
         assert_eq!(wire_len, 61);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
+
+    #[test]
+    fn mc_state() {
+        let mut d = [42; 128];
+
+        let frame = Frame::McState {
+            channel_id: 0xffddeeaabb3366,
+            action: 1,
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 11);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
