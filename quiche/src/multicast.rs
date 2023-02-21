@@ -694,6 +694,55 @@ mod tests {
     }
 
     #[test]
+    fn test_mc_client_state_machine() {
+        let mut multicast = MulticastAttributes {
+            mc_role: MulticastRole::Client(MulticastClientStatus::Unaware),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            multicast.update_client_state(MulticastClientAction::Join),
+            Err(Error::Multicast(MulticastError::McInvalidAction))
+        );
+
+        assert_eq!(
+            multicast.update_client_state(MulticastClientAction::Leave),
+            Err(Error::Multicast(MulticastError::McInvalidAction))
+        );
+
+        assert_eq!(
+            multicast.update_client_state(MulticastClientAction::DecryptionKey),
+            Err(Error::Multicast(MulticastError::McInvalidAction))
+        );
+
+        // This is a good move.
+        assert_eq!(
+            multicast.update_client_state(MulticastClientAction::Notify),
+            Ok(MulticastClientStatus::AwareUnjoined)
+        );
+
+        assert_eq!(
+            multicast.update_client_state(MulticastClientAction::Join),
+            Ok(MulticastClientStatus::WaitingToJoin)
+        );
+
+        assert_eq!(
+            multicast.update_client_state(MulticastClientAction::Join),
+            Ok(MulticastClientStatus::JoinedNoKey)
+        );
+
+        assert_eq!(
+            multicast.update_client_state(MulticastClientAction::DecryptionKey),
+            Ok(MulticastClientStatus::JoinedAndKey)
+        );
+
+        assert_eq!(
+            multicast.update_client_state(MulticastClientAction::Leave),
+            Ok(MulticastClientStatus::Left)
+        );
+    }
+
+    #[test]
     fn test_mc_set_receiver() {
         assert!(true);
     }
