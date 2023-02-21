@@ -277,8 +277,14 @@ impl MulticastAttributes {
     /// Get the channel decryption key secret.
     pub fn get_decryption_key_secret(&self) -> Result<&[u8]> {
         match self.mc_role {
-            MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey) => Ok(self.mc_channel_key.as_ref().ok_or(Error::Multicast(MulticastError::McInvalidSymKey))?),
-            _ => Err(Error::Multicast(MulticastError::McInvalidRole(self.mc_role)))
+            MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey) =>
+                Ok(self
+                    .mc_channel_key
+                    .as_ref()
+                    .ok_or(Error::Multicast(MulticastError::McInvalidSymKey))?),
+            _ => Err(Error::Multicast(MulticastError::McInvalidRole(
+                self.mc_role,
+            ))),
         }
     }
 
@@ -290,7 +296,9 @@ impl MulticastAttributes {
                 self.update_client_state(MulticastClientAction::DecryptionKey)?;
                 Ok(())
             },
-            _ => Err(Error::Multicast(MulticastError::McInvalidRole(self.mc_role))),
+            _ => Err(Error::Multicast(MulticastError::McInvalidRole(
+                self.mc_role,
+            ))),
         }
     }
 }
@@ -792,7 +800,7 @@ mod tests {
     /// Tests the MC_KEY processing.
     /// The server sends an MC_KEY frame to the client once it joined the
     /// multicast group.
-    /// 
+    ///
     /// Both the client and the server move to the JoinedAndKey state.
     fn test_mc_key() {
         let mc_client_tp = MulticastClientTp::default();
@@ -818,9 +826,14 @@ mod tests {
         assert_eq!(pipe.advance(), Ok(()));
 
         assert!(!pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
-        assert_eq!(pipe.client.multicast.as_ref().unwrap().mc_role, MulticastRole::Client(MulticastClientStatus::JoinedAndKey));
-        assert_eq!(pipe.server.multicast.as_ref().unwrap().mc_role, MulticastRole::ServerUnicast(MulticastClientStatus::JoinedAndKey));
-
+        assert_eq!(
+            pipe.client.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::Client(MulticastClientStatus::JoinedAndKey)
+        );
+        assert_eq!(
+            pipe.server.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::ServerUnicast(MulticastClientStatus::JoinedAndKey)
+        );
     }
 
     #[test]

@@ -3982,14 +3982,18 @@ impl Connection {
         // Create MC_KEY frame.
         if let Some(multicast) = self.multicast.as_mut() {
             if multicast.should_send_mc_key() {
-                let mc_announce_data = multicast.get_mc_announce_data().ok_or(Error::Multicast(multicast::MulticastError::McAnnounce))?;
+                let mc_announce_data = multicast.get_mc_announce_data().ok_or(
+                    Error::Multicast(multicast::MulticastError::McAnnounce),
+                )?;
                 let frame = frame::Frame::McKey {
                     channel_id: mc_announce_data.channel_id,
                     key: multicast.get_decryption_key_secret()?.to_vec(),
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    multicast.update_client_state(multicast::MulticastClientAction::DecryptionKey)?;
+                    multicast.update_client_state(
+                        multicast::MulticastClientAction::DecryptionKey,
+                    )?;
                     multicast.read_mc_key();
 
                     ack_eliciting = true;
@@ -7442,7 +7446,9 @@ impl Connection {
                     if let Some(multicast) = self.multicast.as_mut() {
                         multicast.set_decryption_key_secret(key)?;
                     } else {
-                        return Err(Error::Multicast(multicast::MulticastError::McInvalidSymKey));
+                        return Err(Error::Multicast(
+                            multicast::MulticastError::McInvalidSymKey,
+                        ));
                     }
                 }
             },
