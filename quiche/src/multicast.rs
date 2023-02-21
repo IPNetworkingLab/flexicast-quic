@@ -2,12 +2,23 @@
 
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::io::BufRead;
+use std::net::SocketAddr;
 
+use ring::signature::KeyPair;
+use ring::signature;
+use ring::rand;
+
+use crate::accept;
+use crate::connect;
 use crate::crypto::Algorithm;
 use crate::crypto::Open;
 use crate::crypto::Seal;
+use crate::Config;
 use crate::Connection;
+use crate::ConnectionId;
 use crate::Error;
+use crate::RecvInfo;
 use crate::Result;
 
 /// Multicast extension errors.
@@ -37,6 +48,9 @@ pub enum MulticastError {
 
     /// Invalid status state machine move for the client.
     McInvalidAction,
+
+    /// Handshake of the multicast server channel failed.
+    McChannelHandshake,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -542,8 +556,168 @@ impl From<&MulticastClientTp> for Vec<u8> {
     }
 }
 
+/// Represents a source multicast channel.
+/// A multicast channel is like a unicast connection without the handshake
+/// with the clients because it has no explicit set of connected client.
+pub struct MulticastChannelSource {
+    /// Connection representing the channel.
+    pub channel: Connection,
+
+    /// Back-up connection for the multicast channel setup.
+    /// This is used because the source has no direct connection with
+    /// any receiver.
+    pub client_backup: Connection,
+
+    /// Master secret used to derive the symmetric key used to encrypt
+    /// the traffic with the clients.
+    pub master_secret: Vec<u8>,
+
+    /// Public EdDSA key to authenticate the source.
+    pub public_key: Vec<u8>,
+
+    /// Private EdDSA key to authenticate the source.
+    private_key: signature::Ed25519KeyPair,
+}
+
+impl MulticastChannelSource {
+    fn new_with_tls(
+        channel_id: &ConnectionId, config_server: &mut Config,
+        config_client: &mut Config, peer: SocketAddr, keylog_filename: &str,
+    ) -> Result<Self> {
+        let mut pipe = [0u8; 4096];
+
+        let scid = ConnectionId::from_ref(channel_id);
+
+        // Add the keylog file.
+        let key_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(keylog_filename)
+            .map_err(|_| Error::Multicast(MulticastError::McInvalidSymKey))?;
+        let keylog = Some(key_file);
+        config_client.log_keys();
+
+        // Creates the "dummy client" connection to derive the keys.
+        let mut conn_client = connect(None, &scid, peer, peer, config_client)?;
+        if let Some(keylog) = keylog {
+            if let Ok(keylog) = keylog.try_clone() {
+                conn_client.set_keylog(Box::new(keylog));
+            }
+        }
+
+        let (mut write, _) = conn_client.send(&mut pipe)?;
+        info!("Dummy client sends");
+
+        let mut conn_server = accept(&scid, None, peer, peer, config_server)?;
+        info!("Dummy server accepts");
+        let recv_info = RecvInfo {
+            from: peer,
+            to: peer,
+        };
+
+        if let Err(e) = {
+            while !(conn_server.handshake_completed &&
+                conn_server.handshake_confirmed &&
+                conn_server.handshake_done_acked &&
+                conn_client.handshake_completed &&
+                conn_client.handshake_confirmed)
+            {
+                if write > 0 {
+                    let _ = conn_server.recv(&mut pipe[..write], recv_info);
+                }
+
+                let res = conn_server.send(&mut pipe);
+                if res.is_ok() {
+                    write = res.unwrap().0;
+                }
+
+                if write > 0 {
+                    let _ = conn_client.recv(&mut pipe[..write], recv_info);
+                }
+
+                let res = conn_client.send(&mut pipe);
+                if res.is_ok() {
+                    write = res.unwrap().0;
+                }
+            }
+            Ok::<(), Error>(())
+        } {
+            error!("Impossible to complete the handshake: {:?}", e);
+            return Err(e);
+        }
+
+        if !(conn_server.handshake_completed && conn_client.handshake_completed) {
+            error!("Could not make dummy handshake");
+            return Err(Error::Multicast(MulticastError::McChannelHandshake));
+        }
+
+        let exporter_secret =
+            MulticastChannelSource::get_exporter_secret(keylog_filename)?;
+        
+        let signature_eddsa =
+            MulticastChannelSource::compute_asymetric_signature_keys()?;
+
+        Ok(Self {
+            channel: conn_server,
+            client_backup: conn_client,
+            master_secret: exporter_secret,
+            public_key: signature_eddsa.public_key().as_ref().to_owned(),
+            private_key: signature_eddsa,
+        })
+    }
+
+    /// Retrieve the SERVER_TRAFFIC_SECRET_0 secret negotiated by TLS.
+    fn get_exporter_secret(keylog_filename: &str) -> Result<Vec<u8>> {
+        let fd = std::fs::File::open(keylog_filename)
+            .map_err(|_| Error::Multicast(MulticastError::McInvalidSymKey))?;
+        let mut reader = std::io::BufReader::new(fd);
+        let mut in_string = String::new();
+        for _ in 0..3 {
+            reader
+                .read_line(&mut in_string)
+                .map_err(|_| Error::Multicast(MulticastError::McInvalidSymKey))?;
+            in_string = String::new();
+        }
+        reader
+            .read_line(&mut in_string)
+            .map_err(|_| Error::Multicast(MulticastError::McInvalidSymKey))?; // This is very ugly, erk
+        let splited = in_string.split(' ');
+        let a = splited
+            .last()
+            .ok_or(Error::Multicast(MulticastError::McInvalidSymKey))?;
+        (0..a.len() - 1)
+            .step_by(2)
+            .map(|i| {
+                a.get(i..i + 2)
+                    .and_then(|sub| u8::from_str_radix(sub, 16).ok())
+                    .ok_or(Error::Multicast(MulticastError::McInvalidSymKey))
+            })
+            .collect()
+    }
+
+    /// Computes a new asymetric key pair.
+    fn compute_asymetric_signature_keys() -> Result<signature::Ed25519KeyPair> {
+        let rng = rand::SystemRandom::new();
+        let pkcs8_bytes = signature::Ed25519KeyPair::generate_pkcs8(&rng)
+            .map_err(|_| {
+                crate::Error::Multicast(MulticastError::McInvalidAsymKey)
+            })?;
+
+        let key_pair = signature::Ed25519KeyPair::from_pkcs8(
+            pkcs8_bytes.as_ref(),
+        )
+        .map_err(|_| {
+            crate::Error::Multicast(MulticastError::McInvalidAsymKey)
+        })?;
+
+        Ok(key_pair)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use ring::rand::SecureRandom;
+
     use crate::testing;
     use crate::Config;
 
@@ -589,6 +763,23 @@ mod tests {
             public_key: vec![1; 32],
             ttl_data: 1_000_000,
         }
+    }
+
+    /// Simple source multicast channel for the tests.
+    fn get_test_mc_channel_source(config_server: &mut Config, config_client: &mut Config) -> Result<MulticastChannelSource> {
+        let mut channel_id = [0; crate::MAX_CONN_ID_LEN];
+        ring::rand::SystemRandom::new()
+            .fill(&mut channel_id[..])
+            .unwrap();
+        let channel_id = ConnectionId::from_ref(&channel_id);
+
+        let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
+        let dummy_port = 1234;
+        let to = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+            dummy_ip, dummy_port,
+        ));
+
+        MulticastChannelSource::new_with_tls(&channel_id, config_server, config_client, to, "/tmp/mc_channel_text.txt")
     }
 
     #[test]
@@ -837,7 +1028,14 @@ mod tests {
     }
 
     #[test]
-    fn test_mc_set_receiver() {
-        assert!(true);
+    /// Tests the dummy handshake for the creation of the multicast channel
+    /// of the server.
+    fn test_mc_channel_server_handshake() {
+        let mc_client_tp = MulticastClientTp::default();
+        let mut server_config = get_test_mc_config(true, None);
+        let mut client_config = get_test_mc_config(false, Some(&mc_client_tp));
+        
+        let mc_channel = get_test_mc_channel_source(&mut server_config, &mut client_config);
+        assert!(mc_channel.is_ok());
     }
 }
