@@ -5,9 +5,9 @@ use std::convert::TryInto;
 use std::io::BufRead;
 use std::net::SocketAddr;
 
-use ring::signature::KeyPair;
-use ring::signature;
 use ring::rand;
+use ring::signature;
+use ring::signature::KeyPair;
 
 use crate::accept;
 use crate::connect;
@@ -653,7 +653,7 @@ impl MulticastChannelSource {
 
         let exporter_secret =
             MulticastChannelSource::get_exporter_secret(keylog_filename)?;
-        
+
         let signature_eddsa =
             MulticastChannelSource::compute_asymetric_signature_keys()?;
 
@@ -706,9 +706,7 @@ impl MulticastChannelSource {
         let key_pair = signature::Ed25519KeyPair::from_pkcs8(
             pkcs8_bytes.as_ref(),
         )
-        .map_err(|_| {
-            crate::Error::Multicast(MulticastError::McInvalidAsymKey)
-        })?;
+        .map_err(|_| crate::Error::Multicast(MulticastError::McInvalidAsymKey))?;
 
         Ok(key_pair)
     }
@@ -766,7 +764,9 @@ mod tests {
     }
 
     /// Simple source multicast channel for the tests.
-    fn get_test_mc_channel_source(config_server: &mut Config, config_client: &mut Config) -> Result<MulticastChannelSource> {
+    fn get_test_mc_channel_source(
+        config_server: &mut Config, config_client: &mut Config,
+    ) -> Result<MulticastChannelSource> {
         let mut channel_id = [0; crate::MAX_CONN_ID_LEN];
         ring::rand::SystemRandom::new()
             .fill(&mut channel_id[..])
@@ -779,7 +779,13 @@ mod tests {
             dummy_ip, dummy_port,
         ));
 
-        MulticastChannelSource::new_with_tls(&channel_id, config_server, config_client, to, "/tmp/mc_channel_text.txt")
+        MulticastChannelSource::new_with_tls(
+            &channel_id,
+            config_server,
+            config_client,
+            to,
+            "/tmp/mc_channel_text.txt",
+        )
     }
 
     #[test]
@@ -1034,8 +1040,9 @@ mod tests {
         let mc_client_tp = MulticastClientTp::default();
         let mut server_config = get_test_mc_config(true, None);
         let mut client_config = get_test_mc_config(false, Some(&mc_client_tp));
-        
-        let mc_channel = get_test_mc_channel_source(&mut server_config, &mut client_config);
+
+        let mc_channel =
+            get_test_mc_channel_source(&mut server_config, &mut client_config);
         assert!(mc_channel.is_ok());
     }
 }
