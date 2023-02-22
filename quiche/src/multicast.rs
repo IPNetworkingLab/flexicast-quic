@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 
 use crate::rand::rand_bytes;
 use ring::rand;
+use ring::rand::SecureRandom;
 use ring::signature;
 use ring::signature::KeyPair;
 
@@ -21,6 +22,8 @@ use crate::ConnectionId;
 use crate::Error;
 use crate::RecvInfo;
 use crate::Result;
+use crate::testing::emit_flight;
+use crate::testing::process_flight;
 
 /// Multicast extension errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -307,11 +310,9 @@ impl MulticastAttributes {
     pub fn set_decryption_key_secret(&mut self, key: Vec<u8>) -> Result<()> {
         match self.mc_role {
             MulticastRole::Client(MulticastClientStatus::JoinedNoKey) => {
-                let aead_open =
-                    Open::from_secret(Algorithm::AES128_GCM, &key)?;
+                let aead_open = Open::from_secret(Algorithm::AES128_GCM, &key)?;
                 self.mc_crypto_open = Some(aead_open);
-                let aead_seal =
-                    Seal::from_secret(Algorithm::AES128_GCM, &key)?;
+                let aead_seal = Seal::from_secret(Algorithm::AES128_GCM, &key)?;
                 self.mc_crypto_seal = Some(aead_seal);
 
                 self.mc_channel_key = Some(key);
@@ -595,14 +596,16 @@ pub struct MulticastChannelSource {
     /// Connection ID that the clients use for the multicast path.
     /// This tuple contains the Connection Id and the reset token.
     pub mc_path_conn_id: (ConnectionId<'static>, u128),
+
+    /// Address used to trigger sending packets on the multicast path.
+    pub mc_path_peer: SocketAddr,
 }
 
 impl MulticastChannelSource {
     fn new_with_tls(
         channel_id: &ConnectionId, config_server: &mut Config,
-        config_client: &mut Config, peer: SocketAddr, keylog_filename: &str,
+        config_client: &mut Config, peer: SocketAddr, peer2: SocketAddr, keylog_filename: &str,
     ) -> Result<Self> {
-        let mut pipe = [0u8; 4096];
 
         let scid = ConnectionId::from_ref(channel_id);
 
@@ -622,53 +625,26 @@ impl MulticastChannelSource {
                 conn_client.set_keylog(Box::new(keylog));
             }
         }
-
-        let (mut write, _) = conn_client.send(&mut pipe)?;
-        info!("Dummy client sends");
-
         let mut conn_server = accept(&scid, None, peer, peer, config_server)?;
-        info!("Dummy server accepts");
-        let recv_info = RecvInfo {
-            from: peer,
-            to: peer,
-            from_mc: false,
-        };
+        Self::handshake(&mut conn_server, &mut conn_client)?;
+        Self::advance(&mut conn_server, &mut conn_client)?;
 
-        if let Err(e) = {
-            while !(conn_server.handshake_completed &&
-                conn_server.handshake_confirmed &&
-                conn_server.handshake_done_acked &&
-                conn_client.handshake_completed &&
-                conn_client.handshake_confirmed)
-            {
-                if write > 0 {
-                    let _ = conn_server.recv(&mut pipe[..write], recv_info);
-                }
+        // Add a new Connection ID for the multicast path.
+        let mut channel_id = [0; 16];
+        ring::rand::SystemRandom::new().fill(&mut channel_id[..]).unwrap();
+        let channel_id = ConnectionId::from_ref(&channel_id);
+        conn_server.new_source_cid(&channel_id, 0x1, true)?;
+        conn_client.new_source_cid(&channel_id, 0x1, true)?;
+        Self::advance(&mut conn_server, &mut conn_client)?;
 
-                let res = conn_server.send(&mut pipe);
-                if res.is_ok() {
-                    write = res.unwrap().0;
-                }
+        // Probe the new path.
+        conn_client.probe_path(peer2, peer2)?;
+        Self::advance(&mut conn_server, &mut conn_client)?;
 
-                if write > 0 {
-                    let _ = conn_client.recv(&mut pipe[..write], recv_info);
-                }
-
-                let res = conn_client.send(&mut pipe);
-                if res.is_ok() {
-                    write = res.unwrap().0;
-                }
-            }
-            Ok::<(), Error>(())
-        } {
-            error!("Impossible to complete the handshake: {:?}", e);
-            return Err(e);
-        }
-
-        if !(conn_server.handshake_completed && conn_client.handshake_completed) {
-            error!("Could not make dummy handshake");
-            return Err(Error::Multicast(MulticastError::McChannelHandshake));
-        }
+        // Set the new path active.
+        conn_client.set_active(peer2, peer2, true)?;
+        conn_server.set_active(peer2, peer2, true)?;
+        Self::advance(&mut conn_server, &mut conn_client)?;
 
         let exporter_secret =
             MulticastChannelSource::get_exporter_secret(keylog_filename)?;
@@ -693,7 +669,49 @@ impl MulticastChannelSource {
             public_key: signature_eddsa.public_key().as_ref().to_owned(),
             private_key: signature_eddsa,
             mc_path_conn_id: (cid, reset_token),
+            mc_path_peer: peer2,
         })
+    }
+
+    /// Copy of the Pipe::handshake method. Used for the setup
+    /// to create the source multicast channel.
+    pub fn handshake(server: &mut Connection, client: &mut Connection) -> Result<()> {
+        while !client.is_established() || !server.is_established() {
+            let flight = emit_flight(client)?;
+            process_flight(server, flight)?;
+
+            let flight = emit_flight(server)?;
+            process_flight(client, flight)?;
+        }
+
+        Ok(())
+    }
+
+    /// Copy of the Pipe::advance method. Used for the setup
+    /// to create the source multicast channel.
+    fn advance(server: &mut Connection, client: &mut Connection) -> Result<()> {
+        let mut client_done = false;
+            let mut server_done = false;
+
+            while !client_done || !server_done {
+                match emit_flight(client) {
+                    Ok(flight) => process_flight(server, flight)?,
+
+                    Err(Error::Done) => client_done = true,
+
+                    Err(e) => return Err(e),
+                };
+
+                match emit_flight(server) {
+                    Ok(flight) => process_flight(client, flight)?,
+
+                    Err(Error::Done) => server_done = true,
+
+                    Err(e) => return Err(e),
+                };
+            }
+
+            Ok(())
     }
 
     /// Retrieve the SERVER_TRAFFIC_SECRET_0 secret negotiated by TLS.
@@ -810,12 +828,16 @@ mod tests {
         let to = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
             dummy_ip, dummy_port,
         ));
+        let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+            dummy_ip, dummy_port + 1,
+        ));
 
         MulticastChannelSource::new_with_tls(
             &channel_id,
             config_server,
             config_client,
             to,
+            to2,
             "/tmp/mc_channel_text.txt",
         )
     }
@@ -1207,14 +1229,27 @@ mod tests {
         mc_channel.channel.stream_send(1, &data, true).unwrap();
         let res = mc_channel.channel.send(&mut mc_pipe[..]);
         assert!(res.is_ok());
-        let (written, _) = res.unwrap();
+        let (written, info) = res.unwrap();
         println!("Written: {}", written);
+        back.copy_from_slice(&mc_pipe[..]);
+        let recv_info = RecvInfo {
+            from: info.from,
+            to: info.to,
+            from_mc: false,
+        };
+        println!("-- Before client backup");
+        let res = mc_channel
+            .client_backup
+            .recv(&mut back[..written], recv_info);
+        assert!(res.is_ok());
+        assert!(mc_channel.client_backup.stream_readable(1));
+        println!("-- After client backup");
+
         let recv_info = RecvInfo {
             from: server_addr,
             to: client_addr_2,
             from_mc: true,
         };
-        back.copy_from_slice(&mut mc_pipe[..]);
         let res = pipe.client.recv(&mut mc_pipe[..written], recv_info);
         assert!(res.is_ok());
         let read = res.unwrap();
@@ -1223,6 +1258,42 @@ mod tests {
         assert_eq!(
             pipe.client.stream_recv(1, &mut mc_pipe[..]),
             Ok((255, true))
-        );
+        ); 
+    }
+
+    #[test]
+    fn test_mc_channel_alone() {
+        let mc_client_tp = MulticastClientTp::default();
+        let mut server_config = get_test_mc_config(true, None);
+        let mut client_config = get_test_mc_config(false, Some(&mc_client_tp));
+        let mut mc_channel =
+            get_test_mc_channel_source(&mut server_config, &mut client_config)
+                .unwrap();
+        
+        let data: Vec<_> = (0..255).collect();
+        mc_channel.channel.stream_send(1, &data, true).unwrap();
+
+        let mut pipe = [0u8; 4096];
+        let (written, to) = mc_channel.channel.send(&mut pipe[..]).unwrap();
+
+        let recv_info = RecvInfo { from: to.from, to: to.to, from_mc: false };
+        let res = mc_channel.client_backup.recv(&mut pipe[..written], recv_info);
+        assert!(res.is_ok());
+        assert_eq!(mc_channel.client_backup.readable().len(), 1);
+        assert!(mc_channel.client_backup.stream_readable(1));
+
+        // Send data on the second path.
+        mc_channel.channel.stream_send(3, &data, true).unwrap();
+        let res = mc_channel.channel.send_on_path(&mut pipe[..], Some(mc_channel.mc_path_peer), Some(mc_channel.mc_path_peer));
+        assert!(res.is_ok());
+        let (written, to) = res.unwrap();
+
+        let recv_info = RecvInfo { from: to.from, to: to.to, from_mc: false };
+        let res = mc_channel.client_backup.recv(&mut pipe[..written], recv_info);
+        assert!(res.is_ok());
+        assert_eq!(mc_channel.client_backup.readable().len(), 2);
+        assert!(mc_channel.client_backup.stream_readable(3));
+
+
     }
 }
