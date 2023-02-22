@@ -14922,7 +14922,7 @@ mod tests {
     }
 
     // Utility function.
-    fn pipe_with_exchanged_cids(
+    pub fn pipe_with_exchanged_cids(
         config: &mut Config, client_scid_len: usize, server_scid_len: usize,
         additional_cids: usize,
     ) -> testing::Pipe {

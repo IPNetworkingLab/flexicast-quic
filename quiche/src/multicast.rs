@@ -6,6 +6,7 @@ use std::io::BufRead;
 use std::net::SocketAddr;
 
 use ring::rand;
+use crate::rand::rand_bytes;
 use ring::signature;
 use ring::signature::KeyPair;
 
@@ -577,6 +578,10 @@ pub struct MulticastChannelSource {
 
     /// Private EdDSA key to authenticate the source.
     private_key: signature::Ed25519KeyPair,
+
+    /// Connection ID that the clients use for the multicast path.
+    /// This tuple contains the Connection Id and the reset token.
+    pub mc_path_conn_id: (ConnectionId<'static>, u128),
 }
 
 impl MulticastChannelSource {
@@ -656,6 +661,15 @@ impl MulticastChannelSource {
 
         let signature_eddsa =
             MulticastChannelSource::compute_asymetric_signature_keys()?;
+        
+        // Create Connection ID and reset token.
+        let mut cid = vec![0; channel_id.len()];
+        rand_bytes(&mut cid[..]);
+        let cid = ConnectionId::from_ref(&cid).into_owned();
+
+        let mut reset_token = [0; 16];
+        rand_bytes(&mut reset_token);
+        let reset_token = u128::from_be_bytes(reset_token);
 
         Ok(Self {
             channel: conn_server,
@@ -663,6 +677,7 @@ impl MulticastChannelSource {
             master_secret: exporter_secret,
             public_key: signature_eddsa.public_key().as_ref().to_owned(),
             private_key: signature_eddsa,
+            mc_path_conn_id: (cid, reset_token),
         })
     }
 
@@ -718,6 +733,7 @@ mod tests {
 
     use crate::testing;
     use crate::Config;
+    use crate::tests::pipe_with_exchanged_cids;
 
     use super::*;
 
@@ -744,7 +760,9 @@ mod tests {
         config.set_initial_max_stream_data_uni(1_000_000);
         config.set_initial_max_streams_bidi(100);
         config.set_initial_max_streams_uni(100);
-        config.set_disable_active_migration(true);
+        config.set_active_connection_id_limit(3);
+        config.verify_peer(false);
+        config.set_multipath(true);
         config.set_enable_server_multicast(mc_server);
         config.set_enable_client_multicast(mc_client);
         config
@@ -1017,7 +1035,8 @@ mod tests {
         assert!(!pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
 
         let multicast = pipe.server.multicast.as_mut().unwrap();
-        multicast.mc_channel_key = Some((0..32).collect());
+        let mc_channel_key: Vec<_> = (0..32).collect();
+        multicast.mc_channel_key = Some(mc_channel_key.clone());
 
         assert!(pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
         assert_eq!(pipe.advance(), Ok(()));
@@ -1031,6 +1050,8 @@ mod tests {
             pipe.server.multicast.as_ref().unwrap().mc_role,
             MulticastRole::ServerUnicast(MulticastClientStatus::JoinedAndKey)
         );
+
+        assert_eq!(pipe.client.multicast.as_ref().unwrap().mc_channel_key, Some(mc_channel_key.clone()));
     }
 
     #[test]
@@ -1044,5 +1065,49 @@ mod tests {
         let mc_channel =
             get_test_mc_channel_source(&mut server_config, &mut client_config);
         assert!(mc_channel.is_ok());
+    }
+
+    #[test]
+    /// Tests the client joining a multicast channel
+    /// and creating the multicast path to listen to the source.
+    fn test_mc_client_create_multicast_path() {
+        let mc_client_tp = MulticastClientTp::default();
+        let mut server_config = get_test_mc_config(true, None);
+        let mut client_config = get_test_mc_config(false, Some(&mc_client_tp));
+        let mc_announce_data = get_test_mc_announce_data();
+        let mut config = get_test_mc_config(true, Some(&mc_client_tp));
+
+        // Multicast path.
+        let mc_channel =
+            get_test_mc_channel_source(&mut server_config, &mut client_config).unwrap();
+
+        // This is copied from crate::tests::multipath.
+        let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
+        assert_eq!(pipe.client.is_multipath_enabled(), true);
+        assert_eq!(pipe.server.is_multipath_enabled(), true);
+
+        // Server announces and client joins.
+        pipe.server.mc_set_mc_announce_data(&mc_announce_data).unwrap();
+        let multicast = pipe.server.multicast.as_mut().unwrap();
+        multicast.mc_channel_key = Some(mc_channel.master_secret.clone());
+        assert!(pipe.advance().is_ok());
+
+        // Client joins the multicast channel, and the server gives the master key.
+        pipe.client.mc_join_channel().unwrap();
+        assert!(pipe.advance().is_ok());
+
+        assert_eq!(pipe.client.multicast.as_ref().unwrap().mc_role, MulticastRole::Client(MulticastClientStatus::JoinedAndKey));
+
+        let client_addr = testing::Pipe::client_addr();
+        let server_addr = testing::Pipe::server_addr();
+        let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
+        let cid_c2s_0 = pipe.client.destination_id().into_owned();
+        let cid_s2c_0 = pipe.server.destination_id().into_owned();
+
+        // Probe a second path that will listen to the multicast source.
+        assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
+        assert_eq!(pipe.advance(), Ok(()));
+
+
     }
 }
