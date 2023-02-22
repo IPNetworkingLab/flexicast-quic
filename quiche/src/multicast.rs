@@ -336,7 +336,7 @@ impl Default for MulticastAttributes {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McAnnounceData {
     /// Replaces the Connection ID for multicast.
-    pub channel_id: u64,
+    pub channel_id: Vec<u8>,
 
     /// Set to `true` if it is an IPv6 multicast group, `false` for IPv4.
     pub is_ipv6: bool,
@@ -771,7 +771,7 @@ mod tests {
     /// Simple McAnnounceData for testing the multicast extension only.
     fn get_test_mc_announce_data() -> McAnnounceData {
         McAnnounceData {
-            channel_id: 0xfefefd,
+            channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             is_ipv6: false,
             source_ip: std::net::Ipv4Addr::new(127, 0, 0, 1).octets(),
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),

@@ -3935,7 +3935,7 @@ impl Connection {
                 .get_mc_announce_data()
                 .ok_or(Error::Multicast(multicast::MulticastError::McDisabled))?;
             let frame = frame::Frame::McAnnounce {
-                channel_id: mc_announce_data.channel_id,
+                channel_id: mc_announce_data.channel_id.clone(),
                 is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
                 source_ip: mc_announce_data.source_ip,
                 group_ip: mc_announce_data.group_ip,
@@ -3964,7 +3964,7 @@ impl Connection {
                         .ok_or(Error::Multicast(
                             multicast::MulticastError::McAnnounce,
                         ))?
-                        .channel_id,
+                        .channel_id.clone(),
                     action: multicast::MulticastClientAction::Join.try_into()?,
                 };
 
@@ -3986,7 +3986,7 @@ impl Connection {
                     Error::Multicast(multicast::MulticastError::McAnnounce),
                 )?;
                 let frame = frame::Frame::McKey {
-                    channel_id: mc_announce_data.channel_id,
+                    channel_id: mc_announce_data.channel_id.clone(),
                     key: multicast.get_decryption_key_secret()?.to_vec(),
                 };
 
@@ -7387,7 +7387,7 @@ impl Connection {
                 ttl_data,
                 public_key,
             } => {
-                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, is_ipv6, source_ip, group_ip, udp_port);
+                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, is_ipv6, source_ip, group_ip, udp_port);
                 if self.is_server {
                     error!("The server should not receive an MC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -7408,7 +7408,7 @@ impl Connection {
 
             frame::Frame::McState { channel_id, action } => {
                 debug!(
-                    "Received an MC_STATE frame! channel ID: {}, state: {}",
+                    "Received an MC_STATE frame! channel ID: {:?}, state: {}",
                     channel_id, action
                 );
                 // The client can also receive an MC_STATE.
@@ -7431,7 +7431,7 @@ impl Connection {
 
             frame::Frame::McKey { channel_id, key } => {
                 debug!(
-                    "Received an MC_KEY frame! channel ID: {}, key: {:?}",
+                    "Received an MC_KEY frame! channel ID: {:?}, key: {:?}",
                     channel_id, key
                 );
                 if self.is_server {
