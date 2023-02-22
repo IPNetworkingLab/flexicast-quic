@@ -193,6 +193,7 @@ fn main() {
             let recv_info = quiche::RecvInfo {
                 to: local_addr,
                 from,
+                from_mc: false,
             };
 
             // Process potentially coalesced packets.

@@ -645,6 +645,7 @@ impl ConnectionIdentifiers {
         &self, scid: &ConnectionId,
     ) -> Option<(u64, Option<usize>)> {
         self.scids.iter().find_map(|e| {
+            println!("ConnectionIdEntry: {:?} and the looked one {:?}", e, scid);
             if e.cid == *scid {
                 Some((e.seq, e.path_id))
             } else {

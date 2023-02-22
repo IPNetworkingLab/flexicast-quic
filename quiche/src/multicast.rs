@@ -5,8 +5,8 @@ use std::convert::TryInto;
 use std::io::BufRead;
 use std::net::SocketAddr;
 
-use ring::rand;
 use crate::rand::rand_bytes;
+use ring::rand;
 use ring::signature;
 use ring::signature::KeyPair;
 
@@ -307,7 +307,15 @@ impl MulticastAttributes {
     pub fn set_decryption_key_secret(&mut self, key: Vec<u8>) -> Result<()> {
         match self.mc_role {
             MulticastRole::Client(MulticastClientStatus::JoinedNoKey) => {
+                let aead_open =
+                    Open::from_secret(Algorithm::AES128_GCM, &key)?;
+                self.mc_crypto_open = Some(aead_open);
+                let aead_seal =
+                    Seal::from_secret(Algorithm::AES128_GCM, &key)?;
+                self.mc_crypto_seal = Some(aead_seal);
+
                 self.mc_channel_key = Some(key);
+
                 self.update_client_state(MulticastClientAction::DecryptionKey)?;
                 Ok(())
             },
@@ -315,6 +323,11 @@ impl MulticastAttributes {
                 self.mc_role,
             ))),
         }
+    }
+
+    /// Gives the decryption context for the multicast channel.
+    pub fn get_mc_crypto_open(&self) -> Option<&Open> {
+        self.mc_crypto_open.as_ref()
     }
 }
 
@@ -618,6 +631,7 @@ impl MulticastChannelSource {
         let recv_info = RecvInfo {
             from: peer,
             to: peer,
+            from_mc: false,
         };
 
         if let Err(e) = {
@@ -661,11 +675,12 @@ impl MulticastChannelSource {
 
         let signature_eddsa =
             MulticastChannelSource::compute_asymetric_signature_keys()?;
-        
-        // Create Connection ID and reset token.
-        let mut cid = vec![0; channel_id.len()];
-        rand_bytes(&mut cid[..]);
-        let cid = ConnectionId::from_ref(&cid).into_owned();
+
+        // // Create Connection ID and reset token.
+        // let mut cid = vec![0; channel_id.len()];
+        // rand_bytes(&mut cid[..]);
+        // let cid = ConnectionId::from_ref(&cid).into_owned();
+        let cid = channel_id.clone().into_owned();
 
         let mut reset_token = [0; 16];
         rand_bytes(&mut reset_token);
@@ -733,7 +748,6 @@ mod tests {
 
     use crate::testing;
     use crate::Config;
-    use crate::tests::pipe_with_exchanged_cids;
 
     use super::*;
 
@@ -785,7 +799,7 @@ mod tests {
     fn get_test_mc_channel_source(
         config_server: &mut Config, config_client: &mut Config,
     ) -> Result<MulticastChannelSource> {
-        let mut channel_id = [0; crate::MAX_CONN_ID_LEN];
+        let mut channel_id = [0; 16];
         ring::rand::SystemRandom::new()
             .fill(&mut channel_id[..])
             .unwrap();
@@ -1051,7 +1065,10 @@ mod tests {
             MulticastRole::ServerUnicast(MulticastClientStatus::JoinedAndKey)
         );
 
-        assert_eq!(pipe.client.multicast.as_ref().unwrap().mc_channel_key, Some(mc_channel_key.clone()));
+        assert_eq!(
+            pipe.client.multicast.as_ref().unwrap().mc_channel_key,
+            Some(mc_channel_key.clone())
+        );
     }
 
     #[test]
@@ -1074,29 +1091,59 @@ mod tests {
         let mc_client_tp = MulticastClientTp::default();
         let mut server_config = get_test_mc_config(true, None);
         let mut client_config = get_test_mc_config(false, Some(&mc_client_tp));
-        let mc_announce_data = get_test_mc_announce_data();
+        let mut mc_announce_data = get_test_mc_announce_data();
         let mut config = get_test_mc_config(true, Some(&mc_client_tp));
 
         // Multicast path.
-        let mc_channel =
-            get_test_mc_channel_source(&mut server_config, &mut client_config).unwrap();
+        let mut mc_channel =
+            get_test_mc_channel_source(&mut server_config, &mut client_config)
+                .unwrap();
+
+        // Copy the channel ID derived from the multicast channel.
+        mc_announce_data.channel_id =
+            mc_channel.mc_path_conn_id.0.as_ref().to_vec();
 
         // This is copied from crate::tests::multipath.
-        let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
+        let mut pipe =
+            testing::Pipe::with_config_and_scid_lengths(&mut config, 16, 16)
+                .unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
         assert_eq!(pipe.client.is_multipath_enabled(), true);
         assert_eq!(pipe.server.is_multipath_enabled(), true);
 
         // Server announces and client joins.
-        pipe.server.mc_set_mc_announce_data(&mc_announce_data).unwrap();
+        pipe.server
+            .mc_set_mc_announce_data(&mc_announce_data)
+            .unwrap();
         let multicast = pipe.server.multicast.as_mut().unwrap();
         multicast.mc_channel_key = Some(mc_channel.master_secret.clone());
         assert!(pipe.advance().is_ok());
 
-        // Client joins the multicast channel, and the server gives the master key.
+        // Client joins the multicast channel, and the server gives the master
+        // key.
         pipe.client.mc_join_channel().unwrap();
         assert!(pipe.advance().is_ok());
 
-        assert_eq!(pipe.client.multicast.as_ref().unwrap().mc_role, MulticastRole::Client(MulticastClientStatus::JoinedAndKey));
+        assert_eq!(
+            pipe.client.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::Client(MulticastClientStatus::JoinedAndKey)
+        );
+
+        // Issue a new connection ID for the client using the channel ID
+        let reset_token = 0xffeeddccu128;
+        let client_mc_announce = pipe
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_announce_data
+            .as_ref()
+            .unwrap();
+        let cid =
+            ConnectionId::from_ref(&client_mc_announce.channel_id).into_owned();
+        println!("Client will add this CID: {:?}", cid);
+        pipe.client.new_source_cid(&cid, reset_token, true).unwrap();
+        pipe.server.new_source_cid(&cid, reset_token, true).unwrap();
 
         let client_addr = testing::Pipe::client_addr();
         let server_addr = testing::Pipe::server_addr();
@@ -1105,9 +1152,77 @@ mod tests {
         let cid_s2c_0 = pipe.server.destination_id().into_owned();
 
         // Probe a second path that will listen to the multicast source.
+        assert_eq!(pipe.advance(), Ok(()));
+        println!("Client path map before: {:?}", pipe.client.paths.len());
         assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
         assert_eq!(pipe.advance(), Ok(()));
+        println!("Client path map after: {:?}", pipe.client.paths.len());
 
+        let pid_c2s_0 = pipe
+            .client
+            .paths
+            .path_id_from_addrs(&(client_addr, server_addr))
+            .expect("no such path");
+        let pid_c2s_1 = pipe
+            .client
+            .paths
+            .path_id_from_addrs(&(client_addr_2, server_addr))
+            .expect("no such path");
+        let pid_s2c_0 = pipe
+            .server
+            .paths
+            .path_id_from_addrs(&(server_addr, client_addr))
+            .expect("no such path");
 
+        let path_c2s_0 = pipe.client.paths.get(pid_c2s_0).expect("no such path");
+        let path_c2s_1 = pipe.client.paths.get(pid_c2s_1).expect("no such path");
+        let path_s2c_0 = pipe.server.paths.get(pid_s2c_0).expect("no such path");
+
+        assert_eq!(path_c2s_0.active(), true);
+        assert_eq!(path_c2s_1.active(), false);
+        assert_eq!(path_s2c_0.active(), true);
+
+        assert_eq!(
+            pipe.client.set_active(client_addr_2, server_addr, true,),
+            Ok(())
+        );
+
+        let path_c2s_0 = pipe.client.paths.get(pid_c2s_0).expect("no such path");
+        let path_c2s_1 = pipe.client.paths.get(pid_c2s_1).expect("no such path");
+        let path_s2c_0 = pipe.server.paths.get(pid_s2c_0).expect("no such path");
+
+        assert_eq!(path_c2s_0.active(), true);
+        assert_eq!(path_c2s_1.active(), true);
+        assert_eq!(path_s2c_0.active(), true);
+
+        assert_eq!(pipe.advance(), Ok(()));
+        println!("pid_c2s_1: {:?}", pid_c2s_1);
+
+        // The multicast channel sends some data to the client.
+        // MC-TODO: create a multicast pipe.
+        let mut mc_pipe = [0u8; 4096];
+        let mut back = [0u8; 4096];
+        let data: Vec<_> = (0..255).collect();
+        // mc_channel.channel.stream_send(1, &data, true).unwrap();
+        mc_channel.channel.stream_send(1, &data, true).unwrap();
+        let res = mc_channel.channel.send(&mut mc_pipe[..]);
+        assert!(res.is_ok());
+        let (written, _) = res.unwrap();
+        println!("Written: {}", written);
+        let recv_info = RecvInfo {
+            from: server_addr,
+            to: client_addr_2,
+            from_mc: true,
+        };
+        back.copy_from_slice(&mut mc_pipe[..]);
+        let res = pipe.client.recv(&mut mc_pipe[..written], recv_info);
+        assert!(res.is_ok());
+        let read = res.unwrap();
+        println!("READ: {}", read);
+        assert!(pipe.client.stream_readable(1));
+        assert_eq!(
+            pipe.client.stream_recv(1, &mut mc_pipe[..]),
+            Ok((255, true))
+        );
     }
 }

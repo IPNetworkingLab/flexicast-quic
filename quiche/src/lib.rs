@@ -94,7 +94,7 @@
 //! loop {
 //!     let (read, from) = socket.recv_from(&mut buf).unwrap();
 //!
-//!     let recv_info = quiche::RecvInfo { from, to };
+//!     let recv_info = quiche::RecvInfo { from, to, from_mc: false, };
 //!
 //!     let read = match conn.recv(&mut buf[..read], recv_info) {
 //!         Ok(v) => v,
@@ -603,6 +603,9 @@ pub struct RecvInfo {
 
     /// The local address the packet was received on.
     pub to: SocketAddr,
+
+    /// Whether this packet was received on a multicast channel.
+    pub from_mc: bool,
 }
 
 /// Ancillary information about outgoing packets.
@@ -2020,6 +2023,7 @@ impl Connection {
     ///     let recv_info = quiche::RecvInfo {
     ///         from,
     ///         to: local,
+    ///         from_mc: false,
     ///     };
     ///
     ///     let read = match conn.recv(&mut buf[..read], recv_info) {
@@ -2084,6 +2088,7 @@ impl Connection {
                 Ok(v) => v,
 
                 Err(Error::Done) => {
+                    println!("Recv single gives Error::Done");
                     // If the packet can't be processed or decrypted, check if
                     // it's a stateless reset.
                     if self.is_stateless_reset(&buf[len - left..len]) {
@@ -2436,8 +2441,18 @@ impl Connection {
             // Only use 0-RTT key if incoming packet is 0-RTT.
             self.pkt_num_spaces.crypto(epoch).crypto_0rtt_open.as_ref()
         } else {
-            // Otherwise use the packet number space's main key.
-            self.pkt_num_spaces.crypto(epoch).crypto_open.as_ref()
+            if info.from_mc {
+                // The multicast channel uses the shared key.
+                if let Some(multicast) = self.multicast.as_ref() {
+                    println!("USES THE MULTICAST CRYPTO CONTEXT");
+                    multicast.get_mc_crypto_open()
+                } else {
+                    return Err(Error::Multicast(multicast::MulticastError::McDisabled));
+                }
+            } else {
+                // Otherwise use the packet number space's main key.
+                self.pkt_num_spaces.crypto(epoch).crypto_open.as_ref()
+            }
         };
 
         // Finally, discard packet if no usable key is available.
@@ -2474,14 +2489,20 @@ impl Connection {
 
         let aead_tag_len = aead.alg().tag_len();
 
+        println!("Avant decryption de header");
+
         packet::decrypt_hdr(&mut b, &mut hdr, aead).map_err(|e| {
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
 
+        println!("Decryption de header");
+
         let space_id = if self.is_multipath_enabled() {
+            println!("DURING space id");
             if let Some((scid_seq, _)) = self.ids.find_scid_seq(&hdr.dcid) {
                 scid_seq
             } else {
+                println!("Error done");
                 trace!(
                     "{} ignored unknown Source CID {:?}",
                     self.trace_id,
@@ -2492,6 +2513,8 @@ impl Connection {
         } else {
             packet::INITIAL_PACKET_NUMBER_SPACE_ID
         };
+
+        println!("After space ID");
 
         // This might be a new space identifier yet unseen before. In such case,
         // it should start with 0.
@@ -2520,6 +2543,8 @@ impl Connection {
         #[cfg(feature = "qlog")]
         let mut qlog_frames = vec![];
 
+        println!("Before decrypt packet");
+
         let mut payload = packet::decrypt_pkt(
             &mut b,
             space_id as u32,
@@ -2531,6 +2556,8 @@ impl Connection {
         .map_err(|e| {
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
+
+        println!("After decrypt packet");
 
         let pkt_num_space =
             self.pkt_num_spaces.get_mut_or_create(epoch, space_id);
@@ -5744,10 +5771,14 @@ impl Connection {
         // We may want to probe an existing path.
         let pid = match self.paths.path_id_from_addrs(&(local_addr, peer_addr)) {
             Some(pid) => pid,
-            None => self.create_path_on_client(local_addr, peer_addr)?,
+            None => {
+                println!("Creates a path on the client");
+                self.create_path_on_client(local_addr, peer_addr)?   
+            },
         };
 
         let path = self.paths.get_mut(pid)?;
+        println!("Requests validation");
         path.request_validation();
 
         path.active_dcid_seq.ok_or(Error::InvalidState)
@@ -8841,6 +8872,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: server_path.peer_addr(),
                 from: server_path.local_addr(),
+                from_mc: false,
             };
 
             self.client.recv(buf, info)
@@ -8851,6 +8883,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: client_path.peer_addr(),
                 from: client_path.local_addr(),
+                from_mc: false,
             };
 
             self.server.recv(buf, info)
@@ -8872,6 +8905,7 @@ pub mod testing {
         let info = RecvInfo {
             to: active_path.local_addr(),
             from: active_path.peer_addr(),
+            from_mc: false,
         };
 
         conn.recv(&mut buf[..len], info)?;
@@ -8896,6 +8930,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: si.to,
                 from: si.from,
+                from_mc: false,
             };
 
             conn.recv(&mut pkt, info)?;
@@ -14922,7 +14957,7 @@ mod tests {
     }
 
     // Utility function.
-    pub fn pipe_with_exchanged_cids(
+    fn pipe_with_exchanged_cids(
         config: &mut Config, client_scid_len: usize, server_scid_len: usize,
         additional_cids: usize,
     ) -> testing::Pipe {

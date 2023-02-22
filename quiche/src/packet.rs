@@ -654,14 +654,18 @@ pub fn decrypt_pkt<'a>(
     payload_len: usize, aead: &crypto::Open,
 ) -> Result<octets::Octets<'a>> {
     let payload_offset = b.off();
-
+    println!("Avant 1");
     let (header, mut payload) = b.split_at(payload_offset)?;
+    println!("Après 1");
 
     let payload_len = payload_len
         .checked_sub(pn_len)
         .ok_or(Error::InvalidPacket)?;
 
+        println!("Après 2");
+
     let mut ciphertext = payload.peek_bytes_mut(payload_len)?;
+    println!("Après 3: {} {} {} {}", path_seq, pn, pn_len, payload_len);
 
     let payload_len = aead.open_with_u64_counter(
         path_seq,
@@ -669,6 +673,7 @@ pub fn decrypt_pkt<'a>(
         header.as_ref(),
         ciphertext.as_mut(),
     )?;
+    println!("Après 4");
 
     Ok(b.get_bytes(payload_len)?)
 }
