@@ -187,6 +187,10 @@ pub struct MulticastAttributes {
     /// Used for authentication of the source for data received on the multicast
     /// channel. Derived from the McAnnounceData::public_key.
     mc_public_key: Option<signature::UnparsedPublicKey<Vec<u8>>>,
+
+    /// Signature private key.
+    /// Only present for the multicast source.
+    mc_private_key: Option<signature::Ed25519KeyPair>,
 }
 
 impl MulticastAttributes {
@@ -335,6 +339,31 @@ impl MulticastAttributes {
     pub fn get_mc_crypto_open(&self) -> Option<&Open> {
         self.mc_crypto_open.as_ref()
     }
+
+    /// Gives the public key of the multicast source as an array reference.
+    ///
+    /// Returns an error if it is not the multicast source.
+    pub fn get_mc_pub_key(&self) -> Result<&[u8]> {
+        if self.mc_role == MulticastRole::ServerMulticast {
+            if let Some(private_key) = self.mc_private_key.as_ref() {
+                Ok(private_key.public_key().as_ref())
+            } else {
+                Err(Error::Multicast(MulticastError::McInvalidAsymKey))
+            }
+        } else {
+            Err(Error::Multicast(MulticastError::McInvalidRole(
+                self.mc_role,
+            )))
+        }
+    }
+
+    /// Whether authentication is used to send packets.
+    ///
+    /// Only true for a multicast source that has a non-empty signature key.
+    pub fn is_mc_source_and_auth(&self) -> bool {
+        self.mc_role == MulticastRole::ServerMulticast &&
+            self.mc_private_key.is_some()
+    }
 }
 
 impl Default for MulticastAttributes {
@@ -348,6 +377,7 @@ impl Default for MulticastAttributes {
             mc_crypto_seal: None,
             mc_key_up_to_date: false,
             mc_public_key: None,
+            mc_private_key: None,
         }
     }
 }
@@ -429,6 +459,16 @@ pub trait MulticastConnection {
     /// MC-TODO: only Ed25519 is used at the moment.
     /// The last bytes of the packet contain the signature.
     fn mc_recv(&mut self, buf: &mut [u8], info: RecvInfo) -> Result<usize>;
+
+    /// Generates a signature on the given QUIC packet.
+    /// The caller is responsible to give a mutable slice
+    /// with enough space to add the signature.
+    /// Otherwise, the method returns an Error [`BufferTooShort`].
+    /// Only available for the multicast source.
+    /// On success, returns the additional number of bytes used by the
+    /// signature. The signature is added at the end of the data in the
+    /// buffer.
+    fn mc_sign(&self, buf: &mut [u8], data_len: usize) -> Result<usize>;
 }
 
 impl MulticastConnection for Connection {
@@ -574,7 +614,7 @@ impl MulticastConnection for Connection {
                     debug!("mc_rev: Verify the signature of the received packet");
                     let signature_len = 64;
                     let buf_data_len = len - signature_len;
-                    
+
                     let signature = &buf[buf_data_len..];
                     public_key.verify(&buf[..buf_data_len], signature).map_err(
                         |_| Error::Multicast(MulticastError::McInvalidSign),
@@ -593,6 +633,31 @@ impl MulticastConnection for Connection {
             buf.len()
         };
         self.recv(&mut buf[..buf_len], info)
+    }
+
+    fn mc_sign(&self, buf: &mut [u8], data_len: usize) -> Result<usize> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if multicast.mc_role != MulticastRole::ServerMulticast {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    multicast.mc_role,
+                )));
+            }
+
+            // Asymmetric signature on the last bytes of the packet.
+            if let Some(private_key) = multicast.mc_private_key.as_ref() {
+                let signature = private_key.sign(&buf[..data_len]);
+                let signature_len = signature.as_ref().len();
+                assert_eq!(signature_len, 64);
+                buf[data_len..data_len + signature_len]
+                    .copy_from_slice(signature.as_ref());
+
+                Ok(signature_len)
+            } else {
+                Err(Error::Multicast(MulticastError::McInvalidAsymKey))
+            }
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
     }
 }
 
@@ -651,12 +716,6 @@ pub struct MulticastChannelSource {
     /// the traffic with the clients.
     pub master_secret: Vec<u8>,
 
-    /// Public EdDSA key to authenticate the source.
-    pub public_key: Vec<u8>,
-
-    /// Private EdDSA key to authenticate the source.
-    private_key: Option<signature::Ed25519KeyPair>,
-
     /// Connection ID that the clients use for the multicast path.
     /// This tuple contains the Connection Id and the reset token.
     pub mc_path_conn_id: (ConnectionId<'static>, u128),
@@ -670,7 +729,7 @@ impl MulticastChannelSource {
     fn new_with_tls(
         channel_id: &ConnectionId, config_server: &mut Config,
         config_client: &mut Config, peer: SocketAddr, peer2: SocketAddr,
-        keylog_filename: &str,
+        keylog_filename: &str, do_auth: bool,
     ) -> Result<Self> {
         let scid = ConnectionId::from_ref(channel_id);
 
@@ -716,8 +775,11 @@ impl MulticastChannelSource {
         let exporter_secret =
             MulticastChannelSource::get_exporter_secret(keylog_filename)?;
 
-        let signature_eddsa =
-            MulticastChannelSource::compute_asymetric_signature_keys()?;
+        let signature_eddsa = if do_auth {
+            Some(MulticastChannelSource::compute_asymetric_signature_keys()?)
+        } else {
+            None
+        };
 
         // // Create Connection ID and reset token.
         // let mut cid = vec![0; channel_id.len()];
@@ -729,12 +791,16 @@ impl MulticastChannelSource {
         rand_bytes(&mut reset_token);
         let reset_token = u128::from_be_bytes(reset_token);
 
+        conn_server.multicast = Some(MulticastAttributes {
+            mc_private_key: signature_eddsa,
+            mc_role: MulticastRole::ServerMulticast,
+            ..Default::default()
+        });
+
         Ok(Self {
             channel: conn_server,
             client_backup: conn_client,
             master_secret: exporter_secret,
-            public_key: signature_eddsa.public_key().as_ref().to_owned(),
-            private_key: Some(signature_eddsa),
             mc_path_conn_id: (cid, reset_token),
             mc_path_peer: peer2,
         })
@@ -844,17 +910,9 @@ impl MulticastChannelSource {
     /// MC-TODO: only Ed25519 is used at the moment.
     /// The last bytes of the packet contain the signature.
     fn mc_send(&mut self, buf: &mut [u8]) -> Result<usize> {
-        // MC-TODO: complete.
-        let buf_len = buf.len();
-        let buf_len = if self.private_key.is_some() {
-            let signature_len = 64;
-            buf_len - signature_len
-        } else {
-            buf_len
-        };
-
-        self.channel.send_on_path(&mut buf[..buf_len], Some(self.mc_path_peer), Some(self.mc_path_peer)).map(|(written, _)| written)
-        
+        self.channel
+            .send_on_path(buf, Some(self.mc_path_peer), Some(self.mc_path_peer))
+            .map(|(written, _)| written)
     }
 }
 
@@ -913,7 +971,7 @@ mod tests {
 
     /// Simple source multicast channel for the tests.
     fn get_test_mc_channel_source(
-        config_server: &mut Config, config_client: &mut Config,
+        config_server: &mut Config, config_client: &mut Config, do_auth: bool,
     ) -> Result<MulticastChannelSource> {
         let mut channel_id = [0; 16];
         ring::rand::SystemRandom::new()
@@ -938,6 +996,7 @@ mod tests {
             to,
             to2,
             "/tmp/mc_channel_text.txt",
+            do_auth,
         )
     }
 
@@ -1200,8 +1259,11 @@ mod tests {
         let mut server_config = get_test_mc_config(true, None);
         let mut client_config = get_test_mc_config(false, Some(&mc_client_tp));
 
-        let mc_channel =
-            get_test_mc_channel_source(&mut server_config, &mut client_config);
+        let mc_channel = get_test_mc_channel_source(
+            &mut server_config,
+            &mut client_config,
+            false,
+        );
         assert!(mc_channel.is_ok());
     }
 
@@ -1216,9 +1278,12 @@ mod tests {
         let mut config = get_test_mc_config(true, Some(&mc_client_tp));
 
         // Multicast path.
-        let mut mc_channel =
-            get_test_mc_channel_source(&mut server_config, &mut client_config)
-                .unwrap();
+        let mut mc_channel = get_test_mc_channel_source(
+            &mut server_config,
+            &mut client_config,
+            false,
+        )
+        .unwrap();
 
         // Copy the channel ID derived from the multicast channel.
         mc_announce_data.channel_id =
@@ -1269,15 +1334,13 @@ mod tests {
         let client_addr = testing::Pipe::client_addr();
         let server_addr = testing::Pipe::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
-        let cid_c2s_0 = pipe.client.destination_id().into_owned();
-        let cid_s2c_0 = pipe.server.destination_id().into_owned();
+        // let cid_c2s_0 = pipe.client.destination_id().into_owned();
+        // let cid_s2c_0 = pipe.server.destination_id().into_owned();
 
         // Probe a second path that will listen to the multicast source.
         assert_eq!(pipe.advance(), Ok(()));
-        println!("Client path map before: {:?}", pipe.client.paths.len());
         assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
         assert_eq!(pipe.advance(), Ok(()));
-        println!("Client path map after: {:?}", pipe.client.paths.len());
 
         let pid_c2s_0 = pipe
             .client
@@ -1320,7 +1383,6 @@ mod tests {
         println!("pid_c2s_1: {:?}", pid_c2s_1);
 
         // The multicast channel sends some data to the client.
-        // MC-TODO: create a multicast pipe.
         let mut mc_pipe = [0u8; 4096];
         let mut back = [0u8; 4096];
         let data: Vec<_> = (0..255).collect();
@@ -1365,9 +1427,12 @@ mod tests {
         let mc_client_tp = MulticastClientTp::default();
         let mut server_config = get_test_mc_config(true, None);
         let mut client_config = get_test_mc_config(false, Some(&mc_client_tp));
-        let mut mc_channel =
-            get_test_mc_channel_source(&mut server_config, &mut client_config)
-                .unwrap();
+        let mut mc_channel = get_test_mc_channel_source(
+            &mut server_config,
+            &mut client_config,
+            false,
+        )
+        .unwrap();
 
         let data: Vec<_> = (0..255).collect();
         mc_channel.channel.stream_send(1, &data, true).unwrap();
@@ -1408,5 +1473,109 @@ mod tests {
         assert!(res.is_ok());
         assert_eq!(mc_channel.client_backup.readable().len(), 2);
         assert!(mc_channel.client_backup.stream_readable(3));
+    }
+
+    #[test]
+    /// Tests the authentication process for data sent over the multicast
+    /// channel in the multicast path.
+    fn test_mc_channel_auth() {
+        let mc_client_tp = MulticastClientTp::default();
+        let mut server_config = get_test_mc_config(true, None);
+        let mut client_config = get_test_mc_config(false, Some(&mc_client_tp));
+        let mut mc_announce_data = get_test_mc_announce_data();
+        let mut config = get_test_mc_config(true, Some(&mc_client_tp));
+
+        // Multicast path.
+        let mut mc_channel = get_test_mc_channel_source(
+            &mut server_config,
+            &mut client_config,
+            true,
+        )
+        .unwrap();
+
+        // Copy the channel ID derived from the multicast channel.
+        mc_announce_data.channel_id =
+            mc_channel.mc_path_conn_id.0.as_ref().to_vec();
+
+        // Copy the public key from the multicast channel.
+        mc_announce_data.public_key = Some(
+            mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .get_mc_pub_key()
+                .unwrap().to_vec(),
+        );
+
+        let mut pipe =
+            testing::Pipe::with_config_and_scid_lengths(&mut config, 16, 16)
+                .unwrap();
+
+        // Server announces and client joins.
+        pipe.server
+            .mc_set_mc_announce_data(&mc_announce_data)
+            .unwrap();
+        let multicast = pipe.server.multicast.as_mut().unwrap();
+        multicast.mc_channel_key = Some(mc_channel.master_secret.clone());
+        assert!(pipe.advance().is_ok());
+
+        // Client joins the multicast channel, and the server gives the master
+        // key.
+        pipe.client.mc_join_channel().unwrap();
+        assert!(pipe.advance().is_ok());
+
+        let reset_token = 0xffeeddccu128;
+        let client_mc_announce = pipe
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_announce_data
+            .as_ref()
+            .unwrap();
+        let cid =
+            ConnectionId::from_ref(&client_mc_announce.channel_id).into_owned();
+        println!("Client will add this CID: {:?}", cid);
+        pipe.client.new_source_cid(&cid, reset_token, true).unwrap();
+        pipe.server.new_source_cid(&cid, reset_token, true).unwrap();
+
+        let server_addr = testing::Pipe::server_addr();
+        let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
+
+        assert_eq!(pipe.advance(), Ok(()));
+        assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
+        assert_eq!(pipe.advance(), Ok(()));
+
+        assert_eq!(
+            pipe.client.set_active(client_addr_2, server_addr, true,),
+            Ok(())
+        );
+
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // The multicast channel sends some data to the client.
+        let mut mc_pipe = [0u8; 4096];
+        let data: Vec<_> = (0..255).collect();
+
+        mc_channel.channel.stream_send(1, &data, true).unwrap();
+        let res = mc_channel.channel.send(&mut mc_pipe[..]);
+        assert!(res.is_ok());
+        let (written, _) = res.unwrap();
+
+        let recv_info = RecvInfo {
+            from: server_addr,
+            to: client_addr_2,
+            from_mc: true,
+        };
+        let res = pipe.client.recv(&mut mc_pipe[..written], recv_info);
+        assert!(res.is_ok());
+        let read = res.unwrap();
+        println!("READ: {}", read);
+        assert!(pipe.client.stream_readable(1));
+        assert_eq!(
+            pipe.client.stream_recv(1, &mut mc_pipe[..]),
+            Ok((255, true))
+        );
     }
 }

@@ -3149,6 +3149,22 @@ impl Connection {
             left = cmp::min(left, send_path.max_send_bytes);
         }
 
+        // Detect if the packets to generate will be sent on the multicast channel
+        // and need an authentication signature.
+        let mut is_mc_and_auth_packet = false;
+        if let Some(multicast) = self.multicast.as_ref() {
+            // MC-TODO: clean the pid hard-coded comparison.
+            if send_pid == 1 && multicast.is_mc_source_and_auth() {
+                is_mc_and_auth_packet = true;
+            }
+        }
+
+        // Keep room for the last authentication coalesced packet for multicast.
+        if is_mc_and_auth_packet {
+            let signature_len = 64;
+            left -= signature_len;
+        }
+
         // Generate coalesced packets.
         while left > 0 {
             let (ty, written) = match self.send_single(
@@ -3165,6 +3181,13 @@ impl Connection {
 
             done += written;
             left -= written;
+
+            // Multicast: generate the authentication signature if needed.
+            if is_mc_and_auth_packet {
+                let sign_overhead = self.mc_sign(&mut out[done - written..], written)?;
+                done += sign_overhead;
+                left -= sign_overhead;
+            }
 
             match ty {
                 packet::Type::Initial => has_initial = true,
