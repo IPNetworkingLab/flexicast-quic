@@ -2447,7 +2447,9 @@ impl Connection {
                     println!("USES THE MULTICAST CRYPTO CONTEXT");
                     multicast.get_mc_crypto_open()
                 } else {
-                    return Err(Error::Multicast(multicast::MulticastError::McDisabled));
+                    return Err(Error::Multicast(
+                        multicast::MulticastError::McDisabled,
+                    ));
                 }
             } else {
                 // Otherwise use the packet number space's main key.
@@ -3968,7 +3970,13 @@ impl Connection {
                 group_ip: mc_announce_data.group_ip,
                 udp_port: mc_announce_data.udp_port,
                 ttl_data: mc_announce_data.ttl_data,
-                public_key: mc_announce_data.public_key.clone(),
+                public_key: if let Some(key) =
+                    mc_announce_data.public_key.as_ref()
+                {
+                    key.clone()
+                } else {
+                    Vec::new()
+                },
             };
 
             if push_frame_to_pkt!(b, frames, frame, left) {
@@ -3991,7 +3999,8 @@ impl Connection {
                         .ok_or(Error::Multicast(
                             multicast::MulticastError::McAnnounce,
                         ))?
-                        .channel_id.clone(),
+                        .channel_id
+                        .clone(),
                     action: multicast::MulticastClientAction::Join.try_into()?,
                 };
 
@@ -5773,7 +5782,7 @@ impl Connection {
             Some(pid) => pid,
             None => {
                 println!("Creates a path on the client");
-                self.create_path_on_client(local_addr, peer_addr)?   
+                self.create_path_on_client(local_addr, peer_addr)?
             },
         };
 
@@ -7430,7 +7439,11 @@ impl Connection {
                     source_ip,
                     group_ip,
                     udp_port,
-                    public_key,
+                    public_key: if public_key.is_empty() {
+                        None
+                    } else {
+                        Some(public_key)
+                    },
                     ttl_data,
                 };
 
