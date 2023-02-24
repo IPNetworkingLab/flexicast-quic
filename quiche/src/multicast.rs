@@ -267,14 +267,7 @@ impl MulticastAttributes {
     /// channel. Always false for a server.
     /// True if the client application explicitly asked to join the channel.
     pub fn should_send_mc_state(&self) -> bool {
-        match self.mc_role {
-            MulticastRole::Client(status) => match status {
-                MulticastClientStatus::WaitingToJoin => true,
-                _ => false,
-            },
-
-            _ => false,
-        }
+        matches!(self.mc_role, MulticastRole::Client(MulticastClientStatus::WaitingToJoin))
     }
 
     /// Returns whether the server should send an MC_KEY frame
@@ -289,11 +282,10 @@ impl MulticastAttributes {
         if self.mc_channel_key.is_none() {
             return false;
         }
-        match self.mc_role {
-            MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey) =>
-                true,
-            _ => false,
-        }
+        matches!(
+            self.mc_role,
+            MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey)
+        )
     }
 
     /// Read the last multicast decryption key secret.
@@ -531,11 +523,11 @@ impl MulticastConnection for Connection {
                 self.peer_transport_params
                     .multicast_client_params
                     .is_some())) ||
-            (!self.is_server &&
-                !(self.peer_transport_params.multicast_server_params &&
+            !(self.is_server ||
+                self.peer_transport_params.multicast_server_params &&
                     self.local_transport_params
                         .multicast_client_params
-                        .is_some()))
+                        .is_some())
         {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -573,16 +565,14 @@ impl MulticastConnection for Connection {
                 mc_role,
                 mc_announce_data: Some(mc_announce_data.clone()),
                 mc_announce_is_processed: !self.is_server,
-                mc_public_key: if let Some(key_vec) =
-                    mc_announce_data.public_key.as_ref()
-                { 
-                    Some(signature::UnparsedPublicKey::new(
-                        &signature::ED25519,
-                        key_vec.to_owned(),
-                    ))
-                } else {
-                    None
-                },
+                mc_public_key: mc_announce_data.public_key.as_ref().map(
+                    |key_vec| {
+                        signature::UnparsedPublicKey::new(
+                            &signature::ED25519,
+                            key_vec.to_owned(),
+                        )
+                    },
+                ),
                 ..Default::default()
             });
         }

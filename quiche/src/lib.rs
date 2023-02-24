@@ -2440,21 +2440,19 @@ impl Connection {
         let aead = if hdr.ty == packet::Type::ZeroRTT {
             // Only use 0-RTT key if incoming packet is 0-RTT.
             self.pkt_num_spaces.crypto(epoch).crypto_0rtt_open.as_ref()
-        } else {
-            if info.from_mc {
-                // The multicast channel uses the shared key.
-                if let Some(multicast) = self.multicast.as_ref() {
-                    println!("USES THE MULTICAST CRYPTO CONTEXT");
-                    multicast.get_mc_crypto_open()
-                } else {
-                    return Err(Error::Multicast(
-                        multicast::MulticastError::McDisabled,
-                    ));
-                }
+        } else if info.from_mc {
+            // The multicast channel uses the shared key.
+            if let Some(multicast) = self.multicast.as_ref() {
+                println!("USES THE MULTICAST CRYPTO CONTEXT");
+                multicast.get_mc_crypto_open()
             } else {
-                // Otherwise use the packet number space's main key.
-                self.pkt_num_spaces.crypto(epoch).crypto_open.as_ref()
+                return Err(Error::Multicast(
+                    multicast::MulticastError::McDisabled,
+                ));
             }
+        } else {
+            // Otherwise use the packet number space's main key.
+            self.pkt_num_spaces.crypto(epoch).crypto_open.as_ref()
         };
 
         // Finally, discard packet if no usable key is available.
@@ -3184,7 +3182,8 @@ impl Connection {
 
             // Multicast: generate the authentication signature if needed.
             if is_mc_and_auth_packet {
-                let sign_overhead = self.mc_sign(&mut out[done - written..], written)?;
+                let sign_overhead =
+                    self.mc_sign(&mut out[done - written..], written)?;
                 done += sign_overhead;
                 left -= sign_overhead;
             }
@@ -7509,14 +7508,12 @@ impl Connection {
                             ),
                         ),
                     ));
+                } else if let Some(multicast) = self.multicast.as_mut() {
+                    multicast.set_decryption_key_secret(key)?;
                 } else {
-                    if let Some(multicast) = self.multicast.as_mut() {
-                        multicast.set_decryption_key_secret(key)?;
-                    } else {
-                        return Err(Error::Multicast(
-                            multicast::MulticastError::McInvalidSymKey,
-                        ));
-                    }
+                    return Err(Error::Multicast(
+                        multicast::MulticastError::McInvalidSymKey,
+                    ));
                 }
             },
         };
