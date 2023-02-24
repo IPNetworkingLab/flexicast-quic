@@ -267,7 +267,10 @@ impl MulticastAttributes {
     /// channel. Always false for a server.
     /// True if the client application explicitly asked to join the channel.
     pub fn should_send_mc_state(&self) -> bool {
-        matches!(self.mc_role, MulticastRole::Client(MulticastClientStatus::WaitingToJoin))
+        matches!(
+            self.mc_role,
+            MulticastRole::Client(MulticastClientStatus::WaitingToJoin)
+        )
     }
 
     /// Returns whether the server should send an MC_KEY frame
@@ -921,9 +924,65 @@ mod tests {
     use ring::rand::SecureRandom;
 
     use crate::testing;
+    use crate::testing::Pipe;
     use crate::Config;
 
     use super::*;
+
+    /// Multicast extension of crate::testing::Pipe.
+    ///
+    /// Contains a Pipe for each unicast connection and multicast source
+    /// channel. Performs the multicast extension negociation for each client
+    /// in the pipe.
+    pub struct MulticastPipe {
+        pub unicast_pipes: Vec<Pipe>,
+        pub mc_channel: MulticastChannelSource,
+        pub mc_announce_data: McAnnounceData,
+    }
+
+    impl MulticastPipe {
+        pub fn new(nb_clients: usize) -> Result<MulticastPipe> {
+            let mc_client_tp = MulticastClientTp::default();
+            let mut server_config = get_test_mc_config(true, None);
+            let mut client_config =
+                get_test_mc_config(false, Some(&mc_client_tp));
+            let mut mc_announce_data = get_test_mc_announce_data();
+
+            // Multicast path.
+            let mut mc_channel = get_test_mc_channel_source(
+                &mut server_config,
+                &mut client_config,
+                true,
+            )
+            .unwrap();
+
+            // Copy the channel ID derived from the multicast channel.
+            mc_announce_data.channel_id =
+                mc_channel.mc_path_conn_id.0.as_ref().to_vec();
+
+            // Copy the public key from the multicast channel.
+            mc_announce_data.public_key = Some(
+                mc_channel
+                    .channel
+                    .multicast
+                    .as_ref()
+                    .unwrap()
+                    .get_mc_pub_key()
+                    .unwrap()
+                    .to_vec(),
+            );
+
+            let mut pipes = Vec::with_capacity(nb_clients);
+
+            Ok(MulticastPipe {
+                unicast_pipes: pipes,
+                mc_channel,
+                mc_announce_data,
+            })
+        }
+
+        // MC-TODO: maybe a new_from_mc_announce_data
+    }
 
     /// Simple config used for testing the multicast extension only.
     pub fn get_test_mc_config(
