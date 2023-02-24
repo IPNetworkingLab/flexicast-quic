@@ -55,6 +55,10 @@ pub enum MulticastError {
 
     /// Handshake of the multicast server channel failed.
     McChannelHandshake,
+
+    #[cfg(test)]
+    /// Error when initiating the multicast pipe.
+    McPipe,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -935,7 +939,7 @@ mod tests {
     /// channel. Performs the multicast extension negociation for each client
     /// in the pipe.
     pub struct MulticastPipe {
-        pub unicast_pipes: Vec<Pipe>,
+        pub unicast_pipes: Vec<(Pipe, SocketAddr, SocketAddr)>,
         pub mc_channel: MulticastChannelSource,
         pub mc_announce_data: McAnnounceData,
     }
@@ -949,7 +953,7 @@ mod tests {
             let mut mc_announce_data = get_test_mc_announce_data();
 
             // Multicast path.
-            let mut mc_channel = get_test_mc_channel_source(
+            let mc_channel = get_test_mc_channel_source(
                 &mut server_config,
                 &mut client_config,
                 true,
@@ -961,18 +965,72 @@ mod tests {
                 mc_channel.mc_path_conn_id.0.as_ref().to_vec();
 
             // Copy the public key from the multicast channel.
-            mc_announce_data.public_key = Some(
-                mc_channel
-                    .channel
-                    .multicast
-                    .as_ref()
-                    .unwrap()
-                    .get_mc_pub_key()
-                    .unwrap()
-                    .to_vec(),
-            );
+            if let Ok(public_key) = mc_channel.channel.multicast.as_ref().unwrap().get_mc_pub_key() {
+                mc_announce_data.public_key = Some(public_key.to_vec());    
+            }
 
-            let mut pipes = Vec::with_capacity(nb_clients);
+            let pipes: Vec<_> = (0..nb_clients)
+                .flat_map(|_| {
+                    let mut config =
+                        get_test_mc_config(true, Some(&mc_client_tp));
+                    let mut pipe =
+                        Pipe::with_config_and_scid_lengths(&mut config, 16, 16)
+                            .ok()?;
+                    pipe.handshake().ok()?;
+
+                    pipe.server
+                        .mc_set_mc_announce_data(&mc_announce_data)
+                        .unwrap();
+                    let multicast = pipe.server.multicast.as_mut().unwrap();
+                    multicast.mc_channel_key =
+                        Some(mc_channel.master_secret.clone());
+                    assert!(pipe.advance().is_ok());
+
+                    // Client joins the multicast channel, and the server gives
+                    // the master key.
+                    pipe.client.mc_join_channel().unwrap();
+                    assert!(pipe.advance().is_ok());
+
+                    let reset_token = 0xffeeddccu128;
+                    let client_mc_announce = pipe
+                        .client
+                        .multicast
+                        .as_ref()
+                        .unwrap()
+                        .mc_announce_data
+                        .as_ref()
+                        .unwrap();
+                    let cid =
+                        ConnectionId::from_ref(&client_mc_announce.channel_id)
+                            .into_owned();
+                    println!("Client will add this CID: {:?}", cid);
+                    pipe.client.new_source_cid(&cid, reset_token, true).unwrap();
+                    pipe.server.new_source_cid(&cid, reset_token, true).unwrap();
+
+                    let server_addr = testing::Pipe::server_addr();
+                    let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
+
+                    assert_eq!(pipe.advance(), Ok(()));
+                    assert_eq!(
+                        pipe.client.probe_path(client_addr_2, server_addr),
+                        Ok(1)
+                    );
+                    assert_eq!(pipe.advance(), Ok(()));
+
+                    assert_eq!(
+                        pipe.client.set_active(client_addr_2, server_addr, true,),
+                        Ok(())
+                    );
+
+                    assert_eq!(pipe.advance(), Ok(()));
+
+                    Some((pipe, client_addr_2, server_addr))
+                })
+                .collect();
+            
+            if pipes.len() != nb_clients {
+                return Err(Error::Multicast(MulticastError::McPipe));
+            }
 
             Ok(MulticastPipe {
                 unicast_pipes: pipes,
@@ -981,7 +1039,7 @@ mod tests {
             })
         }
 
-        // MC-TODO: maybe a new_from_mc_announce_data
+        // MC-TODO: maybe a new_from_mc_announce_data.
     }
 
     /// Simple config used for testing the multicast extension only.
@@ -1538,89 +1596,22 @@ mod tests {
     /// Tests the authentication process for data sent over the multicast
     /// channel in the multicast path.
     fn test_mc_channel_auth() {
-        let mc_client_tp = MulticastClientTp::default();
-        let mut server_config = get_test_mc_config(true, None);
-        let mut client_config = get_test_mc_config(false, Some(&mc_client_tp));
-        let mut mc_announce_data = get_test_mc_announce_data();
-        let mut config = get_test_mc_config(true, Some(&mc_client_tp));
-
-        // Multicast path.
-        let mut mc_channel = get_test_mc_channel_source(
-            &mut server_config,
-            &mut client_config,
-            true,
-        )
-        .unwrap();
-
-        // Copy the channel ID derived from the multicast channel.
-        mc_announce_data.channel_id =
-            mc_channel.mc_path_conn_id.0.as_ref().to_vec();
-
-        // Copy the public key from the multicast channel.
-        mc_announce_data.public_key = Some(
-            mc_channel
-                .channel
-                .multicast
-                .as_ref()
-                .unwrap()
-                .get_mc_pub_key()
-                .unwrap()
-                .to_vec(),
-        );
-
-        let mut pipe =
-            testing::Pipe::with_config_and_scid_lengths(&mut config, 16, 16)
-                .unwrap();
-        assert_eq!(pipe.handshake(), Ok(()));
-
-        // Server announces and client joins.
-        pipe.server
-            .mc_set_mc_announce_data(&mc_announce_data)
-            .unwrap();
-        let multicast = pipe.server.multicast.as_mut().unwrap();
-        multicast.mc_channel_key = Some(mc_channel.master_secret.clone());
-        assert!(pipe.advance().is_ok());
-
-        // Client joins the multicast channel, and the server gives the master
-        // key.
-        pipe.client.mc_join_channel().unwrap();
-        assert!(pipe.advance().is_ok());
-
-        let reset_token = 0xffeeddccu128;
-        let client_mc_announce = pipe
-            .client
-            .multicast
-            .as_ref()
-            .unwrap()
-            .mc_announce_data
-            .as_ref()
-            .unwrap();
-        let cid =
-            ConnectionId::from_ref(&client_mc_announce.channel_id).into_owned();
-        println!("Client will add this CID: {:?}", cid);
-        pipe.client.new_source_cid(&cid, reset_token, true).unwrap();
-        pipe.server.new_source_cid(&cid, reset_token, true).unwrap();
-
-        let server_addr = testing::Pipe::server_addr();
-        let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
-
-        assert_eq!(pipe.advance(), Ok(()));
-        assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
-        assert_eq!(pipe.advance(), Ok(()));
-
-        assert_eq!(
-            pipe.client.set_active(client_addr_2, server_addr, true,),
-            Ok(())
-        );
-
-        assert_eq!(pipe.advance(), Ok(()));
+        let mc_pipe = MulticastPipe::new(1);
+        assert!(mc_pipe.is_ok());
+        let mut mc_pipe = mc_pipe.unwrap();
+        
+        let mc_channel = &mut mc_pipe.mc_channel;
+        let uc_pipe = &mut mc_pipe.unicast_pipes[0];
+        let pipe = &mut uc_pipe.0;
+        let client_addr_2 = uc_pipe.1;
+        let server_addr = uc_pipe.2;
 
         // The multicast channel sends some data to the client.
-        let mut mc_pipe = [0u8; 4096];
+        let mut mc_buf = [0u8; 4096];
         let data: Vec<_> = (0..255).collect();
 
         mc_channel.channel.stream_send(1, &data, true).unwrap();
-        let res = mc_channel.channel.send(&mut mc_pipe[..]);
+        let res = mc_channel.channel.send(&mut mc_buf[..]);
         assert!(res.is_ok());
         let (written, _) = res.unwrap();
 
@@ -1632,29 +1623,29 @@ mod tests {
 
         // First a message with an invalid authentication signature.
         // Change a byte in the signature.
-        let mut mc_pipe2 = mc_pipe[..written].to_owned();
-        mc_pipe2[written - 1] = mc_pipe2[written - 1].wrapping_add(1);
-        let res = pipe.client.mc_recv(&mut mc_pipe2[..written], recv_info);
+        let mut mc_buf2 = mc_buf[..written].to_owned();
+        mc_buf2[written - 1] = mc_buf2[written - 1].wrapping_add(1);
+        let res = pipe.client.mc_recv(&mut mc_buf2[..written], recv_info);
         assert_eq!(res, Err(Error::Multicast(MulticastError::McInvalidSign)));
         assert_eq!(pipe.client.readable().len(), 0);
         assert!(!pipe.client.stream_readable(1));
 
         // Change a byte in the packet.
-        let mut mc_pipe2 = mc_pipe[..written].to_owned();
-        mc_pipe2[5] = mc_pipe2[5].wrapping_add(1);
-        let res = pipe.client.mc_recv(&mut mc_pipe2[..written], recv_info);
+        let mut mc_buf2 = mc_buf[..written].to_owned();
+        mc_buf2[5] = mc_buf2[5].wrapping_add(1);
+        let res = pipe.client.mc_recv(&mut mc_buf2[..written], recv_info);
         assert_eq!(res, Err(Error::Multicast(MulticastError::McInvalidSign)));
         assert_eq!(pipe.client.readable().len(), 0);
         assert!(!pipe.client.stream_readable(1));
 
         // Now a valid signature.
-        let res = pipe.client.mc_recv(&mut mc_pipe[..written], recv_info);
+        let res = pipe.client.mc_recv(&mut mc_buf[..written], recv_info);
         assert!(res.is_ok());
         let read = res.unwrap();
         println!("READ: {}", read);
         assert!(pipe.client.stream_readable(1));
         assert_eq!(
-            pipe.client.stream_recv(1, &mut mc_pipe[..]),
+            pipe.client.stream_recv(1, &mut mc_buf[..]),
             Ok((255, true))
         );
     }
