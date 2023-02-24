@@ -573,6 +573,16 @@ impl MulticastConnection for Connection {
                 mc_role,
                 mc_announce_data: Some(mc_announce_data.clone()),
                 mc_announce_is_processed: !self.is_server,
+                mc_public_key: if let Some(key_vec) =
+                    mc_announce_data.public_key.as_ref()
+                { 
+                    Some(signature::UnparsedPublicKey::new(
+                        &signature::ED25519,
+                        key_vec.to_owned(),
+                    ))
+                } else {
+                    None
+                },
                 ..Default::default()
             });
         }
@@ -1505,12 +1515,14 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .get_mc_pub_key()
-                .unwrap().to_vec(),
+                .unwrap()
+                .to_vec(),
         );
 
         let mut pipe =
             testing::Pipe::with_config_and_scid_lengths(&mut config, 16, 16)
                 .unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
 
         // Server announces and client joins.
         pipe.server
@@ -1568,7 +1580,18 @@ mod tests {
             to: client_addr_2,
             from_mc: true,
         };
-        let res = pipe.client.recv(&mut mc_pipe[..written], recv_info);
+
+        // First a message with an invalid authentication signature.
+        // Change a byte in the signature.
+        let mut mc_pipe2 = mc_pipe[..written].to_owned();
+        mc_pipe2[written - 1] = mc_pipe2[written - 1].wrapping_add(1);
+        let res = pipe.client.mc_recv(&mut mc_pipe2[..written], recv_info);
+        assert_eq!(res, Err(Error::Multicast(MulticastError::McInvalidSign)));
+        assert_eq!(pipe.client.readable().len(), 0);
+        assert!(!pipe.client.stream_readable(1));
+
+        // Now a valid signature.
+        let res = pipe.client.mc_recv(&mut mc_pipe[..written], recv_info);
         assert!(res.is_ok());
         let read = res.unwrap();
         println!("READ: {}", read);
