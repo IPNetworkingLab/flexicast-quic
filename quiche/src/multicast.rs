@@ -1636,12 +1636,12 @@ mod tests {
         assert!(!pipe.client.stream_readable(1));
 
         // Change a byte in the packet.
-        // let mut mc_buf2 = mc_buf[..written].to_owned();
-        // mc_buf2[5] = mc_buf2[5].wrapping_add(1);
-        // let res = pipe.client.mc_recv(&mut mc_buf2[..written], recv_info);
-        // assert_eq!(res, Err(Error::Multicast(MulticastError::McInvalidSign)));
-        // assert_eq!(pipe.client.readable().len(), 0);
-        // assert!(!pipe.client.stream_readable(1));
+        let mut mc_buf2 = mc_buf[..written].to_owned();
+        mc_buf2[5] = mc_buf2[5].wrapping_add(1);
+        let res = pipe.client.mc_recv(&mut mc_buf2[..written], recv_info);
+        assert_eq!(res, Err(Error::Multicast(MulticastError::McInvalidSign)));
+        assert_eq!(pipe.client.readable().len(), 0);
+        assert!(!pipe.client.stream_readable(1));
 
         // Now a valid signature.
         let res = pipe.client.mc_recv(&mut mc_buf[..written], recv_info);
