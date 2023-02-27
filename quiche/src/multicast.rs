@@ -5,6 +5,7 @@ use std::convert::TryInto;
 use std::io::BufRead;
 use std::net::SocketAddr;
 
+use crate::CongestionControlAlgorithm;
 use crate::rand::rand_bytes;
 use ring::rand;
 use ring::rand::SecureRandom;
@@ -738,6 +739,10 @@ impl MulticastChannelSource {
         config_client: &mut Config, peer: SocketAddr, peer2: SocketAddr,
         keylog_filename: &str, do_auth: bool,
     ) -> Result<Self> {
+        if !(config_client.cc_algorithm == CongestionControlAlgorithm::DISABLED && config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED) {
+            return Err(Error::CongestionControl);
+        }
+
         let scid = ConnectionId::from_ref(channel_id);
 
         // Add the keylog file.
@@ -1092,6 +1097,9 @@ mod tests {
         config_server: &mut Config, config_client: &mut Config, do_auth: bool,
         keylog_filename: &str
     ) -> Result<MulticastChannelSource> {
+        // Set the disabled congestion control for the multicast channel.
+        config_client.set_cc_algorithm(CongestionControlAlgorithm::DISABLED);
+        config_server.set_cc_algorithm(CongestionControlAlgorithm::DISABLED);
         let mut channel_id = [0; 16];
         ring::rand::SystemRandom::new()
             .fill(&mut channel_id[..])
