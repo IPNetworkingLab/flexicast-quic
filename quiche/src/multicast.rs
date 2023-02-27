@@ -700,6 +700,32 @@ impl MulticastConnection for Connection {
     }
 }
 
+/// Extension of a RangeSet to support missing ranges.
+pub trait MissingRangeSet {
+    /// Returns a RangeSet containing the numbers missing in the RangeSet.
+    fn get_missing(&self) -> Self;
+}
+
+impl MissingRangeSet for ranges::RangeSet {
+    fn get_missing(&self) -> Self {
+        let mut missing = Self::default();
+
+        // MC-TODO: find a better way to detect the lost frames.
+        // Currently we simply iterate over the ranges of received packets and
+        // add a range of lost packet with previous.last..current.first.
+        let ranges: Vec<_> = self.iter().collect();
+
+        // Returns no value if less than 2 elements.
+        for range in ranges.windows(2) {
+            let first = &range[0];
+            let second = &range[1];
+            missing.insert(first.end..second.start);
+        }
+
+        missing
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 /// Multicast parameters advertised by a client.
 /// TODO: complete the structure and documentation.
@@ -1699,5 +1725,23 @@ mod tests {
         println!("READ: {}", read);
         assert!(pipe.client.stream_readable(1));
         assert_eq!(pipe.client.stream_recv(1, &mut mc_buf[..]), Ok((255, true)));
+    }
+
+    #[test]
+    fn test_missing_range_set() {
+        let mut r = RangeSet::default();
+
+        r.insert(4..7);
+        r.insert(9..12);
+        r.insert(15..20);
+        r.insert(16..21);
+        r.insert(22..30);
+        r.insert(30..34);
+        r.insert(36..40);
+
+        let missing = r.get_missing();
+        assert_eq!(&missing.flatten().collect::<Vec<u64>>(), &[
+            7, 8, 12, 13, 14, 21, 34, 35
+        ]);
     }
 }
