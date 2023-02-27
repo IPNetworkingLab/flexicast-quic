@@ -5,8 +5,10 @@ use std::convert::TryInto;
 use std::io::BufRead;
 use std::net::SocketAddr;
 
-use crate::CongestionControlAlgorithm;
 use crate::rand::rand_bytes;
+use crate::ranges;
+use crate::ranges::RangeSet;
+use crate::CongestionControlAlgorithm;
 use ring::rand;
 use ring::rand::SecureRandom;
 use ring::signature;
@@ -469,6 +471,15 @@ pub trait MulticastConnection {
     /// signature. The signature is added at the end of the data in the
     /// buffer.
     fn mc_sign(&self, buf: &mut [u8], data_len: usize) -> Result<usize>;
+
+    /// Returns an AckRange of packets that are considered as lost.
+    /// Returns an error if multicast is disabled or the caller has an invalid
+    /// role.
+    ///
+    /// A packet is considered as lost if we see a gap in the packet number
+    /// sequence. This implies that the packet number MUST be monotically
+    /// increasing by 1.
+    fn mc_nack(&self) -> Result<RangeSet>;
 }
 
 impl MulticastConnection for Connection {
@@ -667,6 +678,26 @@ impl MulticastConnection for Connection {
             Err(Error::Multicast(MulticastError::McDisabled))
         }
     }
+
+    fn mc_nack(&self) -> Result<RangeSet> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if !matches!(multicast.mc_role, MulticastRole::Client(_)) {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    multicast.mc_role,
+                )));
+            }
+            let nack_range = ranges::RangeSet::default();
+
+            // MC-TODO: find a better way to detect the lost frames.
+            // Currently we simply iterate over the ranges of received packets and
+            // add a range of lost packet with previous.last..current.first.
+            // TODO.
+
+            Ok(nack_range)
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -739,7 +770,9 @@ impl MulticastChannelSource {
         config_client: &mut Config, peer: SocketAddr, peer2: SocketAddr,
         keylog_filename: &str, do_auth: bool,
     ) -> Result<Self> {
-        if !(config_client.cc_algorithm == CongestionControlAlgorithm::DISABLED && config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED) {
+        if !(config_client.cc_algorithm == CongestionControlAlgorithm::DISABLED &&
+            config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED)
+        {
             return Err(Error::CongestionControl);
         }
 
@@ -950,7 +983,9 @@ mod tests {
     }
 
     impl MulticastPipe {
-        pub fn new(nb_clients: usize, keylog_filename: &str) -> Result<MulticastPipe> {
+        pub fn new(
+            nb_clients: usize, keylog_filename: &str,
+        ) -> Result<MulticastPipe> {
             let mc_client_tp = MulticastClientTp::default();
             let mut server_config = get_test_mc_config(true, None);
             let mut client_config =
@@ -971,8 +1006,14 @@ mod tests {
                 mc_channel.mc_path_conn_id.0.as_ref().to_vec();
 
             // Copy the public key from the multicast channel.
-            if let Ok(public_key) = mc_channel.channel.multicast.as_ref().unwrap().get_mc_pub_key() {
-                mc_announce_data.public_key = Some(public_key.to_vec());    
+            if let Ok(public_key) = mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .get_mc_pub_key()
+            {
+                mc_announce_data.public_key = Some(public_key.to_vec());
             }
 
             let pipes: Vec<_> = (0..nb_clients)
@@ -1033,7 +1074,7 @@ mod tests {
                     Some((pipe, client_addr_2, server_addr))
                 })
                 .collect();
-            
+
             if pipes.len() != nb_clients {
                 return Err(Error::Multicast(MulticastError::McPipe));
             }
@@ -1095,7 +1136,7 @@ mod tests {
     /// Simple source multicast channel for the tests.
     fn get_test_mc_channel_source(
         config_server: &mut Config, config_client: &mut Config, do_auth: bool,
-        keylog_filename: &str
+        keylog_filename: &str,
     ) -> Result<MulticastChannelSource> {
         // Set the disabled congestion control for the multicast channel.
         config_client.set_cc_algorithm(CongestionControlAlgorithm::DISABLED);
@@ -1390,7 +1431,7 @@ mod tests {
             &mut server_config,
             &mut client_config,
             false,
-            "/tmp/test_mc_channel_server_handshake.txt"
+            "/tmp/test_mc_channel_server_handshake.txt",
         );
         assert!(mc_channel.is_ok());
     }
@@ -1410,7 +1451,7 @@ mod tests {
             &mut server_config,
             &mut client_config,
             false,
-            "/tmp/test_mc_client_create_multicast_path.txt"
+            "/tmp/test_mc_client_create_multicast_path.txt",
         )
         .unwrap();
 
@@ -1560,7 +1601,7 @@ mod tests {
             &mut server_config,
             &mut client_config,
             false,
-            "/tmp/test_mc_channel_alone.txt"
+            "/tmp/test_mc_channel_alone.txt",
         )
         .unwrap();
 
@@ -1612,7 +1653,7 @@ mod tests {
         let mc_pipe = MulticastPipe::new(1, "/tmp/test_mc_channel_auth.txt");
         assert!(mc_pipe.is_ok());
         let mut mc_pipe = mc_pipe.unwrap();
-        
+
         let mc_channel = &mut mc_pipe.mc_channel;
         let uc_pipe = &mut mc_pipe.unicast_pipes[0];
         let pipe = &mut uc_pipe.0;
@@ -1657,9 +1698,6 @@ mod tests {
         let read = res.unwrap();
         println!("READ: {}", read);
         assert!(pipe.client.stream_readable(1));
-        assert_eq!(
-            pipe.client.stream_recv(1, &mut mc_buf[..]),
-            Ok((255, true))
-        );
+        assert_eq!(pipe.client.stream_recv(1, &mut mc_buf[..]), Ok((255, true)));
     }
 }
