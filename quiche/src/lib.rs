@@ -2539,7 +2539,10 @@ impl Connection {
         let mut qlog_frames = vec![];
 
         if !self.is_server {
-            println!("Après 3.: {} {} {} {}", space_id as u32, pn, pn_len, payload_len);
+            println!(
+                "Après 3.: {} {} {} {}",
+                space_id as u32, pn, pn_len, payload_len
+            );
         }
 
         let mut payload = packet::decrypt_pkt(
@@ -2806,13 +2809,15 @@ impl Connection {
                         // to the multicast channel, it means that it is an
                         // MC_NACK frame, and not a simple ACKMP frame.
                         let mut is_mc_nack = false;
-                        if let Some(multicast) = self.multicast.as_mut() {
-                            if let Some(space_id) = multicast.get_mc_space_id() {
-                                if space_id as u64 == space_identifier {
-                                    is_mc_nack = true;
-                                    println!("Received an MC_NACK frame for space identifier {}: {:?}", space_identifier, ranges);
-
-                                    multicast.set_mc_nack_ranges(&ranges)?;
+                        if self.is_server {
+                            if let Some(multicast) = self.multicast.as_mut() {
+                                if let Some(space_id) = multicast.get_mc_space_id() {
+                                    if space_id as u64 == space_identifier {
+                                        is_mc_nack = true;
+                                        println!("Received an MC_NACK frame for space identifier {}: {:?} but is server={}", space_identifier, ranges, self.is_server);
+    
+                                        multicast.set_mc_nack_ranges(&ranges)?;
+                                    }
                                 }
                             }
                         }
@@ -3584,7 +3589,7 @@ impl Connection {
         // MC_NACK frames are only sent on active multicast path.
         // MC-TODO.
         let mut sent_mc_nack = false;
-        if self.multicast.is_some() {
+        if self.multicast.is_some() && !self.is_server {
             let ack_delay = pkt_num_space.largest_rx_pkt_time.elapsed();
 
             // If the result is None, it means that either it is empty or an error
@@ -3592,6 +3597,7 @@ impl Connection {
             // MC-TODO: verify that the space ID corresponds to the multicast
             // path.
             if let Some(nack_range) = self.mc_nack_range(epoch, space_id) {
+                println!("Will send NACK, but is server={}", self.is_server);
                 // We have some nack range to send! Create the MC_NACK frame.
                 // Maybe this is not optimal, but we will reuse ACKMP frames to
                 // carry the nack ranges. If the space
@@ -4099,6 +4105,7 @@ impl Connection {
                 )?;
                 let frame = frame::Frame::McKey {
                     channel_id: mc_announce_data.channel_id.clone(),
+                    packet_num: 2, // MC-TODO!
                     key: multicast.get_decryption_key_secret()?.to_vec(),
                 };
 
@@ -4626,7 +4633,10 @@ impl Connection {
 
         let pkt_num_space = self.pkt_num_spaces.get_mut(epoch, space_id)?;
         pkt_num_space.next_pkt_num += 1;
-        println!("Increase the packet number by one on space id {}... Now is {}", space_id, pkt_num_space.next_pkt_num);
+        println!(
+            "Increase the packet number by one on space id {}... Now is {}",
+            space_id, pkt_num_space.next_pkt_num
+        );
 
         self.sent_count += 1;
         self.sent_bytes += written as u64;
@@ -7549,7 +7559,11 @@ impl Connection {
                 }
             },
 
-            frame::Frame::McKey { channel_id, key } => {
+            frame::Frame::McKey {
+                channel_id,
+                packet_num,
+                key,
+            } => {
                 debug!(
                     "Received an MC_KEY frame! channel ID: {:?}, key: {:?}",
                     channel_id, key
@@ -7564,6 +7578,15 @@ impl Connection {
                     ));
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     multicast.set_decryption_key_secret(key)?;
+
+                    // Remove packet numbers before the advertised value
+                    // because we know the server will never send it again.
+                    println!("COMPRENDS PAS {:?}", multicast.get_mc_space_id());
+                    if let Some(space_id) = multicast.get_mc_space_id() {
+                        self.mc_remove_pkt_num(packet_num, epoch, space_id as u64)?;
+                    } else {
+                        multicast.set_mc_pkt_num_client(packet_num);
+                    }
                 } else {
                     return Err(Error::Multicast(
                         multicast::MulticastError::McInvalidSymKey,

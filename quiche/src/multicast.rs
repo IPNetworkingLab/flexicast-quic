@@ -60,6 +60,9 @@ pub enum MulticastError {
     /// Handshake of the multicast server channel failed.
     McChannelHandshake,
 
+    /// Invalid multipath path used, or invalid space id.
+    McPath,
+
     #[cfg(test)]
     /// Error when initiating the multicast pipe.
     McPipe,
@@ -208,6 +211,10 @@ pub struct MulticastAttributes {
     /// MC-TODO: move this field in [`mc_role`] because it is
     /// unicast-server-specific.
     mc_nack_ranges: Option<RangeSet>,
+
+    /// The multicast client starting packet number.
+    /// Before this packet number, the client will not receive them.
+    mc_pkt_num_client: Option<u64>,
 }
 
 impl MulticastAttributes {
@@ -408,6 +415,11 @@ impl MulticastAttributes {
 
         Ok(())
     }
+
+    /// Sets the [`mc_pkt_num_client`] value.
+    pub fn set_mc_pkt_num_client(&mut self, pkt_num: u64) {
+        self.mc_pkt_num_client = Some(pkt_num);
+    }
 }
 
 impl Default for MulticastAttributes {
@@ -424,6 +436,7 @@ impl Default for MulticastAttributes {
             mc_private_key: None,
             mc_space_id: None,
             mc_nack_ranges: None,
+            mc_pkt_num_client: None,
         }
     }
 }
@@ -524,6 +537,9 @@ pub trait MulticastConnection {
     /// sequence. This implies that the packet number MUST be monotically
     /// increasing by 1.
     fn mc_nack_range(&self, epoch: Epoch, space_id: u64) -> Option<RangeSet>;
+
+    /// Removes from the ack ranges packet numbers before the given value.
+    fn mc_remove_pkt_num(&mut self, packet_num: u64, epoch: Epoch, space_id: u64) -> Result<()>;
 }
 
 impl MulticastConnection for Connection {
@@ -749,6 +765,18 @@ impl MulticastConnection for Connection {
         } else {
             None
         }
+    }
+
+    fn mc_remove_pkt_num(&mut self, packet_num: u64, epoch: Epoch, space_id: u64) -> Result<()> {
+        let pkt_num_space = self.pkt_num_spaces.get_mut(
+            epoch,
+            space_id,
+        )?;
+        pkt_num_space.recv_pkt_need_ack.remove_until(packet_num);
+
+        println!("Remove packets until {} for space id {}", packet_num, space_id);
+
+        Ok(())
     }
 }
 
@@ -1117,11 +1145,6 @@ mod tests {
                         Some(mc_channel.master_secret.clone());
                     assert!(pipe.advance().is_ok());
 
-                    // Client joins the multicast channel, and the server gives
-                    // the master key.
-                    pipe.client.mc_join_channel().unwrap();
-                    assert!(pipe.advance().is_ok());
-
                     let reset_token = 0xffeeddccu128;
                     let client_mc_announce = pipe
                         .client
@@ -1159,13 +1182,30 @@ mod tests {
                         .path_id_from_addrs(&(client_addr_2, server_addr))
                         .expect("no such path");
 
-                    assert_eq!(pipe.advance(), Ok(()));
+                    let pid_s2c_1 = pipe
+                        .server
+                        .paths
+                        .path_id_from_addrs(&(server_addr, client_addr_2))
+                        .expect("no such path");
 
                     pipe.client
                         .multicast
                         .as_mut()
                         .unwrap()
                         .set_mc_space_id(pid_c2s_1);
+
+                    pipe.server
+                        .multicast
+                        .as_mut()
+                        .unwrap()
+                        .set_mc_space_id(pid_s2c_1);
+
+                    assert_eq!(pipe.advance(), Ok(()));
+
+                    // Client joins the multicast channel, and the server gives
+                    // the master key.
+                    pipe.client.mc_join_channel().unwrap();
+                    pipe.advance().unwrap();
 
                     Some((pipe, client_addr_2, server_addr))
                 })
@@ -1849,11 +1889,10 @@ mod tests {
             from_mc: true,
         };
 
-        let client_mc_space_id = pipe.client.multicast.as_ref().unwrap().get_mc_space_id();
+        let client_mc_space_id =
+            pipe.client.multicast.as_ref().unwrap().get_mc_space_id();
         assert_eq!(client_mc_space_id, Some(1));
         let client_mc_space_id = client_mc_space_id.unwrap();
-
-        let nack_ranges = pipe.client.mc_nack_range(Epoch::Application, client_mc_space_id as u64);
 
         // The source multicast sends multiple packets. The second is lost to
         // trigger the nack.
@@ -1864,16 +1903,9 @@ mod tests {
         let res = pipe.client.mc_recv(&mut mc_buf[..written], recv_info);
         assert_eq!(res, Ok(written - signature_len));
 
-        let nack_ranges = pipe.client.mc_nack_range(Epoch::Application, client_mc_space_id as u64);
-        
         // Second packet... lost
         let res = mc_channel.mc_send(&mut mc_buf[..]);
         assert_eq!(res, Ok(1350));
-        let written = res.unwrap();
-        let res = pipe.client.mc_recv(&mut mc_buf[..written], recv_info);
-        assert_eq!(res, Ok(written - signature_len));
-
-        let nack_ranges = pipe.client.mc_nack_range(Epoch::Application, client_mc_space_id as u64);
 
         // Third packet... received.
         let res = mc_channel.mc_send(&mut mc_buf[..]);
@@ -1884,10 +1916,12 @@ mod tests {
         assert_eq!(res, Ok(written - signature_len));
 
         // The client sees a gap in the ack ranges.
-        let nack_ranges = pipe.client.mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        let nack_ranges = pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
 
         let mut expected_range_set = ranges::RangeSet::default();
-        expected_range_set.insert(1..4);
-        // assert_eq!(nack_ranges, Some(expected_range_set));
+        expected_range_set.insert(3..4);
+        assert_eq!(nack_ranges, Some(expected_range_set));
     }
 }

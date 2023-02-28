@@ -221,6 +221,7 @@ pub enum Frame {
 
     McKey {
         channel_id: Vec<u8>,
+        packet_num: u64,
         key: Vec<u8>,
     },
 }
@@ -427,6 +428,7 @@ impl Frame {
 
             MC_KEY_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
+                let packet_num = b.get_varint()?;
                 let key_len = b.get_varint()?;
                 let key = b.get_bytes(key_len as usize)?
                                    .buf()
@@ -434,6 +436,7 @@ impl Frame {
                                    .map_err(|_| Error::BufferTooShort)?;
                 Frame::McKey {
                     channel_id,
+                    packet_num,
                     key,
                 }
             }
@@ -758,11 +761,12 @@ impl Frame {
                 b.put_varint(*action)?;
             },
 
-            Frame::McKey { channel_id, key } => {
+            Frame::McKey { channel_id, packet_num, key } => {
                 debug!("Going to encode the MC_KEY frame");
                 b.put_varint(MC_KEY_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
+                b.put_varint(*packet_num)?;
                 b.put_varint(key.len() as u64)?;
                 b.put_bytes(key)?;
             }
@@ -1026,9 +1030,10 @@ impl Frame {
                 state_size
             },
 
-            Frame::McKey { channel_id, key } => {
+            Frame::McKey { channel_id, packet_num, key } => {
                 let key_len_size = octets::varint_len(key.len() as u64);
                 1 + // frame type
+                octets::varint_len(*packet_num) + 
                 1 + // channel_id len
                 channel_id.len() +
                 key_len_size +
@@ -1539,8 +1544,8 @@ impl std::fmt::Debug for Frame {
                 write!(f, "MC_STATE channel ID={:?}, state={}", channel_id, action)?;
             },
 
-            Frame::McKey { channel_id, key } => {
-                write!(f, "MC_KEY channel ID={:?}, key={:?}", channel_id, key)?;
+            Frame::McKey { channel_id, packet_num, key } => {
+                write!(f, "MC_KEY channel ID={:?}, packet num={:?} key={:?}", channel_id, packet_num, key)?;
             }
         }
 
@@ -2808,10 +2813,11 @@ mod tests {
 
     #[test]
     fn mc_key() {
-        let mut d = [42; 128];
+        let mut d = [41; 400];
 
         let frame = Frame::McKey {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
+            packet_num: 0xffeeddccbbaa,
             key: vec![1; 32],
         };
 
@@ -2820,7 +2826,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 43);
+        assert_eq!(wire_len, 51);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
