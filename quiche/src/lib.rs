@@ -3566,9 +3566,49 @@ impl Connection {
             }
         }
 
+        // Create MC_NACK frame if needed.
+        // MC_NACK frames are only sent on active multicast path.
+        // MC-TODO.
+        let mut sent_mc_nack = false;
+        if self.multicast.is_some() && false {
+            let ack_delay = pkt_num_space.largest_rx_pkt_time.elapsed();
+
+            // If the result is None, it means that either it is empty or an error
+            // occured.
+            // MC-TODO: verify that the space ID corresponds to the multicast
+            // path.
+            if let Some(nack_range) = self.mc_nack_range(epoch, space_id) {
+                // We have some nack range to send! Create the MC_NACK frame.
+                // Maybe this is not optimal, but we will reuse ACKMP frames to
+                // carry the nack ranges. If the space
+                // identifier is equal to the multicast path, it is an MC_NACK
+                // frame. Otherwise, it is an ACKMP frame.
+                let ack_delay = ack_delay.as_micros() as u64 /
+                    2_u64.pow(
+                        self.local_transport_params.ack_delay_exponent as u32,
+                    );
+
+                let frame = frame::Frame::ACKMP {
+                    space_identifier: space_id,
+                    ack_delay,
+                    ranges: nack_range,
+                    ecn_counts: None,
+                };
+
+                if push_frame_to_pkt!(b, frames, frame, left) {
+                    // We want the MC_NACK frames to be sent even if no data is
+                    // sent.
+                    ack_eliciting = true;
+                    in_flight = true;
+                    sent_mc_nack = true;
+                }
+            }
+        }
+
         // Create ACK_MP frames if needed.
         if multiple_application_data_pkt_num_spaces &&
             !is_closing &&
+            !sent_mc_nack &&
             self.paths.get(send_pid)?.active()
         {
             // We first check if we should bundle the ACK_MP belonging to our

@@ -5,6 +5,7 @@ use std::convert::TryInto;
 use std::io::BufRead;
 use std::net::SocketAddr;
 
+use crate::packet::Epoch;
 use crate::rand::rand_bytes;
 use crate::ranges;
 use crate::ranges::RangeSet;
@@ -473,13 +474,13 @@ pub trait MulticastConnection {
     fn mc_sign(&self, buf: &mut [u8], data_len: usize) -> Result<usize>;
 
     /// Returns an AckRange of packets that are considered as lost.
-    /// Returns an error if multicast is disabled or the caller has an invalid
-    /// role.
+    /// Returns None if multicast is disabled or the caller has an invalid
+    /// role. Also returns None if the nack range is empty.
     ///
     /// A packet is considered as lost if we see a gap in the packet number
     /// sequence. This implies that the packet number MUST be monotically
     /// increasing by 1.
-    fn mc_nack(&self) -> Result<RangeSet>;
+    fn mc_nack_range(&self, epoch: Epoch, space_id: u64) -> Option<RangeSet>;
 }
 
 impl MulticastConnection for Connection {
@@ -601,13 +602,16 @@ impl MulticastConnection for Connection {
 
     fn mc_has_control_data(&self) -> bool {
         // MC-TODO: complete
-        self.mc_should_send_mc_announce() ||
-            match self.multicast.as_ref() {
-                None => false,
-                Some(multicast) =>
-                    multicast.should_send_mc_state() ||
-                        multicast.should_send_mc_key(),
-            }
+        // MC-TODO: use real values instead of hard-coded space id and epoch.
+        self.multicast.is_some() &&
+            (self.mc_should_send_mc_announce() ||
+                self.mc_nack_range(Epoch::Application, 1).is_some() ||
+                match self.multicast.as_ref() {
+                    None => false,
+                    Some(multicast) =>
+                        multicast.should_send_mc_state() ||
+                            multicast.should_send_mc_key(),
+                })
     }
 
     fn mc_join_channel(&mut self) -> Result<MulticastClientStatus> {
@@ -679,23 +683,24 @@ impl MulticastConnection for Connection {
         }
     }
 
-    fn mc_nack(&self) -> Result<RangeSet> {
+    fn mc_nack_range(&self, epoch: Epoch, space_id: u64) -> Option<RangeSet> {
         if let Some(multicast) = self.multicast.as_ref() {
             if !matches!(multicast.mc_role, MulticastRole::Client(_)) {
-                return Err(Error::Multicast(MulticastError::McInvalidRole(
-                    multicast.mc_role,
-                )));
+                return None;
             }
-            let nack_range = ranges::RangeSet::default();
 
-            // MC-TODO: find a better way to detect the lost frames.
-            // Currently we simply iterate over the ranges of received packets and
-            // add a range of lost packet with previous.last..current.first.
-            // TODO.
-
-            Ok(nack_range)
+            if let Ok(pns) = self.pkt_num_spaces.get(epoch, space_id) {
+                let nack_range = pns.recv_pkt_need_ack.get_missing();
+                if nack_range.len() == 0 {
+                    None
+                } else {
+                    Some(nack_range)
+                }
+            } else {
+                None
+            }
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            None
         }
     }
 }
