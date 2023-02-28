@@ -2435,7 +2435,6 @@ impl Connection {
         // Select packet number space epoch based on the received packet's type.
         let epoch = hdr.ty.to_epoch()?;
 
-        // MC-TODO: use here our crypto aead if this is a multicast path.
         // Select AEAD context used to open incoming packet.
         let aead = if hdr.ty == packet::Type::ZeroRTT {
             // Only use 0-RTT key if incoming packet is 0-RTT.
@@ -2443,7 +2442,7 @@ impl Connection {
         } else if info.from_mc {
             // The multicast channel uses the shared key.
             if let Some(multicast) = self.multicast.as_ref() {
-                println!("USES THE MULTICAST CRYPTO CONTEXT");
+                debug!("USES THE MULTICAST CRYPTO CONTEXT");
                 multicast.get_mc_crypto_open()
             } else {
                 return Err(Error::Multicast(
@@ -2489,20 +2488,14 @@ impl Connection {
 
         let aead_tag_len = aead.alg().tag_len();
 
-        println!("Avant decryption de header");
-
         packet::decrypt_hdr(&mut b, &mut hdr, aead).map_err(|e| {
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
 
-        println!("Decryption de header");
-
         let space_id = if self.is_multipath_enabled() {
-            println!("DURING space id");
             if let Some((scid_seq, _)) = self.ids.find_scid_seq(&hdr.dcid) {
                 scid_seq
             } else {
-                println!("Error done");
                 trace!(
                     "{} ignored unknown Source CID {:?}",
                     self.trace_id,
@@ -2513,8 +2506,6 @@ impl Connection {
         } else {
             packet::INITIAL_PACKET_NUMBER_SPACE_ID
         };
-
-        println!("After space ID");
 
         // This might be a new space identifier yet unseen before. In such case,
         // it should start with 0.
@@ -2543,8 +2534,6 @@ impl Connection {
         #[cfg(feature = "qlog")]
         let mut qlog_frames = vec![];
 
-        println!("Before decrypt packet");
-
         let mut payload = packet::decrypt_pkt(
             &mut b,
             space_id as u32,
@@ -2556,8 +2545,6 @@ impl Connection {
         .map_err(|e| {
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
-
-        println!("After decrypt packet");
 
         let pkt_num_space =
             self.pkt_num_spaces.get_mut_or_create(epoch, space_id);
