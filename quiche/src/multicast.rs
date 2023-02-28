@@ -202,6 +202,12 @@ pub struct MulticastAttributes {
 
     /// Space ID of the multicast path.
     mc_space_id: Option<usize>,
+
+    /// Nack ranges received by the server from the client.
+    /// Only present for the server unicast.
+    /// MC-TODO: move this field in [`mc_role`] because it is
+    /// unicast-server-specific.
+    mc_nack_ranges: Option<RangeSet>,
 }
 
 impl MulticastAttributes {
@@ -349,17 +355,15 @@ impl MulticastAttributes {
     /// Gives the public key of the multicast source as an array reference.
     ///
     /// Returns an error if it is not the multicast source.
-    pub fn get_mc_pub_key(&self) -> Result<&[u8]> {
+    pub fn get_mc_pub_key(&self) -> Option<&[u8]> {
         if self.mc_role == MulticastRole::ServerMulticast {
             if let Some(private_key) = self.mc_private_key.as_ref() {
-                Ok(private_key.public_key().as_ref())
+                Some(private_key.public_key().as_ref())
             } else {
-                Err(Error::Multicast(MulticastError::McInvalidAsymKey))
+                None
             }
         } else {
-            Err(Error::Multicast(MulticastError::McInvalidRole(
-                self.mc_role,
-            )))
+            None
         }
     }
 
@@ -382,6 +386,28 @@ impl MulticastAttributes {
     pub fn get_mc_space_id(&self) -> Option<usize> {
         self.mc_space_id
     }
+
+    /// Sets the multicast nack ranges received from the client.
+    /// Returns an error if it is not a [`ServerUnicast`].
+    pub fn set_mc_nack_ranges(
+        &mut self, ranges: &ranges::RangeSet,
+    ) -> Result<()> {
+        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_)) {
+            return Err(Error::Multicast(MulticastError::McInvalidRole(
+                self.mc_role,
+            )));
+        }
+
+        if let Some(current_ranges) = self.mc_nack_ranges.as_mut() {
+            for range in ranges.iter() {
+                current_ranges.insert(range);
+            }
+        } else {
+            self.mc_nack_ranges = Some(ranges.clone());
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for MulticastAttributes {
@@ -397,6 +423,7 @@ impl Default for MulticastAttributes {
             mc_public_key: None,
             mc_private_key: None,
             mc_space_id: None,
+            mc_nack_ranges: None,
         }
     }
 }
@@ -1041,7 +1068,7 @@ mod tests {
 
     impl MulticastPipe {
         pub fn new(
-            nb_clients: usize, keylog_filename: &str,
+            nb_clients: usize, keylog_filename: &str, do_auth: bool,
         ) -> Result<MulticastPipe> {
             let mc_client_tp = MulticastClientTp::default();
             let mut server_config = get_test_mc_config(true, None);
@@ -1053,7 +1080,7 @@ mod tests {
             let mc_channel = get_test_mc_channel_source(
                 &mut server_config,
                 &mut client_config,
-                true,
+                do_auth,
                 keylog_filename,
             )
             .unwrap();
@@ -1063,7 +1090,7 @@ mod tests {
                 mc_channel.mc_path_conn_id.0.as_ref().to_vec();
 
             // Copy the public key from the multicast channel.
-            if let Ok(public_key) = mc_channel
+            if let Some(public_key) = mc_channel
                 .channel
                 .multicast
                 .as_ref()
@@ -1197,7 +1224,7 @@ mod tests {
             source_ip: std::net::Ipv4Addr::new(127, 0, 0, 1).octets(),
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
             udp_port: 7676,
-            public_key: Some(vec![1; 32]),
+            public_key: None,
             ttl_data: 1_000_000,
         }
     }
@@ -1726,7 +1753,8 @@ mod tests {
     /// Tests the authentication process for data sent over the multicast
     /// channel in the multicast path.
     fn test_mc_channel_auth() {
-        let mc_pipe = MulticastPipe::new(1, "/tmp/test_mc_channel_auth.txt");
+        let mc_pipe =
+            MulticastPipe::new(1, "/tmp/test_mc_channel_auth.txt", true);
         assert!(mc_pipe.is_ok());
         let mut mc_pipe = mc_pipe.unwrap();
 
@@ -1737,13 +1765,13 @@ mod tests {
         let server_addr = uc_pipe.2;
 
         // The multicast channel sends some data to the client.
-        let mut mc_buf = [0u8; 1500];
+        let mut mc_buf = [0u8; 4096];
         let data: Vec<_> = (0..255).collect();
 
         mc_channel.channel.stream_send(1, &data, true).unwrap();
-        let res = mc_channel.channel.send(&mut mc_buf[..]);
+        let res = mc_channel.mc_send(&mut mc_buf[..]);
         assert!(res.is_ok());
-        let (written, _) = res.unwrap();
+        let written = res.unwrap();
 
         let recv_info = RecvInfo {
             from: server_addr,
@@ -1793,5 +1821,73 @@ mod tests {
         assert_eq!(&missing.flatten().collect::<Vec<u64>>(), &[
             7, 8, 12, 13, 14, 21, 34, 35
         ]);
+    }
+
+    #[test]
+    /// Tests that the client will correctly generates an MC_NACK to the server.
+    fn test_mc_nack() {
+        let use_auth = false;
+        let mut mc_pipe =
+            MulticastPipe::new(1, "/tmp/test_mc_nack.txt", use_auth).unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+
+        let mc_channel = &mut mc_pipe.mc_channel;
+        let uc_pipe = &mut mc_pipe.unicast_pipes[0];
+        let pipe = &mut uc_pipe.0;
+        let client_addr_2 = uc_pipe.1;
+        let server_addr = uc_pipe.2;
+        let mut mc_buf = [0u8; 4096];
+
+        // Send some data and the receiver will receive it all.
+        let mut data = [0u8; 4000];
+        ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
+
+        mc_channel.channel.stream_send(1, &data, true).unwrap();
+        let recv_info = RecvInfo {
+            from: server_addr,
+            to: client_addr_2,
+            from_mc: true,
+        };
+
+        let client_mc_space_id = pipe.client.multicast.as_ref().unwrap().get_mc_space_id();
+        assert_eq!(client_mc_space_id, Some(1));
+        let client_mc_space_id = client_mc_space_id.unwrap();
+
+        let nack_ranges = pipe.client.mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+
+        // The source multicast sends multiple packets. The second is lost to
+        // trigger the nack.
+        let res = mc_channel.mc_send(&mut mc_buf[..]);
+        assert_eq!(res, Ok(1350));
+        let written = res.unwrap();
+
+        let res = pipe.client.mc_recv(&mut mc_buf[..written], recv_info);
+        assert_eq!(res, Ok(written - signature_len));
+
+        let nack_ranges = pipe.client.mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        
+        // Second packet... lost
+        let res = mc_channel.mc_send(&mut mc_buf[..]);
+        assert_eq!(res, Ok(1350));
+        let written = res.unwrap();
+        let res = pipe.client.mc_recv(&mut mc_buf[..written], recv_info);
+        assert_eq!(res, Ok(written - signature_len));
+
+        let nack_ranges = pipe.client.mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+
+        // Third packet... received.
+        let res = mc_channel.mc_send(&mut mc_buf[..]);
+        assert_eq!(res, Ok(1350));
+        let written = res.unwrap();
+
+        let res = pipe.client.mc_recv(&mut mc_buf[..written], recv_info);
+        assert_eq!(res, Ok(written - signature_len));
+
+        // The client sees a gap in the ack ranges.
+        let nack_ranges = pipe.client.mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+
+        let mut expected_range_set = ranges::RangeSet::default();
+        expected_range_set.insert(1..4);
+        // assert_eq!(nack_ranges, Some(expected_range_set));
     }
 }

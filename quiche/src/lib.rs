@@ -2520,6 +2520,10 @@ impl Connection {
             hdr.pkt_num_len,
         );
 
+        if !self.is_server {
+            println!("Received packet with pn={}", pn);
+        }
+
         let pn_len = hdr.pkt_num_len;
 
         trace!(
@@ -2533,6 +2537,10 @@ impl Connection {
 
         #[cfg(feature = "qlog")]
         let mut qlog_frames = vec![];
+
+        if !self.is_server {
+            println!("Après 3.: {} {} {} {}", space_id as u32, pn, pn_len, payload_len);
+        }
 
         let mut payload = packet::decrypt_pkt(
             &mut b,
@@ -2794,20 +2802,36 @@ impl Connection {
                         ranges,
                         ..
                     } => {
+                        // If the space identifier of the ack ranges correspond
+                        // to the multicast channel, it means that it is an
+                        // MC_NACK frame, and not a simple ACKMP frame.
+                        let mut is_mc_nack = false;
+                        if let Some(multicast) = self.multicast.as_mut() {
+                            if let Some(space_id) = multicast.get_mc_space_id() {
+                                if space_id as u64 == space_identifier {
+                                    is_mc_nack = true;
+                                    println!("Received an MC_NACK frame for space identifier {}: {:?}", space_identifier, ranges);
+
+                                    multicast.set_mc_nack_ranges(&ranges)?;
+                                }
+                            }
+                        }
                         // Stop acknowledging packets less than or equal to the
                         // largest acknowledged in the sent ACK_MP frame that,
                         // in turn, got acked.
-                        if let Some(largest_acked) = ranges.last() {
-                            self.pkt_num_spaces
-                                .get_mut(
-                                    packet::Epoch::Application,
-                                    space_identifier,
-                                )
-                                .map(|pns| {
-                                    pns.recv_pkt_need_ack
-                                        .remove_until(largest_acked)
-                                })
-                                .ok();
+                        if !is_mc_nack {
+                            if let Some(largest_acked) = ranges.last() {
+                                self.pkt_num_spaces
+                                    .get_mut(
+                                        packet::Epoch::Application,
+                                        space_identifier,
+                                    )
+                                    .map(|pns| {
+                                        pns.recv_pkt_need_ack
+                                            .remove_until(largest_acked)
+                                    })
+                                    .ok();
+                            }
                         }
                     },
 
@@ -3138,22 +3162,21 @@ impl Connection {
         // and need an authentication signature.
         let mut is_mc_and_auth_packet = false;
         if let Some(multicast) = self.multicast.as_ref() {
-            // MC-TODO: clean the pid hard-coded comparison.
-            if send_pid == multicast.get_mc_space_id().unwrap_or(0) &&
-                multicast.is_mc_source_and_auth()
-            {
-                is_mc_and_auth_packet = true;
+            if let Some(space_id) = multicast.get_mc_space_id() {
+                if space_id == send_pid && multicast.is_mc_source_and_auth() {
+                    is_mc_and_auth_packet = true;
+                }
             }
-        }
-
-        // Keep room for the last authentication coalesced packet for multicast.
-        if is_mc_and_auth_packet {
-            let signature_len = 64;
-            left -= signature_len;
         }
 
         // Generate coalesced packets.
         while left > 0 {
+            // Save room for the signature of multicast packets.
+            if is_mc_and_auth_packet {
+                let signature_len = 64;
+                left -= signature_len;
+            }
+
             let (ty, written) = match self.send_single(
                 &mut out[done..done + left],
                 send_pid,
@@ -3174,7 +3197,8 @@ impl Connection {
                 let sign_overhead =
                     self.mc_sign(&mut out[done - written..], written)?;
                 done += sign_overhead;
-                left -= sign_overhead;
+                // We already removed the room for the multicast authentication
+                // signature.
             }
 
             match ty {
@@ -3198,6 +3222,7 @@ impl Connection {
             if !(from.is_some() && to.is_some()) &&
                 self.get_send_path_id(from, to)? != send_pid
             {
+                error!("Different paths");
                 break;
             }
         }
@@ -3559,7 +3584,7 @@ impl Connection {
         // MC_NACK frames are only sent on active multicast path.
         // MC-TODO.
         let mut sent_mc_nack = false;
-        if self.multicast.is_some() && false {
+        if self.multicast.is_some() {
             let ack_delay = pkt_num_space.largest_rx_pkt_time.elapsed();
 
             // If the result is None, it means that either it is empty or an error
@@ -4600,8 +4625,8 @@ impl Connection {
         }
 
         let pkt_num_space = self.pkt_num_spaces.get_mut(epoch, space_id)?;
-
         pkt_num_space.next_pkt_num += 1;
+        println!("Increase the packet number by one on space id {}... Now is {}", space_id, pkt_num_space.next_pkt_num);
 
         self.sent_count += 1;
         self.sent_bytes += written as u64;
@@ -9114,6 +9139,8 @@ pub mod testing {
             None,
             aead,
         )?;
+
+        println!("SEKHLFJKHFJKAFHEJLFHEZJFHEJZALFEZJFHEZALFHEZ Also increases the packet number here. Now is {}", conn.pkt_num_spaces.get_mut(epoch, 0)?.next_pkt_num);
 
         conn.pkt_num_spaces.get_mut(epoch, 0)?.next_pkt_num += 1;
 
