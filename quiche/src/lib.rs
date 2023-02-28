@@ -3152,7 +3152,7 @@ impl Connection {
         let mut is_mc_and_auth_packet = false;
         if let Some(multicast) = self.multicast.as_ref() {
             // MC-TODO: clean the pid hard-coded comparison.
-            if send_pid == 1 && multicast.is_mc_source_and_auth() {
+            if send_pid == multicast.get_mc_space_id().unwrap_or(0) && multicast.is_mc_source_and_auth() {
                 is_mc_and_auth_packet = true;
             }
         }

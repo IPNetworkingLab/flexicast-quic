@@ -199,6 +199,9 @@ pub struct MulticastAttributes {
     /// Signature private key.
     /// Only present for the multicast source.
     mc_private_key: Option<signature::Ed25519KeyPair>,
+
+    /// Space ID of the multicast path.
+    mc_space_id: Option<usize>,
 }
 
 impl MulticastAttributes {
@@ -367,6 +370,18 @@ impl MulticastAttributes {
         self.mc_role == MulticastRole::ServerMulticast &&
             self.mc_private_key.is_some()
     }
+
+    /// Sets the multicast path space identifier.
+    /// This is used to alwasy refer to the correct multicast path
+    /// when processing packets.
+    pub fn set_mc_space_id(&mut self, space_id: usize) {
+        self.mc_space_id = Some(space_id);
+    }
+
+    /// Gets the multicast space ID.
+    pub fn get_mc_space_id(&self) -> Option<usize> {
+        self.mc_space_id
+    }
 }
 
 impl Default for MulticastAttributes {
@@ -381,6 +396,7 @@ impl Default for MulticastAttributes {
             mc_key_up_to_date: false,
             mc_public_key: None,
             mc_private_key: None,
+            mc_space_id: None,
         }
     }
 }
@@ -605,12 +621,16 @@ impl MulticastConnection for Connection {
         // MC-TODO: use real values instead of hard-coded space id and epoch.
         self.multicast.is_some() &&
             (self.mc_should_send_mc_announce() ||
-                self.mc_nack_range(Epoch::Application, 1).is_some() ||
                 match self.multicast.as_ref() {
                     None => false,
                     Some(multicast) =>
                         multicast.should_send_mc_state() ||
-                            multicast.should_send_mc_key(),
+                            multicast.should_send_mc_key() ||
+                            self.mc_nack_range(
+                                Epoch::Application,
+                                multicast.mc_space_id.unwrap_or(0) as u64,
+                            )
+                            .is_some(),
                 })
     }
 
@@ -843,6 +863,11 @@ impl MulticastChannelSource {
         conn_client.probe_path(peer2, peer2)?;
         Self::advance(&mut conn_server, &mut conn_client)?;
 
+        let pid_c2s_1 = conn_client
+            .paths
+            .path_id_from_addrs(&(peer2, peer2))
+            .expect("no such path");
+
         // Set the new path active.
         conn_client.set_active(peer2, peer2, true)?;
         conn_server.set_active(peer2, peer2, true)?;
@@ -870,6 +895,7 @@ impl MulticastChannelSource {
         conn_server.multicast = Some(MulticastAttributes {
             mc_private_key: signature_eddsa,
             mc_role: MulticastRole::ServerMulticast,
+            mc_space_id: Some(pid_c2s_1),
             ..Default::default()
         });
 
@@ -1100,7 +1126,19 @@ mod tests {
                         Ok(())
                     );
 
+                    let pid_c2s_1 = pipe
+                        .client
+                        .paths
+                        .path_id_from_addrs(&(client_addr_2, server_addr))
+                        .expect("no such path");
+
                     assert_eq!(pipe.advance(), Ok(()));
+
+                    pipe.client
+                        .multicast
+                        .as_mut()
+                        .unwrap()
+                        .set_mc_space_id(pid_c2s_1);
 
                     Some((pipe, client_addr_2, server_addr))
                 })
@@ -1571,6 +1609,13 @@ mod tests {
             pipe.client.set_active(client_addr_2, server_addr, true,),
             Ok(())
         );
+
+        mc_channel
+            .channel
+            .multicast
+            .as_mut()
+            .unwrap()
+            .set_mc_space_id(pid_c2s_1);
 
         let path_c2s_0 = pipe.client.paths.get(pid_c2s_0).expect("no such path");
         let path_c2s_1 = pipe.client.paths.get(pid_c2s_1).expect("no such path");
