@@ -74,6 +74,8 @@ pub const MC_ANNOUNCE_CODE: u64 = 0xf3;
 pub const MC_STATE_CODE: u64 = 0xf4;
 /// MC_KEY frame type.
 pub const MC_KEY_CODE: u64 = 0xf5;
+/// MC_EXPIRE frame type.
+pub const MC_EXPIRE_CODE: u64 = 0xf6;
 
 /// States of a multicast client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd)]
@@ -211,10 +213,6 @@ pub struct MulticastAttributes {
     /// MC-TODO: move this field in [`mc_role`] because it is
     /// unicast-server-specific.
     mc_nack_ranges: Option<RangeSet>,
-
-    /// The multicast client starting packet number.
-    /// Before this packet number, the client will not receive them.
-    mc_pkt_num_client: Option<u64>,
 }
 
 impl MulticastAttributes {
@@ -415,11 +413,6 @@ impl MulticastAttributes {
 
         Ok(())
     }
-
-    /// Sets the [`mc_pkt_num_client`] value.
-    pub fn set_mc_pkt_num_client(&mut self, pkt_num: u64) {
-        self.mc_pkt_num_client = Some(pkt_num);
-    }
 }
 
 impl Default for MulticastAttributes {
@@ -436,7 +429,6 @@ impl Default for MulticastAttributes {
             mc_private_key: None,
             mc_space_id: None,
             mc_nack_ranges: None,
-            mc_pkt_num_client: None,
         }
     }
 }
@@ -538,8 +530,16 @@ pub trait MulticastConnection {
     /// increasing by 1.
     fn mc_nack_range(&self, epoch: Epoch, space_id: u64) -> Option<RangeSet>;
 
-    /// Removes from the ack ranges packet numbers before the given value.
-    fn mc_remove_pkt_num(&mut self, packet_num: u64, epoch: Epoch, space_id: u64) -> Result<()>;
+    /// Removes from internal state all frames and packet numbers
+    /// before the argument values. This is used to ensure that a client
+    /// does not ask for retransmission of too old data.
+    /// This removes from the RangeSet the too old packet numbers and
+    /// resets the streams having an ID below the given ID.
+    ///
+    /// Only availble for a multicast client.
+    fn mc_expire(
+        &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>, stream_id_opt: Option<u64>,
+    ) -> Result<()>;
 }
 
 impl MulticastConnection for Connection {
@@ -767,14 +767,40 @@ impl MulticastConnection for Connection {
         }
     }
 
-    fn mc_remove_pkt_num(&mut self, packet_num: u64, epoch: Epoch, space_id: u64) -> Result<()> {
-        let pkt_num_space = self.pkt_num_spaces.get_mut(
-            epoch,
-            space_id,
-        )?;
-        pkt_num_space.recv_pkt_need_ack.remove_until(packet_num);
+    fn mc_expire(
+        &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>, stream_id_opt: Option<u64>,
+    ) -> Result<()> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if !matches!(
+                multicast.mc_role,
+                MulticastRole::Client(MulticastClientStatus::JoinedAndKey),
+            ) {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    multicast.mc_role,
+                )));
+            }
+        }
 
-        println!("Remove packets until {} for space id {}", packet_num, space_id);
+        // Remove expired packets.
+        if let Some(exp_pkt_num) = pkt_num_opt {
+            let pkt_num_space = self.pkt_num_spaces.get_mut(epoch, space_id)?;
+            pkt_num_space.recv_pkt_need_ack.remove_until(exp_pkt_num);
+            println!(
+                "Remove packets until {} for space id {}",
+                exp_pkt_num, space_id
+            );
+        }
+
+        // Reset expired (but still open) streams.
+        if let Some(exp_stream_id) = stream_id_opt {
+            for stream_id in self.readable() {
+                if stream_id < exp_stream_id {
+                    let stream_opt = self.streams.get_mut(stream_id);
+                    let local = if let Some(stream) = stream_opt { stream.local } else { false };
+                    self.streams.collect(stream_id, local);
+                }
+            }
+        }
 
         Ok(())
     }

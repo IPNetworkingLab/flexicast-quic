@@ -2811,11 +2811,13 @@ impl Connection {
                         let mut is_mc_nack = false;
                         if self.is_server {
                             if let Some(multicast) = self.multicast.as_mut() {
-                                if let Some(space_id) = multicast.get_mc_space_id() {
+                                if let Some(space_id) =
+                                    multicast.get_mc_space_id()
+                                {
                                     if space_id as u64 == space_identifier {
                                         is_mc_nack = true;
                                         println!("Received an MC_NACK frame for space identifier {}: {:?} but is server={}", space_identifier, ranges, self.is_server);
-    
+
                                         multicast.set_mc_nack_ranges(&ranges)?;
                                     }
                                 }
@@ -4105,7 +4107,6 @@ impl Connection {
                 )?;
                 let frame = frame::Frame::McKey {
                     channel_id: mc_announce_data.channel_id.clone(),
-                    packet_num: 2, // MC-TODO!
                     key: multicast.get_decryption_key_secret()?.to_vec(),
                 };
 
@@ -7559,11 +7560,7 @@ impl Connection {
                 }
             },
 
-            frame::Frame::McKey {
-                channel_id,
-                packet_num,
-                key,
-            } => {
+            frame::Frame::McKey { channel_id, key } => {
                 debug!(
                     "Received an MC_KEY frame! channel ID: {:?}, key: {:?}",
                     channel_id, key
@@ -7578,14 +7575,40 @@ impl Connection {
                     ));
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     multicast.set_decryption_key_secret(key)?;
+                } else {
+                    return Err(Error::Multicast(
+                        multicast::MulticastError::McInvalidSymKey,
+                    ));
+                }
+            },
 
-                    // Remove packet numbers before the advertised value
-                    // because we know the server will never send it again.
-                    println!("COMPRENDS PAS {:?}", multicast.get_mc_space_id());
+            frame::Frame::McExpire {
+                channel_id,
+                expiration_type: _,
+                pkt_num,
+                stream_id,
+            } => {
+                debug!("Received an MC_EXPIRE frame! channel ID: {:?}, pkt num: {:?}, stream ID: {:?}", channel_id, pkt_num, stream_id);
+                if self.is_server {
+                    return Err(Error::Multicast(
+                        multicast::MulticastError::McInvalidRole(
+                            multicast::MulticastRole::ServerUnicast(
+                                multicast::MulticastClientStatus::Unspecified,
+                            ),
+                        ),
+                    ));
+                } else if let Some(multicast) = self.multicast.as_mut() {
                     if let Some(space_id) = multicast.get_mc_space_id() {
-                        self.mc_remove_pkt_num(packet_num, epoch, space_id as u64)?;
+                        self.mc_expire(
+                            epoch,
+                            space_id as u64,
+                            pkt_num,
+                            stream_id,
+                        )?;
                     } else {
-                        multicast.set_mc_pkt_num_client(packet_num);
+                        return Err(Error::Multicast(
+                            multicast::MulticastError::McPath,
+                        ));
                     }
                 } else {
                     return Err(Error::Multicast(

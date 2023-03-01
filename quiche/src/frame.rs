@@ -30,6 +30,7 @@ use crate::Error;
 use crate::Result;
 
 use crate::multicast::MC_ANNOUNCE_CODE;
+use crate::multicast::MC_EXPIRE_CODE;
 use crate::multicast::MC_KEY_CODE;
 use crate::multicast::MC_STATE_CODE;
 use crate::packet;
@@ -221,8 +222,14 @@ pub enum Frame {
 
     McKey {
         channel_id: Vec<u8>,
-        packet_num: u64,
         key: Vec<u8>,
+    },
+
+    McExpire {
+        channel_id: Vec<u8>,
+        expiration_type: u8,
+        pkt_num: Option<u64>,
+        stream_id: Option<u64>,
     },
 }
 
@@ -393,22 +400,24 @@ impl Frame {
             MC_ANNOUNCE_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
                 let is_ipv6 = b.get_u8()?;
-                let source_ip = b.get_bytes(4)?
-                .buf()
-                .try_into()
-                .map_err(|_| Error::BufferTooShort)?;
+                let source_ip = b
+                    .get_bytes(4)?
+                    .buf()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?;
                 let group_ip = b
-                .get_bytes(4)?
-                .buf()
-                .try_into()
-                .map_err(|_| Error::BufferTooShort)?;
+                    .get_bytes(4)?
+                    .buf()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?;
                 let udp_port = b.get_u16()?;
                 let ttl_data = b.get_u64()?;
                 let key_len = b.get_varint()? as usize;
-                let public_key = b.get_bytes(key_len)?
-                                          .buf()
-                                          .try_into()
-                                          .map_err(|_| Error::BufferTooShort)?;
+                let public_key = b
+                    .get_bytes(key_len)?
+                    .buf()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?;
 
                 Frame::McAnnounce {
                     channel_id,
@@ -428,18 +437,35 @@ impl Frame {
 
             MC_KEY_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
-                let packet_num = b.get_varint()?;
                 let key_len = b.get_varint()?;
-                let key = b.get_bytes(key_len as usize)?
-                                   .buf()
-                                   .try_into()
-                                   .map_err(|_| Error::BufferTooShort)?;
-                Frame::McKey {
+                let key = b
+                    .get_bytes(key_len as usize)?
+                    .buf()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?;
+                Frame::McKey { channel_id, key }
+            },
+
+            MC_EXPIRE_CODE => {
+                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
+                let expiration_type = b.get_u8()?;
+                let pkt_num = if expiration_type & 1 > 0 {
+                    Some(b.get_varint()?)
+                } else {
+                    None
+                };
+                let stream_id = if expiration_type & 2 > 0 {
+                    Some(b.get_varint()?)
+                } else {
+                    None
+                };
+                Frame::McExpire {
                     channel_id,
-                    packet_num,
-                    key,
+                    expiration_type,
+                    pkt_num,
+                    stream_id,
                 }
-            }
+            },
 
             _ => return Err(Error::InvalidFrame),
         };
@@ -761,15 +787,33 @@ impl Frame {
                 b.put_varint(*action)?;
             },
 
-            Frame::McKey { channel_id, packet_num, key } => {
+            Frame::McKey { channel_id, key } => {
                 debug!("Going to encode the MC_KEY frame");
                 b.put_varint(MC_KEY_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
-                b.put_varint(*packet_num)?;
                 b.put_varint(key.len() as u64)?;
                 b.put_bytes(key)?;
-            }
+            },
+
+            Frame::McExpire {
+                channel_id,
+                expiration_type,
+                pkt_num,
+                stream_id,
+            } => {
+                debug!("Going to encode the MC_EXPIRE frame");
+                b.put_varint(MC_EXPIRE_CODE)?;
+                b.put_u8(channel_id.len() as u8)?;
+                b.put_bytes(channel_id.as_ref())?;
+                b.put_u8(*expiration_type)?;
+                if let Some(pkt_num) = pkt_num {
+                    b.put_varint(*pkt_num)?;
+                }
+                if let Some(stream_id) = stream_id {
+                    b.put_varint(*stream_id)?;
+                }
+            },
         }
 
         Ok(before - b.cap())
@@ -1009,7 +1053,8 @@ impl Frame {
                 ttl_data: _,
                 public_key,
             } => {
-                let public_key_len_size = octets::varint_len(public_key.len() as u64);
+                let public_key_len_size =
+                    octets::varint_len(public_key.len() as u64);
                 1 + // frame type
                 1 + // channel_id len
                 channel_id.len() +
@@ -1018,7 +1063,7 @@ impl Frame {
                 4 + // group_ip
                 2 + // udp_port
                 8 + // ttl_data
-                public_key_len_size + 
+                public_key_len_size +
                 public_key.len()
             },
 
@@ -1030,16 +1075,30 @@ impl Frame {
                 state_size
             },
 
-            Frame::McKey { channel_id, packet_num, key } => {
+            Frame::McKey { channel_id, key } => {
                 let key_len_size = octets::varint_len(key.len() as u64);
                 1 + // frame type
-                octets::varint_len(*packet_num) + 
                 1 + // channel_id len
                 channel_id.len() +
                 key_len_size +
                 key.len()
+            },
 
-            }
+            Frame::McExpire {
+                channel_id,
+                expiration_type: _,
+                pkt_num,
+                stream_id,
+            } => {
+                let pkt_num_len = pkt_num.map(octets::varint_len).unwrap_or(0);
+                let stream_id_len =
+                    stream_id.map(octets::varint_len).unwrap_or(0);
+                1 + // frame type
+                1 + // channel_id len
+                channel_id.len() +
+                pkt_num_len +
+                stream_id_len
+            },
         }
     }
 
@@ -1317,10 +1376,17 @@ impl Frame {
                 raw: Some("101".to_string()),
             },
 
-            Frame::McKey { .. } => QuicFrame::Unknown { raw_frame_type: MC_KEY_CODE,
+            Frame::McKey { .. } => QuicFrame::Unknown {
+                raw_frame_type: MC_KEY_CODE,
                 raw_length: Some(12),
                 raw: Some("102".to_string()),
-            }
+            },
+
+            Frame::McExpire { .. } => QuicFrame::Unknown {
+                raw_frame_type: MC_EXPIRE_CODE,
+                raw_length: Some(13),
+                raw: Some("103".to_string()),
+            },
         }
     }
 }
@@ -1541,12 +1607,25 @@ impl std::fmt::Debug for Frame {
             },
 
             Frame::McState { channel_id, action } => {
-                write!(f, "MC_STATE channel ID={:?}, state={}", channel_id, action)?;
+                write!(
+                    f,
+                    "MC_STATE channel ID={:?}, state={}",
+                    channel_id, action
+                )?;
             },
 
-            Frame::McKey { channel_id, packet_num, key } => {
-                write!(f, "MC_KEY channel ID={:?}, packet num={:?} key={:?}", channel_id, packet_num, key)?;
-            }
+            Frame::McKey { channel_id, key } => {
+                write!(f, "MC_KEY channel ID={:?} key={:?}", channel_id, key)?;
+            },
+
+            Frame::McExpire {
+                channel_id,
+                expiration_type,
+                pkt_num,
+                stream_id,
+            } => {
+                write!(f, "MC_EXPIRE channel ID={:?} expiration type: {:?} pkt_num: {:?} stream_id: {:?}", channel_id, expiration_type, pkt_num, stream_id)?;
+            },
         }
 
         Ok(())
@@ -2817,7 +2896,6 @@ mod tests {
 
         let frame = Frame::McKey {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
-            packet_num: 0xffeeddccbbaa,
             key: vec![1; 32],
         };
 
@@ -2826,7 +2904,41 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 51);
+        assert_eq!(wire_len, 43);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
+
+    #[test]
+    fn mc_expire() {
+        let mut d = [41; 400];
+
+        let frame = Frame::McExpire {
+            channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
+            expiration_type: 3,
+            pkt_num: Some(5678),
+            stream_id: Some(1234),
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 15);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
