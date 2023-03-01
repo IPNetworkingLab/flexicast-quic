@@ -1,28 +1,51 @@
-use crate::{packet::Epoch, ranges};
+use crate::packet::Epoch;
+use crate::ranges;
 use crate::Result;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
-use super::{HandshakeStatus, SpaceId};
+use super::HandshakeStatus;
+use super::SpaceId;
 
 /// Multicast extension of the recovery mechanism of QUIC.
 /// This extension attempts to add partial reliability to
 /// the multicast extension of QUIC.
 pub trait MulticastRecovery {
     /// Removes multicast data that passes above a defined time threshold.
-    fn mc_data_timeout(&mut self, space_id: SpaceId, now: Instant, ttl: Duration, handshake_status: HandshakeStatus) -> Result<()>;
+    fn mc_data_timeout(
+        &mut self, space_id: SpaceId, now: Instant, ttl: u64,
+        handshake_status: HandshakeStatus,
+    ) -> Result<(Option<u64>, Option<u64>)>;
+
+    /// Returns the next expiring event.
+    fn mc_next_timeout(&self) -> Option<Instant>;
 }
 
 impl MulticastRecovery for crate::recovery::Recovery {
-    fn mc_data_timeout(&mut self, space_id: SpaceId, now: Instant, ttl: Duration, handshake_status: HandshakeStatus) -> Result<()> {
+    fn mc_data_timeout(
+        &mut self, space_id: SpaceId, now: Instant, ttl: u64,
+        handshake_status: HandshakeStatus,
+    ) -> Result<(Option<u64>, Option<u64>)> {
         let mut expired_sent = self.sent[Epoch::Application]
-        .iter()
-        .take_while(|p| now.saturating_duration_since(p.time_sent) >= ttl)
-        .filter(|p| p.time_acked.is_none());
+            .iter()
+        .take_while(|p| now.saturating_duration_since(p.time_sent) >= Duration::from_millis(ttl))
+        .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
+
+        // Get the last stream ID which is impacted by the timeout.
+        let exp2 = expired_sent.clone();
+        let stream_ids = exp2.flat_map(|p| p.frames.as_ref().iter().filter_map(|f| match f {
+            crate::frame::Frame::StreamHeader {
+                stream_id,
+                ..
+            } => Some(*stream_id),
+            _ => None,
+        }));
+        let stream_id_removed = stream_ids.max();
         
         // Take the first and last sent from the iterator.
         // We will make a range for all of them.
         match expired_sent.next() {
-            None => (),
+            None => Ok((None, None)),
             Some(first) => {
                 // Create a dummy ack to remove the expired data.
                 let mut acked = ranges::RangeSet::default();
@@ -32,30 +55,51 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 };
                 // MC-TODO: be sure that we ack multicast data.
                 acked.insert((first.pkt_num.1)..(last.pkt_num.1 + 1));
+                let pkt_num_removed = last.pkt_num.1;
 
-                self.on_ack_received(space_id, &acked, ttl.as_millis() as u64, Epoch::Application, handshake_status, now, "")?;
-            }
+                self.on_ack_received(
+                    space_id,
+                    &acked,
+                    ttl,
+                    Epoch::Application,
+                    handshake_status,
+                    now,
+                    "",
+                )?;
+
+                Ok((Some(pkt_num_removed), stream_id_removed))
+            },
         }
+    }
 
-        Ok(())
+    fn mc_next_timeout(&self) -> Option<Instant> {
+        // MC-TODO: be sure that `front()` is correct and not `back`.
+        Some(self.sent[Epoch::Application].front()?.time_sent)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ranges;
+    use crate::recovery::CongestionControlAlgorithm;
+    use crate::recovery::HandshakeStatus;
+    use crate::recovery::Recovery;
+    use crate::recovery::Sent;
+    use crate::recovery::SpacedPktNum;
     use smallvec::smallvec;
-    use crate::{recovery::{Recovery, CongestionControlAlgorithm, Sent, HandshakeStatus, SpacedPktNum}, ranges};
+    use std::time::Duration;
 
     #[test]
-    fn mc_data_timeout() {
+    fn test_mc_data_timeout() {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(CongestionControlAlgorithm::DISABLED);
 
         let mut r = Recovery::new(&cfg);
 
         let mut now = Instant::now();
-        let data_expiration = Duration::from_millis(100);
+        let data_expiration_val = 100;
+        let data_expiration = Duration::from_millis(data_expiration_val);
 
         assert_eq!(r.sent[Epoch::Application].len(), 0);
 
@@ -192,8 +236,13 @@ mod tests {
 
         // Filter the expired data.
         // Expect to have packet with packet number 2 timeout.
-        let res = r.mc_data_timeout(0, now, data_expiration, HandshakeStatus::default());
-        assert!(res.is_ok());
+        let res = r.mc_data_timeout(
+            0,
+            now,
+            data_expiration_val,
+            HandshakeStatus::default(),
+        );
+        assert_eq!(res, Ok((Some(2), None)));
 
         assert_eq!(r.sent[Epoch::Application].len(), 1);
         assert_eq!(r.bytes_in_flight, 1000);
@@ -262,6 +311,5 @@ mod tests {
         r.detect_lost_packets(Epoch::Application, now, "");
 
         assert_eq!(r.sent[Epoch::Application].len(), 0);
-
     }
 }

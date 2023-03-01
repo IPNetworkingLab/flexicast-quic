@@ -4,11 +4,13 @@ use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::io::BufRead;
 use std::net::SocketAddr;
+use std::time;
 
 use crate::packet::Epoch;
 use crate::rand::rand_bytes;
 use crate::ranges;
 use crate::ranges::RangeSet;
+use crate::recovery::multicast::MulticastRecovery;
 use crate::CongestionControlAlgorithm;
 use ring::rand;
 use ring::rand::SecureRandom;
@@ -538,8 +540,21 @@ pub trait MulticastConnection {
     ///
     /// Only availble for a multicast client.
     fn mc_expire(
-        &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>, stream_id_opt: Option<u64>,
+        &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>,
+        stream_id_opt: Option<u64>,
     ) -> Result<()>;
+
+    /// Returns the amount of time until the next multicast timeout event.
+    ///
+    /// Once the given duration has elapsted, the [`on_mc_timeout()`] method
+    /// should be called. A timeout of `None` means that the timer should be
+    /// disarmed.
+    fn mc_timeout(&self) -> Option<time::Duration>;
+
+    /// Processes a multicast timeout event.
+    ///
+    /// If no timeout has occurred it does nothing.
+    fn on_mc_timeout(&mut self) -> Result<(Option<u64>, Option<u64>)>;
 }
 
 impl MulticastConnection for Connection {
@@ -768,9 +783,10 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_expire(
-        &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>, stream_id_opt: Option<u64>,
+        &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>,
+        stream_id_opt: Option<u64>,
     ) -> Result<()> {
-        if let Some(multicast) = self.multicast.as_ref() {
+        let multicast = if let Some(multicast) = self.multicast.as_ref() {
             if !matches!(
                 multicast.mc_role,
                 MulticastRole::Client(MulticastClientStatus::JoinedAndKey),
@@ -779,10 +795,28 @@ impl MulticastConnection for Connection {
                     multicast.mc_role,
                 )));
             }
-        }
+            multicast
+        } else {
+            return Err(Error::Multicast(MulticastError::McDisabled));
+        };
+
+        let hs_status = self.handshake_status();
 
         // Remove expired packets.
-        if let Some(exp_pkt_num) = pkt_num_opt {
+        if self.is_server {
+            let now = time::Instant::now();
+            let p = self.paths.get_mut(space_id as usize)?;
+            p.recovery.mc_data_timeout(
+                space_id as u32,
+                now,
+                multicast
+                    .mc_announce_data
+                    .as_ref()
+                    .ok_or(Error::Multicast(MulticastError::McAnnounce))?
+                    .ttl_data,
+                hs_status,
+            )?;
+        } else if let Some(exp_pkt_num) = pkt_num_opt {
             let pkt_num_space = self.pkt_num_spaces.get_mut(epoch, space_id)?;
             pkt_num_space.recv_pkt_need_ack.remove_until(exp_pkt_num);
             println!(
@@ -793,16 +827,62 @@ impl MulticastConnection for Connection {
 
         // Reset expired (but still open) streams.
         if let Some(exp_stream_id) = stream_id_opt {
-            for stream_id in self.readable() {
+            let iterable = if self.is_server {
+                self.writable()
+            } else {
+                self.readable()
+            };
+            for stream_id in iterable {
                 if stream_id < exp_stream_id {
                     let stream_opt = self.streams.get_mut(stream_id);
-                    let local = if let Some(stream) = stream_opt { stream.local } else { false };
+                    let local = if let Some(stream) = stream_opt {
+                        stream.local
+                    } else {
+                        false
+                    };
                     self.streams.collect(stream_id, local);
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn mc_timeout(&self) -> Option<time::Duration> {
+        let space_id = self.multicast.as_ref()?.get_mc_space_id()?;
+        self.paths
+            .get(space_id)
+            .ok()?
+            .recovery
+            .mc_next_timeout()
+            .map(|timeout| {
+                let now = time::Instant::now();
+
+                if timeout <= now {
+                    time::Duration::ZERO
+                } else {
+                    timeout.duration_since(now)
+                }
+            })
+    }
+
+    fn on_mc_timeout(&mut self) -> Result<(Option<u64>, Option<u64>)> {
+        let now = time::Instant::now();
+
+        let handshake_status = self.handshake_status();
+
+        // Some data has expired.
+        if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(space_id) = multicast.get_mc_space_id() {
+                if let Some(time::Duration::ZERO) = self.mc_timeout() {
+                    if let Ok(path) = self.paths.get_mut(space_id) {
+                        return path.recovery.mc_data_timeout(space_id as u32, now, multicast.mc_announce_data.as_ref().unwrap().ttl_data, handshake_status);
+                    }
+                }
+            }
+        }
+
+        Ok((None, None))
     }
 }
 
@@ -1904,7 +1984,6 @@ mod tests {
         let server_addr = uc_pipe.2;
         let mut mc_buf = [0u8; 4096];
 
-        // Send some data and the receiver will receive it all.
         let mut data = [0u8; 4000];
         ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
 
@@ -1949,5 +2028,38 @@ mod tests {
         let mut expected_range_set = ranges::RangeSet::default();
         expected_range_set.insert(3..4);
         assert_eq!(nack_ranges, Some(expected_range_set));
+    }
+
+    #[test]
+    /// Tests the process of MC_EXPIRE from the server to the client.
+    /// The server sends an MC_EXPIRE when the data expires with the `ttl_data`
+    /// value of the multicast attributes.
+    fn test_mc_expire() {
+        let use_auth = false;
+        let mut mc_pipe =
+            MulticastPipe::new(1, "/tmp/test_mc_expire.txt", use_auth).unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+
+        let mc_channel = &mut mc_pipe.mc_channel;
+        let uc_pipe = &mut mc_pipe.unicast_pipes[0];
+        let pipe = &mut uc_pipe.0;
+        let client_addr_2 = uc_pipe.1;
+        let server_addr = uc_pipe.2;
+        let mut mc_buf = [0u8; 4096];
+
+        let mut data = [0u8; 4000];
+        ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
+
+        mc_channel.channel.stream_send(1, &data, true).unwrap();
+        let recv_info = RecvInfo {
+            from: server_addr,
+            to: client_addr_2,
+            from_mc: true,
+        };
+
+        let client_mc_space_id =
+            pipe.client.multicast.as_ref().unwrap().get_mc_space_id();
+        assert_eq!(client_mc_space_id, Some(1));
+        let client_mc_space_id = client_mc_space_id.unwrap();
     }
 }
