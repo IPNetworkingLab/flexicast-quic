@@ -28,20 +28,23 @@ impl MulticastRecovery for crate::recovery::Recovery {
     ) -> Result<(Option<u64>, Option<u64>)> {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
-        .take_while(|p| now.saturating_duration_since(p.time_sent) >= Duration::from_millis(ttl))
-        .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
+            .take_while(|p| {
+                now.saturating_duration_since(p.time_sent) >=
+                    Duration::from_millis(ttl)
+            })
+            .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
         // Get the last stream ID which is impacted by the timeout.
         let exp2 = expired_sent.clone();
-        let stream_ids = exp2.flat_map(|p| p.frames.as_ref().iter().filter_map(|f| match f {
-            crate::frame::Frame::StreamHeader {
-                stream_id,
-                ..
-            } => Some(*stream_id),
-            _ => None,
-        }));
+        let stream_ids = exp2.flat_map(|p| {
+            p.frames.as_ref().iter().filter_map(|f| match f {
+                crate::frame::Frame::StreamHeader { stream_id, .. } =>
+                    Some(*stream_id),
+                _ => None,
+            })
+        });
         let stream_id_removed = stream_ids.max();
-        
+
         // Take the first and last sent from the iterator.
         // We will make a range for all of them.
         match expired_sent.next() {
@@ -81,6 +84,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::Frame;
     use crate::ranges;
     use crate::recovery::CongestionControlAlgorithm;
     use crate::recovery::HandshakeStatus;
@@ -89,6 +93,17 @@ mod tests {
     use crate::recovery::SpacedPktNum;
     use smallvec::smallvec;
     use std::time::Duration;
+
+    /// Helper creating a small [`StreamHeader`] from a stream ID.
+    /// The generated [`StreamHeader`] is unique with `fin` set.
+    fn get_test_stream_header(stream_id: u64) -> Frame {
+        Frame::StreamHeader {
+            stream_id,
+            offset: 0,
+            length: 100,
+            fin: true,
+        }
+    }
 
     #[test]
     fn test_mc_data_timeout() {
@@ -106,7 +121,7 @@ mod tests {
         // Start by sending a few packets separated by 10ms each.
         let p = Sent {
             pkt_num: SpacedPktNum(0, 0),
-            frames: smallvec![],
+            frames: smallvec![get_test_stream_header(1)],
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -132,7 +147,7 @@ mod tests {
 
         let p = Sent {
             pkt_num: SpacedPktNum(0, 1),
-            frames: smallvec![],
+            frames: smallvec![get_test_stream_header(5)],
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -158,7 +173,7 @@ mod tests {
 
         let p = Sent {
             pkt_num: SpacedPktNum(0, 2),
-            frames: smallvec![],
+            frames: smallvec![get_test_stream_header(9)],
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -186,7 +201,7 @@ mod tests {
 
         let p = Sent {
             pkt_num: SpacedPktNum(0, 3),
-            frames: smallvec![],
+            frames: smallvec![get_test_stream_header(13)],
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -242,7 +257,7 @@ mod tests {
             data_expiration_val,
             HandshakeStatus::default(),
         );
-        assert_eq!(res, Ok((Some(2), None)));
+        assert_eq!(res, Ok((Some(2), Some(9))));
 
         assert_eq!(r.sent[Epoch::Application].len(), 1);
         assert_eq!(r.bytes_in_flight, 1000);
@@ -260,7 +275,7 @@ mod tests {
 
         let p = Sent {
             pkt_num: SpacedPktNum(0, 4),
-            frames: smallvec![],
+            frames: smallvec![get_test_stream_header(17)],
             time_sent: now,
             time_acked: None,
             time_lost: None,

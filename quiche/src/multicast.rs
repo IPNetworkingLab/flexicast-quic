@@ -876,7 +876,12 @@ impl MulticastConnection for Connection {
             if let Some(space_id) = multicast.get_mc_space_id() {
                 if let Some(time::Duration::ZERO) = self.mc_timeout() {
                     if let Ok(path) = self.paths.get_mut(space_id) {
-                        return path.recovery.mc_data_timeout(space_id as u32, now, multicast.mc_announce_data.as_ref().unwrap().ttl_data, handshake_status);
+                        return path.recovery.mc_data_timeout(
+                            space_id as u32,
+                            now,
+                            multicast.mc_announce_data.as_ref().unwrap().ttl_data,
+                            handshake_status,
+                        );
                     }
                 }
             }
@@ -1326,6 +1331,30 @@ mod tests {
                 mc_channel,
                 mc_announce_data,
             })
+        }
+
+        /// The multicast source sends a single packet.
+        /// Returns the number of bytes sent by the source.
+        /// 
+        /// If `all_recv` is `true`, all clients receive the packet.
+        fn source_send_single(&mut self, all_recv: bool, signature_len: usize) -> Result<usize> {
+            let mut mc_buf = [0u8; 4096];
+            let written = self.mc_channel.mc_send(&mut mc_buf[..])?;
+
+            if all_recv {
+                self.unicast_pipes.iter_mut().for_each(|(pipe, client_addr, server_addr)| {
+                    let recv_info = RecvInfo {
+                        from: *server_addr,
+                        to: *client_addr,
+                        from_mc: true,
+                    };
+
+                    let res = pipe.client.mc_recv(&mut mc_buf.clone()[..], recv_info).unwrap();
+                    assert_eq!(res, written - signature_len);
+                });
+            }
+
+            Ok(written)
         }
 
         // MC-TODO: maybe a new_from_mc_announce_data.
@@ -2061,5 +2090,9 @@ mod tests {
             pipe.client.multicast.as_ref().unwrap().get_mc_space_id();
         assert_eq!(client_mc_space_id, Some(1));
         let client_mc_space_id = client_mc_space_id.unwrap();
+
+        // First packet is received.
+        let res = mc_pipe.source_send_single(true, signature_len);
+        // assert_eq!(res, Ok(1350));
     }
 }
