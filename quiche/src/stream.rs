@@ -207,6 +207,11 @@ impl StreamMap {
         self.streams.get_mut(&id)
     }
 
+    /// Returns an iterator over the open streams.
+    pub fn iter(&self) -> std::collections::hash_map::Iter<'_, u64, Stream> {
+        self.streams.iter()
+    }
+
     /// Returns the mutable stream with the given ID if it exists, or creates
     /// a new one otherwise.
     ///

@@ -48,7 +48,9 @@ impl MulticastRecovery for crate::recovery::Recovery {
         // Take the first and last sent from the iterator.
         // We will make a range for all of them.
         match expired_sent.next() {
-            None => Ok((None, None)),
+            None => {
+                Ok((None, None))
+            },
             Some(first) => {
                 // Create a dummy ack to remove the expired data.
                 let mut acked = ranges::RangeSet::default();

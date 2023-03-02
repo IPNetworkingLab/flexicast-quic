@@ -7599,11 +7599,13 @@ impl Connection {
                     ));
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     if let Some(space_id) = multicast.get_mc_space_id() {
+                        let now = time::Instant::now();
                         self.mc_expire(
                             epoch,
                             space_id as u64,
                             pkt_num,
                             stream_id,
+                            now,
                         )?;
                     } else {
                         return Err(Error::Multicast(

@@ -215,6 +215,9 @@ pub struct MulticastAttributes {
     /// MC-TODO: move this field in [`mc_role`] because it is
     /// unicast-server-specific.
     mc_nack_ranges: Option<RangeSet>,
+
+    /// Last expired packet num and stream ID.
+    mc_last_expired: Option<(Option<u64>, Option<u64>)>,
 }
 
 impl MulticastAttributes {
@@ -431,6 +434,7 @@ impl Default for MulticastAttributes {
             mc_private_key: None,
             mc_space_id: None,
             mc_nack_ranges: None,
+            mc_last_expired: None,
         }
     }
 }
@@ -541,8 +545,8 @@ pub trait MulticastConnection {
     /// Only availble for a multicast client.
     fn mc_expire(
         &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>,
-        stream_id_opt: Option<u64>,
-    ) -> Result<()>;
+        stream_id_opt: Option<u64>, now: time::Instant,
+    ) -> Result<(Option<u64>, Option<u64>)>;
 
     /// Returns the amount of time until the next multicast timeout event.
     ///
@@ -554,7 +558,9 @@ pub trait MulticastConnection {
     /// Processes a multicast timeout event.
     ///
     /// If no timeout has occurred it does nothing.
-    fn on_mc_timeout(&mut self) -> Result<(Option<u64>, Option<u64>)>;
+    fn on_mc_timeout(
+        &mut self, now: time::Instant,
+    ) -> Result<(Option<u64>, Option<u64>)>;
 }
 
 impl MulticastConnection for Connection {
@@ -676,7 +682,6 @@ impl MulticastConnection for Connection {
 
     fn mc_has_control_data(&self) -> bool {
         // MC-TODO: complete
-        // MC-TODO: use real values instead of hard-coded space id and epoch.
         self.multicast.is_some() &&
             (self.mc_should_send_mc_announce() ||
                 match self.multicast.as_ref() {
@@ -783,13 +788,14 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_expire(
-        &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>,
-        stream_id_opt: Option<u64>,
-    ) -> Result<()> {
+        &mut self, epoch: Epoch, space_id: u64, mut pkt_num_opt: Option<u64>,
+        mut stream_id_opt: Option<u64>, now: time::Instant,
+    ) -> Result<(Option<u64>, Option<u64>)> {
         let multicast = if let Some(multicast) = self.multicast.as_ref() {
             if !matches!(
                 multicast.mc_role,
-                MulticastRole::Client(MulticastClientStatus::JoinedAndKey),
+                MulticastRole::Client(MulticastClientStatus::JoinedAndKey) |
+                    MulticastRole::ServerMulticast,
             ) {
                 return Err(Error::Multicast(MulticastError::McInvalidRole(
                     multicast.mc_role,
@@ -804,9 +810,8 @@ impl MulticastConnection for Connection {
 
         // Remove expired packets.
         if self.is_server {
-            let now = time::Instant::now();
             let p = self.paths.get_mut(space_id as usize)?;
-            p.recovery.mc_data_timeout(
+            let res = p.recovery.mc_data_timeout(
                 space_id as u32,
                 now,
                 multicast
@@ -816,6 +821,8 @@ impl MulticastConnection for Connection {
                     .ttl_data,
                 hs_status,
             )?;
+            pkt_num_opt = res.0;
+            stream_id_opt = res.1;
         } else if let Some(exp_pkt_num) = pkt_num_opt {
             let pkt_num_space = self.pkt_num_spaces.get_mut(epoch, space_id)?;
             pkt_num_space.recv_pkt_need_ack.remove_until(exp_pkt_num);
@@ -827,25 +834,24 @@ impl MulticastConnection for Connection {
 
         // Reset expired (but still open) streams.
         if let Some(exp_stream_id) = stream_id_opt {
-            let iterable = if self.is_server {
-                self.writable()
-            } else {
-                self.readable()
-            };
+            let iterable: Vec<_> = self.streams.iter().map(|(stream_id, _)| *stream_id).collect();
             for stream_id in iterable {
-                if stream_id < exp_stream_id {
+                if stream_id <= exp_stream_id {
                     let stream_opt = self.streams.get_mut(stream_id);
-                    let local = if let Some(stream) = stream_opt {
-                        stream.local
-                    } else {
-                        false
+                    if let Some(stream) = stream_opt {
+                        if self.is_server {
+                            stream.send.reset()?;
+                        } else {
+                            stream.recv.reset(0, 0)?;
+                        }
+                        let local = stream.local;
+                        self.streams.collect(stream_id, local);
                     };
-                    self.streams.collect(stream_id, local);
                 }
             }
         }
 
-        Ok(())
+        Ok((pkt_num_opt, stream_id_opt))
     }
 
     fn mc_timeout(&self) -> Option<time::Duration> {
@@ -866,22 +872,29 @@ impl MulticastConnection for Connection {
             })
     }
 
-    fn on_mc_timeout(&mut self) -> Result<(Option<u64>, Option<u64>)> {
-        let now = time::Instant::now();
-
-        let handshake_status = self.handshake_status();
-
+    fn on_mc_timeout(
+        &mut self, now: time::Instant,
+    ) -> Result<(Option<u64>, Option<u64>)> {
         // Some data has expired.
-        if let Some(multicast) = self.multicast.as_ref() {
-            if let Some(space_id) = multicast.get_mc_space_id() {
-                if let Some(time::Duration::ZERO) = self.mc_timeout() {
-                    if let Ok(path) = self.paths.get_mut(space_id) {
-                        return path.recovery.mc_data_timeout(
-                            space_id as u32,
-                            now,
-                            multicast.mc_announce_data.as_ref().unwrap().ttl_data,
-                            handshake_status,
-                        );
+        if let Some(time::Duration::ZERO) = self.mc_timeout() {
+            if let Some(multicast) = self.multicast.as_ref() {
+                if let Some(space_id) = multicast.get_mc_space_id() {
+                    let res = self.mc_expire(
+                        Epoch::Application,
+                        space_id as u64,
+                        None,
+                        None,
+                        now,
+                    );
+                    println!("Avant les valeurs: {:?}", res);
+                    match res {
+                        Ok(v) => {
+                            // Set the expired values.
+                            self.multicast.as_mut().unwrap().mc_last_expired =
+                                Some(v);
+                            return Ok(v);
+                        },
+                        _ => (),
                     }
                 }
             }
@@ -1216,7 +1229,7 @@ mod tests {
             let mut mc_announce_data = get_test_mc_announce_data();
 
             // Multicast path.
-            let mc_channel = get_test_mc_channel_source(
+            let mut mc_channel = get_test_mc_channel_source(
                 &mut server_config,
                 &mut client_config,
                 do_auth,
@@ -1227,6 +1240,13 @@ mod tests {
             // Copy the channel ID derived from the multicast channel.
             mc_announce_data.channel_id =
                 mc_channel.mc_path_conn_id.0.as_ref().to_vec();
+
+            mc_channel
+                .channel
+                .multicast
+                .as_mut()
+                .unwrap()
+                .mc_announce_data = Some(mc_announce_data.clone());
 
             // Copy the public key from the multicast channel.
             if let Some(public_key) = mc_channel
@@ -1335,23 +1355,32 @@ mod tests {
 
         /// The multicast source sends a single packet.
         /// Returns the number of bytes sent by the source.
-        /// 
+        ///
         /// If `all_recv` is `true`, all clients receive the packet.
-        fn source_send_single(&mut self, all_recv: bool, signature_len: usize) -> Result<usize> {
-            let mut mc_buf = [0u8; 4096];
+        fn source_send_single(
+            &mut self, all_recv: bool, signature_len: usize,
+        ) -> Result<usize> {
+            let mut mc_buf = [0u8; 1500];
             let written = self.mc_channel.mc_send(&mut mc_buf[..])?;
+            println!("POURTANT J'AI ECRIT {}", written);
 
             if all_recv {
-                self.unicast_pipes.iter_mut().for_each(|(pipe, client_addr, server_addr)| {
-                    let recv_info = RecvInfo {
-                        from: *server_addr,
-                        to: *client_addr,
-                        from_mc: true,
-                    };
+                let mut recv_buf = mc_buf.clone();
+                self.unicast_pipes.iter_mut().for_each(
+                    |(pipe, client_addr, server_addr)| {
+                        let recv_info = RecvInfo {
+                            from: *server_addr,
+                            to: *client_addr,
+                            from_mc: true,
+                        };
 
-                    let res = pipe.client.mc_recv(&mut mc_buf.clone()[..], recv_info).unwrap();
-                    assert_eq!(res, written - signature_len);
-                });
+                        let res = pipe
+                            .client
+                            .mc_recv(&mut recv_buf[..written], recv_info)
+                            .unwrap();
+                        assert_eq!(res, written - signature_len);
+                    },
+                );
             }
 
             Ok(written)
@@ -2063,36 +2092,61 @@ mod tests {
     /// Tests the process of MC_EXPIRE from the server to the client.
     /// The server sends an MC_EXPIRE when the data expires with the `ttl_data`
     /// value of the multicast attributes.
-    fn test_mc_expire() {
+    fn test_on_mc_timeout() {
         let use_auth = false;
         let mut mc_pipe =
             MulticastPipe::new(1, "/tmp/test_mc_expire.txt", use_auth).unwrap();
         let signature_len = if use_auth { 64 } else { 0 };
 
         let mc_channel = &mut mc_pipe.mc_channel;
-        let uc_pipe = &mut mc_pipe.unicast_pipes[0];
-        let pipe = &mut uc_pipe.0;
-        let client_addr_2 = uc_pipe.1;
-        let server_addr = uc_pipe.2;
-        let mut mc_buf = [0u8; 4096];
 
         let mut data = [0u8; 4000];
         ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
 
         mc_channel.channel.stream_send(1, &data, true).unwrap();
-        let recv_info = RecvInfo {
-            from: server_addr,
-            to: client_addr_2,
-            from_mc: true,
-        };
-
-        let client_mc_space_id =
-            pipe.client.multicast.as_ref().unwrap().get_mc_space_id();
-        assert_eq!(client_mc_space_id, Some(1));
-        let client_mc_space_id = client_mc_space_id.unwrap();
 
         // First packet is received.
         let res = mc_pipe.source_send_single(true, signature_len);
-        // assert_eq!(res, Ok(1350));
+        assert_eq!(res, Ok(1350));
+
+        // Second packet is lost.
+        let res = mc_pipe.source_send_single(false, signature_len);
+        assert_eq!(res, Ok(1350));
+
+        // Third packet is lost.
+        let res = mc_pipe.source_send_single(false, signature_len);
+        assert_eq!(res, Ok(1350));
+
+        // Last packet is received.
+        let res = mc_pipe.source_send_single(true, signature_len);
+        assert_eq!(res, Ok(109));
+
+        // The stream is is still open.
+        assert!(!mc_pipe.mc_channel.channel.stream_finished(1));
+
+        // The expiration timeout is exceeded. Closes the stream and removes the
+        // packets from the sending queue.
+        let now = time::Instant::now();
+        let expired_timer = now +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            ); // Margin
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
+        assert_eq!(res, Ok((Some(5), Some(1))));
+
+        // MC-TODO: assert that the packets are not in the sending state anymore.
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_last_expired,
+            Some((Some(5), Some(1)))
+        );
+
+        // The stream is closed now.
+        assert_eq!(mc_pipe.mc_channel.channel.stream_writable(1, 0), Err(Error::InvalidStreamState(1)));
     }
 }
