@@ -834,7 +834,11 @@ impl MulticastConnection for Connection {
 
         // Reset expired (but still open) streams.
         if let Some(exp_stream_id) = stream_id_opt {
-            let iterable: Vec<_> = self.streams.iter().map(|(stream_id, _)| *stream_id).collect();
+            let iterable: Vec<_> = self
+                .streams
+                .iter()
+                .map(|(stream_id, _)| *stream_id)
+                .collect();
             for stream_id in iterable {
                 if stream_id <= exp_stream_id {
                     let stream_opt = self.streams.get_mut(stream_id);
@@ -1384,6 +1388,25 @@ mod tests {
             }
 
             Ok(written)
+        }
+
+        /// The multicast source sends a single small stream of 300 bytes to fit
+        /// in a single QUIC packet.
+        /// Calls [`MulticastPipe::source_send_single`].
+        fn source_send_single_stream(
+            &mut self, all_recv: bool, signature_len: usize, stream_id: u64,
+        ) -> Result<usize> {
+            let mut mc_buf = [0u8; 300];
+            ring::rand::SystemRandom::new()
+                .fill(&mut mc_buf[..])
+                .unwrap();
+            self.mc_channel.channel.stream_send(
+                stream_id,
+                &mut mc_buf[..],
+                true,
+            )?;
+
+            self.source_send_single(all_recv, signature_len)
         }
 
         // MC-TODO: maybe a new_from_mc_announce_data.
@@ -2147,6 +2170,76 @@ mod tests {
         );
 
         // The stream is closed now.
-        assert_eq!(mc_pipe.mc_channel.channel.stream_writable(1, 0), Err(Error::InvalidStreamState(1)));
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_writable(1, 0),
+            Err(Error::InvalidStreamState(1))
+        );
+    }
+
+    #[test]
+    /// Tests the multicast source sending multiple short streams and some of
+    /// them expire.
+    fn test_mc_multiple_streams_expire() {
+        let use_auth = false;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_multiple_streams_expire.txt",
+            use_auth,
+        )
+        .unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+
+        // First stream is received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, signature_len, 1),
+            Ok(339)
+        );
+
+        // Second stream is not received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(false, signature_len, 3),
+            Ok(339)
+        );
+
+        // Third stream is not received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(false, signature_len, 5),
+            Ok(339)
+        );
+
+        // Second stream is received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, signature_len, 7),
+            Ok(339)
+        );
+
+        // Second stream is received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, signature_len, 9),
+            Ok(339)
+        );
+
+        let uc_pipe = mc_pipe.unicast_pipes.get_mut(0).unwrap();
+        let mut readables = uc_pipe.0.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 7, 9]);
+
+        let timer = time::Instant::now();
+        let timer = timer + time::Duration::from_millis(mc_pipe.mc_announce_data.ttl_data + 100);
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
+        assert_eq!(res, Ok((Some(6), Some(9))));
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_last_expired,
+            Some((Some(6), Some(9)))
+        );
+
+        let open_streams = mc_pipe.mc_channel.channel.streams.iter().map(|(sid, _)| *sid).collect::<Vec<_>>();
+        assert_eq!(open_streams, vec![0u64; 0]);
     }
 }
