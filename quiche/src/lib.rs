@@ -3674,6 +3674,20 @@ impl Connection {
                         if space_id == active_scid_seq {
                             continue;
                         }
+
+                        // Multicast: client does not send ACKMP frames for frames received
+                        // on the multicast path.
+                        // MC-TODO: need to test this condition.
+                        if !self.is_server {
+                            if let Some(multicast) = self.multicast.as_ref() {
+                                if let Some(mc_space_id) = multicast.get_mc_space_id() {
+                                    if space_id == mc_space_id as u64 {
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
                         // If the SCID is no more present, do not raise an error.
                         let pns_path_id = self
                             .ids
