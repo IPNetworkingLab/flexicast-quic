@@ -2225,7 +2225,10 @@ mod tests {
         assert_eq!(readables, vec![1, 7, 9]);
 
         let timer = time::Instant::now();
-        let timer = timer + time::Duration::from_millis(mc_pipe.mc_announce_data.ttl_data + 100);
+        let timer = timer +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
         assert_eq!(res, Ok((Some(6), Some(9))));
         assert_eq!(
@@ -2239,7 +2242,13 @@ mod tests {
             Some((Some(6), Some(9)))
         );
 
-        let open_streams = mc_pipe.mc_channel.channel.streams.iter().map(|(sid, _)| *sid).collect::<Vec<_>>();
+        let open_streams = mc_pipe
+            .mc_channel
+            .channel
+            .streams
+            .iter()
+            .map(|(sid, _)| *sid)
+            .collect::<Vec<_>>();
         assert_eq!(open_streams, vec![0u64; 0]);
     }
 }

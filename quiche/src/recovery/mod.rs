@@ -211,7 +211,8 @@ impl RecoveryConfig {
             cc_ops: config.cc_algorithm.into(),
             hystart: config.hystart,
             pacing: config.pacing,
-            experimental_bbr_probertt_cwnd_gain: config.experimental_bbr_probertt_cwnd_gain,
+            experimental_bbr_probertt_cwnd_gain: config
+                .experimental_bbr_probertt_cwnd_gain,
             real_time: config.real_time,
         }
     }
@@ -222,7 +223,8 @@ impl Recovery {
         let initial_congestion_window =
             recovery_config.max_send_udp_payload_size * INITIAL_WINDOW_PACKETS;
         let mut bbr_state = bbr::State::new();
-        bbr_state.probe_rtt_cwnd_gain = recovery_config.experimental_bbr_probertt_cwnd_gain;
+        bbr_state.probe_rtt_cwnd_gain =
+            recovery_config.experimental_bbr_probertt_cwnd_gain;
         Recovery {
             loss_detection_timer: None,
 
@@ -451,16 +453,17 @@ impl Recovery {
 
     /// here, the ranges concern source symbol metadata, not packet numbers
     pub fn on_source_symbol_ack_received(
-        &mut self, ranges: &ranges::RangeSet,
-        epoch: packet::Epoch,
+        &mut self, ranges: &ranges::RangeSet, epoch: packet::Epoch,
         trace_id: &str,
     ) {
-        // Detect and mark recovered source symbols, without considering them acked or anything
+        // Detect and mark recovered source symbols, without considering them
+        // acked or anything
         for r in ranges.iter() {
             let lowest_recovered_in_block = r.start;
             let largest_recovered_in_block = r.end - 1;
 
-            // search in the unacked packets, the one containing source symbols that have been recovered here
+            // search in the unacked packets, the one containing source symbols
+            // that have been recovered here
             let unacked_iter = self.sent[epoch]
                 .iter_mut()
                 // Skip packets that have already been acked or lost.
@@ -468,20 +471,28 @@ impl Recovery {
 
             for unacked in unacked_iter {
                 for frame in &mut unacked.frames {
-                    if let frame::Frame::SourceSymbolHeader{
-                                                metadata,
-                                                recovered,
-                                            } = frame {
-                        let mdu64 = source_symbol_metadata_to_u64(metadata.clone());
-                        if lowest_recovered_in_block <= mdu64 && mdu64 <= largest_recovered_in_block {
+                    if let frame::Frame::SourceSymbolHeader {
+                        metadata,
+                        recovered,
+                    } = frame
+                    {
+                        let mdu64 =
+                            source_symbol_metadata_to_u64(metadata.clone());
+                        if lowest_recovered_in_block <= mdu64 &&
+                            mdu64 <= largest_recovered_in_block
+                        {
                             *recovered = true;
-                            trace!("{} source symbol newly recovered {} in pkt {:?}", trace_id, mdu64, unacked.pkt_num);
+                            trace!(
+                                "{} source symbol newly recovered {} in pkt {:?}",
+                                trace_id,
+                                mdu64,
+                                unacked.pkt_num
+                            );
                         }
                     }
                 }
             }
         }
-
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -645,27 +656,45 @@ impl Recovery {
         Ok((lost_packets, lost_bytes))
     }
 
-    // returns a (packet_number, stream_id, off, len) tuble indicating a stream portion to retransmit
-    // when possible, the stream frame will belong to a previously sent packet with a number
-    // above sent_after. If not possible, it will be the first stream frame in an unacked packet
-    // Returns None if no stream frame could be found.
-    pub fn get_unacked_stream_frame_for_probing(&mut self, epoch: packet::Epoch) -> Option<(SpacedPktNum, u64, u64, usize)> {
+    // returns a (packet_number, stream_id, off, len) tuble indicating a stream
+    // portion to retransmit when possible, the stream frame will belong to a
+    // previously sent packet with a number above sent_after. If not possible,
+    // it will be the first stream frame in an unacked packet Returns None if
+    // no stream frame could be found.
+    pub fn get_unacked_stream_frame_for_probing(
+        &mut self, epoch: packet::Epoch,
+    ) -> Option<(SpacedPktNum, u64, u64, usize)> {
         let unacked_iter = self.sent[epoch]
                 .iter_mut()
                 // Skip packets that have already been acked or lost.
                 .filter(|p| !p.retransmitted_for_probing && p.time_acked.is_none());
         for unacked in unacked_iter {
             for frame in &unacked.frames {
-                if let &Frame::StreamHeader { stream_id, offset, length, .. } = frame {
+                if let &Frame::StreamHeader {
+                    stream_id,
+                    offset,
+                    length,
+                    ..
+                } = frame
+                {
                     unacked.retransmitted_for_probing = true;
                     return Some((unacked.pkt_num, stream_id, offset, length));
                 }
             }
         }
 
-        for unacked in self.sent[epoch].iter_mut().filter(|p| p.time_acked.is_none()) {
+        for unacked in self.sent[epoch]
+            .iter_mut()
+            .filter(|p| p.time_acked.is_none())
+        {
             for frame in &unacked.frames {
-                if let &Frame::StreamHeader { stream_id, offset, length, .. } = frame {
+                if let &Frame::StreamHeader {
+                    stream_id,
+                    offset,
+                    length,
+                    ..
+                } = frame
+                {
                     unacked.retransmitted_for_probing = true;
                     return Some((unacked.pkt_num, stream_id, offset, length));
                 }
@@ -733,14 +762,16 @@ impl Recovery {
         for unacked in unacked_iter {
             let mut contains_recovered_source_symbol = false;
             for frame in &unacked.frames {
-                if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame {
+                if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame
+                {
                     if *recovered {
                         contains_recovered_source_symbol = true;
                     }
                 }
 
                 if contains_recovered_source_symbol {
-                    self.lost[epoch].push(LostFrame::LostAndRecovered(frame.clone()))
+                    self.lost[epoch]
+                        .push(LostFrame::LostAndRecovered(frame.clone()))
                 } else {
                     self.lost[epoch].push(LostFrame::Lost(frame.clone()))
                 }
@@ -973,17 +1004,21 @@ impl Recovery {
             let mut largest_lost_pkt = None;
             for sent in self.sent[e].drain(..) {
                 if sent.time_acked.is_none() {
-
                     let mut contains_recovered_source_symbol = false;
                     for frame in &sent.frames {
-                        if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame {
+                        if let frame::Frame::SourceSymbolHeader {
+                            recovered,
+                            ..
+                        } = frame
+                        {
                             if *recovered {
                                 contains_recovered_source_symbol = true;
                             }
                         }
 
                         if contains_recovered_source_symbol {
-                            self.lost[e].push(LostFrame::LostAndRecovered(frame.clone()))
+                            self.lost[e]
+                                .push(LostFrame::LostAndRecovered(frame.clone()))
                         } else {
                             self.lost[e].push(LostFrame::Lost(frame.clone()))
                         }
@@ -1056,14 +1091,18 @@ impl Recovery {
             {
                 let mut contains_recovered_source_symbol = false;
                 for frame in &unacked.frames {
-                    if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame {
+                    if let frame::Frame::SourceSymbolHeader {
+                        recovered, ..
+                    } = frame
+                    {
                         if *recovered {
                             contains_recovered_source_symbol = true;
                         }
                     }
 
                     if contains_recovered_source_symbol {
-                        self.lost[epoch].push(LostFrame::LostAndRecovered(frame.clone()))
+                        self.lost[epoch]
+                            .push(LostFrame::LostAndRecovered(frame.clone()))
                     } else {
                         self.lost[epoch].push(LostFrame::Lost(frame.clone()))
                     }
@@ -1247,11 +1286,11 @@ impl Recovery {
 #[repr(C)]
 pub enum CongestionControlAlgorithm {
     /// Reno congestion control algorithm. `reno` in a string form.
-    Reno  = 0,
+    Reno     = 0,
     /// CUBIC congestion control algorithm (default). `cubic` in a string form.
-    CUBIC = 1,
+    CUBIC    = 1,
     /// BBR congestion control algorithm. `bbr` in a string form.
-    BBR   = 2,
+    BBR      = 2,
     /// DISABLED congestion control. `disabled` in a string form.
     DISABLED = 3,
 }
@@ -2388,9 +2427,9 @@ mod tests {
 mod bbr;
 mod cubic;
 mod delivery_rate;
+mod disabled_cc;
 mod hystart;
+pub mod multicast;
 mod pacer;
 mod prr;
 mod reno;
-pub mod multicast;
-mod disabled_cc;
