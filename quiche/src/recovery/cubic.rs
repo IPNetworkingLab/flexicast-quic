@@ -222,7 +222,7 @@ fn on_packet_acked(
         return;
     }
 
-    if (r.app_limited && !r.real_time) || (r.bytes_in_flight.saturating_mul(3) / 2).saturating_add(packet.size) < r.congestion_window {
+    if (r.app_limited && !r.real_time) || (r.real_time && (r.bytes_in_flight.saturating_mul(3) / 2).saturating_add(packet.size) < r.congestion_window) {
         return;
     }
 
