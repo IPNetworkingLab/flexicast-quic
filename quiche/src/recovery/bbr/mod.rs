@@ -185,6 +185,10 @@ pub struct State {
 
     // bytes_in_flight before processing this ACK.
     prior_bytes_in_flight: usize,
+
+    // experimental: simulates a ProbeRTT behaviour closer to BBRv2
+    // (better for video conferencing which cannot affort 4 pkts)
+    pub probe_rtt_cwnd_gain: Option<f64>,
 }
 
 impl State {
@@ -247,6 +251,8 @@ impl State {
             newly_acked_bytes: 0,
 
             prior_bytes_in_flight: 0,
+
+            probe_rtt_cwnd_gain: None,
         }
     }
 }
@@ -424,6 +430,7 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                retransmitted_for_probing: false,
             };
 
             r.on_packet_sent(
@@ -492,6 +499,7 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                retransmitted_for_probing: false,
             };
 
             r.on_packet_sent(
@@ -559,6 +567,7 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                retransmitted_for_probing: false,
             };
 
             r.on_packet_sent(
@@ -608,6 +617,7 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                retransmitted_for_probing: false,
             };
 
             r.on_packet_sent(
@@ -680,6 +690,7 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                retransmitted_for_probing: false,
             };
 
             r.on_packet_sent(
@@ -751,6 +762,7 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                retransmitted_for_probing: false,
             };
 
             r.on_packet_sent(
@@ -803,6 +815,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(

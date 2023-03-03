@@ -180,7 +180,10 @@ fn bbr_modulate_cwnd_for_recovery(r: &mut Recovery) {
 // 4.2.3.5 Modulating cwnd in ProbeRTT
 fn bbr_modulate_cwnd_for_probe_rtt(r: &mut Recovery) {
     if r.bbr_state.state == BBRStateMachine::ProbeRTT {
-        r.congestion_window = r.congestion_window.min(bbr_min_pipe_cwnd(r))
+        r.congestion_window = match r.bbr_state.probe_rtt_cwnd_gain {
+            None => r.congestion_window.min(bbr_min_pipe_cwnd(r)),
+            Some(gain) => bbr_min_pipe_cwnd(r).max((gain*(r.bbr_state.prior_cwnd as f64)) as usize),
+        };
     }
 }
 

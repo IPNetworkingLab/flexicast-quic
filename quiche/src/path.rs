@@ -268,9 +268,10 @@ pub struct Path {
 
     /// Whether or not we should force eliciting of an ACK (e.g. via PING frame)
     pub needs_ack_eliciting: bool,
-
     /// The expected sequence number of the PATH_STATUS to be received.
     expected_path_status_seq_num: u64,
+
+    pub fec_only: bool,
 }
 
 impl Path {
@@ -316,6 +317,7 @@ impl Path {
             migrating: false,
             needs_ack_eliciting: false,
             expected_path_status_seq_num: 0,
+            fec_only: false,
         }
     }
 

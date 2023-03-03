@@ -122,6 +122,9 @@ fn main() {
     config.set_max_connection_window(conn_args.max_window);
     config.set_max_stream_window(conn_args.max_stream_window);
 
+    config.send_fec(conn_args.send_fec);
+    config.receive_fec(conn_args.receive_fec);
+
     let mut keylog = None;
 
     if let Some(keylog_path) = std::env::var_os("SSLKEYLOGFILE") {

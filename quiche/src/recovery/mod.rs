@@ -37,10 +37,12 @@ use crate::Config;
 use crate::Result;
 
 use crate::frame;
+use crate::frame::Frame;
 use crate::minmax;
 use crate::packet;
 use crate::ranges;
 
+use networkcoding::source_symbol_metadata_to_u64;
 #[cfg(feature = "qlog")]
 use qlog::events::EventData;
 
@@ -88,6 +90,10 @@ impl SpacedPktNum {
         Self(space_id, pkt_num)
     }
 }
+pub enum LostFrame {
+    Lost(Frame),
+    LostAndRecovered(Frame),
+}
 
 pub struct Recovery {
     loss_detection_timer: Option<Instant>,
@@ -117,7 +123,7 @@ pub struct Recovery {
 
     sent: [VecDeque<Sent>; packet::Epoch::count()],
 
-    pub lost: [Vec<frame::Frame>; packet::Epoch::count()],
+    pub lost: [Vec<LostFrame>; packet::Epoch::count()],
 
     pub acked: [Vec<frame::Frame>; packet::Epoch::count()],
 
@@ -160,6 +166,8 @@ pub struct Recovery {
 
     max_datagram_size: usize,
 
+    real_time: bool,
+
     cubic_state: cubic::State,
 
     // HyStart++.
@@ -191,6 +199,8 @@ pub struct RecoveryConfig {
     cc_ops: &'static CongestionControlOps,
     hystart: bool,
     pacing: bool,
+    experimental_bbr_probertt_cwnd_gain: Option<f64>,
+    real_time: bool,
 }
 
 impl RecoveryConfig {
@@ -201,6 +211,8 @@ impl RecoveryConfig {
             cc_ops: config.cc_algorithm.into(),
             hystart: config.hystart,
             pacing: config.pacing,
+            experimental_bbr_probertt_cwnd_gain: config.experimental_bbr_probertt_cwnd_gain,
+            real_time: config.real_time,
         }
     }
 }
@@ -209,7 +221,8 @@ impl Recovery {
     pub fn new_with_config(recovery_config: &RecoveryConfig) -> Self {
         let initial_congestion_window =
             recovery_config.max_send_udp_payload_size * INITIAL_WINDOW_PACKETS;
-
+        let mut bbr_state = bbr::State::new();
+        bbr_state.probe_rtt_cwnd_gain = recovery_config.experimental_bbr_probertt_cwnd_gain;
         Recovery {
             loss_detection_timer: None,
 
@@ -277,6 +290,8 @@ impl Recovery {
 
             max_datagram_size: recovery_config.max_send_udp_payload_size,
 
+            real_time: recovery_config.real_time,
+
             cc_ops: recovery_config.cc_ops,
 
             delivery_rate: delivery_rate::Rate::default(),
@@ -301,7 +316,7 @@ impl Recovery {
             #[cfg(feature = "qlog")]
             qlog_metrics: QlogMetrics::default(),
 
-            bbr_state: bbr::State::new(),
+            bbr_state,
 
             outstanding_non_ack_eliciting: 0,
         }
@@ -432,6 +447,41 @@ impl Recovery {
         };
 
         self.pacer.send(sent_bytes, now);
+    }
+
+    /// here, the ranges concern source symbol metadata, not packet numbers
+    pub fn on_source_symbol_ack_received(
+        &mut self, ranges: &ranges::RangeSet,
+        epoch: packet::Epoch,
+        trace_id: &str,
+    ) {
+        // Detect and mark recovered source symbols, without considering them acked or anything
+        for r in ranges.iter() {
+            let lowest_recovered_in_block = r.start;
+            let largest_recovered_in_block = r.end - 1;
+
+            // search in the unacked packets, the one containing source symbols that have been recovered here
+            let unacked_iter = self.sent[epoch]
+                .iter_mut()
+                // Skip packets that have already been acked or lost.
+                .filter(|p| p.time_acked.is_none());
+
+            for unacked in unacked_iter {
+                for frame in &mut unacked.frames {
+                    if let frame::Frame::SourceSymbolHeader{
+                                                metadata,
+                                                recovered,
+                                            } = frame {
+                        let mdu64 = source_symbol_metadata_to_u64(metadata.clone());
+                        if lowest_recovered_in_block <= mdu64 && mdu64 <= largest_recovered_in_block {
+                            *recovered = true;
+                            trace!("{} source symbol newly recovered {} in pkt {:?}", trace_id, mdu64, unacked.pkt_num);
+                        }
+                    }
+                }
+            }
+        }
+
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -595,6 +645,36 @@ impl Recovery {
         Ok((lost_packets, lost_bytes))
     }
 
+    // returns a (packet_number, stream_id, off, len) tuble indicating a stream portion to retransmit
+    // when possible, the stream frame will belong to a previously sent packet with a number
+    // above sent_after. If not possible, it will be the first stream frame in an unacked packet
+    // Returns None if no stream frame could be found.
+    pub fn get_unacked_stream_frame_for_probing(&mut self, epoch: packet::Epoch) -> Option<(SpacedPktNum, u64, u64, usize)> {
+        let unacked_iter = self.sent[epoch]
+                .iter_mut()
+                // Skip packets that have already been acked or lost.
+                .filter(|p| !p.retransmitted_for_probing && p.time_acked.is_none());
+        for unacked in unacked_iter {
+            for frame in &unacked.frames {
+                if let &Frame::StreamHeader { stream_id, offset, length, .. } = frame {
+                    unacked.retransmitted_for_probing = true;
+                    return Some((unacked.pkt_num, stream_id, offset, length));
+                }
+            }
+        }
+
+        for unacked in self.sent[epoch].iter_mut().filter(|p| p.time_acked.is_none()) {
+            for frame in &unacked.frames {
+                if let &Frame::StreamHeader { stream_id, offset, length, .. } = frame {
+                    unacked.retransmitted_for_probing = true;
+                    return Some((unacked.pkt_num, stream_id, offset, length));
+                }
+            }
+        }
+
+        None
+    }
+
     pub fn on_loss_detection_timeout(
         &mut self, handshake_status: HandshakeStatus, now: Instant,
         trace_id: &str,
@@ -651,7 +731,20 @@ impl Recovery {
         // HANDSHAKE_DONE and MAX_DATA / MAX_STREAM_DATA as well, in addition
         // to CRYPTO and STREAM, if the original packet carried them.
         for unacked in unacked_iter {
-            self.lost[epoch].extend_from_slice(&unacked.frames);
+            let mut contains_recovered_source_symbol = false;
+            for frame in &unacked.frames {
+                if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame {
+                    if *recovered {
+                        contains_recovered_source_symbol = true;
+                    }
+                }
+
+                if contains_recovered_source_symbol {
+                    self.lost[epoch].push(LostFrame::LostAndRecovered(frame.clone()))
+                } else {
+                    self.lost[epoch].push(LostFrame::Lost(frame.clone()))
+                }
+            }
         }
 
         self.set_loss_detection_timer(handshake_status, now);
@@ -880,7 +973,21 @@ impl Recovery {
             let mut largest_lost_pkt = None;
             for sent in self.sent[e].drain(..) {
                 if sent.time_acked.is_none() {
-                    self.lost[e].extend_from_slice(&sent.frames);
+
+                    let mut contains_recovered_source_symbol = false;
+                    for frame in &sent.frames {
+                        if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame {
+                            if *recovered {
+                                contains_recovered_source_symbol = true;
+                            }
+                        }
+
+                        if contains_recovered_source_symbol {
+                            self.lost[e].push(LostFrame::LostAndRecovered(frame.clone()))
+                        } else {
+                            self.lost[e].push(LostFrame::Lost(frame.clone()))
+                        }
+                    }
                     if sent.in_flight {
                         epoch_lost_bytes += sent.size;
 
@@ -947,7 +1054,20 @@ impl Recovery {
             if unacked.time_sent <= lost_send_time ||
                 largest_acked.1 >= unacked.pkt_num.1 + self.pkt_thresh
             {
-                self.lost[epoch].extend(unacked.frames.drain(..));
+                let mut contains_recovered_source_symbol = false;
+                for frame in &unacked.frames {
+                    if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame {
+                        if *recovered {
+                            contains_recovered_source_symbol = true;
+                        }
+                    }
+
+                    if contains_recovered_source_symbol {
+                        self.lost[epoch].push(LostFrame::LostAndRecovered(frame.clone()))
+                    } else {
+                        self.lost[epoch].push(LostFrame::Lost(frame.clone()))
+                    }
+                }
 
                 unacked.time_lost = Some(now);
 
@@ -1194,7 +1314,7 @@ impl From<CongestionControlAlgorithm> for &'static CongestionControlOps {
             CongestionControlAlgorithm::Reno => &reno::RENO,
             CongestionControlAlgorithm::CUBIC => &cubic::CUBIC,
             CongestionControlAlgorithm::BBR => &bbr::BBR,
-            CongestionControlAlgorithm::DISABLED => &disable_cc::DISABLED_CC,
+            CongestionControlAlgorithm::DISABLED => &disabled_cc::DISABLED_CC,
         }
     }
 }
@@ -1274,6 +1394,8 @@ pub struct Sent {
     pub is_app_limited: bool,
 
     pub has_data: bool,
+
+    pub retransmitted_for_probing: bool,
 }
 
 impl std::fmt::Debug for Sent {
@@ -1513,6 +1635,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1539,6 +1662,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1565,6 +1689,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1591,6 +1716,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1650,6 +1776,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1676,6 +1803,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1748,6 +1876,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1774,6 +1903,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1800,6 +1930,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1826,6 +1957,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1909,6 +2041,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1935,6 +2068,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1961,6 +2095,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -1987,6 +2122,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -2083,6 +2219,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -2141,6 +2278,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -2172,6 +2310,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -2200,6 +2339,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         r.on_packet_sent(
@@ -2252,5 +2392,5 @@ mod hystart;
 mod pacer;
 mod prr;
 mod reno;
-mod disable_cc;
 pub mod multicast;
+mod disabled_cc;

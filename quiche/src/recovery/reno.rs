@@ -214,6 +214,7 @@ mod tests {
             first_sent_time: std::time::Instant::now(),
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited
@@ -263,6 +264,7 @@ mod tests {
             first_sent_time: std::time::Instant::now(),
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited

@@ -222,7 +222,7 @@ fn on_packet_acked(
         return;
     }
 
-    if r.app_limited {
+    if (r.app_limited && !r.real_time) || (r.bytes_in_flight.saturating_mul(3) / 2).saturating_add(packet.size) < r.congestion_window {
         return;
     }
 
@@ -485,6 +485,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited
@@ -533,6 +534,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited
@@ -731,6 +733,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         // 1st round.
@@ -882,6 +885,7 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            retransmitted_for_probing: false,
         };
 
         // 1st round.
