@@ -2378,6 +2378,9 @@ impl Connection {
         &mut self, buf: &mut [u8], info: &RecvInfo, recv_pid: Option<usize>,
     ) -> Result<usize> {
         let now = time::Instant::now();
+        if self.is_server {
+            println!("Is server here");
+        }
 
         if buf.is_empty() {
             return Err(Error::Done);
@@ -2392,6 +2395,8 @@ impl Connection {
         if is_closing {
             return Err(Error::Done);
         }
+
+        println!("After sanity checks");
 
         let buf_len = buf.len();
 
@@ -2733,13 +2738,6 @@ impl Connection {
         #[cfg(feature = "qlog")]
         let mut qlog_frames = vec![];
 
-        if !self.is_server {
-            println!(
-                "Après 3.: {} {} {} {}",
-                space_id as u32, pn, pn_len, payload_len
-            );
-        }
-
         let mut payload = packet::decrypt_pkt(
             &mut b,
             space_id as u32,
@@ -2821,6 +2819,8 @@ impl Connection {
         let mut probing = true;
 
         let mut source_symbol_data = Vec::with_capacity(1500);
+
+        println!("Before processing packet payload");
 
         // Process packet payload.
         while payload.cap() > 0 {
@@ -3019,37 +3019,40 @@ impl Connection {
                         // to the multicast channel, it means that it is an
                         // MC_NACK frame, and not a simple ACKMP frame.
                         let mut is_mc_nack = false;
-                        if self.is_server {
-                            if let Some(multicast) = self.multicast.as_mut() {
-                                if let Some(space_id) =
-                                    multicast.get_mc_space_id()
-                                {
-                                    if space_id as u64 == space_identifier {
-                                        is_mc_nack = true;
-                                        println!("Received an MC_NACK frame for space identifier {}: {:?} but is server={}", space_identifier, ranges, self.is_server);
+                        // if self.is_server {
+                        //     if let Some(multicast) = self.multicast.as_mut() {
+                        //         println!(
+                        //             "Received ACKMP that could be an MC_NACK"
+                        //         );
+                        //         if let Some(space_id) =
+                        //             multicast.get_mc_space_id()
+                        //         {
+                        //             if space_id as u64 == space_identifier {
+                        //                 is_mc_nack = true;
+                        //                 println!("Received an MC_NACK frame for space identifier {}: {:?} but is server={}", space_identifier, ranges, self.is_server);
 
-                                        multicast.set_mc_nack_ranges(&ranges)?;
+                        //                 multicast.set_mc_nack_ranges(&ranges)?;
 
-                                        // Notify the FEC scheduler that a client
-                                        // lost some data.
-                                        // MC-TODO: Note that the following line
-                                        // can be VERY danregours.
-                                        let conn_id_ref = self
-                                            .ids
-                                            .get_dcid(p.active_dcid_seq.unwrap())
-                                            .unwrap();
-                                        if let Some(fec_scheduler) =
-                                            self.fec_scheduler.as_mut()
-                                        {
-                                            fec_scheduler.lost_source_symbol(
-                                                &ranges,
-                                                &conn_id_ref.cid.as_ref(),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        //                 // Notify the FEC scheduler that a client
+                        //                 // lost some data.
+                        //                 // MC-TODO: Note that the following line
+                        //                 // can be VERY danregours.
+                        //                 let conn_id_ref = self
+                        //                     .ids
+                        //                     .get_dcid(p.active_dcid_seq.unwrap())
+                        //                     .unwrap();
+                        //                 if let Some(fec_scheduler) =
+                        //                     self.fec_scheduler.as_mut()
+                        //                 {
+                        //                     fec_scheduler.lost_source_symbol(
+                        //                         &ranges,
+                        //                         &conn_id_ref.cid.as_ref(),
+                        //                     );
+                        //                 }
+                        //             }
+                        //         }
+                        //     }
+                        // }
                         // Stop acknowledging packets less than or equal to the
                         // largest acknowledged in the sent ACK_MP frame that,
                         // in turn, got acked.
@@ -3388,6 +3391,9 @@ impl Connection {
         // maximum UDP payload size limit.
         let mut left = cmp::min(out.len(), self.max_send_udp_payload_size());
 
+        // let is_mc_client = !self.is_server && self.multicast.is_some() &&
+        // self.multicast.as_ref().unwrap()
+
         let send_pid = match (from, to) {
             (Some(f), Some(t)) => self
                 .paths
@@ -3396,6 +3402,10 @@ impl Connection {
 
             _ => self.get_send_path_id(from, to)?,
         };
+
+        if !self.is_server {
+            println!("Send PID={}", send_pid);
+        }
 
         let send_path = self.paths.get_mut(send_pid)?;
 
@@ -3859,42 +3869,53 @@ impl Connection {
         // MC_NACK frames are only sent on active multicast path.
         // MC-TODO.
         let mut sent_mc_nack = false;
+        println!("Should send MC_NACK");
         if self.multicast.is_some() && !self.is_server {
-            let ack_delay = pkt_num_space.largest_rx_pkt_time.elapsed();
+            if let Some(mc_space_id) =
+                self.multicast.as_ref().unwrap().get_mc_space_id()
+            {
+                println!("Will send MC_NACK");
+                let ack_delay = pkt_num_space.largest_rx_pkt_time.elapsed();
 
-            // If the result is None, it means that either it is empty or an error
-            // occured.
-            // MC-TODO: verify that the space ID corresponds to the multicast
-            // path.
-            if let Some(nack_range) = self.mc_nack_range(epoch, space_id) {
-                println!("Will send NACK, but is server={}", self.is_server);
-                self.multicast
-                    .as_mut()
-                    .unwrap()
-                    .set_mc_nack_ranges(&nack_range)?;
-                // We have some nack range to send! Create the MC_NACK frame.
-                // Maybe this is not optimal, but we will reuse ACKMP frames to
-                // carry the nack ranges. If the space
-                // identifier is equal to the multicast path, it is an MC_NACK
-                // frame. Otherwise, it is an ACKMP frame.
-                let ack_delay = ack_delay.as_micros() as u64 /
-                    2_u64.pow(
-                        self.local_transport_params.ack_delay_exponent as u32,
+                // If the result is None, it means that either it is empty or an
+                // error occured.
+                // MC-TODO: verify that the space ID corresponds to the multicast
+                // path.
+                if let Some(nack_range) =
+                    self.mc_nack_range(epoch, mc_space_id as u64)
+                {
+                    println!(
+                        "Will send NACK, but is server={} space id={}",
+                        self.is_server, mc_space_id
                     );
+                    self.multicast
+                        .as_mut()
+                        .unwrap()
+                        .set_mc_nack_ranges(&nack_range)?;
+                    // We have some nack range to send! Create the MC_NACK frame.
+                    // Maybe this is not optimal, but we will reuse ACKMP frames
+                    // to carry the nack ranges. If the space
+                    // identifier is equal to the multicast path, it is an MC_NACK
+                    // frame. Otherwise, it is an ACKMP frame.
+                    let ack_delay = ack_delay.as_micros() as u64 /
+                        2_u64.pow(
+                            self.local_transport_params.ack_delay_exponent as u32,
+                        );
 
-                let frame = frame::Frame::ACKMP {
-                    space_identifier: space_id,
-                    ack_delay,
-                    ranges: nack_range,
-                    ecn_counts: None,
-                };
+                    let frame = frame::Frame::ACKMP {
+                        space_identifier: mc_space_id as u64,
+                        ack_delay,
+                        ranges: nack_range,
+                        ecn_counts: None,
+                    };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
-                    // We want the MC_NACK frames to be sent even if no data is
-                    // sent.
-                    ack_eliciting = true;
-                    in_flight = true;
-                    sent_mc_nack = true;
+                    if push_frame_to_pkt!(b, frames, frame, left) {
+                        // We want the MC_NACK frames to be sent even if no data
+                        // is sent.
+                        ack_eliciting = true;
+                        in_flight = true;
+                        sent_mc_nack = true;
+                    }
                 }
             }
         }
@@ -8040,7 +8061,11 @@ impl Connection {
                 ack_delay,
                 ..
             } => {
+                if self.is_server {
+                    println!("Received ACKMP frame");
+                }
                 if !self.use_path_pkt_num_space(epoch) {
+                    println!("AAAAA");
                     return Err(Error::MultiPathViolation);
                 }
                 let ack_delay = ack_delay
@@ -8048,7 +8073,7 @@ impl Connection {
                         self.peer_transport_params.ack_delay_exponent as u32,
                     ))
                     .ok_or(Error::InvalidFrame)?;
-
+                println!("t1");
                 // When we receive an ACK for a 1-RTT packet after handshake
                 // completion, it means the handshake has been confirmed.
                 if epoch == packet::Epoch::Application && self.is_established() {
@@ -8065,6 +8090,7 @@ impl Connection {
                 // MUST treat this as a connection error of type
                 // MP_PROTOCOL_VIOLATION and close the connection.
                 if space_identifier > self.ids.largest_dcid_seq() {
+                    println!("yepppppp");
                     return Err(Error::MultiPathViolation);
                 }
 
@@ -8074,7 +8100,11 @@ impl Connection {
                 // MUST ignore the ACK_MP frame without causing a connection
                 // error.
                 if let Ok(e) = self.ids.get_dcid(space_identifier) {
+                    println!("aaaaaa {} {}", self.is_server, space_identifier);
+                    // If this is a multicast MC_NACK packet, the server has no
+                    // idea of this second path.
                     if let Some(path_id) = e.path_id {
+                        println!("bbbbbb");
                         let is_app_limited =
                             self.delivery_rate_check_if_app_limited(path_id);
                         let p = self.paths.get_mut(path_id)?;
@@ -8093,7 +8123,34 @@ impl Connection {
                             )?;
                         self.lost_count += lost_packets;
                         self.lost_bytes += lost_bytes as u64;
+                    } else if self.is_server {
+                        if let Some(multicast) = self.multicast.as_mut() {
+                            if let Some(mc_space_id) = multicast.get_mc_space_id()
+                            {
+                                println!("RRRRRR");
+                                if mc_space_id as u64 == space_identifier {
+                                    println!("EKLEKFELFKL");
+                                    multicast.set_mc_nack_ranges(&ranges)?;
+
+                                    // Notify the FEC scheduler that a client
+                                    // lost some data.
+                                    // MC-TODO: Note that the following line
+                                    // can be VERY danregours.
+                                    let conn_id_ref = self.ids.get_dcid(0)?;
+                                    if let Some(fec_scheduler) =
+                                        self.fec_scheduler.as_mut()
+                                    {
+                                        fec_scheduler.lost_source_symbol(
+                                            &ranges,
+                                            &conn_id_ref.cid.as_ref(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
+                } else {
+                    println!("here");
                 }
 
                 // Once the handshake is confirmed, we can drop Handshake keys.
@@ -8560,6 +8617,25 @@ impl Connection {
             }
         }
 
+        // If multicast is enabled, send packets on the client anywhere but on the
+        // multicast path.
+        // MC-TODO: this could be simplified if the client does a [`send_on_path`]
+        // instead of [`send`].
+        if !self.is_server {
+            if let Some(multicast) = self.multicast.as_ref() {
+                if let Some(mc_path) = multicast.get_mc_space_id() {
+                    return Ok(self
+                        .pkt_num_spaces
+                        .application_data_space_ids()
+                        .filter(|&sid| sid != mc_path as u64)
+                        .next()
+                        .ok_or(Error::Multicast(
+                            multicast::MulticastError::McPath,
+                        ))? as usize);
+                }
+            }
+        }
+
         // When using multiple packet number spaces, let's force ACK_MP sending
         // on their corresponding paths.
         if self.is_multipath_enabled() {
@@ -8581,6 +8657,7 @@ impl Connection {
                             .flatten()
                     })
             {
+                println!("THIS IS THE REASON");
                 return Ok(pid);
             }
         }
@@ -15495,10 +15572,7 @@ mod tests {
         assert_eq!(pipe.client.source_cids_left(), 2);
 
         let (scid, reset_token) = testing::create_cid_and_reset_token(16);
-        assert_eq!(
-            pipe.client.new_source_cid(&scid, reset_token, false),
-            Ok(1)
-        );
+        assert_eq!(pipe.client.new_source_cid(&scid, reset_token, false), Ok(1));
 
         // Let exchange packets over the connection.
         assert_eq!(pipe.advance(), Ok(()));
@@ -15511,10 +15585,7 @@ mod tests {
 
         // Now, a second CID can be provided.
         let (scid, reset_token) = testing::create_cid_and_reset_token(16);
-        assert_eq!(
-            pipe.client.new_source_cid(&scid, reset_token, false),
-            Ok(2)
-        );
+        assert_eq!(pipe.client.new_source_cid(&scid, reset_token, false), Ok(2));
 
         // Let exchange packets over the connection.
         assert_eq!(pipe.advance(), Ok(()));
@@ -15563,8 +15634,7 @@ mod tests {
 
         let (scid_1, reset_token_1) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.client
-                .new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
             Ok(1)
         );
 
@@ -15584,8 +15654,7 @@ mod tests {
 
         let (scid_2, reset_token_2) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.client
-                .new_source_cid(&scid_2, reset_token_2, true),
+            pipe.client.new_source_cid(&scid_2, reset_token_2, true),
             Ok(2)
         );
 
@@ -15660,8 +15729,7 @@ mod tests {
 
         let (scid_1, reset_token_1) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.client
-                .new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
             Ok(1)
         );
 
@@ -15719,8 +15787,7 @@ mod tests {
 
         let (scid_1, reset_token_1) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.client
-                .new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
             Ok(1)
         );
         assert_eq!(pipe.advance(), Ok(()));
@@ -15729,16 +15796,14 @@ mod tests {
         // InvalidState error.
         let reset_token_2 = reset_token_1.wrapping_add(1);
         assert_eq!(
-            pipe.client
-                .new_source_cid(&scid_1, reset_token_2, false),
+            pipe.client.new_source_cid(&scid_1, reset_token_2, false),
             Err(Error::InvalidState),
         );
 
         // Retrying to send the exact same CID with the same token returns the
         // previously assigned CID seq, but without sending anything.
         assert_eq!(
-            pipe.client
-                .new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
             Ok(1)
         );
         assert_eq!(pipe.client.ids.has_new_scids(), false);
@@ -15750,8 +15815,7 @@ mod tests {
         // It is up to the application to ensure that a given SCID is not reused
         // later.
         assert_eq!(
-            pipe.client
-                .new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
             Ok(2),
         );
     }
@@ -15854,15 +15918,13 @@ mod tests {
         let (c_cid, c_reset_token) = testing::create_cid_and_reset_token(16);
 
         assert_eq!(
-            pipe.client
-                .new_source_cid(&c_cid, c_reset_token, true),
+            pipe.client.new_source_cid(&c_cid, c_reset_token, true),
             Ok(1)
         );
 
         let (s_cid, s_reset_token) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.server
-                .new_source_cid(&s_cid, s_reset_token, true),
+            pipe.server.new_source_cid(&s_cid, s_reset_token, true),
             Ok(1)
         );
 

@@ -6,6 +6,7 @@ use std::io::BufRead;
 use std::net::SocketAddr;
 use std::time;
 
+use crate::multicast;
 use crate::packet::Epoch;
 use crate::rand::rand_bytes;
 use crate::ranges;
@@ -957,6 +958,9 @@ impl MulticastConnection for Connection {
         // Not forget to set the path as active.
         println!("P2");
         self.set_active(client_addr, server_addr, true)?;
+        // if let Some(multicast) = self.multicast.as_mut() {
+        //     multicast.set_mc_space_id(pid);
+        // }
 
         let path = self.paths.get_mut(pid)?;
         println!("P3");
@@ -1386,6 +1390,7 @@ mod tests {
                         .as_mut()
                         .unwrap()
                         .set_mc_space_id(pid_c2s_1);
+                    println!("SETS THE SPACE ID");
 
                     // MC-TODO URGENT: how does the server have access to `pid_c2s_1`?
                     pipe.server
@@ -1408,6 +1413,8 @@ mod tests {
             if pipes.len() != nb_clients {
                 return Err(Error::Multicast(MulticastError::McPipe));
             }
+
+            println!("MAIS WESHHH");
 
             Ok(MulticastPipe {
                 unicast_pipes: pipes,
@@ -1522,7 +1529,7 @@ mod tests {
         config.set_initial_max_stream_data_uni(1_000_000);
         config.set_initial_max_streams_bidi(100);
         config.set_initial_max_streams_uni(100);
-        config.set_active_connection_id_limit(3);
+        config.set_active_connection_id_limit(5);
         config.verify_peer(false);
         config.set_multipath(true);
         config.set_enable_server_multicast(mc_server);
