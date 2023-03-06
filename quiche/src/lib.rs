@@ -3030,11 +3030,21 @@ impl Connection {
 
                                         multicast.set_mc_nack_ranges(&ranges)?;
 
-                                        // Notify the FEC scheduler that a client lost some data.
-                                        // MC-TODO: Note that the following line can be VERY danregours.
-                                        let conn_id_ref = self.ids.get_dcid(p.active_dcid_seq.unwrap()).unwrap();
-                                        if let Some(fec_scheduler) = self.fec_scheduler.as_mut() {
-                                            fec_scheduler.lost_source_symbol(&ranges, &conn_id_ref.cid.as_ref());
+                                        // Notify the FEC scheduler that a client
+                                        // lost some data.
+                                        // MC-TODO: Note that the following line
+                                        // can be VERY danregours.
+                                        let conn_id_ref = self
+                                            .ids
+                                            .get_dcid(p.active_dcid_seq.unwrap())
+                                            .unwrap();
+                                        if let Some(fec_scheduler) =
+                                            self.fec_scheduler.as_mut()
+                                        {
+                                            fec_scheduler.lost_source_symbol(
+                                                &ranges,
+                                                &conn_id_ref.cid.as_ref(),
+                                            );
                                         }
                                     }
                                 }
@@ -3069,6 +3079,7 @@ impl Connection {
                     },
 
                     frame::Frame::Repair { .. } => {
+                        debug!("In multicast, we should not receive an ACK for a Repair frame");
                         if let Some(scheduler) = &mut self.fec_scheduler {
                             scheduler.acked_repair_symbol();
                         }
@@ -3857,6 +3868,10 @@ impl Connection {
             // path.
             if let Some(nack_range) = self.mc_nack_range(epoch, space_id) {
                 println!("Will send NACK, but is server={}", self.is_server);
+                self.multicast
+                    .as_mut()
+                    .unwrap()
+                    .set_mc_nack_ranges(&nack_range)?;
                 // We have some nack range to send! Create the MC_NACK frame.
                 // Maybe this is not optimal, but we will reuse ACKMP frames to
                 // carry the nack ranges. If the space
@@ -3931,6 +3946,12 @@ impl Connection {
                         if space_id == active_scid_seq {
                             continue;
                         }
+
+                        // // Don't ever send ack for data received on a multicast
+                        // // path.
+                        // if self.is_mc_path(space_id as usize) {
+                        //     continue;
+                        // }
 
                         // Multicast: client does not send ACKMP frames for frames
                         // received on the multicast path.
@@ -13509,8 +13530,8 @@ mod tests {
     //     let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
     //     assert_eq!(pipe.handshake(), Ok(()));
 
-    //     // Client sends stream data bigger than cwnd (it will never arrive to the
-    //     // server).
+    //     // Client sends stream data bigger than cwnd (it will never arrive to
+    // the     // server).
     //     let send_buf1 = [0; 20000];
     //     assert_eq!(pipe.client.stream_send(0, &send_buf1, false), Ok(12000));
 
@@ -13534,11 +13555,13 @@ mod tests {
 
     //     assert_eq!(pipe.client.tx_cap, 0);
 
-    //     assert!(matches!(ret, Ok((_, _))), "the client should at least send one packet to acknowledge the newly received data");
+    //     assert!(matches!(ret, Ok((_, _))), "the client should at least send one
+    // packet to acknowledge the newly received data");
 
     //     let (sent, _) = ret.unwrap();
 
-    //     assert_ne!(sent, 0, "the client should at least send a pure ACK packet");
+    //     assert_ne!(sent, 0, "the client should at least send a pure ACK
+    // packet");
 
     //     let frames =
     //         testing::decode_pkt(&mut pipe.server, &mut buf, sent).unwrap();
@@ -15472,7 +15495,10 @@ mod tests {
         assert_eq!(pipe.client.source_cids_left(), 2);
 
         let (scid, reset_token) = testing::create_cid_and_reset_token(16);
-        assert_eq!(pipe.client.new_source_cid(&scid, reset_token, false), Ok(1));
+        assert_eq!(
+            pipe.client.new_source_cid(&scid, reset_token, false),
+            Ok(1)
+        );
 
         // Let exchange packets over the connection.
         assert_eq!(pipe.advance(), Ok(()));
@@ -15485,7 +15511,10 @@ mod tests {
 
         // Now, a second CID can be provided.
         let (scid, reset_token) = testing::create_cid_and_reset_token(16);
-        assert_eq!(pipe.client.new_source_cid(&scid, reset_token, false), Ok(2));
+        assert_eq!(
+            pipe.client.new_source_cid(&scid, reset_token, false),
+            Ok(2)
+        );
 
         // Let exchange packets over the connection.
         assert_eq!(pipe.advance(), Ok(()));
@@ -15534,7 +15563,8 @@ mod tests {
 
         let (scid_1, reset_token_1) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client
+                .new_source_cid(&scid_1, reset_token_1, false),
             Ok(1)
         );
 
@@ -15554,7 +15584,8 @@ mod tests {
 
         let (scid_2, reset_token_2) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.client.new_source_cid(&scid_2, reset_token_2, true),
+            pipe.client
+                .new_source_cid(&scid_2, reset_token_2, true),
             Ok(2)
         );
 
@@ -15629,7 +15660,8 @@ mod tests {
 
         let (scid_1, reset_token_1) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client
+                .new_source_cid(&scid_1, reset_token_1, false),
             Ok(1)
         );
 
@@ -15687,7 +15719,8 @@ mod tests {
 
         let (scid_1, reset_token_1) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client
+                .new_source_cid(&scid_1, reset_token_1, false),
             Ok(1)
         );
         assert_eq!(pipe.advance(), Ok(()));
@@ -15696,14 +15729,16 @@ mod tests {
         // InvalidState error.
         let reset_token_2 = reset_token_1.wrapping_add(1);
         assert_eq!(
-            pipe.client.new_source_cid(&scid_1, reset_token_2, false),
+            pipe.client
+                .new_source_cid(&scid_1, reset_token_2, false),
             Err(Error::InvalidState),
         );
 
         // Retrying to send the exact same CID with the same token returns the
         // previously assigned CID seq, but without sending anything.
         assert_eq!(
-            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client
+                .new_source_cid(&scid_1, reset_token_1, false),
             Ok(1)
         );
         assert_eq!(pipe.client.ids.has_new_scids(), false);
@@ -15715,7 +15750,8 @@ mod tests {
         // It is up to the application to ensure that a given SCID is not reused
         // later.
         assert_eq!(
-            pipe.client.new_source_cid(&scid_1, reset_token_1, false),
+            pipe.client
+                .new_source_cid(&scid_1, reset_token_1, false),
             Ok(2),
         );
     }
@@ -15818,13 +15854,15 @@ mod tests {
         let (c_cid, c_reset_token) = testing::create_cid_and_reset_token(16);
 
         assert_eq!(
-            pipe.client.new_source_cid(&c_cid, c_reset_token, true),
+            pipe.client
+                .new_source_cid(&c_cid, c_reset_token, true),
             Ok(1)
         );
 
         let (s_cid, s_reset_token) = testing::create_cid_and_reset_token(16);
         assert_eq!(
-            pipe.server.new_source_cid(&s_cid, s_reset_token, true),
+            pipe.server
+                .new_source_cid(&s_cid, s_reset_token, true),
             Ok(1)
         );
 

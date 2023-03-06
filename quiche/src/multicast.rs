@@ -212,8 +212,7 @@ pub struct MulticastAttributes {
 
     /// Nack ranges received by the server from the client.
     /// Only present for the server unicast.
-    /// MC-TODO: move this field in [`mc_role`] because it is
-    /// unicast-server-specific.
+    /// For the client, it contains the last sent nack ranges.
     mc_nack_ranges: Option<RangeSet>,
 
     /// Last expired packet num and stream ID.
@@ -402,11 +401,13 @@ impl MulticastAttributes {
     pub fn set_mc_nack_ranges(
         &mut self, ranges: &ranges::RangeSet,
     ) -> Result<()> {
-        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_)) {
+        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_) | MulticastRole::Client(_)) {
             return Err(Error::Multicast(MulticastError::McInvalidRole(
                 self.mc_role,
             )));
         }
+
+        println!("Received ranges: {:?}", ranges);
 
         if let Some(current_ranges) = self.mc_nack_ranges.as_mut() {
             for range in ranges.iter() {
@@ -561,6 +562,14 @@ pub trait MulticastConnection {
     fn on_mc_timeout(
         &mut self, now: time::Instant,
     ) -> Result<(Option<u64>, Option<u64>)>;
+
+    /// Returns whether the path id given as argument is a multicast path.
+    /// False if multicast is disabled or if the path is not a multicast path.
+    fn is_mc_path(&self, space_id: usize) -> bool;
+
+    /// Creates a multicast path on the client.
+    /// This is done manually by the client without contacting the unicast server to avoid sharing a same path for the multicast and unicast source.
+    fn create_mc_path(&mut self, cid: &ConnectionId, client_addr: SocketAddr, server_addr: SocketAddr) -> Result<u64>;
 }
 
 impl MulticastConnection for Connection {
@@ -774,10 +783,17 @@ impl MulticastConnection for Connection {
 
             if let Ok(pns) = self.pkt_num_spaces.get(epoch, space_id) {
                 let nack_range = pns.recv_pkt_need_ack.get_missing();
+                println!("NACK from missing: {:?} is server: {}", nack_range, self.is_server);
                 if nack_range.len() == 0 {
                     None
                 } else {
-                    Some(nack_range)
+                    if multicast.mc_nack_ranges.as_ref() == Some(&nack_range) {
+                        // Avoid sending exactly the same nack range as before.
+                        println!("Same ranges as before {:?}", nack_range);
+                        None
+                    } else {
+                        Some(nack_range)
+                    }
                 }
             } else {
                 None
@@ -905,6 +921,46 @@ impl MulticastConnection for Connection {
         }
 
         Ok((None, None))
+    }
+
+    fn is_mc_path(&self, space_id: usize) -> bool {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(mc_id) = multicast.get_mc_space_id() {
+                return space_id == mc_id;
+            }
+        }
+        false
+    }
+
+    fn create_mc_path(&mut self, cid: &ConnectionId, client_addr: SocketAddr, server_addr: SocketAddr) -> Result<u64> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if !matches!(multicast.mc_role, MulticastRole::Client(_)) {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(multicast.mc_role)));
+            }
+        }
+
+        // Add the connection ID for the client without advertising it to the unicast server.
+        println!("P0");
+        let reset_token = 0xff;
+        self.new_source_cid(cid, reset_token, true)?;
+        let seq_num = self.ids.next_advertise_new_scid_seq().unwrap();
+        self.ids.mark_advertise_new_scid_seq(seq_num, true);
+        
+        // Add the destination Connection ID.
+        let conn_id = cid.as_ref().to_owned();
+        self.ids.new_dcid(conn_id.into(), seq_num, reset_token, 0)?;
+
+        // Create a new path on the client.
+        println!("P1");
+        let pid = self.create_path_on_client(client_addr, server_addr)?;
+        
+        // Not forget to set the path as active.
+        println!("P2");
+        self.set_active(client_addr, server_addr, true)?;
+
+        let path = self.paths.get_mut(pid)?;
+        println!("P3");
+        path.active_dcid_seq.ok_or(Error::InvalidState)
     }
 }
 
@@ -1293,18 +1349,20 @@ mod tests {
                         ConnectionId::from_ref(&client_mc_announce.channel_id)
                             .into_owned();
                     println!("Client will add this CID: {:?}", cid);
-                    pipe.client.new_source_cid(&cid, reset_token, true).unwrap();
-                    pipe.server.new_source_cid(&cid, reset_token, true).unwrap();
+                    // pipe.client.new_source_cid(&cid, reset_token, true, true).unwrap();
+                    // pipe.server.new_source_cid(&cid, reset_token, true, true).unwrap();
 
                     let server_addr = testing::Pipe::server_addr();
                     let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
 
-                    assert_eq!(pipe.advance(), Ok(()));
-                    assert_eq!(
-                        pipe.client.probe_path(client_addr_2, server_addr),
-                        Ok(1)
-                    );
-                    assert_eq!(pipe.advance(), Ok(()));
+                    pipe.client.create_mc_path(&cid, client_addr_2, server_addr).unwrap();
+
+                    // assert_eq!(pipe.advance(), Ok(()));
+                    // assert_eq!(
+                    //     pipe.client.probe_path(client_addr_2, server_addr),
+                    //     Ok(1)
+                    // );
+                    // assert_eq!(pipe.advance(), Ok(()));
 
                     assert_eq!(
                         pipe.client.set_active(client_addr_2, server_addr, true,),
@@ -1317,11 +1375,11 @@ mod tests {
                         .path_id_from_addrs(&(client_addr_2, server_addr))
                         .expect("no such path");
 
-                    let pid_s2c_1 = pipe
-                        .server
-                        .paths
-                        .path_id_from_addrs(&(server_addr, client_addr_2))
-                        .expect("no such path");
+                    // let pid_s2c_1 = pipe
+                    //     .server
+                    //     .paths
+                    //     .path_id_from_addrs(&(server_addr, client_addr_2))
+                    //     .expect("no such path");
 
                     pipe.client
                         .multicast
@@ -1329,11 +1387,12 @@ mod tests {
                         .unwrap()
                         .set_mc_space_id(pid_c2s_1);
 
+                    // MC-TODO URGENT: how does the server have access to `pid_c2s_1`?
                     pipe.server
                         .multicast
                         .as_mut()
                         .unwrap()
-                        .set_mc_space_id(pid_s2c_1);
+                        .set_mc_space_id(pid_c2s_1);
 
                     assert_eq!(pipe.advance(), Ok(()));
 
@@ -1407,6 +1466,34 @@ mod tests {
             )?;
 
             self.source_send_single(all_recv, signature_len)
+        }
+
+        /// The clients send feedback using the unicast connection to the
+        /// server.
+        fn clients_send(&mut self, signature_len: usize) -> Result<()> {
+            let mut buf = [0u8; 1500];
+            for (pipe, ..) in self.unicast_pipes.iter_mut() {
+                loop {
+                    let (written, send_info) = match pipe.client.send(&mut buf) {
+                        Ok(v) => v,
+                        Err(Error::Done) => break,
+                        Err(e) => return Err(e),
+                    };
+
+                    let recv_info = RecvInfo {
+                        from: send_info.from,
+                        to: send_info.to,
+                        from_mc: false,
+                    };
+
+                    pipe.server.recv(&mut buf[..written], recv_info)?;
+
+                    // The unicast server propagates potential NACK to the server.
+                    // MC-TODO.
+                }
+            }
+
+            Ok(())
         }
 
         // MC-TODO: maybe a new_from_mc_announce_data.
@@ -2250,5 +2337,65 @@ mod tests {
             .map(|(sid, _)| *sid)
             .collect::<Vec<_>>();
         assert_eq!(open_streams, vec![0u64; 0]);
+    }
+
+    #[test]
+    fn test_client_nack_to_source_and_recovery() {
+        let use_auth = false;
+        let mut mc_pipe =
+            MulticastPipe::new(1, "/tmp/test_client_nack_to_source_and_recovery.txt", use_auth)
+                .unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+
+        // First two streams are received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, signature_len, 1),
+            Ok(339)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, signature_len, 3),
+            Ok(339)
+        );
+
+        // Third and fourth streams are lost.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(false, signature_len, 5),
+            Ok(339)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single_stream(false, signature_len, 7),
+            Ok(339)
+        );
+
+        // Fifth stream is received and triggers NACK from the client.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, signature_len, 9),
+            Ok(339)
+        );
+
+        // The client has correctly received the three streams.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 3, 9]);
+
+        // And has a NACK range for the lost streams.
+        let client_mc_space_id =
+            uc_pipe.client.multicast.as_ref().unwrap().get_mc_space_id().unwrap();
+        let nack_ranges = uc_pipe.client.mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        let mut expected_ranges = ranges::RangeSet::default();
+        expected_ranges.insert(4..6);
+        assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
+
+        // The client generates an MC_NACK frame.
+        assert_eq!(mc_pipe.clients_send(signature_len), Ok(()));
+
+        // The client stores the last sent nack ranges.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        assert_eq!(uc_pipe.client.multicast.as_ref().unwrap().mc_nack_ranges.as_ref(), Some(&expected_ranges));
+
+        // The server received the MC_NACK.
+        let nack_on_source = uc_pipe.server.multicast.as_ref().unwrap().mc_nack_ranges.as_ref();
+        assert_eq!(nack_on_source, Some(&expected_ranges));
     }
 }
