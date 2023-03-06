@@ -7,8 +7,11 @@ use crate::fec::fec_scheduler::FECScheduler::BackgroundOnly;
 use crate::fec::fec_scheduler::FECScheduler::Bursty;
 use crate::fec::fec_scheduler::FECScheduler::BurstyOnFECOnly;
 use crate::fec::fec_scheduler::FECScheduler::NoRedundancy;
+use crate::fec::fec_scheduler::FECScheduler::RetransmissionFec;
+use crate::fec::retransmission_fec_scheduler::RetransmissionFecScheduler;
 use crate::path::Path;
 use crate::Connection;
+use crate::ranges::RangeSet;
 
 /// Available FEC redundancy schedulers.
 ///
@@ -17,15 +20,17 @@ use crate::Connection;
 #[repr(C)]
 pub enum FECSchedulerAlgorithm {
     /// Never sends redundancy (default). `noredundancy` in a string form.
-    NoRedundancy   = 0,
+    NoRedundancy      = 0,
     /// Only sends redundancy when there is no user data to send. `background`
     /// in a string form.
-    BackgroundOnly = 1,
+    BackgroundOnly    = 1,
     /// Sends redundancy only when there is no user data to send and
     /// when a burst of packets has been sent. `bursts` in a string form.
-    BurstsOnly     = 2,
+    BurstsOnly        = 2,
     /// Same as above but sends REPAIR symbols only on a fec_only path.
     BurstsOnlyOnFECOnlyPath = 3,
+    /// Only sends FEC when a lost packet has been detected by a client.
+    RetransmissionFec = 4,
 }
 
 impl FromStr for FECSchedulerAlgorithm {
@@ -41,7 +46,7 @@ impl FromStr for FECSchedulerAlgorithm {
             "bursts" => Ok(FECSchedulerAlgorithm::BurstsOnly),
             "bursts_feconly" =>
                 Ok(FECSchedulerAlgorithm::BurstsOnlyOnFECOnlyPath),
-
+            "retransmission" => Ok(FECSchedulerAlgorithm::RetransmissionFec),
             _ => Err(crate::Error::FECScheduler),
         }
     }
@@ -52,6 +57,7 @@ pub(crate) enum FECScheduler {
     BackgroundOnly(BackgroundFECScheduler),
     Bursty(BurstsFECScheduler),
     BurstyOnFECOnly(BurstsFECSchedulerWithFECOnly),
+    RetransmissionFec(RetransmissionFecScheduler),
 }
 
 pub(crate) fn new_fec_scheduler(alg: FECSchedulerAlgorithm) -> FECScheduler {
@@ -61,6 +67,7 @@ pub(crate) fn new_fec_scheduler(alg: FECSchedulerAlgorithm) -> FECScheduler {
         FECSchedulerAlgorithm::BurstsOnly => new_bursts_only_scheduler(),
         FECSchedulerAlgorithm::BurstsOnlyOnFECOnlyPath =>
             new_bursts_only_on_fec_only_path_scheduler(),
+        FECSchedulerAlgorithm::RetransmissionFec => new_retransmission_fec(),
     }
 }
 
@@ -76,6 +83,10 @@ fn new_bursts_only_on_fec_only_path_scheduler() -> FECScheduler {
     BurstyOnFECOnly(BurstsFECSchedulerWithFECOnly::new())
 }
 
+fn new_retransmission_fec() -> FECScheduler {
+    RetransmissionFec(RetransmissionFecScheduler::new())
+}
+
 impl FECScheduler {
     pub fn should_send_repair(
         &mut self, conn: &Connection, path: &Path, symbol_size: usize,
@@ -88,6 +99,8 @@ impl FECScheduler {
             BurstyOnFECOnly(scheduler) =>
                 scheduler.should_send_repair(conn, path, symbol_size),
             NoRedundancy => false,
+            RetransmissionFec(scheduler) =>
+                scheduler.should_send_repair(),
         }
     }
 
@@ -96,6 +109,7 @@ impl FECScheduler {
             BackgroundOnly(scheduler) => scheduler.sent_repair_symbol(),
             Bursty(scheduler) => scheduler.sent_repair_symbol(),
             BurstyOnFECOnly(scheduler) => scheduler.sent_repair_symbol(),
+            RetransmissionFec(scheduler) => scheduler.sent_repair_symbol(),
             NoRedundancy => (),
         }
     }
@@ -105,6 +119,7 @@ impl FECScheduler {
             BackgroundOnly(scheduler) => scheduler.acked_repair_symbol(),
             Bursty(scheduler) => scheduler.acked_repair_symbol(),
             BurstyOnFECOnly(scheduler) => scheduler.acked_repair_symbol(),
+            RetransmissionFec(scheduler) => scheduler.acked_repair_symbol(),
             NoRedundancy => (),
         }
     }
@@ -114,6 +129,7 @@ impl FECScheduler {
             BackgroundOnly(scheduler) => scheduler.sent_source_symbol(),
             Bursty(scheduler) => scheduler.sent_source_symbol(),
             BurstyOnFECOnly(scheduler) => scheduler.sent_source_symbol(),
+            RetransmissionFec(scheduler) => scheduler.sent_source_symbol(),
             NoRedundancy => (),
         }
     }
@@ -123,7 +139,15 @@ impl FECScheduler {
             BackgroundOnly(scheduler) => scheduler.lost_repair_symbol(),
             Bursty(scheduler) => scheduler.lost_repair_symbol(),
             BurstyOnFECOnly(scheduler) => scheduler.lost_repair_symbol(),
+            RetransmissionFec(scheduler) => scheduler.lost_repair_symbol(),
             NoRedundancy => (),
+        }
+    }
+
+    pub fn lost_source_symbol(&mut self, ranges: &RangeSet, client_cid: &[u8]) {
+        match self {
+            RetransmissionFec(scheduler) => scheduler.lost_source_symbol(ranges.to_owned(), client_cid),
+            _ => (),
         }
     }
 }

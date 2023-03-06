@@ -3029,6 +3029,13 @@ impl Connection {
                                         println!("Received an MC_NACK frame for space identifier {}: {:?} but is server={}", space_identifier, ranges, self.is_server);
 
                                         multicast.set_mc_nack_ranges(&ranges)?;
+
+                                        // Notify the FEC scheduler that a client lost some data.
+                                        // MC-TODO: Note that the following line can be VERY danregours.
+                                        let conn_id_ref = self.ids.get_dcid(p.active_dcid_seq.unwrap()).unwrap();
+                                        if let Some(fec_scheduler) = self.fec_scheduler.as_mut() {
+                                            fec_scheduler.lost_source_symbol(&ranges, &conn_id_ref.cid.as_ref());
+                                        }
                                     }
                                 }
                             }
