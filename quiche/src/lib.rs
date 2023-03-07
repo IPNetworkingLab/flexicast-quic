@@ -2260,7 +2260,6 @@ impl Connection {
                 Ok(v) => v,
 
                 Err(Error::Done) => {
-                    println!("Recv single gives Error::Done");
                     // If the packet can't be processed or decrypted, check if
                     // it's a stateless reset.
                     if self.is_stateless_reset(&buf[len - left..len]) {
@@ -2378,9 +2377,6 @@ impl Connection {
         &mut self, buf: &mut [u8], info: &RecvInfo, recv_pid: Option<usize>,
     ) -> Result<usize> {
         let now = time::Instant::now();
-        if self.is_server {
-            println!("Is server here");
-        }
 
         if buf.is_empty() {
             return Err(Error::Done);
@@ -2395,8 +2391,6 @@ impl Connection {
         if is_closing {
             return Err(Error::Done);
         }
-
-        println!("After sanity checks");
 
         let buf_len = buf.len();
 
@@ -2720,10 +2714,6 @@ impl Connection {
             hdr.pkt_num_len,
         );
 
-        if !self.is_server {
-            println!("Received packet with pn={}", pn);
-        }
-
         let pn_len = hdr.pkt_num_len;
 
         trace!(
@@ -2819,8 +2809,6 @@ impl Connection {
         let mut probing = true;
 
         let mut source_symbol_data = Vec::with_capacity(1500);
-
-        println!("Before processing packet payload");
 
         // Process packet payload.
         while payload.cap() > 0 {
@@ -3403,10 +3391,6 @@ impl Connection {
             _ => self.get_send_path_id(from, to)?,
         };
 
-        if !self.is_server {
-            println!("Send PID={}", send_pid);
-        }
-
         let send_path = self.paths.get_mut(send_pid)?;
 
         // Limit data sent by the server based on the amount of data received
@@ -3869,12 +3853,10 @@ impl Connection {
         // MC_NACK frames are only sent on active multicast path.
         // MC-TODO.
         let mut sent_mc_nack = false;
-        println!("Should send MC_NACK");
         if self.multicast.is_some() && !self.is_server {
             if let Some(mc_space_id) =
                 self.multicast.as_ref().unwrap().get_mc_space_id()
             {
-                println!("Will send MC_NACK");
                 let ack_delay = pkt_num_space.largest_rx_pkt_time.elapsed();
 
                 // If the result is None, it means that either it is empty or an
@@ -3884,14 +3866,11 @@ impl Connection {
                 if let Some(nack_range) =
                     self.mc_nack_range(epoch, mc_space_id as u64)
                 {
-                    println!(
-                        "Will send NACK, but is server={} space id={}",
-                        self.is_server, mc_space_id
-                    );
                     self.multicast
                         .as_mut()
                         .unwrap()
-                        .set_mc_nack_ranges(&nack_range)?;
+                        .set_mc_nack_ranges(Some(&nack_range))?;
+                    
                     // We have some nack range to send! Create the MC_NACK frame.
                     // Maybe this is not optimal, but we will reuse ACKMP frames
                     // to carry the nack ranges. If the space
@@ -4607,14 +4586,15 @@ impl Connection {
         let can_send_fec = self.emit_fec &&
             (self.paths.get(send_pid)?.fec_only ||
                 self.paths.iter().all(|(_, p)| !p.fec_only));
-
         // Create REPAIR frame.
+        println!("Can send fec={}, should send repair symbol={}, can_send_repair_symbols={}", can_send_fec, self.should_send_repair_symbol(send_pid)?, self.fec_encoder.can_send_repair_symbols());
         if can_send_fec &&
             pkt_type == packet::Type::Short &&
             (self.should_send_repair_symbol(send_pid)? ||
                 (self.should_probe_bw() && self.bw_probe_using_fec)) &&
             self.fec_encoder.can_send_repair_symbols()
         {
+            println!("WILL SEND FEC");
             if let Some(md) =
                 self.latest_metadata_of_symbol_with_fec_protected_frames
             {
@@ -4627,6 +4607,7 @@ impl Connection {
                         .generate_and_serialize_repair_symbol_up_to(md)
                     {
                         Ok(rs) => {
+                            println!("WILL SEND A REPAIR PACKET");
                             let frame =
                                 frame::Frame::Repair { repair_symbol: rs };
                             if push_frame_to_pkt!(b, frames, frame, left) {
@@ -5157,10 +5138,6 @@ impl Connection {
 
         let pkt_num_space = self.pkt_num_spaces.get_mut(epoch, space_id)?;
         pkt_num_space.next_pkt_num += 1;
-        println!(
-            "Increase the packet number by one on space id {}... Now is {}",
-            space_id, pkt_num_space.next_pkt_num
-        );
 
         self.sent_count += 1;
         self.sent_bytes += written as u64;
@@ -8061,11 +8038,7 @@ impl Connection {
                 ack_delay,
                 ..
             } => {
-                if self.is_server {
-                    println!("Received ACKMP frame");
-                }
                 if !self.use_path_pkt_num_space(epoch) {
-                    println!("AAAAA");
                     return Err(Error::MultiPathViolation);
                 }
                 let ack_delay = ack_delay
@@ -8073,7 +8046,6 @@ impl Connection {
                         self.peer_transport_params.ack_delay_exponent as u32,
                     ))
                     .ok_or(Error::InvalidFrame)?;
-                println!("t1");
                 // When we receive an ACK for a 1-RTT packet after handshake
                 // completion, it means the handshake has been confirmed.
                 if epoch == packet::Epoch::Application && self.is_established() {
@@ -8090,7 +8062,6 @@ impl Connection {
                 // MUST treat this as a connection error of type
                 // MP_PROTOCOL_VIOLATION and close the connection.
                 if space_identifier > self.ids.largest_dcid_seq() {
-                    println!("yepppppp");
                     return Err(Error::MultiPathViolation);
                 }
 
@@ -8100,11 +8071,9 @@ impl Connection {
                 // MUST ignore the ACK_MP frame without causing a connection
                 // error.
                 if let Ok(e) = self.ids.get_dcid(space_identifier) {
-                    println!("aaaaaa {} {}", self.is_server, space_identifier);
                     // If this is a multicast MC_NACK packet, the server has no
                     // idea of this second path.
                     if let Some(path_id) = e.path_id {
-                        println!("bbbbbb");
                         let is_app_limited =
                             self.delivery_rate_check_if_app_limited(path_id);
                         let p = self.paths.get_mut(path_id)?;
@@ -8127,24 +8096,8 @@ impl Connection {
                         if let Some(multicast) = self.multicast.as_mut() {
                             if let Some(mc_space_id) = multicast.get_mc_space_id()
                             {
-                                println!("RRRRRR");
                                 if mc_space_id as u64 == space_identifier {
-                                    println!("EKLEKFELFKL");
-                                    multicast.set_mc_nack_ranges(&ranges)?;
-
-                                    // Notify the FEC scheduler that a client
-                                    // lost some data.
-                                    // MC-TODO: Note that the following line
-                                    // can be VERY danregours.
-                                    let conn_id_ref = self.ids.get_dcid(0)?;
-                                    if let Some(fec_scheduler) =
-                                        self.fec_scheduler.as_mut()
-                                    {
-                                        fec_scheduler.lost_source_symbol(
-                                            &ranges,
-                                            &conn_id_ref.cid.as_ref(),
-                                        );
-                                    }
+                                    multicast.set_mc_nack_ranges(Some(&ranges))?;
                                 }
                             }
                         }
@@ -8657,7 +8610,6 @@ impl Connection {
                             .flatten()
                     })
             {
-                println!("THIS IS THE REASON");
                 return Ok(pid);
             }
         }
