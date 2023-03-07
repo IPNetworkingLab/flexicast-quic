@@ -6,7 +6,6 @@ use std::io::BufRead;
 use std::net::SocketAddr;
 use std::time;
 
-use crate::multicast;
 use crate::packet::Epoch;
 use crate::rand::rand_bytes;
 use crate::ranges;
@@ -806,14 +805,12 @@ impl MulticastConnection for Connection {
                 let nack_range = pns.recv_pkt_need_ack.get_missing();
                 if nack_range.len() == 0 {
                     None
+                } else if multicast.mc_nack_ranges.as_ref() == Some(&nack_range) {
+                    // Avoid sending exactly the same nack range as before.
+                    println!("Same ranges as before {:?}", nack_range);
+                    None
                 } else {
-                    if multicast.mc_nack_ranges.as_ref() == Some(&nack_range) {
-                        // Avoid sending exactly the same nack range as before.
-                        println!("Same ranges as before {:?}", nack_range);
-                        None
-                    } else {
-                        Some(nack_range)
-                    }
+                    Some(nack_range)
                 }
             } else {
                 None
@@ -927,14 +924,10 @@ impl MulticastConnection for Connection {
                         now,
                     );
                     println!("Avant les valeurs: {:?}", res);
-                    match res {
-                        Ok(v) => {
-                            // Set the expired values.
-                            self.multicast.as_mut().unwrap().mc_last_expired =
-                                Some(v);
-                            return Ok(v);
-                        },
-                        _ => (),
+                    if let Ok(v) = res {
+                        self.multicast.as_mut().unwrap().mc_last_expired =
+                            Some(v);
+                        return Ok(v);
                     }
                 }
             }
@@ -966,7 +959,7 @@ impl MulticastConnection for Connection {
 
         // Add the connection ID for the client without advertising it to the
         // unicast server.
-        let reset_token = 0xff;
+        let reset_token = 0xffeeddccu128;
         self.new_source_cid(cid, reset_token, true)?;
         let seq_num = self.ids.next_advertise_new_scid_seq().unwrap();
         self.ids.mark_advertise_new_scid_seq(seq_num, true);
@@ -1015,8 +1008,8 @@ impl MulticastConnection for Connection {
                 let conn_id_ref = self.ids.get_dcid(0)?; // MC-TODO: replace hard-coded value.
                 if let Some(fec_scheduler) = mc_channel.fec_scheduler.as_mut() {
                     fec_scheduler.lost_source_symbol(
-                        &nack_ranges,
-                        &conn_id_ref.cid.as_ref(),
+                        nack_ranges,
+                        conn_id_ref.cid.as_ref(),
                     );
 
                     // Reset nack ranges of the unicast server to avoid loops.
@@ -1404,7 +1397,6 @@ mod tests {
                         Some(mc_channel.master_secret.clone());
                     assert!(pipe.advance().is_ok());
 
-                    let reset_token = 0xffeeddccu128;
                     let client_mc_announce = pipe
                         .client
                         .multicast
@@ -1416,9 +1408,6 @@ mod tests {
                     let cid =
                         ConnectionId::from_ref(&client_mc_announce.channel_id)
                             .into_owned();
-                    // pipe.client.new_source_cid(&cid, reset_token, true,
-                    // true).unwrap(); pipe.server.
-                    // new_source_cid(&cid, reset_token, true, true).unwrap();
 
                     let server_addr = testing::Pipe::server_addr();
                     let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
@@ -1426,13 +1415,6 @@ mod tests {
                     pipe.client
                         .create_mc_path(&cid, client_addr_2, server_addr)
                         .unwrap();
-
-                    // assert_eq!(pipe.advance(), Ok(()));
-                    // assert_eq!(
-                    //     pipe.client.probe_path(client_addr_2, server_addr),
-                    //     Ok(1)
-                    // );
-                    // assert_eq!(pipe.advance(), Ok(()));
 
                     assert_eq!(
                         pipe.client.set_active(client_addr_2, server_addr, true,),
@@ -1540,7 +1522,7 @@ mod tests {
 
         /// The clients send feedback using the unicast connection to the
         /// server.
-        fn clients_send(&mut self, signature_len: usize) -> Result<()> {
+        fn clients_send(&mut self) -> Result<()> {
             let mut buf = [0u8; 1500];
             for (pipe, ..) in self.unicast_pipes.iter_mut() {
                 loop {
@@ -2480,7 +2462,7 @@ mod tests {
         assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
 
         // The client generates an MC_NACK frame.
-        assert_eq!(mc_pipe.clients_send(signature_len), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         // The client stores the last sent nack ranges.
         let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;

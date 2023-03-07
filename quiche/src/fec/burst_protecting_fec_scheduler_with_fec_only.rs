@@ -104,7 +104,7 @@ impl BurstsFECSchedulerWithFECOnly {
     }
 
     pub fn sent_source_symbol(&mut self) {
-        if let None = self.first_source_symbol_in_burst_sent_time {
+        if self.first_source_symbol_in_burst_sent_time.is_none() {
             self.first_source_symbol_in_burst_sent_time = Some(std::time::Instant::now());
         }
     }

@@ -197,8 +197,6 @@ impl Args for CommonArgs {
 
         let multipath = args.get_bool("--multipath");
 
-        let multipath = args.get_bool("--multipath");
-
         CommonArgs {
             alpns,
             max_data,

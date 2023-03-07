@@ -8499,8 +8499,7 @@ impl Connection {
                     return Ok(self
                         .pkt_num_spaces
                         .application_data_space_ids()
-                        .filter(|&sid| sid != mc_path as u64)
-                        .next()
+                        .find(|&sid| sid != mc_path as u64)
                         .ok_or(Error::Multicast(
                             multicast::MulticastError::McPath,
                         ))? as usize);

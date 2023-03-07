@@ -1793,44 +1793,6 @@ impl std::fmt::Debug for Frame {
                 write!(f, "MC_EXPIRE channel ID={:?} expiration type: {:?} pkt_num: {:?} stream_id: {:?}", channel_id, expiration_type, pkt_num, stream_id)?;
             },
 
-            Frame::ACKMP {
-                space_identifier,
-                ack_delay,
-                ranges,
-                ecn_counts,
-            } => {
-                write!(
-                    f,
-                    "ACK_MP space_id={} delay={} blocks={:?} ecn_counts={:?}",
-                    space_identifier, ack_delay, ranges, ecn_counts
-                )?;
-            },
-
-            Frame::PathAbandon {
-                identifier_type,
-                path_identifier,
-                error_code,
-                reason,
-            } => {
-                write!(
-                    f,
-                    "PATH_ABANDON id_type={} path_id={:x?} err={:x} reason={:x?}",
-                    identifier_type, path_identifier, error_code, reason
-                )?;
-            },
-
-            Frame::PathStatus {
-                identifier_type,
-                path_identifier,
-                seq_num,
-                status,
-            } => {
-                write!(
-                    f,
-                    "PATH_STATUS id_type={} path_id={:x?} seq_num={:x} status={:x}",
-                    identifier_type, path_identifier, seq_num, status,
-                )?;
-            },
             Frame::Repair { repair_symbol } => {
                 write!(f, "REPAIR len={}", repair_symbol.wire_len())?;
             },

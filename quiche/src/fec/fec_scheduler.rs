@@ -145,9 +145,8 @@ impl FECScheduler {
     }
 
     pub fn lost_source_symbol(&mut self, ranges: &RangeSet, client_cid: &[u8]) {
-        match self {
-            RetransmissionFec(scheduler) => scheduler.lost_source_symbol(ranges.to_owned(), client_cid),
-            _ => (),
+        if let RetransmissionFec(scheduler) = self {
+            scheduler.lost_source_symbol(ranges.to_owned(), client_cid);
         }
     }
 }

@@ -35,13 +35,13 @@ impl BurstsFECScheduler {
         const DEFAULT_COOLDOWN_US: u64 = 0;
         const DEFAULT_FRAC_DENOMINATOR_TO_PROTECT: usize = 2;
         const DEFAULT_MINIMUM_ROOM_IN_CWIN: usize = 5000;
-        const DEFAULT_BANDWIDTH_PROBING_BPS: usize = 0;
+        // const DEFAULT_BANDWIDTH_PROBING_BPS: usize = 0;
         let burst_size: usize = env::var("DEBUG_QUICHE_FEC_BURST_SIZE_BYTES").unwrap_or(DEFAULT_BURST_SIZE.to_string()).parse().unwrap_or(DEFAULT_BURST_SIZE);
         let fec_cooldown_us: u64 = env::var("DEBUG_QUICHE_FEC_COOLDOWN_US").unwrap_or(DEFAULT_COOLDOWN_US.to_string()).parse().unwrap_or(DEFAULT_COOLDOWN_US);
         let fec_cooldown = std::time::Duration::from_micros(fec_cooldown_us);
         let fec_frac_denominator_to_protect: usize = env::var("DEBUG_QUICHE_DEFAULT_FRAC_DENOMINATOR_TO_PROTECT").unwrap_or(DEFAULT_FRAC_DENOMINATOR_TO_PROTECT.to_string()).parse().unwrap_or(DEFAULT_FRAC_DENOMINATOR_TO_PROTECT);
         let minimum_room_in_cwin = env::var("DEBUG_QUICHE_MINIMUM_ROOM_IN_CWIN").unwrap_or(DEFAULT_MINIMUM_ROOM_IN_CWIN.to_string()).parse().unwrap_or(DEFAULT_MINIMUM_ROOM_IN_CWIN);
-        let bandwidth_probing_bps = env::var("DEBUG_QUICHE_BANDWIDTH_PROBING_BPS").unwrap_or(DEFAULT_BANDWIDTH_PROBING_BPS.to_string()).parse().unwrap_or(DEFAULT_BANDWIDTH_PROBING_BPS);
+        // let bandwidth_probing_bps = env::var("DEBUG_QUICHE_BANDWIDTH_PROBING_BPS").unwrap_or(DEFAULT_BANDWIDTH_PROBING_BPS.to_string()).parse().unwrap_or(DEFAULT_BANDWIDTH_PROBING_BPS);
         let dgrams_to_emit = conn.dgram_max_writable_len().is_some();
         let stream_to_emit = conn.streams.has_flushable();
         // send if no more data to send && we sent less repair than half the cwin
@@ -117,7 +117,7 @@ impl BurstsFECScheduler {
     }
 
     pub fn sent_source_symbol(&mut self) {
-        if let None = self.first_source_symbol_in_burst_sent_time {
+        if self.first_source_symbol_in_burst_sent_time.is_none() {
             self.first_source_symbol_in_burst_sent_time = Some(std::time::Instant::now());
         }
     }

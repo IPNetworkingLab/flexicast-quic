@@ -476,8 +476,7 @@ impl Recovery {
                         recovered,
                     } = frame
                     {
-                        let mdu64 =
-                            source_symbol_metadata_to_u64(metadata.clone());
+                        let mdu64 = source_symbol_metadata_to_u64(*metadata);
                         if lowest_recovered_in_block <= mdu64 &&
                             mdu64 <= largest_recovered_in_block
                         {
