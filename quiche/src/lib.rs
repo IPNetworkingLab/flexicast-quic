@@ -740,6 +740,7 @@ pub struct Config {
     emit_fec: bool,
     receive_fec: bool,
     fec_window_size: usize,
+    fec_symbol_size: usize,
 
     real_time: bool,
 }
@@ -807,6 +808,7 @@ impl Config {
             emit_fec: false,
             receive_fec: false,
             fec_window_size: DEFAULT_FEC_WINDOW_SIZE,
+            fec_symbol_size: 1280,
 
             real_time: false,
         })
@@ -1275,6 +1277,11 @@ impl Config {
     /// media
     pub fn set_real_time(&mut self, v: bool) {
         self.real_time = v;
+    }
+    
+    /// Sets the FEC symbol maximum size.
+    pub fn set_fec_symbol_size(&mut self, v: usize) {
+        self.fec_symbol_size = v;
     }
 }
 
@@ -1924,8 +1931,8 @@ impl Connection {
 
             multicast: None,
 
-            fec_encoder: networkcoding::Encoder::VLC(VLCEncoder::new(1280, 5000)),
-            fec_decoder: networkcoding::Decoder::VLC(VLCDecoder::new(1280, 5000)),
+            fec_encoder: networkcoding::Encoder::VLC(VLCEncoder::new(config.fec_symbol_size, 5000)),
+            fec_decoder: networkcoding::Decoder::VLC(VLCDecoder::new(config.fec_symbol_size, 5000)),
             fec_scheduler: Some(fec::fec_scheduler::new_fec_scheduler(
                 config.fec_scheduler_algorithm,
             )),

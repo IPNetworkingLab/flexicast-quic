@@ -1610,6 +1610,7 @@ mod tests {
         config.set_fec_scheduler_algorithm(
             crate::fec::fec_scheduler::FECSchedulerAlgorithm::RetransmissionFec,
         );
+        config.set_fec_symbol_size(1280 - 64); // MC-TODO: make dynamic with auth.
         config
     }
 
@@ -2543,8 +2544,8 @@ mod tests {
 
         // The server generates FEC repair packets and forwards them to the
         // client.
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1271));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1271));
         // No need to send additional repair symbols.
         assert_eq!(
             mc_pipe.source_send_single(None, signature_len),
@@ -2572,7 +2573,7 @@ mod tests {
     /// MC-TODO: currently with authentication the test fails because the
     /// signature takes too much room for the REPAIR frames.
     fn test_fec_reliable_multiple_clients_with_auth() {
-        let use_auth = false;
+        let use_auth = true;
         let mut mc_pipe = MulticastPipe::new(
             2,
             "/tmp/test_fec_reliable_multiple_clients_with_auth.txt",
