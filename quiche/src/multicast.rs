@@ -423,7 +423,6 @@ impl MulticastAttributes {
             self.mc_nack_ranges = None;
         }
 
-
         Ok(())
     }
 }
@@ -582,6 +581,16 @@ pub trait MulticastConnection {
         &mut self, cid: &ConnectionId, client_addr: SocketAddr,
         server_addr: SocketAddr,
     ) -> Result<u64>;
+
+    /// The unicast server connection sends control messages to the multicast
+    /// source.
+    ///
+    /// Possible messages are:
+    ///     * MC_NACK received from the client on the unicast channel
+    ///
+    /// Returns an error if this method is called by another entity than the
+    /// unicast server.
+    fn uc_to_mc_control(&mut self, mc_channel: &mut Connection) -> Result<()>;
 }
 
 impl MulticastConnection for Connection {
@@ -978,6 +987,48 @@ impl MulticastConnection for Connection {
         let path = self.paths.get_mut(pid)?;
         path.active_dcid_seq.ok_or(Error::InvalidState)
     }
+
+    fn uc_to_mc_control(&mut self, mc_channel: &mut Connection) -> Result<()> {
+        if let Some(multicast) = mc_channel.multicast.as_ref() {
+            if !matches!(multicast.mc_role, MulticastRole::ServerMulticast) {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    MulticastRole::ServerMulticast,
+                )));
+            }
+        } else {
+            return Err(Error::Multicast(MulticastError::McDisabled));
+        }
+
+        if let Some(multicast) = self.multicast.as_mut() {
+            if !matches!(multicast.mc_role, MulticastRole::ServerUnicast(_)) {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    MulticastRole::ServerUnicast(
+                        MulticastClientStatus::Unspecified,
+                    ),
+                )));
+            }
+
+            // MC_NACK ranges.
+            if let Some(nack_ranges) = multicast.mc_nack_ranges.as_mut() {
+                // The multicast source updates its FEC scheduler with the
+                // received losses.
+                let conn_id_ref = self.ids.get_dcid(0)?; // MC-TODO: replace hard-coded value.
+                if let Some(fec_scheduler) = mc_channel.fec_scheduler.as_mut() {
+                    fec_scheduler.lost_source_symbol(
+                        &nack_ranges,
+                        &conn_id_ref.cid.as_ref(),
+                    );
+
+                    // Reset nack ranges of the unicast server to avoid loops.
+                    multicast.set_mc_nack_ranges(None)?;
+                }
+            }
+        } else {
+            return Err(Error::Multicast(MulticastError::McDisabled));
+        }
+
+        Ok(())
+    }
 }
 
 /// Extension of a RangeSet to support missing ranges.
@@ -1296,7 +1347,8 @@ mod tests {
 
     impl MulticastPipe {
         pub fn new(
-            nb_clients: usize, keylog_filename: &str, do_auth: bool, use_fec: bool,
+            nb_clients: usize, keylog_filename: &str, do_auth: bool,
+            use_fec: bool,
         ) -> Result<MulticastPipe> {
             let mc_client_tp = MulticastClientTp::default();
             let mut server_config = get_test_mc_config(true, None, use_fec);
@@ -1338,7 +1390,7 @@ mod tests {
             let pipes: Vec<_> = (0..nb_clients)
                 .flat_map(|_| {
                     let mut config =
-                        get_test_mc_config(true, Some(&mc_client_tp), false);
+                        get_test_mc_config(true, Some(&mc_client_tp), true);
                     let mut pipe =
                         Pipe::with_config_and_scid_lengths(&mut config, 16, 16)
                             .ok()?;
@@ -1858,7 +1910,8 @@ mod tests {
     fn test_mc_channel_server_handshake() {
         let mc_client_tp = MulticastClientTp::default();
         let mut server_config = get_test_mc_config(true, None, false);
-        let mut client_config = get_test_mc_config(false, Some(&mc_client_tp), false);
+        let mut client_config =
+            get_test_mc_config(false, Some(&mc_client_tp), false);
 
         let mc_channel = get_test_mc_channel_source(
             &mut server_config,
@@ -1875,7 +1928,8 @@ mod tests {
     fn test_mc_client_create_multicast_path() {
         let mc_client_tp = MulticastClientTp::default();
         let mut server_config = get_test_mc_config(true, None, false);
-        let mut client_config = get_test_mc_config(false, Some(&mc_client_tp), false);
+        let mut client_config =
+            get_test_mc_config(false, Some(&mc_client_tp), false);
         let mut mc_announce_data = get_test_mc_announce_data();
         let mut config = get_test_mc_config(true, Some(&mc_client_tp), false);
 
@@ -2036,7 +2090,8 @@ mod tests {
     fn test_mc_channel_alone() {
         let mc_client_tp = MulticastClientTp::default();
         let mut server_config = get_test_mc_config(true, None, false);
-        let mut client_config = get_test_mc_config(false, Some(&mc_client_tp), false);
+        let mut client_config =
+            get_test_mc_config(false, Some(&mc_client_tp), false);
         let mut mc_channel = get_test_mc_channel_source(
             &mut server_config,
             &mut client_config,
@@ -2165,7 +2220,8 @@ mod tests {
     fn test_mc_nack() {
         let use_auth = false;
         let mut mc_pipe =
-            MulticastPipe::new(1, "/tmp/test_mc_nack.txt", use_auth, false).unwrap();
+            MulticastPipe::new(1, "/tmp/test_mc_nack.txt", use_auth, false)
+                .unwrap();
         let signature_len = if use_auth { 64 } else { 0 };
 
         let mc_channel = &mut mc_pipe.mc_channel;
@@ -2228,7 +2284,8 @@ mod tests {
     fn test_on_mc_timeout() {
         let use_auth = false;
         let mut mc_pipe =
-            MulticastPipe::new(1, "/tmp/test_mc_expire.txt", use_auth, false).unwrap();
+            MulticastPipe::new(1, "/tmp/test_mc_expire.txt", use_auth, false)
+                .unwrap();
         let signature_len = if use_auth { 64 } else { 0 };
 
         let mc_channel = &mut mc_pipe.mc_channel;
@@ -2438,7 +2495,7 @@ mod tests {
             Some(&expected_ranges)
         );
 
-        // The server received the MC_NACK.
+        // The unicast server receives the MC_NACK.
         let nack_on_source = uc_pipe
             .server
             .multicast
@@ -2448,7 +2505,32 @@ mod tests {
             .as_ref();
         assert_eq!(nack_on_source, Some(&expected_ranges));
 
-        // The server generates FEC packets based on the lost symbols.
-        // assert_eq!(mc_pipe.source_send_single(true, signature_len), Ok(1000));
+        // The unicast server forwards information to the multicast source.
+        assert_eq!(
+            uc_pipe
+                .server
+                .uc_to_mc_control(&mut mc_pipe.mc_channel.channel),
+            Ok(())
+        );
+
+        // The server generates FEC repair packets and forwards them to the
+        // client.
+        assert_eq!(mc_pipe.source_send_single(true, signature_len), Ok(1335));
+        assert_eq!(mc_pipe.source_send_single(true, signature_len), Ok(1335));
+        // No need to send additional repair symbols.
+        assert_eq!(mc_pipe.source_send_single(true, signature_len), Err(Error::Done));
+
+        // The client recovers the lost packets with FEC.
+        // This results in receiving all streams.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 3, 5, 7, 9]);
+
+        // And the client has no lost packets anymore.
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        assert_eq!(nack_ranges.as_ref(), None);
     }
 }
