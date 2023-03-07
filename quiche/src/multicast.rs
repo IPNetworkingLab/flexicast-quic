@@ -1472,30 +1472,40 @@ mod tests {
         /// The multicast source sends a single packet.
         /// Returns the number of bytes sent by the source.
         ///
-        /// If `all_recv` is `true`, all clients receive the packet.
+        /// `client_loss` is a RangeSet containing the indexes of clients that
+        /// DO NOT receive the packet. `None` if all clients receive the packet.
         fn source_send_single(
-            &mut self, all_recv: bool, signature_len: usize,
+            &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
         ) -> Result<usize> {
             let mut mc_buf = [0u8; 1500];
             let written = self.mc_channel.mc_send(&mut mc_buf[..])?;
 
-            if all_recv {
-                let mut recv_buf = mc_buf.clone();
-                self.unicast_pipes.iter_mut().for_each(
-                    |(pipe, client_addr, server_addr)| {
-                        let recv_info = RecvInfo {
-                            from: *server_addr,
-                            to: *client_addr,
-                            from_mc: true,
-                        };
+            let mut recv_buf = mc_buf.clone();
+            let idx_client_receive = if let Some(range_set) = client_loss {
+                range_set
+                    .get_missing()
+                    .flatten()
+                    .map(|x| x as usize)
+                    .collect::<Vec<_>>()
+            } else {
+                (0..self.unicast_pipes.len()).collect::<Vec<_>>()
+            };
 
-                        let res = pipe
-                            .client
-                            .mc_recv(&mut recv_buf[..written], recv_info)
-                            .unwrap();
-                        assert_eq!(res, written - signature_len);
-                    },
-                );
+            for client_idx in idx_client_receive {
+                let (pipe, client_addr, server_addr) =
+                    self.unicast_pipes.get_mut(client_idx as usize).unwrap();
+
+                let recv_info = RecvInfo {
+                    from: *server_addr,
+                    to: *client_addr,
+                    from_mc: true,
+                };
+
+                let res = pipe
+                    .client
+                    .mc_recv(&mut recv_buf[..written], recv_info)
+                    .unwrap();
+                assert_eq!(res, written - signature_len);
             }
 
             Ok(written)
@@ -1504,8 +1514,12 @@ mod tests {
         /// The multicast source sends a single small stream of 300 bytes to fit
         /// in a single QUIC packet.
         /// Calls [`MulticastPipe::source_send_single`].
+        ///
+        /// `client_loss` is a RangeSet containing the indexes of clients that
+        /// DO NOT receive the packet. `None` if all clients receive the packet.
         fn source_send_single_stream(
-            &mut self, all_recv: bool, signature_len: usize, stream_id: u64,
+            &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
+            stream_id: u64,
         ) -> Result<usize> {
             let mut mc_buf = [0u8; 300];
             ring::rand::SystemRandom::new()
@@ -1517,7 +1531,7 @@ mod tests {
                 true,
             )?;
 
-            self.source_send_single(all_recv, signature_len)
+            self.source_send_single(client_loss, signature_len)
         }
 
         /// The clients send feedback using the unicast connection to the
@@ -2271,6 +2285,8 @@ mod tests {
         let signature_len = if use_auth { 64 } else { 0 };
 
         let mc_channel = &mut mc_pipe.mc_channel;
+        let mut clients_losing_packets = RangeSet::default();
+        clients_losing_packets.insert(0..1);
 
         let mut data = [0u8; 4000];
         ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
@@ -2278,19 +2294,21 @@ mod tests {
         mc_channel.channel.stream_send(1, &data, true).unwrap();
 
         // First packet is received.
-        let res = mc_pipe.source_send_single(true, signature_len);
+        let res = mc_pipe.source_send_single(None, signature_len);
         assert_eq!(res, Ok(1350));
 
         // Second packet is lost.
-        let res = mc_pipe.source_send_single(false, signature_len);
+        let res = mc_pipe
+            .source_send_single(Some(&clients_losing_packets), signature_len);
         assert_eq!(res, Ok(1350));
 
         // Third packet is lost.
-        let res = mc_pipe.source_send_single(false, signature_len);
+        let res = mc_pipe
+            .source_send_single(Some(&clients_losing_packets), signature_len);
         assert_eq!(res, Ok(1350));
 
         // Last packet is received.
-        let res = mc_pipe.source_send_single(true, signature_len);
+        let res = mc_pipe.source_send_single(None, signature_len);
         assert_eq!(res, Ok(109));
 
         // The stream is is still open.
@@ -2339,33 +2357,44 @@ mod tests {
         .unwrap();
         let signature_len = if use_auth { 64 } else { 0 };
 
+        let mut clients_losing_packets = RangeSet::default();
+        clients_losing_packets.insert(0..1);
+
         // First stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(true, signature_len, 1),
+            mc_pipe.source_send_single_stream(None, signature_len, 1),
             Ok(339)
         );
 
         // Second stream is not received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(false, signature_len, 3),
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                3
+            ),
             Ok(339)
         );
 
         // Third stream is not received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(false, signature_len, 5),
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                5
+            ),
             Ok(339)
         );
 
         // Second stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(true, signature_len, 7),
+            mc_pipe.source_send_single_stream(None, signature_len, 7),
             Ok(339)
         );
 
         // Second stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(true, signature_len, 9),
+            mc_pipe.source_send_single_stream(None, signature_len, 9),
             Ok(339)
         );
 
@@ -2413,30 +2442,40 @@ mod tests {
         )
         .unwrap();
         let signature_len = if use_auth { 64 } else { 0 };
+        let mut clients_losing_packets = RangeSet::default();
+        clients_losing_packets.insert(0..1);
 
         // First two streams are received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(true, signature_len, 1),
+            mc_pipe.source_send_single_stream(None, signature_len, 1),
             Ok(348)
         );
         assert_eq!(
-            mc_pipe.source_send_single_stream(true, signature_len, 3),
+            mc_pipe.source_send_single_stream(None, signature_len, 3),
             Ok(348)
         );
 
         // Third and fourth streams are lost.
         assert_eq!(
-            mc_pipe.source_send_single_stream(false, signature_len, 5),
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                5
+            ),
             Ok(348)
         );
         assert_eq!(
-            mc_pipe.source_send_single_stream(false, signature_len, 7),
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                7
+            ),
             Ok(348)
         );
 
         // Fifth stream is received and triggers NACK from the client.
         assert_eq!(
-            mc_pipe.source_send_single_stream(true, signature_len, 9),
+            mc_pipe.source_send_single_stream(None, signature_len, 9),
             Ok(348)
         );
 
@@ -2497,11 +2536,11 @@ mod tests {
 
         // The server generates FEC repair packets and forwards them to the
         // client.
-        assert_eq!(mc_pipe.source_send_single(true, signature_len), Ok(1335));
-        assert_eq!(mc_pipe.source_send_single(true, signature_len), Ok(1335));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
         // No need to send additional repair symbols.
         assert_eq!(
-            mc_pipe.source_send_single(true, signature_len),
+            mc_pipe.source_send_single(None, signature_len),
             Err(Error::Done)
         );
 
@@ -2517,5 +2556,20 @@ mod tests {
             .client
             .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
         assert_eq!(nack_ranges.as_ref(), None);
+    }
+
+    #[test]
+    /// Tests client MC_NACK feedback on the server with multiple clients losing
+    /// different packets. Additionally, it uses authentication.
+    fn test_fec_reliable_multiple_clients_with_auth() {
+        let use_auth = true;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_fec_reliable_multiple_clients_with_auth.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
     }
 }
