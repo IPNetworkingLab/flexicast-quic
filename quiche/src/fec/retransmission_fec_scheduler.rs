@@ -100,4 +100,34 @@ mod tests {
             assert_eq!(scheduler.n_repair_to_send, 4);
         }
     }
+
+    #[test]
+    /// Test with multiple clients. The number of repair symbols to generate is the maximum among all clients.
+    fn test_send_repair_using_nack_two_clients() {
+        let mut scheduler = RetransmissionFecScheduler::new();
+        let cid_1 = vec![1, 2, 3];
+        let cid_2 = vec![4, 5, 6, 7, 8];
+
+        // Nack for the first client.
+        let mut nack = RangeSet::default();
+        nack.insert(1..2); // A single packet.
+        nack.insert(4..7); // Three lost packets.
+
+        scheduler.lost_source_symbol(nack, &cid_1);
+
+        // The second client lost only three, but different, packets.
+        let mut nack = RangeSet::default();
+        nack.insert(2..3);
+        nack.insert(10..12);
+
+        scheduler.lost_source_symbol(nack, &cid_2);
+
+        // The scheduler should send 3 repair symbols.
+        for nb_repair in 1..5 {
+            assert!(scheduler.should_send_repair());
+            scheduler.sent_repair_symbol();
+            assert_eq!(scheduler.n_repair_in_flight, nb_repair);
+            assert_eq!(scheduler.n_repair_to_send, 4);
+        }
+    }
 }
