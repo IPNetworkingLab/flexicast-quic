@@ -742,10 +742,6 @@ pub struct Config {
     fec_window_size: usize,
 
     real_time: bool,
-
-    bw_probe_start_threshold_bps: f64,
-    bw_probe_target_bps: f64,
-    bw_probe_using_fec: bool,
 }
 
 // See https://quicwg.org/base-drafts/rfc9000.html#section-15
@@ -812,9 +808,6 @@ impl Config {
             receive_fec: false,
             fec_window_size: DEFAULT_FEC_WINDOW_SIZE,
 
-            bw_probe_start_threshold_bps: 0.0,
-            bw_probe_target_bps: 0.0,
-            bw_probe_using_fec: false,
             real_time: false,
         })
     }
@@ -1278,22 +1271,6 @@ impl Config {
         self.receive_fec = v;
     }
 
-    /// sets a target bandwidth to probe for by resending existing
-    /// QUIC will perform probing as soon as its rate gets under threshold_bps
-    /// and will try to reach the specified target_bps
-    /// application data or sending FEC if possible
-    pub fn set_bandwidth_probing_bps(
-        &mut self, threshold_bps: f64, target_bps: f64,
-    ) {
-        self.bw_probe_start_threshold_bps = threshold_bps;
-        self.bw_probe_target_bps = target_bps;
-    }
-
-    /// if set, use FEC REPAIR frames for probing bandwidth
-    pub fn use_fec_for_bandwidth_probing(&mut self, v: bool) {
-        self.bw_probe_using_fec = v;
-    }
-
     /// if set, consider the connection as a connection transporting real-time
     /// media
     pub fn set_real_time(&mut self, v: bool) {
@@ -1510,19 +1487,6 @@ pub struct Connection {
 
     /// Multicast extension-related attributes.
     multicast: Option<multicast::MulticastAttributes>,
-
-    /// the minimum amount of bandwidth to probe for when application-limited,
-    /// the bandwidth threshold below which we start proginb for more bandwidth
-    /// when app limited in bits per second
-    bw_probe_start_threshold_bps: f64,
-
-    /// the target bandwidth to probe for when app-limited and the threshold
-    /// triggered probing, in bots per second
-    bw_probe_target_bps: f64,
-
-    bw_probe_reached_target: bool,
-
-    bw_probe_using_fec: bool,
 }
 
 /// Creates a new server-side connection.
@@ -1973,11 +1937,6 @@ impl Connection {
             recovered_symbols_need_ack: ranges::RangeSet::new(
                 crate::MAX_ACK_RANGES,
             ),
-
-            bw_probe_start_threshold_bps: config.bw_probe_start_threshold_bps,
-            bw_probe_target_bps: config.bw_probe_target_bps,
-            bw_probe_reached_target: true,
-            bw_probe_using_fec: config.bw_probe_using_fec,
         };
 
         // Don't support multipath with zero-length CIDs.
@@ -3003,64 +2962,20 @@ impl Connection {
                         ranges,
                         ..
                     } => {
-                        // If the space identifier of the ack ranges correspond
-                        // to the multicast channel, it means that it is an
-                        // MC_NACK frame, and not a simple ACKMP frame.
-                        let mut is_mc_nack = false;
-                        // if self.is_server {
-                        //     if let Some(multicast) = self.multicast.as_mut() {
-                        //         println!(
-                        //             "Received ACKMP that could be an MC_NACK"
-                        //         );
-                        //         if let Some(space_id) =
-                        //             multicast.get_mc_space_id()
-                        //         {
-                        //             if space_id as u64 == space_identifier {
-                        //                 is_mc_nack = true;
-                        //                 println!("Received an MC_NACK frame for
-                        // space identifier {}: {:?} but is server={}",
-                        // space_identifier, ranges, self.is_server);
-
-                        //                 multicast.set_mc_nack_ranges(&ranges)?;
-
-                        //                 // Notify the FEC scheduler that a
-                        // client                 // lost
-                        // some data.                 //
-                        // MC-TODO: Note that the following line
-                        //                 // can be VERY danregours.
-                        //                 let conn_id_ref = self
-                        //                     .ids
-                        //                     
-                        // .get_dcid(p.active_dcid_seq.unwrap())
-                        //                     .unwrap();
-                        //                 if let Some(fec_scheduler) =
-                        //                     self.fec_scheduler.as_mut()
-                        //                 {
-                        //                     fec_scheduler.lost_source_symbol(
-                        //                         &ranges,
-                        //                         &conn_id_ref.cid.as_ref(),
-                        //                     );
-                        //                 }
-                        //             }
-                        //         }
-                        //     }
-                        // }
                         // Stop acknowledging packets less than or equal to the
                         // largest acknowledged in the sent ACK_MP frame that,
                         // in turn, got acked.
-                        if !is_mc_nack {
-                            if let Some(largest_acked) = ranges.last() {
-                                self.pkt_num_spaces
-                                    .get_mut(
-                                        packet::Epoch::Application,
-                                        space_identifier,
-                                    )
-                                    .map(|pns| {
-                                        pns.recv_pkt_need_ack
-                                            .remove_until(largest_acked)
-                                    })
-                                    .ok();
-                            }
+                        if let Some(largest_acked) = ranges.last() {
+                            self.pkt_num_spaces
+                                .get_mut(
+                                    packet::Epoch::Application,
+                                    space_identifier,
+                                )
+                                .map(|pns| {
+                                    pns.recv_pkt_need_ack
+                                        .remove_until(largest_acked)
+                                })
+                                .ok();
                         }
                     },
 
@@ -4594,8 +4509,7 @@ impl Connection {
         println!("Can send fec={}, should send repair symbol={}, can_send_repair_symbols={}", can_send_fec, self.should_send_repair_symbol(send_pid)?, self.fec_encoder.can_send_repair_symbols());
         if can_send_fec &&
             pkt_type == packet::Type::Short &&
-            (self.should_send_repair_symbol(send_pid)? ||
-                (self.should_probe_bw() && self.bw_probe_using_fec)) &&
+            self.should_send_repair_symbol(send_pid)? &&
             self.fec_encoder.can_send_repair_symbols()
         {
             println!("WILL SEND FEC");

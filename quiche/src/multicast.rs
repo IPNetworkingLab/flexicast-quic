@@ -2518,7 +2518,10 @@ mod tests {
         assert_eq!(mc_pipe.source_send_single(true, signature_len), Ok(1335));
         assert_eq!(mc_pipe.source_send_single(true, signature_len), Ok(1335));
         // No need to send additional repair symbols.
-        assert_eq!(mc_pipe.source_send_single(true, signature_len), Err(Error::Done));
+        assert_eq!(
+            mc_pipe.source_send_single(true, signature_len),
+            Err(Error::Done)
+        );
 
         // The client recovers the lost packets with FEC.
         // This results in receiving all streams.
