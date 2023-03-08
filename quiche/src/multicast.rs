@@ -80,6 +80,8 @@ pub const MC_KEY_CODE: u64 = 0xf5;
 /// MC_EXPIRE frame type.
 pub const MC_EXPIRE_CODE: u64 = 0xf6;
 
+type ExpiredData = (Option<u64>, Option<u64>, Option<u64>);
+
 /// States of a multicast client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd)]
 pub enum MulticastClientStatus {
@@ -217,7 +219,7 @@ pub struct MulticastAttributes {
     mc_nack_ranges: Option<RangeSet>,
 
     /// Last expired packet num (0) and stream ID (1).
-    pub(crate) mc_last_expired: Option<(Option<u64>, Option<u64>, Option<u64>)>,
+    pub(crate) mc_last_expired: Option<ExpiredData>,
 }
 
 impl MulticastAttributes {
@@ -551,10 +553,9 @@ pub trait MulticastConnection {
     ///
     /// Only availble for a multicast client.
     fn mc_expire(
-        &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>,
-        stream_id_opt: Option<u64>, fec_metadata_opt: Option<u64>,
-        now: time::Instant,
-    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)>;
+        &mut self, epoch: Epoch, space_id: u64,
+        expired_data: Option<&ExpiredData>, now: time::Instant,
+    ) -> Result<ExpiredData>;
 
     /// Returns the amount of time until the next multicast timeout event.
     ///
@@ -566,9 +567,7 @@ pub trait MulticastConnection {
     /// Processes a multicast timeout event.
     ///
     /// If no timeout has occurred it does nothing.
-    fn on_mc_timeout(
-        &mut self, now: time::Instant,
-    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)>;
+    fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData>;
 
     /// Returns whether the path id given as argument is a multicast path.
     /// False if multicast is disabled or if the path is not a multicast path.
@@ -824,10 +823,12 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_expire(
-        &mut self, epoch: Epoch, space_id: u64, mut pkt_num_opt: Option<u64>,
-        mut stream_id_opt: Option<u64>, mut fec_metadata_opt: Option<u64>,
-        now: time::Instant,
-    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
+        &mut self, epoch: Epoch, space_id: u64,
+        expired_data: Option<&ExpiredData>, now: time::Instant,
+    ) -> Result<ExpiredData> {
+        let (mut pkt_num_opt, mut stream_id_opt, mut fec_metadata_opt) =
+            expired_data.unwrap_or(&(None, None, None));
+
         let multicast = if let Some(multicast) = self.multicast.as_ref() {
             if !matches!(
                 multicast.mc_role,
@@ -933,9 +934,7 @@ impl MulticastConnection for Connection {
             })
     }
 
-    fn on_mc_timeout(
-        &mut self, now: time::Instant,
-    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
+    fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData> {
         // Some data has expired.
         if let Some(time::Duration::ZERO) = self.mc_timeout() {
             if let Some(multicast) = self.multicast.as_ref() {
@@ -943,8 +942,6 @@ impl MulticastConnection for Connection {
                     let res = self.mc_expire(
                         Epoch::Application,
                         space_id as u64,
-                        None,
-                        None,
                         None,
                         now,
                     );

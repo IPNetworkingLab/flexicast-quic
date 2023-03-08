@@ -8224,9 +8224,7 @@ impl Connection {
                         self.mc_expire(
                             epoch,
                             space_id as u64,
-                            pkt_num,
-                            stream_id,
-                            fec_metadata,
+                            Some(&(pkt_num, stream_id, fec_metadata)),
                             now,
                         )?;
                     } else {
