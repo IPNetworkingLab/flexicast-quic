@@ -4364,7 +4364,9 @@ impl Connection {
 
         // Create MC_EXPIRE frame.
         if let Some(multicast) = self.multicast.as_mut() {
-            if let Some((exp_pn_opt, exp_sid_opt, exp_fec_metadata_opt)) = multicast.mc_last_expired {
+            if let Some((exp_pn_opt, exp_sid_opt, exp_fec_metadata_opt)) =
+                multicast.mc_last_expired
+            {
                 let mut expiration_type = 0;
                 if exp_pn_opt.is_some() {
                     expiration_type += 1;
@@ -4379,7 +4381,7 @@ impl Connection {
                     Error::Multicast(multicast::MulticastError::McAnnounce),
                 )?;
                 println!("J'ENVOIE AVEC EXP FEC: {:?}", exp_fec_metadata_opt);
-                
+
                 let frame = frame::Frame::McExpire {
                     channel_id: mc_announce_data.channel_id.clone(),
                     expiration_type,

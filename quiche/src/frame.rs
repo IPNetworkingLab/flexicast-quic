@@ -468,7 +468,11 @@ impl Frame {
                     .try_into()
                     .map_err(|_| Error::BufferTooShort)?;
                 let first_pn = b.get_varint()?;
-                Frame::McKey { channel_id, key, first_pn }
+                Frame::McKey {
+                    channel_id,
+                    key,
+                    first_pn,
+                }
             },
 
             MC_EXPIRE_CODE => {
@@ -847,7 +851,11 @@ impl Frame {
                 b.put_varint(*action)?;
             },
 
-            Frame::McKey { channel_id, key, first_pn } => {
+            Frame::McKey {
+                channel_id,
+                key,
+                first_pn,
+            } => {
                 debug!("Going to encode the MC_KEY frame");
                 b.put_varint(MC_KEY_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
@@ -1190,7 +1198,11 @@ impl Frame {
                 state_size
             },
 
-            Frame::McKey { channel_id, key, first_pn } => {
+            Frame::McKey {
+                channel_id,
+                key,
+                first_pn,
+            } => {
                 let key_len_size = octets::varint_len(key.len() as u64);
                 let first_pn_size = octets::varint_len(*first_pn);
                 1 + // frame type
@@ -1211,7 +1223,8 @@ impl Frame {
                 let pkt_num_len = pkt_num.map(octets::varint_len).unwrap_or(0);
                 let stream_id_len =
                     stream_id.map(octets::varint_len).unwrap_or(0);
-                let fec_metadata_len = fec_metadata.map(octets::varint_len).unwrap_or(0);
+                let fec_metadata_len =
+                    fec_metadata.map(octets::varint_len).unwrap_or(0);
                 1 + // frame type
                 1 + // channel_id len
                 channel_id.len() +
@@ -1800,8 +1813,16 @@ impl std::fmt::Debug for Frame {
                 )?;
             },
 
-            Frame::McKey { channel_id, key, first_pn } => {
-                write!(f, "MC_KEY channel ID={:?} key={:?} first pn={:?}", channel_id, key, first_pn)?;
+            Frame::McKey {
+                channel_id,
+                key,
+                first_pn,
+            } => {
+                write!(
+                    f,
+                    "MC_KEY channel ID={:?} key={:?} first pn={:?}",
+                    channel_id, key, first_pn
+                )?;
             },
 
             Frame::McExpire {

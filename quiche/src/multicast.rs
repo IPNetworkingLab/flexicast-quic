@@ -552,7 +552,8 @@ pub trait MulticastConnection {
     /// Only availble for a multicast client.
     fn mc_expire(
         &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>,
-        stream_id_opt: Option<u64>, fec_metadata_opt: Option<u64>, now: time::Instant,
+        stream_id_opt: Option<u64>, fec_metadata_opt: Option<u64>,
+        now: time::Instant,
     ) -> Result<(Option<u64>, Option<u64>, Option<u64>)>;
 
     /// Returns the amount of time until the next multicast timeout event.
@@ -824,7 +825,8 @@ impl MulticastConnection for Connection {
 
     fn mc_expire(
         &mut self, epoch: Epoch, space_id: u64, mut pkt_num_opt: Option<u64>,
-        mut stream_id_opt: Option<u64>, mut fec_metadata_opt: Option<u64>, now: time::Instant,
+        mut stream_id_opt: Option<u64>, mut fec_metadata_opt: Option<u64>,
+        now: time::Instant,
     ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
         let multicast = if let Some(multicast) = self.multicast.as_ref() {
             if !matches!(
@@ -897,10 +899,16 @@ impl MulticastConnection for Connection {
         if let Some(exp_fec_metadata) = fec_metadata_opt {
             if self.is_server {
                 // Reset FEC encoder state.
-                self.fec_encoder.remove_up_to(source_symbol_metadata_from_u64(exp_fec_metadata));
+                self.fec_encoder
+                    .remove_up_to(source_symbol_metadata_from_u64(
+                        exp_fec_metadata,
+                    ));
             } else {
                 // Reset FEC decoder state.
-                self.fec_decoder.remove_up_to(source_symbol_metadata_from_u64(exp_fec_metadata));
+                self.fec_decoder
+                    .remove_up_to(source_symbol_metadata_from_u64(
+                        exp_fec_metadata,
+                    ));
             }
         }
 
@@ -2987,7 +2995,10 @@ mod tests {
             .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
         assert_eq!(nack_ranges.as_ref(), None);
         let mut tmp_buf = [42u8; 4096];
-        assert_eq!(uc_pipe.client.stream_recv(9, &mut tmp_buf[..]), Ok((4000, true)));
+        assert_eq!(
+            uc_pipe.client.stream_recv(9, &mut tmp_buf[..]),
+            Ok((4000, true))
+        );
         assert_eq!(tmp_buf[..4000], data[..4000]);
     }
 }
