@@ -1,3 +1,5 @@
+use networkcoding::source_symbol_metadata_to_u64;
+
 use crate::packet::Epoch;
 use crate::ranges;
 use crate::Result;
@@ -15,7 +17,7 @@ pub trait MulticastRecovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus,
-    ) -> Result<(Option<u64>, Option<u64>)>;
+    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)>;
 
     /// Returns the next expiring event.
     fn mc_next_timeout(&self) -> Option<Instant>;
@@ -25,7 +27,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus,
-    ) -> Result<(Option<u64>, Option<u64>)> {
+    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
@@ -45,12 +47,21 @@ impl MulticastRecovery for crate::recovery::Recovery {
         });
         let stream_id_removed = stream_ids.max();
 
+        // Get the highest expired FEC metadata.
+        let exp3 = expired_sent.clone();
+        let fec_medatadas = exp3.flat_map(|p| {
+            p.frames.as_ref().iter().filter_map(|f| match f {
+                crate::frame::Frame::SourceSymbolHeader { metadata, .. } =>
+                    Some(source_symbol_metadata_to_u64(*metadata)),
+                _ => None,
+            })
+        });
+        let fec_metadata_removed: Option<u64> = fec_medatadas.max();
+
         // Take the first and last sent from the iterator.
         // We will make a range for all of them.
         match expired_sent.next() {
-            None => {
-                Ok((None, None))
-            },
+            None => Ok((None, None, None)),
             Some(first) => {
                 // Create a dummy ack to remove the expired data.
                 let mut acked = ranges::RangeSet::default();
@@ -72,7 +83,11 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     "",
                 )?;
 
-                Ok((Some(pkt_num_removed), stream_id_removed))
+                Ok((
+                    Some(pkt_num_removed),
+                    stream_id_removed,
+                    fec_metadata_removed,
+                ))
             },
         }
     }
@@ -93,6 +108,7 @@ mod tests {
     use crate::recovery::Recovery;
     use crate::recovery::Sent;
     use crate::recovery::SpacedPktNum;
+    use networkcoding::source_symbol_metadata_from_u64;
     use smallvec::smallvec;
     use std::time::Duration;
 
@@ -104,6 +120,14 @@ mod tests {
             offset: 0,
             length: 100,
             fin: true,
+        }
+    }
+
+    /// Helper creating a small [`SourceSymbolHeader`] from a metadata.
+    fn get_test_source_symbol_header(metadata: u64) -> Frame {
+        Frame::SourceSymbolHeader {
+            metadata: source_symbol_metadata_from_u64(metadata),
+            recovered: false,
         }
     }
 
@@ -123,7 +147,10 @@ mod tests {
         // Start by sending a few packets separated by 10ms each.
         let p = Sent {
             pkt_num: SpacedPktNum(0, 0),
-            frames: smallvec![get_test_stream_header(1)],
+            frames: smallvec![
+                get_test_stream_header(1),
+                get_test_source_symbol_header(0)
+            ],
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -150,7 +177,10 @@ mod tests {
 
         let p = Sent {
             pkt_num: SpacedPktNum(0, 1),
-            frames: smallvec![get_test_stream_header(5)],
+            frames: smallvec![
+                get_test_stream_header(5),
+                get_test_source_symbol_header(1)
+            ],
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -177,7 +207,10 @@ mod tests {
 
         let p = Sent {
             pkt_num: SpacedPktNum(0, 2),
-            frames: smallvec![get_test_stream_header(9)],
+            frames: smallvec![
+                get_test_stream_header(9),
+                get_test_source_symbol_header(2)
+            ],
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -206,7 +239,10 @@ mod tests {
 
         let p = Sent {
             pkt_num: SpacedPktNum(0, 3),
-            frames: smallvec![get_test_stream_header(13)],
+            frames: smallvec![
+                get_test_stream_header(13),
+                get_test_source_symbol_header(3)
+            ],
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -263,7 +299,7 @@ mod tests {
             data_expiration_val,
             HandshakeStatus::default(),
         );
-        assert_eq!(res, Ok((Some(2), Some(9))));
+        assert_eq!(res, Ok((Some(2), Some(9), Some(2))));
 
         assert_eq!(r.sent[Epoch::Application].len(), 1);
         assert_eq!(r.bytes_in_flight, 1000);
@@ -281,7 +317,10 @@ mod tests {
 
         let p = Sent {
             pkt_num: SpacedPktNum(0, 4),
-            frames: smallvec![get_test_stream_header(17)],
+            frames: smallvec![
+                get_test_stream_header(17),
+                get_test_source_symbol_header(4)
+            ],
             time_sent: now,
             time_acked: None,
             time_lost: None,

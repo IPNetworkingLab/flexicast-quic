@@ -236,6 +236,7 @@ pub enum Frame {
         expiration_type: u8,
         pkt_num: Option<u64>,
         stream_id: Option<u64>,
+        fec_metadata: Option<u64>,
     },
 
     Repair {
@@ -483,11 +484,18 @@ impl Frame {
                 } else {
                     None
                 };
+                let fec_metadata = if expiration_type & 4 > 0 {
+                    Some(b.get_varint()?)
+                } else {
+                    None
+                };
+
                 Frame::McExpire {
                     channel_id,
                     expiration_type,
                     pkt_num,
                     stream_id,
+                    fec_metadata,
                 }
             },
 
@@ -854,6 +862,7 @@ impl Frame {
                 expiration_type,
                 pkt_num,
                 stream_id,
+                fec_metadata,
             } => {
                 debug!("Going to encode the MC_EXPIRE frame");
                 b.put_varint(MC_EXPIRE_CODE)?;
@@ -865,6 +874,9 @@ impl Frame {
                 }
                 if let Some(stream_id) = stream_id {
                     b.put_varint(*stream_id)?;
+                }
+                if let Some(fec_metadata) = fec_metadata {
+                    b.put_varint(*fec_metadata)?;
                 }
             },
 
@@ -1194,15 +1206,18 @@ impl Frame {
                 expiration_type: _,
                 pkt_num,
                 stream_id,
+                fec_metadata,
             } => {
                 let pkt_num_len = pkt_num.map(octets::varint_len).unwrap_or(0);
                 let stream_id_len =
                     stream_id.map(octets::varint_len).unwrap_or(0);
+                let fec_metadata_len = fec_metadata.map(octets::varint_len).unwrap_or(0);
                 1 + // frame type
                 1 + // channel_id len
                 channel_id.len() +
                 pkt_num_len +
-                stream_id_len
+                stream_id_len +
+                fec_metadata_len
             },
 
             Frame::Repair { repair_symbol } => {
@@ -1794,8 +1809,9 @@ impl std::fmt::Debug for Frame {
                 expiration_type,
                 pkt_num,
                 stream_id,
+                fec_metadata,
             } => {
-                write!(f, "MC_EXPIRE channel ID={:?} expiration type: {:?} pkt_num: {:?} stream_id: {:?}", channel_id, expiration_type, pkt_num, stream_id)?;
+                write!(f, "MC_EXPIRE channel ID={:?} expiration type: {:?} pkt_num: {:?} stream_id: {:?} fec_metadata: {:?}", channel_id, expiration_type, pkt_num, stream_id, fec_metadata)?;
             },
 
             Frame::Repair { repair_symbol } => {
@@ -3611,9 +3627,10 @@ mod tests {
 
         let frame = Frame::McExpire {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
-            expiration_type: 3,
+            expiration_type: 7,
             pkt_num: Some(5678),
             stream_id: Some(1234),
+            fec_metadata: Some(91011),
         };
 
         let wire_len = {
@@ -3621,7 +3638,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 15);
+        assert_eq!(wire_len, 19);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

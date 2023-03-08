@@ -4364,7 +4364,7 @@ impl Connection {
 
         // Create MC_EXPIRE frame.
         if let Some(multicast) = self.multicast.as_mut() {
-            if let Some((exp_pn_opt, exp_sid_opt)) = multicast.mc_last_expired {
+            if let Some((exp_pn_opt, exp_sid_opt, exp_fec_metadata_opt)) = multicast.mc_last_expired {
                 let mut expiration_type = 0;
                 if exp_pn_opt.is_some() {
                     expiration_type += 1;
@@ -4372,16 +4372,22 @@ impl Connection {
                 if exp_sid_opt.is_some() {
                     expiration_type += 2;
                 }
+                if exp_fec_metadata_opt.is_some() {
+                    expiration_type += 4;
+                }
                 let mc_announce_data = multicast.get_mc_announce_data().ok_or(
                     Error::Multicast(multicast::MulticastError::McAnnounce),
                 )?;
+                println!("J'ENVOIE AVEC EXP FEC: {:?}", exp_fec_metadata_opt);
                 
                 let frame = frame::Frame::McExpire {
                     channel_id: mc_announce_data.channel_id.clone(),
                     expiration_type,
                     pkt_num: exp_pn_opt,
                     stream_id: exp_sid_opt,
+                    fec_metadata: exp_fec_metadata_opt,
                 };
+                // MC-TODO: expired FEC metadata
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     multicast.mc_last_expired = None;
@@ -8199,8 +8205,9 @@ impl Connection {
                 expiration_type: _,
                 pkt_num,
                 stream_id,
+                fec_metadata,
             } => {
-                debug!("Received an MC_EXPIRE frame! channel ID: {:?}, pkt num: {:?}, stream ID: {:?}", channel_id, pkt_num, stream_id);
+                debug!("Received an MC_EXPIRE frame! channel ID: {:?}, pkt num: {:?}, stream ID: {:?} fec metadata: {:?}", channel_id, pkt_num, stream_id, fec_metadata);
                 if self.is_server {
                     return Err(Error::Multicast(
                         multicast::MulticastError::McInvalidRole(
@@ -8217,6 +8224,7 @@ impl Connection {
                             space_id as u64,
                             pkt_num,
                             stream_id,
+                            fec_metadata,
                             now,
                         )?;
                     } else {

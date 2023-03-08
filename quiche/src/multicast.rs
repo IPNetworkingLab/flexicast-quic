@@ -12,6 +12,7 @@ use crate::ranges;
 use crate::ranges::RangeSet;
 use crate::recovery::multicast::MulticastRecovery;
 use crate::CongestionControlAlgorithm;
+use networkcoding::source_symbol_metadata_from_u64;
 use ring::rand;
 use ring::rand::SecureRandom;
 use ring::signature;
@@ -216,7 +217,7 @@ pub struct MulticastAttributes {
     mc_nack_ranges: Option<RangeSet>,
 
     /// Last expired packet num (0) and stream ID (1).
-    pub(crate) mc_last_expired: Option<(Option<u64>, Option<u64>)>,
+    pub(crate) mc_last_expired: Option<(Option<u64>, Option<u64>, Option<u64>)>,
 }
 
 impl MulticastAttributes {
@@ -551,8 +552,8 @@ pub trait MulticastConnection {
     /// Only availble for a multicast client.
     fn mc_expire(
         &mut self, epoch: Epoch, space_id: u64, pkt_num_opt: Option<u64>,
-        stream_id_opt: Option<u64>, now: time::Instant,
-    ) -> Result<(Option<u64>, Option<u64>)>;
+        stream_id_opt: Option<u64>, fec_metadata_opt: Option<u64>, now: time::Instant,
+    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)>;
 
     /// Returns the amount of time until the next multicast timeout event.
     ///
@@ -566,7 +567,7 @@ pub trait MulticastConnection {
     /// If no timeout has occurred it does nothing.
     fn on_mc_timeout(
         &mut self, now: time::Instant,
-    ) -> Result<(Option<u64>, Option<u64>)>;
+    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)>;
 
     /// Returns whether the path id given as argument is a multicast path.
     /// False if multicast is disabled or if the path is not a multicast path.
@@ -823,8 +824,8 @@ impl MulticastConnection for Connection {
 
     fn mc_expire(
         &mut self, epoch: Epoch, space_id: u64, mut pkt_num_opt: Option<u64>,
-        mut stream_id_opt: Option<u64>, now: time::Instant,
-    ) -> Result<(Option<u64>, Option<u64>)> {
+        mut stream_id_opt: Option<u64>, mut fec_metadata_opt: Option<u64>, now: time::Instant,
+    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
         let multicast = if let Some(multicast) = self.multicast.as_ref() {
             if !matches!(
                 multicast.mc_role,
@@ -857,6 +858,7 @@ impl MulticastConnection for Connection {
             )?;
             pkt_num_opt = res.0;
             stream_id_opt = res.1;
+            fec_metadata_opt = res.2;
         } else if let Some(exp_pkt_num) = pkt_num_opt {
             let pkt_num_space = self.pkt_num_spaces.get_mut(epoch, space_id)?;
             pkt_num_space.recv_pkt_need_ack.remove_until(exp_pkt_num);
@@ -891,7 +893,18 @@ impl MulticastConnection for Connection {
             }
         }
 
-        Ok((pkt_num_opt, stream_id_opt))
+        // Reset FEC state to remove old source symbols.
+        if let Some(exp_fec_metadata) = fec_metadata_opt {
+            if self.is_server {
+                // Reset FEC encoder state.
+                self.fec_encoder.remove_up_to(source_symbol_metadata_from_u64(exp_fec_metadata));
+            } else {
+                // Reset FEC decoder state.
+                self.fec_decoder.remove_up_to(source_symbol_metadata_from_u64(exp_fec_metadata));
+            }
+        }
+
+        Ok((pkt_num_opt, stream_id_opt, fec_metadata_opt))
     }
 
     fn mc_timeout(&self) -> Option<time::Duration> {
@@ -914,7 +927,7 @@ impl MulticastConnection for Connection {
 
     fn on_mc_timeout(
         &mut self, now: time::Instant,
-    ) -> Result<(Option<u64>, Option<u64>)> {
+    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
         // Some data has expired.
         if let Some(time::Duration::ZERO) = self.mc_timeout() {
             if let Some(multicast) = self.multicast.as_ref() {
@@ -922,6 +935,7 @@ impl MulticastConnection for Connection {
                     let res = self.mc_expire(
                         Epoch::Application,
                         space_id as u64,
+                        None,
                         None,
                         None,
                         now,
@@ -936,7 +950,7 @@ impl MulticastConnection for Connection {
             }
         }
 
-        Ok((None, None))
+        Ok((None, None, None))
     }
 
     fn is_mc_path(&self, space_id: usize) -> bool {
@@ -2343,7 +2357,7 @@ mod tests {
                 mc_pipe.mc_announce_data.ttl_data + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
-        assert_eq!(res, Ok((Some(5), Some(1))));
+        assert_eq!(res, Ok((Some(5), Some(1), None)));
 
         // MC-TODO: assert that the packets are not in the sending state anymore.
         assert_eq!(
@@ -2354,7 +2368,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .mc_last_expired,
-            Some((Some(5), Some(1)))
+            Some((Some(5), Some(1), None))
         );
 
         // The stream is closed now.
@@ -2408,7 +2422,7 @@ mod tests {
                 mc_pipe.mc_announce_data.ttl_data + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
-        assert_eq!(res, Ok((Some(10), Some(3))));
+        assert_eq!(res, Ok((Some(10), Some(3), None)));
 
         // MC-TODO: assert that the packets are not in the sending state anymore.
         assert_eq!(
@@ -2419,7 +2433,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .mc_last_expired,
-            Some((Some(10), Some(3)))
+            Some((Some(10), Some(3), None))
         );
 
         // The stream is closed now.
@@ -2515,7 +2529,7 @@ mod tests {
                 mc_pipe.mc_announce_data.ttl_data + 100,
             );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
-        assert_eq!(res, Ok((Some(6), Some(9))));
+        assert_eq!(res, Ok((Some(6), Some(9), None)));
         assert_eq!(
             mc_pipe
                 .mc_channel
@@ -2524,7 +2538,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .mc_last_expired,
-            Some((Some(6), Some(9)))
+            Some((Some(6), Some(9), None))
         );
 
         // Multicast source sends an MC_EXPIRE to the client.
@@ -2563,11 +2577,11 @@ mod tests {
     }
 
     #[test]
-    fn test_client_nack_to_source_and_recovery() {
+    fn test_mc_client_nack_to_source_and_recovery() {
         let use_auth = false;
         let mut mc_pipe = MulticastPipe::new(
             1,
-            "/tmp/test_client_nack_to_source_and_recovery.txt",
+            "/tmp/test_mc_client_nack_to_source_and_recovery.txt",
             use_auth,
             true,
         )
@@ -2690,11 +2704,11 @@ mod tests {
     /// different packets. Additionally, it uses authentication.
     /// MC-TODO: currently with authentication the test fails because the
     /// signature takes too much room for the REPAIR frames.
-    fn test_fec_reliable_multiple_clients_with_auth() {
+    fn test_mc_fec_reliable_multiple_clients_with_auth() {
         let use_auth = true;
         let mut mc_pipe = MulticastPipe::new(
             2,
-            "/tmp/test_fec_reliable_multiple_clients_with_auth.txt",
+            "/tmp/test_mc_fec_reliable_multiple_clients_with_auth.txt",
             use_auth,
             true,
         )
@@ -2832,5 +2846,148 @@ mod tests {
                 .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
             assert_eq!(nack_ranges.as_ref(), None);
         }
+    }
+
+    #[test]
+    /// Tests the reset of the FEC state upon data timeout.
+    fn test_mc_fec_on_mc_timeout() {
+        let use_auth = true;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_fec_on_mc_timeout.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+        let mut clients_losing_packets = RangeSet::default();
+        clients_losing_packets.insert(0..1);
+
+        // First stream is received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            Ok(348 + signature_len)
+        );
+
+        // Three consecutive streams are lost.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                3
+            ),
+            Ok(348 + signature_len)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                5
+            ),
+            Ok(348 + signature_len)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                7
+            ),
+            Ok(348 + signature_len)
+        );
+
+        // Timeout of the four streams.
+        let timer = time::Instant::now();
+        let timer = timer +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            );
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
+        assert_eq!(res, Ok((Some(5), Some(7), Some(3))));
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_last_expired,
+            Some((Some(5), Some(7), Some(3)))
+        );
+
+        // Multicast source sends an MC_EXPIRE to the client.
+        assert_eq!(
+            mc_pipe.source_send_single(None, signature_len),
+            Ok(57 + signature_len)
+        );
+
+        // The client has no missing packet.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let client_mc_space_id = uc_pipe
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .get_mc_space_id()
+            .unwrap();
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        assert_eq!(nack_ranges.as_ref(), None);
+
+        // The server sends a stream of 3 packets.
+        let mut data = [0u8; 4000];
+        ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
+        mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(9, &data, true)
+            .unwrap();
+
+        // First packet is lost.
+        assert_eq!(
+            mc_pipe
+                .source_send_single(Some(&clients_losing_packets), signature_len),
+            Ok(1314)
+        );
+
+        // All subsequent packets are received.
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1314));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1314));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(509));
+
+        // The client knows that they lost the first packet.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        let mut expected_ranges = ranges::RangeSet::default();
+        expected_ranges.insert(7..8);
+        assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
+
+        // The client sends an MC_NACK to the server.
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        // Communication to unicast servers.
+        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+
+        // The server generates FEC a single repair packet because the client lost
+        // the first frame of the stream. Recall that the previous packets have
+        // been removed due to a timeout.
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
+        // No need to send additional repair symbols.
+        assert_eq!(
+            mc_pipe.source_send_single(None, signature_len),
+            Err(Error::Done)
+        );
+
+        // The client recovers the lost packet and can read the stream.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        assert_eq!(nack_ranges.as_ref(), None);
+        let mut tmp_buf = [42u8; 4096];
+        assert_eq!(uc_pipe.client.stream_recv(9, &mut tmp_buf[..]), Ok((4000, true)));
+        assert_eq!(tmp_buf[..4000], data[..4000]);
     }
 }
