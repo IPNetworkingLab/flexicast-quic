@@ -2942,7 +2942,7 @@ mod tests {
             .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
         assert_eq!(nack_ranges.as_ref(), None);
 
-        // The server sends a stream of 3 packets.
+        // The server sends a stream of 4 packets.
         let mut data = [0u8; 4000];
         ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
         mc_pipe
@@ -2951,6 +2951,11 @@ mod tests {
             .stream_send(9, &data, true)
             .unwrap();
 
+        // MC-TODO: because the client received the packet containing the
+        // MC_EXPIRE frame, it has received the packet with packet number=6. It is
+        // thanks to this packet that the client knows that the packet with packet
+        // number=7 is lost, otherwise it would think that it joined the multicast
+        // channel 'late'. Should we fix this in the future?
         // First packet is lost.
         assert_eq!(
             mc_pipe
