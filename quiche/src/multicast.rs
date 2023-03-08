@@ -882,9 +882,7 @@ impl MulticastConnection for Connection {
                         } else {
                             // Maybe the final size is already known.
                             let final_size = stream.recv.max_off();
-                            println!("Before reset stream {}", stream_id);
                             stream.recv.reset(0, final_size)?;
-                            println!("After reset stream {}", stream_id);
                         }
                         let local = stream.local;
                         self.streams.collect(stream_id, local);
@@ -2371,7 +2369,8 @@ mod tests {
         // The stream is also closed on the client now.
         assert!(mc_pipe.unicast_pipes[0].0.client.stream_finished(1));
 
-        // Send another stream that will timeout without receiving the end of the stream.
+        // Send another stream that will timeout without receiving the end of the
+        // stream.
         let mc_channel = &mut mc_pipe.mc_channel;
         ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
         mc_channel.channel.stream_send(3, &data, false).unwrap();
@@ -2391,8 +2390,10 @@ mod tests {
         assert_eq!(res, Ok(1350));
 
         // Fourth packet is lost.
-        // At this stage, all stream data has been sent but the stream is not finished.
-        let res = mc_pipe.source_send_single(Some(&clients_losing_packets), signature_len);
+        // At this stage, all stream data has been sent but the stream is not
+        // finished.
+        let res = mc_pipe
+            .source_send_single(Some(&clients_losing_packets), signature_len);
         assert_eq!(res, Ok(109));
 
         // The stream is is still open.
@@ -2432,7 +2433,6 @@ mod tests {
 
         // The stream is also closed on the client now.
         assert!(mc_pipe.unicast_pipes[0].0.client.stream_finished(3));
-
     }
 
     #[test]

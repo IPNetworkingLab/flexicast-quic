@@ -4375,8 +4375,6 @@ impl Connection {
                 let mc_announce_data = multicast.get_mc_announce_data().ok_or(
                     Error::Multicast(multicast::MulticastError::McAnnounce),
                 )?;
-
-                println!("Source sends MC_EXPIRE with pkt_num={:?} and stream_id={:?}", exp_pn_opt, exp_sid_opt);
                 
                 let frame = frame::Frame::McExpire {
                     channel_id: mc_announce_data.channel_id.clone(),
@@ -4558,7 +4556,6 @@ impl Connection {
             self.should_send_repair_symbol(send_pid)? &&
             self.fec_encoder.can_send_repair_symbols()
         {
-            println!("WILL SEND FEC");
             if let Some(md) =
                 self.latest_metadata_of_symbol_with_fec_protected_frames
             {
@@ -4571,7 +4568,6 @@ impl Connection {
                         .generate_and_serialize_repair_symbol_up_to(md)
                     {
                         Ok(rs) => {
-                            println!("WILL SEND A REPAIR PACKET");
                             let frame =
                                 frame::Frame::Repair { repair_symbol: rs };
                             if push_frame_to_pkt!(b, frames, frame, left) {
