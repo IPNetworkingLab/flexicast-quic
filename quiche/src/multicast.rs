@@ -2335,7 +2335,7 @@ mod tests {
 
         // The stream is is still open.
         assert!(!mc_pipe.mc_channel.channel.stream_finished(1));
-        assert!(mc_pipe.unicast_pipes[0].0.client.stream_readable(1));
+        assert!(!mc_pipe.unicast_pipes[0].0.client.stream_finished(1));
 
         // The expiration timeout is exceeded. Closes the stream and removes the
         // packets from the sending queue.
@@ -2369,7 +2369,70 @@ mod tests {
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(56));
 
         // The stream is also closed on the client now.
-        assert!(!mc_pipe.unicast_pipes[0].0.client.stream_readable(1));
+        assert!(mc_pipe.unicast_pipes[0].0.client.stream_finished(1));
+
+        // Send another stream that will timeout without receiving the end of the stream.
+        let mc_channel = &mut mc_pipe.mc_channel;
+        ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
+        mc_channel.channel.stream_send(3, &data, false).unwrap();
+
+        // First packet is received.
+        let res = mc_pipe.source_send_single(None, signature_len);
+        assert_eq!(res, Ok(1350));
+
+        // Second packet is lost.
+        let res = mc_pipe
+            .source_send_single(Some(&clients_losing_packets), signature_len);
+        assert_eq!(res, Ok(1350));
+
+        // Third packet is lost.
+        let res = mc_pipe
+            .source_send_single(Some(&clients_losing_packets), signature_len);
+        assert_eq!(res, Ok(1350));
+
+        // Fourth packet is lost.
+        // At this stage, all stream data has been sent but the stream is not finished.
+        let res = mc_pipe.source_send_single(Some(&clients_losing_packets), signature_len);
+        assert_eq!(res, Ok(109));
+
+        // The stream is is still open.
+        assert!(!mc_pipe.mc_channel.channel.stream_finished(3));
+        assert!(!mc_pipe.unicast_pipes[0].0.client.stream_finished(3));
+
+        // The expiration timeout is exceeded. Closes the stream and removes the
+        // packets from the sending queue.
+        let now = time::Instant::now();
+        let expired_timer = now +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            ); // Margin
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
+        assert_eq!(res, Ok((Some(10), Some(3))));
+
+        // MC-TODO: assert that the packets are not in the sending state anymore.
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_last_expired,
+            Some((Some(10), Some(3)))
+        );
+
+        // The stream is closed now.
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_writable(3, 0),
+            Err(Error::InvalidStreamState(3))
+        );
+
+        // The multicast source sends an MC_EXPIRE to the client.
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(56));
+
+        // The stream is also closed on the client now.
+        assert!(mc_pipe.unicast_pipes[0].0.client.stream_finished(3));
+
     }
 
     #[test]
