@@ -228,6 +228,7 @@ pub enum Frame {
     McKey {
         channel_id: Vec<u8>,
         key: Vec<u8>,
+        first_pn: u64,
     },
 
     McExpire {
@@ -465,7 +466,8 @@ impl Frame {
                     .buf()
                     .try_into()
                     .map_err(|_| Error::BufferTooShort)?;
-                Frame::McKey { channel_id, key }
+                let first_pn = b.get_varint()?;
+                Frame::McKey { channel_id, key, first_pn }
             },
 
             MC_EXPIRE_CODE => {
@@ -837,13 +839,14 @@ impl Frame {
                 b.put_varint(*action)?;
             },
 
-            Frame::McKey { channel_id, key } => {
+            Frame::McKey { channel_id, key, first_pn } => {
                 debug!("Going to encode the MC_KEY frame");
                 b.put_varint(MC_KEY_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
                 b.put_varint(key.len() as u64)?;
                 b.put_bytes(key)?;
+                b.put_varint(*first_pn)?;
             },
 
             Frame::McExpire {
@@ -1175,13 +1178,15 @@ impl Frame {
                 state_size
             },
 
-            Frame::McKey { channel_id, key } => {
+            Frame::McKey { channel_id, key, first_pn } => {
                 let key_len_size = octets::varint_len(key.len() as u64);
+                let first_pn_size = octets::varint_len(*first_pn);
                 1 + // frame type
                 1 + // channel_id len
                 channel_id.len() +
                 key_len_size +
-                key.len()
+                key.len() +
+                first_pn_size
             },
 
             Frame::McExpire {
@@ -1780,8 +1785,8 @@ impl std::fmt::Debug for Frame {
                 )?;
             },
 
-            Frame::McKey { channel_id, key } => {
-                write!(f, "MC_KEY channel ID={:?} key={:?}", channel_id, key)?;
+            Frame::McKey { channel_id, key, first_pn } => {
+                write!(f, "MC_KEY channel ID={:?} key={:?} first pn={:?}", channel_id, key, first_pn)?;
             },
 
             Frame::McExpire {
@@ -3563,6 +3568,7 @@ mod tests {
         let frame = Frame::McKey {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             key: vec![1; 32],
+            first_pn: 0xffffff,
         };
 
         let wire_len = {
@@ -3570,7 +3576,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 43);
+        assert_eq!(wire_len, 47);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

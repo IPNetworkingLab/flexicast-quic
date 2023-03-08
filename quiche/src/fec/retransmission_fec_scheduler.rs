@@ -43,11 +43,6 @@ impl RetransmissionFecScheduler {
             self.client_losses = HashMap::new();
         }
 
-        println!(
-            "IN FLIGHT: {}, TO SEND {}",
-            self.n_repair_in_flight, self.n_repair_to_send
-        );
-
         self.n_repair_in_flight < self.n_repair_to_send
 
         // trace!("fec_scheduler dgrams_to_emit={} stream_to_emit={}

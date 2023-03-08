@@ -1278,7 +1278,7 @@ impl Config {
     pub fn set_real_time(&mut self, v: bool) {
         self.real_time = v;
     }
-    
+
     /// Sets the FEC symbol maximum size.
     pub fn set_fec_symbol_size(&mut self, v: usize) {
         self.fec_symbol_size = v;
@@ -1931,8 +1931,14 @@ impl Connection {
 
             multicast: None,
 
-            fec_encoder: networkcoding::Encoder::VLC(VLCEncoder::new(config.fec_symbol_size, 5000)),
-            fec_decoder: networkcoding::Decoder::VLC(VLCDecoder::new(config.fec_symbol_size, 5000)),
+            fec_encoder: networkcoding::Encoder::VLC(VLCEncoder::new(
+                config.fec_symbol_size,
+                5000,
+            )),
+            fec_decoder: networkcoding::Decoder::VLC(VLCDecoder::new(
+                config.fec_symbol_size,
+                5000,
+            )),
             fec_scheduler: Some(fec::fec_scheduler::new_fec_scheduler(
                 config.fec_scheduler_algorithm,
             )),
@@ -4340,6 +4346,8 @@ impl Connection {
                 let frame = frame::Frame::McKey {
                     channel_id: mc_announce_data.channel_id.clone(),
                     key: multicast.get_decryption_key_secret()?.to_vec(),
+                    first_pn: 1, /* MC-TODO: get first packet number from FEC
+                                  * encoder. */
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
@@ -4347,6 +4355,38 @@ impl Connection {
                         multicast::MulticastClientAction::DecryptionKey,
                     )?;
                     multicast.read_mc_key();
+
+                    ack_eliciting = true;
+                    in_flight = true;
+                }
+            }
+        }
+
+        // Create MC_EXPIRE frame.
+        if let Some(multicast) = self.multicast.as_mut() {
+            if let Some((exp_pn_opt, exp_sid_opt)) = multicast.mc_last_expired {
+                let mut expiration_type = 0;
+                if exp_pn_opt.is_some() {
+                    expiration_type += 1;
+                }
+                if exp_sid_opt.is_some() {
+                    expiration_type += 2;
+                }
+                let mc_announce_data = multicast.get_mc_announce_data().ok_or(
+                    Error::Multicast(multicast::MulticastError::McAnnounce),
+                )?;
+
+                println!("Source sends MC_EXPIRE with pkt_num={:?} and stream_id={:?}", exp_pn_opt, exp_sid_opt);
+                
+                let frame = frame::Frame::McExpire {
+                    channel_id: mc_announce_data.channel_id.clone(),
+                    expiration_type,
+                    pkt_num: exp_pn_opt,
+                    stream_id: exp_sid_opt,
+                };
+
+                if push_frame_to_pkt!(b, frames, frame, left) {
+                    multicast.mc_last_expired = None;
 
                     ack_eliciting = true;
                     in_flight = true;
@@ -4513,7 +4553,6 @@ impl Connection {
             (self.paths.get(send_pid)?.fec_only ||
                 self.paths.iter().all(|(_, p)| !p.fec_only));
         // Create REPAIR frame.
-        println!("Can send fec={}, should send repair symbol={}, can_send_repair_symbols={}", can_send_fec, self.should_send_repair_symbol(send_pid)?, self.fec_encoder.can_send_repair_symbols());
         if can_send_fec &&
             pkt_type == packet::Type::Short &&
             self.should_send_repair_symbol(send_pid)? &&
@@ -8131,7 +8170,11 @@ impl Connection {
                 }
             },
 
-            frame::Frame::McKey { channel_id, key } => {
+            frame::Frame::McKey {
+                channel_id,
+                key,
+                first_pn,
+            } => {
                 debug!(
                     "Received an MC_KEY frame! channel ID: {:?}, key: {:?}",
                     channel_id, key
@@ -8146,6 +8189,8 @@ impl Connection {
                     ));
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     multicast.set_decryption_key_secret(key)?;
+
+                    // MC-TODO: handle the first packet number for FEC recovery.
                 } else {
                     return Err(Error::Multicast(
                         multicast::MulticastError::McInvalidSymKey,

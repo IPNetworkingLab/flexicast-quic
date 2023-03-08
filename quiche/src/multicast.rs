@@ -215,8 +215,8 @@ pub struct MulticastAttributes {
     /// For the client, it contains the last sent nack ranges.
     mc_nack_ranges: Option<RangeSet>,
 
-    /// Last expired packet num and stream ID.
-    mc_last_expired: Option<(Option<u64>, Option<u64>)>,
+    /// Last expired packet num (0) and stream ID (1).
+    pub(crate) mc_last_expired: Option<(Option<u64>, Option<u64>)>,
 }
 
 impl MulticastAttributes {
@@ -722,7 +722,8 @@ impl MulticastConnection for Connection {
                                 Epoch::Application,
                                 multicast.mc_space_id.unwrap_or(0) as u64,
                             )
-                            .is_some(),
+                            .is_some() ||
+                            multicast.mc_last_expired.is_some(),
                 })
     }
 
@@ -879,7 +880,11 @@ impl MulticastConnection for Connection {
                         if self.is_server {
                             stream.send.reset()?;
                         } else {
-                            stream.recv.reset(0, 0)?;
+                            // Maybe the final size is already known.
+                            let final_size = stream.recv.max_off();
+                            println!("Before reset stream {}", stream_id);
+                            stream.recv.reset(0, final_size)?;
+                            println!("After reset stream {}", stream_id);
                         }
                         let local = stream.local;
                         self.streams.collect(stream_id, local);
@@ -1016,6 +1021,10 @@ impl MulticastConnection for Connection {
                     multicast.set_mc_nack_ranges(None)?;
                 }
             }
+
+            // Unicast connection asks for the oldest valid packet number of the
+            // multicast path.
+            // MC-TODO.
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -1419,7 +1428,7 @@ mod tests {
                         .unwrap();
 
                     assert_eq!(
-                        pipe.client.set_active(client_addr_2, server_addr, true,),
+                        pipe.client.set_active(client_addr_2, server_addr, true),
                         Ok(())
                     );
 
@@ -2326,6 +2335,7 @@ mod tests {
 
         // The stream is is still open.
         assert!(!mc_pipe.mc_channel.channel.stream_finished(1));
+        assert!(mc_pipe.unicast_pipes[0].0.client.stream_readable(1));
 
         // The expiration timeout is exceeded. Closes the stream and removes the
         // packets from the sending queue.
@@ -2354,6 +2364,12 @@ mod tests {
             mc_pipe.mc_channel.channel.stream_writable(1, 0),
             Err(Error::InvalidStreamState(1))
         );
+
+        // The multicast source sends an MC_EXPIRE to the client.
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(56));
+
+        // The stream is also closed on the client now.
+        assert!(!mc_pipe.unicast_pipes[0].0.client.stream_readable(1));
     }
 
     #[test]
@@ -2399,22 +2415,36 @@ mod tests {
             Ok(339)
         );
 
-        // Second stream is received.
+        // Fourth stream is received.
         assert_eq!(
             mc_pipe.source_send_single_stream(None, signature_len, 7),
             Ok(339)
         );
 
-        // Second stream is received.
+        // Fifth stream is received.
         assert_eq!(
             mc_pipe.source_send_single_stream(None, signature_len, 9),
             Ok(339)
         );
 
-        let uc_pipe = mc_pipe.unicast_pipes.get_mut(0).unwrap();
-        let mut readables = uc_pipe.0.client.readable().collect::<Vec<_>>();
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
         readables.sort();
         assert_eq!(readables, vec![1, 7, 9]);
+
+        let client_mc_space_id = uc_pipe
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .get_mc_space_id()
+            .unwrap();
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        let mut expected_ranges = ranges::RangeSet::default();
+        expected_ranges.insert(3..5);
+        assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
 
         let timer = time::Instant::now();
         let timer = timer +
@@ -2434,6 +2464,15 @@ mod tests {
             Some((Some(6), Some(9)))
         );
 
+        // Multicast source sends an MC_EXPIRE to the client.
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(56));
+
+        // Sixth stream is received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 11),
+            Ok(339)
+        );
+
         let open_streams = mc_pipe
             .mc_channel
             .channel
@@ -2441,7 +2480,23 @@ mod tests {
             .iter()
             .map(|(sid, _)| *sid)
             .collect::<Vec<_>>();
-        assert_eq!(open_streams, vec![0u64; 0]);
+        assert_eq!(open_streams, vec![11]);
+
+        // The client has no missing packet.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        assert_eq!(nack_ranges.as_ref(), None);
+
+        // Only the last stream did not timeout.
+        // All timeout streams are still redeables but finished.
+        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 7, 9, 11]);
+        assert!(uc_pipe.client.stream_finished(1));
+        assert!(uc_pipe.client.stream_finished(7));
+        assert!(uc_pipe.client.stream_finished(9));
     }
 
     #[test]
