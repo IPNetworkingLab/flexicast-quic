@@ -4364,8 +4364,8 @@ impl Connection {
 
         // Create MC_EXPIRE frame.
         if let Some(multicast) = self.multicast.as_mut() {
-            if let Some((exp_pn_opt, exp_sid_opt, exp_fec_metadata_opt)) =
-                multicast.mc_last_expired
+            if let (true, Some((exp_pn_opt, exp_sid_opt, exp_fec_metadata_opt))) =
+                (multicast.mc_last_expired_needs_notif, multicast.mc_last_expired)
             {
                 let mut expiration_type = 0;
                 if exp_pn_opt.is_some() {
@@ -4392,7 +4392,7 @@ impl Connection {
                 // MC-TODO: expired FEC metadata
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    multicast.mc_last_expired = None;
+                    multicast.mc_last_expired_needs_notif = false;
 
                     ack_eliciting = true;
                     in_flight = true;

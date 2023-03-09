@@ -220,6 +220,9 @@ pub struct MulticastAttributes {
 
     /// Last expired packet num (0) and stream ID (1).
     pub(crate) mc_last_expired: Option<ExpiredData>,
+
+    /// Last expired data needs to trigger an MC_EXPIRE frame.
+    pub(crate) mc_last_expired_needs_notif: bool,
 }
 
 impl MulticastAttributes {
@@ -444,6 +447,7 @@ impl Default for MulticastAttributes {
             mc_space_id: None,
             mc_nack_ranges: None,
             mc_last_expired: None,
+            mc_last_expired_needs_notif: false,
         }
     }
 }
@@ -724,7 +728,7 @@ impl MulticastConnection for Connection {
                                 multicast.mc_space_id.unwrap_or(0) as u64,
                             )
                             .is_some() ||
-                            multicast.mc_last_expired.is_some(),
+                            multicast.mc_last_expired_needs_notif,
                 })
     }
 
@@ -949,6 +953,15 @@ impl MulticastConnection for Connection {
                     if let Ok(v) = res {
                         self.multicast.as_mut().unwrap().mc_last_expired =
                             Some(v);
+                        self.multicast
+                            .as_mut()
+                            .unwrap()
+                            .mc_last_expired_needs_notif = true;
+                        let mc_role = self.multicast.as_ref().unwrap().mc_role;
+                        println!(
+                            "J'ai update les valeurs avec {:?} mon role est {:?}",
+                            self.multicast.as_mut().unwrap().mc_last_expired, mc_role
+                        );
                         return Ok(v);
                     }
                 }
@@ -1025,6 +1038,19 @@ impl MulticastConnection for Connection {
 
             // MC_NACK ranges.
             if let Some(nack_ranges) = multicast.mc_nack_ranges.as_mut() {
+                // Filter from the nack ranges packets that are expired on the
+                // source. This is necessary in case of
+                // desynchronization with the client.
+                println!("Received NACK ranges: {:?}", nack_ranges);
+                println!("Les last expired= {:?}", multicast.mc_last_expired);
+                if let Some(last_expired_data) = mc_channel.multicast.as_ref().unwrap().mc_last_expired {
+                    if let Some(last_expired_pn) = last_expired_data.0 {
+                        println!("Last expired pn: {}", last_expired_pn);
+                        nack_ranges.remove_until(last_expired_pn + 1);
+                        println!("Now the nack range is {:?}", nack_ranges);
+                    }
+                }
+
                 // The multicast source updates its FEC scheduler with the
                 // received losses.
                 let conn_id_ref = self.ids.get_dcid(0)?; // MC-TODO: replace hard-coded value.
@@ -1589,7 +1615,7 @@ mod tests {
             Ok(())
         }
 
-        /// Unicase server sends multicast feedback control from the client to
+        /// UnicasT server sends multicast feedback control from the client to
         /// the multicast source.
         fn server_control_to_mc_source(&mut self) -> Result<()> {
             let mc_channel = &mut self.mc_channel.channel;
@@ -2892,13 +2918,9 @@ mod tests {
             Ok(348 + signature_len)
         );
 
-        // A last stream is received
+        // A last stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(
-                None,
-                signature_len,
-                7
-            ),
+            mc_pipe.source_send_single_stream(None, signature_len, 7),
             Ok(348 + signature_len)
         );
 
@@ -3020,11 +3042,11 @@ mod tests {
     /// multicast source. In this case, they will send an MC_NACK frame with
     /// expired packet numbers. The server must not generate FEC repair symbols
     /// for these lost source symbols that are expired.
-    fn source_does_not_generate_fec_repair_for_expired() {
+    fn source_does_not_generate_mc_fec_repair_for_expired() {
         let use_auth = true;
         let mut mc_pipe = MulticastPipe::new(
             1,
-            "/tmp/source_does_not_generate_fec_repair_for_expired.txt",
+            "/tmp/source_does_not_generate_mc_fec_repair_for_expired.txt",
             use_auth,
             true,
         )
@@ -3057,6 +3079,28 @@ mod tests {
             Ok(348 + signature_len)
         );
 
+        // A last stream is received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 7),
+            Ok(348 + signature_len)
+        );
+
+        // The client has two missing packets.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let client_mc_space_id = uc_pipe
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .get_mc_space_id()
+            .unwrap();
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        let mut expected_ranges = ranges::RangeSet::default();
+        expected_ranges.insert(3..5);
+        assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
+
         // Timeout of the three streams.
         let timer = time::Instant::now();
         let timer = timer +
@@ -3076,10 +3120,81 @@ mod tests {
             Some((Some(5), Some(7), Some(3)))
         );
 
-        // Multicast source sends an MC_EXPIRE to the client.
+        // Multicast source sends an MC_EXPIRE. The packet is lost.
         assert_eq!(
-            mc_pipe.source_send_single(None, signature_len),
+            mc_pipe
+                .source_send_single(Some(&clients_losing_packets), signature_len),
             Ok(57 + signature_len)
         );
+
+        // The client still has two lost packets.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
+
+        // The server sends a stream of 4 packets.
+        let mut data = [0u8; 4000];
+        ring::rand::SystemRandom::new().fill(&mut data[..]).unwrap();
+        mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(9, &data, true)
+            .unwrap();
+
+        // First packet is lost.
+        assert_eq!(
+            mc_pipe
+                .source_send_single(Some(&clients_losing_packets), signature_len),
+            Ok(1314)
+        );
+
+        // All subsequent packets are received.
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1314));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1314));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(509));
+
+        // The client knows that they lost the first packet of the new stream, but
+        // also the two older (and expired!) packets because they did not receive
+        // the MC_EXPIRE frame from the multicast source..
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        expected_ranges.insert(6..8); // The client also lost the packet with the MC_EXPIRE.
+        assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
+
+        // The client sends an MC_NACK to the server.
+        // This MC_NACK also contains expired data.
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        // Communication to unicast servers.
+        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+
+        // The server generates FEC a single repair packet because the client lost
+        // the first frame of the stream. Recall that the previous packets have
+        // been removed due to a timeout. Even if the MC_NACK of the client
+        // contains more packets, the source filters them out.
+        // MC-TODO: verify the nack ranges on the source to be sure?
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
+        // No need to send additional repair symbols.
+        assert_eq!(
+            mc_pipe.source_send_single(None, signature_len),
+            Err(Error::Done)
+        );
+
+        // The client recovers the lost packet and can read the stream.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        assert_eq!(nack_ranges.as_ref(), None);
+        let mut tmp_buf = [42u8; 4096];
+        assert_eq!(
+            uc_pipe.client.stream_recv(9, &mut tmp_buf[..]),
+            Ok((4000, true))
+        );
+        assert_eq!(tmp_buf[..4000], data[..4000]);
     }
 }
