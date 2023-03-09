@@ -2874,7 +2874,7 @@ mod tests {
             Ok(348 + signature_len)
         );
 
-        // Three consecutive streams are lost.
+        // Two consecutive streams are lost.
         assert_eq!(
             mc_pipe.source_send_single_stream(
                 Some(&clients_losing_packets),
@@ -2891,14 +2891,32 @@ mod tests {
             ),
             Ok(348 + signature_len)
         );
+
+        // A last stream is received
         assert_eq!(
             mc_pipe.source_send_single_stream(
-                Some(&clients_losing_packets),
+                None,
                 signature_len,
                 7
             ),
             Ok(348 + signature_len)
         );
+
+        // The client has two missing packets.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let client_mc_space_id = uc_pipe
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .get_mc_space_id()
+            .unwrap();
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        let mut expected_ranges = ranges::RangeSet::default();
+        expected_ranges.insert(3..5);
+        assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
 
         // Timeout of the four streams.
         let timer = time::Instant::now();
@@ -2927,13 +2945,6 @@ mod tests {
 
         // The client has no missing packet.
         let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
-        let client_mc_space_id = uc_pipe
-            .client
-            .multicast
-            .as_ref()
-            .unwrap()
-            .get_mc_space_id()
-            .unwrap();
         let nack_ranges = uc_pipe
             .client
             .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
@@ -3002,5 +3013,73 @@ mod tests {
             Ok((4000, true))
         );
         assert_eq!(tmp_buf[..4000], data[..4000]);
+    }
+
+    #[test]
+    /// Tests the case where the client did not receive the MC_EXPIRE from the
+    /// multicast source. In this case, they will send an MC_NACK frame with
+    /// expired packet numbers. The server must not generate FEC repair symbols
+    /// for these lost source symbols that are expired.
+    fn source_does_not_generate_fec_repair_for_expired() {
+        let use_auth = true;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/source_does_not_generate_fec_repair_for_expired.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+        let mut clients_losing_packets = RangeSet::default();
+        clients_losing_packets.insert(0..1);
+
+        // First stream is received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            Ok(348 + signature_len)
+        );
+
+        // Two consecutive streams are lost.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                3
+            ),
+            Ok(348 + signature_len)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                5
+            ),
+            Ok(348 + signature_len)
+        );
+
+        // Timeout of the three streams.
+        let timer = time::Instant::now();
+        let timer = timer +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            );
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
+        assert_eq!(res, Ok((Some(5), Some(7), Some(3))));
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_last_expired,
+            Some((Some(5), Some(7), Some(3)))
+        );
+
+        // Multicast source sends an MC_EXPIRE to the client.
+        assert_eq!(
+            mc_pipe.source_send_single(None, signature_len),
+            Ok(57 + signature_len)
+        );
     }
 }
