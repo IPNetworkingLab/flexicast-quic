@@ -4381,7 +4381,6 @@ impl Connection {
                 let mc_announce_data = multicast.get_mc_announce_data().ok_or(
                     Error::Multicast(multicast::MulticastError::McAnnounce),
                 )?;
-                println!("J'ENVOIE AVEC EXP FEC: {:?}", exp_fec_metadata_opt);
 
                 let frame = frame::Frame::McExpire {
                     channel_id: mc_announce_data.channel_id.clone(),

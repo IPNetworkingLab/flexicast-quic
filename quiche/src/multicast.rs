@@ -995,7 +995,11 @@ impl MulticastConnection for Connection {
 
         // Add the connection ID for the client without advertising it to the
         // unicast server.
-        let reset_token = 0xffeeddccu128;
+        let mut reset_token = [0; 16];
+        ring::rand::SystemRandom::new()
+            .fill(&mut reset_token)
+            .unwrap();
+        let reset_token = u128::from_be_bytes(reset_token);
         self.new_source_cid(cid, reset_token, true)?;
         let seq_num = self.ids.next_advertise_new_scid_seq().unwrap();
         self.ids.mark_advertise_new_scid_seq(seq_num, true);
@@ -1006,12 +1010,7 @@ impl MulticastConnection for Connection {
 
         // Create a new path on the client.
         let pid = self.create_path_on_client(client_addr, server_addr)?;
-
-        // Not forget to set the path as active.
         self.set_active(client_addr, server_addr, true)?;
-        // if let Some(multicast) = self.multicast.as_mut() {
-        //     multicast.set_mc_space_id(pid);
-        // }
 
         let path = self.paths.get_mut(pid)?;
         path.active_dcid_seq.ok_or(Error::InvalidState)
@@ -1042,15 +1041,11 @@ impl MulticastConnection for Connection {
                 // Filter from the nack ranges packets that are expired on the
                 // source. This is necessary in case of
                 // desynchronization with the client.
-                println!("Received NACK ranges: {:?}", nack_ranges);
-                println!("Les last expired= {:?}", multicast.mc_last_expired);
                 if let Some(last_expired_data) =
                     mc_channel.multicast.as_ref().unwrap().mc_last_expired
                 {
                     if let Some(last_expired_pn) = last_expired_data.0 {
-                        println!("Last expired pn: {}", last_expired_pn);
                         nack_ranges.remove_until(last_expired_pn + 1);
-                        println!("Now the nack range is {:?}", nack_ranges);
                     }
                 }
 
@@ -1237,9 +1232,6 @@ impl MulticastChannelSource {
         };
 
         // // Create Connection ID and reset token.
-        // let mut cid = vec![0; channel_id.len()];
-        // rand_bytes(&mut cid[..]);
-        // let cid = ConnectionId::from_ref(&cid).into_owned();
         let cid = channel_id.clone().into_owned();
 
         let mut reset_token = [0; 16];
@@ -1472,11 +1464,6 @@ mod tests {
                     pipe.client
                         .create_mc_path(&cid, client_addr_2, server_addr)
                         .unwrap();
-
-                    assert_eq!(
-                        pipe.client.set_active(client_addr_2, server_addr, true),
-                        Ok(())
-                    );
 
                     let pid_c2s_1 = pipe
                         .client
@@ -2256,7 +2243,6 @@ mod tests {
         let res = pipe.client.mc_recv(&mut mc_buf[..written], recv_info);
         assert!(res.is_ok());
         let read = res.unwrap();
-        println!("READ: {}", read);
         assert!(pipe.client.stream_readable(1));
         assert_eq!(pipe.client.stream_recv(1, &mut mc_buf[..]), Ok((255, true)));
     }
