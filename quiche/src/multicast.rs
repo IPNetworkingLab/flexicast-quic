@@ -960,7 +960,8 @@ impl MulticastConnection for Connection {
                         let mc_role = self.multicast.as_ref().unwrap().mc_role;
                         println!(
                             "J'ai update les valeurs avec {:?} mon role est {:?}",
-                            self.multicast.as_mut().unwrap().mc_last_expired, mc_role
+                            self.multicast.as_mut().unwrap().mc_last_expired,
+                            mc_role
                         );
                         return Ok(v);
                     }
@@ -1043,7 +1044,9 @@ impl MulticastConnection for Connection {
                 // desynchronization with the client.
                 println!("Received NACK ranges: {:?}", nack_ranges);
                 println!("Les last expired= {:?}", multicast.mc_last_expired);
-                if let Some(last_expired_data) = mc_channel.multicast.as_ref().unwrap().mc_last_expired {
+                if let Some(last_expired_data) =
+                    mc_channel.multicast.as_ref().unwrap().mc_last_expired
+                {
                     if let Some(last_expired_pn) = last_expired_data.0 {
                         println!("Last expired pn: {}", last_expired_pn);
                         nack_ranges.remove_until(last_expired_pn + 1);
