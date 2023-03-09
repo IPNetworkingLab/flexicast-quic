@@ -222,6 +222,7 @@ pub enum Frame {
         channel_id: Vec<u8>,
         // MC-TODO: sequence number?
         action: u64,
+        action_data: u64,
         // MC-TODO: reason code?
     },
 
@@ -457,6 +458,7 @@ impl Frame {
             MC_STATE_CODE => Frame::McState {
                 channel_id: b.get_bytes_with_u8_length()?.to_vec(),
                 action: b.get_varint()?,
+                action_data: b.get_varint()?,
             },
 
             MC_KEY_CODE => {
@@ -843,12 +845,17 @@ impl Frame {
                 debug!("After putting the frame: {}", b.off());
             },
 
-            Frame::McState { channel_id, action } => {
+            Frame::McState {
+                channel_id,
+                action,
+                action_data,
+            } => {
                 debug!("Going to encode the MC_STATE frame");
                 b.put_varint(MC_STATE_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
                 b.put_varint(*action)?;
+                b.put_varint(*action_data)?;
             },
 
             Frame::McKey {
@@ -1190,12 +1197,18 @@ impl Frame {
                 public_key.len()
             },
 
-            Frame::McState { channel_id, action } => {
-                let state_size = octets::varint_len(*action);
+            Frame::McState {
+                channel_id,
+                action,
+                action_data,
+            } => {
+                let action_size = octets::varint_len(*action);
+                let action_data_size = octets::varint_len(*action_data);
                 1 + // frame type
                 1 + // channel_id len
                 channel_id.len() +
-                state_size
+                action_size +
+                action_data_size
             },
 
             Frame::McKey {
@@ -1805,11 +1818,15 @@ impl std::fmt::Debug for Frame {
                 write!(f, "MC_ANNOUNCE channel ID={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}, ttl_data={}", channel_id, is_ipv6, source_ip, group_ip, udp_port, ttl_data)?;
             },
 
-            Frame::McState { channel_id, action } => {
+            Frame::McState {
+                channel_id,
+                action,
+                action_data,
+            } => {
                 write!(
                     f,
-                    "MC_STATE channel ID={:?}, state={}",
-                    channel_id, action
+                    "MC_STATE channel ID={:?}, action={}, action_data={}",
+                    channel_id, action, action_data,
                 )?;
             },
 
@@ -3562,6 +3579,7 @@ mod tests {
         let frame = Frame::McState {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             action: 1,
+            action_data: 0xff,
         };
 
         let wire_len = {
@@ -3569,7 +3587,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 11);
+        assert_eq!(wire_len, 13);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

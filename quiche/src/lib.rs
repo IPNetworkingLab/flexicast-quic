@@ -4305,6 +4305,7 @@ impl Connection {
                 multicast.set_mc_announce_processed(true)?;
                 multicast.update_client_state(
                     multicast::MulticastClientAction::Notify,
+                    None,
                 )?;
 
                 ack_eliciting = true;
@@ -4315,6 +4316,23 @@ impl Connection {
         // Create MC_STATE frame.
         if let Some(multicast) = self.multicast.as_mut() {
             if multicast.should_send_mc_state() {
+                let (action, action_data) = match multicast.get_mc_role() {
+                    multicast::MulticastRole::Client(
+                        multicast::MulticastClientStatus::WaitingToJoin,
+                    ) => (multicast::MulticastClientAction::Join, None),
+                    multicast::MulticastRole::Client(
+                        multicast::MulticastClientStatus::JoinedAndKey,
+                    ) => (
+                        multicast::MulticastClientAction::McPath,
+                        multicast.get_mc_space_id(),
+                    ),
+                    _ =>
+                        return Err(Error::Multicast(
+                            multicast::MulticastError::McInvalidRole(
+                                multicast.get_mc_role(),
+                            ),
+                        )),
+                };
                 let frame = frame::Frame::McState {
                     channel_id: multicast
                         .get_mc_announce_data()
@@ -4323,12 +4341,14 @@ impl Connection {
                         ))?
                         .channel_id
                         .clone(),
-                    action: multicast::MulticastClientAction::Join.try_into()?,
+                    action: action.try_into()?,
+                    action_data: action_data.unwrap_or(0) as u64,
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     multicast.update_client_state(
-                        multicast::MulticastClientAction::Join,
+                        action,
+                        action_data.map(|v| v as u64),
                     )?;
 
                     ack_eliciting = true;
@@ -4359,6 +4379,7 @@ impl Connection {
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     multicast.update_client_state(
                         multicast::MulticastClientAction::DecryptionKey,
+                        None,
                     )?;
                     multicast.read_mc_key();
 
@@ -8157,10 +8178,14 @@ impl Connection {
                 self.mc_set_mc_announce_data(&mc_announce_data)?;
             },
 
-            frame::Frame::McState { channel_id, action } => {
+            frame::Frame::McState {
+                channel_id,
+                action,
+                action_data,
+            } => {
                 debug!(
-                    "Received an MC_STATE frame! channel ID: {:?}, state: {}",
-                    channel_id, action
+                    "Received an MC_STATE frame! channel ID: {:?}, action: {}, action_data: {}",
+                    channel_id, action, action_data,
                 );
                 // The client can also receive an MC_STATE.
                 // It can be used to request for a channel leave.
@@ -8170,8 +8195,10 @@ impl Connection {
                 } else {
                     match self.multicast.as_mut() {
                         Some(multicast) =>
-                            _ = multicast
-                                .update_client_state(action.try_into()?)?,
+                            _ = multicast.update_client_state(
+                                action.try_into()?,
+                                Some(action_data),
+                            )?,
                         None =>
                             return Err(Error::Multicast(
                                 multicast::MulticastError::McDisabled,
