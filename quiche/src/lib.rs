@@ -8194,7 +8194,11 @@ impl Connection {
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     multicast.set_decryption_key_secret(key)?;
 
-                    // MC-TODO: handle the first packet number for FEC recovery.
+                    // Store the first packet number of interest for the client.
+                    // Packets starting with this number will trigger MC_NACK in
+                    // case of loss.
+                    multicast.mc_last_expired =
+                        Some((Some(first_pn), None, None));
                 } else {
                     return Err(Error::Multicast(
                         multicast::MulticastError::McInvalidSymKey,

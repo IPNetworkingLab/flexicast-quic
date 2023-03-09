@@ -1041,12 +1041,10 @@ impl MulticastConnection for Connection {
                 // Filter from the nack ranges packets that are expired on the
                 // source. This is necessary in case of
                 // desynchronization with the client.
-                if let Some(last_expired_data) =
+                if let Some((Some(last_expired_pn), ..)) =
                     mc_channel.multicast.as_ref().unwrap().mc_last_expired
                 {
-                    if let Some(last_expired_pn) = last_expired_data.0 {
-                        nack_ranges.remove_until(last_expired_pn + 1);
-                    }
+                    nack_ranges.remove_until(last_expired_pn + 1);
                 }
 
                 // The multicast source updates its FEC scheduler with the
@@ -2242,7 +2240,6 @@ mod tests {
         // Now a valid signature.
         let res = pipe.client.mc_recv(&mut mc_buf[..written], recv_info);
         assert!(res.is_ok());
-        let read = res.unwrap();
         assert!(pipe.client.stream_readable(1));
         assert_eq!(pipe.client.stream_recv(1, &mut mc_buf[..]), Ok((255, true)));
     }
