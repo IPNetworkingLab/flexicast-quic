@@ -1013,7 +1013,19 @@ impl MulticastConnection for Connection {
         self.set_active(client_addr, server_addr, true)?;
 
         let path = self.paths.get_mut(pid)?;
-        path.active_dcid_seq.ok_or(Error::InvalidState)
+        let pid = path.active_dcid_seq.ok_or(Error::InvalidState)?;
+
+        // Add the first packet number of interest for the new path if possible.
+        if let Some((Some(first_pn), ..)) =
+            self.multicast.as_ref().unwrap().mc_last_expired
+        {
+            self.pkt_num_spaces
+                .get_mut(Epoch::Application, pid)?
+                .recv_pkt_need_ack
+                .insert(first_pn..first_pn + 1);
+        }
+
+        Ok(pid)
     }
 
     fn uc_to_mc_control(&mut self, mc_channel: &mut Connection) -> Result<()> {
@@ -1063,7 +1075,15 @@ impl MulticastConnection for Connection {
 
             // Unicast connection asks for the oldest valid packet number of the
             // multicast path.
-            // MC-TODO.
+            if let Some((Some(pn), ..)) =
+                mc_channel.multicast.as_ref().unwrap().mc_last_expired
+            {
+                if let Some((_, v, w)) = multicast.mc_last_expired {
+                    multicast.mc_last_expired = Some((Some(pn), v, w));
+                } else {
+                    multicast.mc_last_expired = Some((Some(pn), None, None));
+                }
+            }
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -3182,5 +3202,63 @@ mod tests {
             Ok((4000, true))
         );
         assert_eq!(tmp_buf[..4000], data[..4000]);
+    }
+
+    #[test]
+    /// The `first_pn` value of the MC_KEY frame enables the client to detect
+    /// lost packets even if the first multicast packets are lost.
+    fn test_mc_client_first_pn_utility() {
+        let use_auth = true;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/source_does_not_generate_mc_fec_repair_for_expired.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+        let mut clients_losing_packets = RangeSet::default();
+        clients_losing_packets.insert(0..1);
+
+        // First two streams are lost.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                1
+            ),
+            Ok(348 + signature_len)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                3
+            ),
+            Ok(348 + signature_len)
+        );
+
+        // Third stream is received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 5),
+            Ok(348 + signature_len)
+        );
+
+        // With the first packet from the MC_KEY frame, the client detects the two
+        // first missing packets.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let client_mc_space_id = uc_pipe
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .get_mc_space_id()
+            .unwrap();
+        let nack_ranges = uc_pipe
+            .client
+            .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
+        let mut expected_ranges = ranges::RangeSet::default();
+        expected_ranges.insert(2..4);
+        assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
     }
 }

@@ -4343,11 +4343,17 @@ impl Connection {
                 let mc_announce_data = multicast.get_mc_announce_data().ok_or(
                     Error::Multicast(multicast::MulticastError::McAnnounce),
                 )?;
+                let first_pn =
+                    if let Some((Some(pn), ..)) = multicast.mc_last_expired {
+                        pn
+                    } else {
+                        1
+                    };
+
                 let frame = frame::Frame::McKey {
                     channel_id: mc_announce_data.channel_id.clone(),
                     key: multicast.get_decryption_key_secret()?.to_vec(),
-                    first_pn: 1, /* MC-TODO: get first packet number from FEC
-                                  * encoder. */
+                    first_pn,
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
@@ -8179,9 +8185,9 @@ impl Connection {
                 key,
                 first_pn,
             } => {
-                debug!(
-                    "Received an MC_KEY frame! channel ID: {:?}, key: {:?}",
-                    channel_id, key
+                println!(
+                    "Received an MC_KEY frame! channel ID: {:?}, key: {:?}, first_pn: {:?}",
+                    channel_id, key, first_pn,
                 );
                 if self.is_server {
                     return Err(Error::Multicast(
@@ -8194,11 +8200,22 @@ impl Connection {
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     multicast.set_decryption_key_secret(key)?;
 
-                    // Store the first packet number of interest for the client.
                     // Packets starting with this number will trigger MC_NACK in
                     // case of loss.
-                    multicast.mc_last_expired =
-                        Some((Some(first_pn), None, None));
+                    if let Some(mc_space_id) = multicast.get_mc_space_id() {
+                        // If the multicast path exists, do that directly...
+                        self.pkt_num_spaces
+                            .get_mut_or_create(
+                                packet::Epoch::Application,
+                                mc_space_id as u64,
+                            )
+                            .recv_pkt_need_ack
+                            .insert(first_pn..first_pn + 1);
+                    } else {
+                        // ... and if the path does not exist, store for later.
+                        multicast.mc_last_expired =
+                            Some((Some(first_pn), None, None));
+                    }
                 } else {
                     return Err(Error::Multicast(
                         multicast::MulticastError::McInvalidSymKey,
