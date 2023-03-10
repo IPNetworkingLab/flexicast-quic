@@ -369,6 +369,7 @@ use qlog::events::EventType;
 use qlog::events::RawInfo;
 
 use std::cmp;
+use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::time;
 
@@ -3014,6 +3015,34 @@ impl Connection {
                         }
                     },
 
+                    frame::Frame::McState {
+                        channel_id: _,
+                        action,
+                        action_data,
+                    } =>
+                        if let Some(multicast) = self.multicast.as_mut() {
+                            if matches!(
+                                multicast.get_mc_role(),
+                                multicast::MulticastRole::Client(
+                                    multicast::MulticastClientStatus::Leaving(
+                                        true
+                                    )
+                                )
+                            ) && multicast::MulticastClientAction::try_from(
+                                action,
+                            )? == multicast::MulticastClientAction::Leave
+                            {
+                                multicast.update_client_state(
+                                    action.try_into()?,
+                                    Some(action_data),
+                                )?;
+                            }
+                        } else {
+                            return Err(Error::Multicast(
+                                multicast::MulticastError::McDisabled,
+                            ));
+                        },
+
                     _ => (),
                 }
             }
@@ -4326,6 +4355,9 @@ impl Connection {
                         multicast::MulticastClientAction::McPath,
                         multicast.get_mc_space_id(),
                     ),
+                    multicast::MulticastRole::Client(
+                        multicast::MulticastClientStatus::Leaving(false),
+                    ) => (multicast::MulticastClientAction::Leave, None),
                     _ =>
                         return Err(Error::Multicast(
                             multicast::MulticastError::McInvalidRole(
