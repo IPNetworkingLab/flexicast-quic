@@ -553,6 +553,9 @@ pub trait MulticastConnection {
     /// Sets the symetric keys from the secrets. Only used in multicast.
     /// Updates the MC_ANNOUNCE data if it exists, or adds a new structure.
     /// Creates the multicast structure if it does not exist.
+    ///
+    /// Also sets the multicast channel decryption key secret on the unicast
+    /// server. MC-TODO: change the name to be more explicit.
     fn mc_set_multicast_receiver(&mut self, secret: &[u8]) -> Result<()>;
 
     /// Returns true if the multicast extension has control data to send.
@@ -653,6 +656,9 @@ pub trait MulticastConnection {
     /// Returns an error if this method is called by another entity than the
     /// unicast server.
     fn uc_to_mc_control(&mut self, mc_channel: &mut Connection) -> Result<()>;
+
+    /// Returns the multicast attributes.
+    fn get_multicast_attributes(&self) -> Option<&MulticastAttributes>;
 }
 
 impl MulticastConnection for Connection {
@@ -698,6 +704,11 @@ impl MulticastConnection for Connection {
 
                     Ok(())
                 },
+                MulticastRole::ServerUnicast(_) => {
+                    multicast.mc_channel_key = Some(secret.to_owned());
+
+                    Ok(())
+                },
                 _ => Err(Error::Multicast(MulticastError::McInvalidRole(
                     multicast.mc_role,
                 ))),
@@ -710,16 +721,7 @@ impl MulticastConnection for Connection {
     fn mc_set_mc_announce_data(
         &mut self, mc_announce_data: &McAnnounceData,
     ) -> Result<()> {
-        if (self.is_server &&
-            !(self.local_transport_params.multicast_server_params &&
-                self.peer_transport_params
-                    .multicast_client_params
-                    .is_some())) ||
-            !(self.is_server ||
-                self.peer_transport_params.multicast_server_params &&
-                    self.local_transport_params
-                        .multicast_client_params
-                        .is_some())
+        if self.is_server && !self.local_transport_params.multicast_server_params
         {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -1022,7 +1024,6 @@ impl MulticastConnection for Connection {
                         None,
                         now,
                     );
-                    println!("Avant les valeurs: {:?}", res);
                     if let Ok(v) = res {
                         self.multicast.as_mut().unwrap().mc_last_expired =
                             Some(v);
@@ -1098,6 +1099,11 @@ impl MulticastConnection for Connection {
                 .insert(first_pn..first_pn + 1);
         }
 
+        self.multicast
+            .as_mut()
+            .unwrap()
+            .set_mc_space_id(pid as usize);
+
         Ok(pid)
     }
 
@@ -1162,6 +1168,10 @@ impl MulticastConnection for Connection {
         }
 
         Ok(())
+    }
+
+    fn get_multicast_attributes(&self) -> Option<&MulticastAttributes> {
+        self.multicast.as_ref()
     }
 }
 
@@ -1252,11 +1262,14 @@ pub struct MulticastChannelSource {
 
     /// Address used to trigger sending packets on the multicast path.
     pub mc_path_peer: SocketAddr,
+
+    /// Multicast send address.
+    pub mc_send_addr: SocketAddr,
 }
 
 impl MulticastChannelSource {
     /// Creates a new source multicast channel.
-    fn new_with_tls(
+    pub fn new_with_tls(
         channel_id: &ConnectionId, config_server: &mut Config,
         config_client: &mut Config, peer: SocketAddr, peer2: SocketAddr,
         keylog_filename: &str, do_auth: bool,
@@ -1342,6 +1355,7 @@ impl MulticastChannelSource {
             master_secret: exporter_secret,
             mc_path_conn_id: (cid, reset_token),
             mc_path_peer: peer2,
+            mc_send_addr: peer,
         })
     }
 
@@ -1448,7 +1462,7 @@ impl MulticastChannelSource {
     ///
     /// MC-TODO: only Ed25519 is used at the moment.
     /// The last bytes of the packet contain the signature.
-    fn mc_send(&mut self, buf: &mut [u8]) -> Result<usize> {
+    pub fn mc_send(&mut self, buf: &mut [u8]) -> Result<usize> {
         self.channel
             .send_on_path(buf, Some(self.mc_path_peer), Some(self.mc_path_peer))
             .map(|(written, _)| written)

@@ -4303,158 +4303,163 @@ impl Connection {
                     break;
                 }
             }
-        }
-
-        // Create MC_ANNOUNCE frame.
-        if self.mc_should_send_mc_announce() {
-            let multicast = self
-                .multicast
-                .as_mut()
-                .ok_or(Error::Multicast(multicast::MulticastError::McDisabled))?;
-            let mc_announce_data = multicast
-                .get_mc_announce_data()
-                .ok_or(Error::Multicast(multicast::MulticastError::McDisabled))?;
-            let frame = frame::Frame::McAnnounce {
-                channel_id: mc_announce_data.channel_id.clone(),
-                is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
-                source_ip: mc_announce_data.source_ip,
-                group_ip: mc_announce_data.group_ip,
-                udp_port: mc_announce_data.udp_port,
-                ttl_data: mc_announce_data.ttl_data,
-                public_key: if let Some(key) =
-                    mc_announce_data.public_key.as_ref()
-                {
-                    key.clone()
-                } else {
-                    Vec::new()
-                },
-            };
-
-            if push_frame_to_pkt!(b, frames, frame, left) {
-                multicast.set_mc_announce_processed(true)?;
-                multicast.update_client_state(
-                    multicast::MulticastClientAction::Notify,
-                    None,
+            // Create MC_ANNOUNCE frame.
+            if self.mc_should_send_mc_announce() {
+                let multicast = self.multicast.as_mut().ok_or(
+                    Error::Multicast(multicast::MulticastError::McDisabled),
                 )?;
-
-                ack_eliciting = true;
-                in_flight = true;
-            }
-        }
-
-        // Create MC_STATE frame.
-        if let Some(multicast) = self.multicast.as_mut() {
-            if multicast.should_send_mc_state() {
-                let (action, action_data) = match multicast.get_mc_role() {
-                    multicast::MulticastRole::Client(
-                        multicast::MulticastClientStatus::WaitingToJoin,
-                    ) => (multicast::MulticastClientAction::Join, None),
-                    multicast::MulticastRole::Client(
-                        multicast::MulticastClientStatus::JoinedAndKey,
-                    ) => (
-                        multicast::MulticastClientAction::McPath,
-                        multicast.get_mc_space_id(),
-                    ),
-                    multicast::MulticastRole::Client(
-                        multicast::MulticastClientStatus::Leaving(false),
-                    ) => (multicast::MulticastClientAction::Leave, None),
-                    _ =>
-                        return Err(Error::Multicast(
-                            multicast::MulticastError::McInvalidRole(
-                                multicast.get_mc_role(),
-                            ),
-                        )),
+                let mc_announce_data = multicast.get_mc_announce_data().ok_or(
+                    Error::Multicast(multicast::MulticastError::McDisabled),
+                )?;
+                let frame = frame::Frame::McAnnounce {
+                    channel_id: mc_announce_data.channel_id.clone(),
+                    is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
+                    source_ip: mc_announce_data.source_ip,
+                    group_ip: mc_announce_data.group_ip,
+                    udp_port: mc_announce_data.udp_port,
+                    ttl_data: mc_announce_data.ttl_data,
+                    public_key: if let Some(key) =
+                        mc_announce_data.public_key.as_ref()
+                    {
+                        key.clone()
+                    } else {
+                        Vec::new()
+                    },
                 };
-                let frame = frame::Frame::McState {
-                    channel_id: multicast
+
+                if push_frame_to_pkt!(b, frames, frame, left) {
+                    multicast.set_mc_announce_processed(true)?;
+                    multicast.update_client_state(
+                        multicast::MulticastClientAction::Notify,
+                        None,
+                    )?;
+
+                    ack_eliciting = true;
+                    in_flight = true;
+                }
+            }
+
+            // Create MC_STATE frame.
+            if let Some(multicast) = self.multicast.as_mut() {
+                if multicast.should_send_mc_state() {
+                    let (action, action_data) = match multicast.get_mc_role() {
+                        multicast::MulticastRole::Client(
+                            multicast::MulticastClientStatus::WaitingToJoin,
+                        ) => (multicast::MulticastClientAction::Join, None),
+                        multicast::MulticastRole::Client(
+                            multicast::MulticastClientStatus::JoinedAndKey,
+                        ) => (
+                            multicast::MulticastClientAction::McPath,
+                            multicast.get_mc_space_id(),
+                        ),
+                        multicast::MulticastRole::Client(
+                            multicast::MulticastClientStatus::Leaving(false),
+                        ) => (multicast::MulticastClientAction::Leave, None),
+                        _ =>
+                            return Err(Error::Multicast(
+                                multicast::MulticastError::McInvalidRole(
+                                    multicast.get_mc_role(),
+                                ),
+                            )),
+                    };
+                    let frame = frame::Frame::McState {
+                        channel_id: multicast
+                            .get_mc_announce_data()
+                            .ok_or(Error::Multicast(
+                                multicast::MulticastError::McAnnounce,
+                            ))?
+                            .channel_id
+                            .clone(),
+                        action: action.try_into()?,
+                        action_data: action_data.unwrap_or(0) as u64,
+                    };
+
+                    if push_frame_to_pkt!(b, frames, frame, left) {
+                        multicast.update_client_state(
+                            action,
+                            action_data.map(|v| v as u64),
+                        )?;
+
+                        ack_eliciting = true;
+                        in_flight = true;
+                    }
+                }
+            }
+
+            // Create MC_KEY frame.
+            if let Some(multicast) = self.multicast.as_mut() {
+                if multicast.should_send_mc_key() {
+                    let mc_announce_data = multicast
                         .get_mc_announce_data()
                         .ok_or(Error::Multicast(
                             multicast::MulticastError::McAnnounce,
-                        ))?
-                        .channel_id
-                        .clone(),
-                    action: action.try_into()?,
-                    action_data: action_data.unwrap_or(0) as u64,
-                };
+                        ))?;
+                    let first_pn =
+                        if let Some((Some(pn), ..)) = multicast.mc_last_expired {
+                            pn
+                        } else {
+                            1
+                        };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
-                    multicast.update_client_state(
-                        action,
-                        action_data.map(|v| v as u64),
-                    )?;
-
-                    ack_eliciting = true;
-                    in_flight = true;
-                }
-            }
-        }
-
-        // Create MC_KEY frame.
-        if let Some(multicast) = self.multicast.as_mut() {
-            if multicast.should_send_mc_key() {
-                let mc_announce_data = multicast.get_mc_announce_data().ok_or(
-                    Error::Multicast(multicast::MulticastError::McAnnounce),
-                )?;
-                let first_pn =
-                    if let Some((Some(pn), ..)) = multicast.mc_last_expired {
-                        pn
-                    } else {
-                        1
+                    let frame = frame::Frame::McKey {
+                        channel_id: mc_announce_data.channel_id.clone(),
+                        key: multicast.get_decryption_key_secret()?.to_vec(),
+                        first_pn,
                     };
 
-                let frame = frame::Frame::McKey {
-                    channel_id: mc_announce_data.channel_id.clone(),
-                    key: multicast.get_decryption_key_secret()?.to_vec(),
-                    first_pn,
-                };
+                    if push_frame_to_pkt!(b, frames, frame, left) {
+                        multicast.update_client_state(
+                            multicast::MulticastClientAction::DecryptionKey,
+                            None,
+                        )?;
+                        multicast.read_mc_key();
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
-                    multicast.update_client_state(
-                        multicast::MulticastClientAction::DecryptionKey,
-                        None,
-                    )?;
-                    multicast.read_mc_key();
-
-                    ack_eliciting = true;
-                    in_flight = true;
+                        ack_eliciting = true;
+                        in_flight = true;
+                    }
                 }
             }
-        }
 
-        // Create MC_EXPIRE frame.
-        if let Some(multicast) = self.multicast.as_mut() {
-            if let (true, Some((exp_pn_opt, exp_sid_opt, exp_fec_metadata_opt))) = (
-                multicast.mc_last_expired_needs_notif,
-                multicast.mc_last_expired,
-            ) {
-                let mut expiration_type = 0;
-                if exp_pn_opt.is_some() {
-                    expiration_type += 1;
-                }
-                if exp_sid_opt.is_some() {
-                    expiration_type += 2;
-                }
-                if exp_fec_metadata_opt.is_some() {
-                    expiration_type += 4;
-                }
-                let mc_announce_data = multicast.get_mc_announce_data().ok_or(
-                    Error::Multicast(multicast::MulticastError::McAnnounce),
-                )?;
+            // Create MC_EXPIRE frame.
+            if let Some(multicast) = self.multicast.as_mut() {
+                if let (
+                    true,
+                    Some((exp_pn_opt, exp_sid_opt, exp_fec_metadata_opt)),
+                ) = (
+                    multicast.mc_last_expired_needs_notif,
+                    multicast.mc_last_expired,
+                ) {
+                    let mut expiration_type = 0;
+                    if exp_pn_opt.is_some() {
+                        expiration_type += 1;
+                    }
+                    if exp_sid_opt.is_some() {
+                        expiration_type += 2;
+                    }
+                    if exp_fec_metadata_opt.is_some() {
+                        expiration_type += 4;
+                    }
+                    let mc_announce_data = multicast
+                        .get_mc_announce_data()
+                        .ok_or(Error::Multicast(
+                            multicast::MulticastError::McAnnounce,
+                        ))?;
 
-                let frame = frame::Frame::McExpire {
-                    channel_id: mc_announce_data.channel_id.clone(),
-                    expiration_type,
-                    pkt_num: exp_pn_opt,
-                    stream_id: exp_sid_opt,
-                    fec_metadata: exp_fec_metadata_opt,
-                };
-                // MC-TODO: expired FEC metadata
+                    let frame = frame::Frame::McExpire {
+                        channel_id: mc_announce_data.channel_id.clone(),
+                        expiration_type,
+                        pkt_num: exp_pn_opt,
+                        stream_id: exp_sid_opt,
+                        fec_metadata: exp_fec_metadata_opt,
+                    };
+                    // MC-TODO: expired FEC metadata
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
-                    multicast.mc_last_expired_needs_notif = false;
+                    if push_frame_to_pkt!(b, frames, frame, left) {
+                        multicast.mc_last_expired_needs_notif = false;
 
-                    ack_eliciting = true;
-                    in_flight = true;
+                        ack_eliciting = true;
+                        in_flight = true;
+                    }
                 }
             }
         }
@@ -8216,8 +8221,8 @@ impl Connection {
                 action_data,
             } => {
                 debug!(
-                    "Received an MC_STATE frame! channel ID: {:?}, action: {}, action_data: {}",
-                    channel_id, action, action_data,
+                    "Received an MC_STATE frame! channel ID: {:?}, action: {:?}, action_data: {}",
+                    channel_id, multicast::MulticastClientAction::try_from(action)?, action_data,
                 );
                 // The client can also receive an MC_STATE.
                 // It can be used to request for a channel leave.
