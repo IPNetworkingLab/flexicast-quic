@@ -476,7 +476,6 @@ fn main() {
                 let (tmp1, tmp2) = video_content.next().unwrap().to_owned();
                 video_nxt_timestamp = Some(tmp1);
                 video_nxt_nb_bytes = tmp2;
-                println!("Video nxt timestamp={:?}", video_nxt_timestamp);
                 video_stream_id += 4;
             }
         }
@@ -514,6 +513,7 @@ fn main() {
         // packets to be sent.
         for client in clients.values_mut() {
             if !active_video {
+                info!("Closing the the connection for {} because no active video", client.conn.trace_id());
                 client.conn.close(true, 1, &[0, 1]).unwrap();
             }
             loop {
@@ -738,10 +738,10 @@ fn get_multicast_channel(
     Option<MulticastChannelSource>,
     Option<McAnnounceData>,
 ) {
-    let mc_addr = "224.0.0.225:8889".parse().unwrap();
-    let mc_addr_bytes = [224, 0, 0, 255];
+    let mc_addr = "224.3.0.225:8889".parse().unwrap();
+    let mc_addr_bytes = [224, 3, 0, 225];
     let mc_port = 8889;
-    let source_addr = "127.0.0.1:8888".parse().unwrap();
+    let source_addr = "127.0.0.1:4434".parse().unwrap();
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
 
     let mc_client_tp = MulticastClientTp::default();
@@ -799,7 +799,7 @@ pub fn get_test_mc_config(
     config
         .set_application_protos(&[b"proto1", b"proto2"])
         .unwrap();
-    config.set_max_idle_timeout(5000);
+    config.set_max_idle_timeout(5_000_000_000);
     config.set_max_recv_udp_payload_size(1350);
     config.set_max_send_udp_payload_size(1350);
     config.set_initial_max_data(10_000_000);

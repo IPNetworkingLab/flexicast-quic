@@ -70,8 +70,8 @@ fn main() {
         ipv4_channels_allowed: true,
         ipv6_channels_allowed: true,
     };
-    let mut mc_socket = None;
-    let mc_addr = "0.0.0.0:9998";
+    let mut mc_socket_opt: Option<mio::net::UdpSocket> = None;
+    let mc_addr = "0.0.0.0:8889".parse().unwrap();
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -112,7 +112,7 @@ fn main() {
         ])
         .unwrap();
 
-    config.set_max_idle_timeout(5000);
+    config.set_max_idle_timeout(5_000_000_000);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_initial_max_data(10_000_000);
@@ -132,7 +132,6 @@ fn main() {
             quiche::FECSchedulerAlgorithm::RetransmissionFec,
         );
         config.set_fec_symbol_size(1280 - 64);
-        // config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     }
 
     // Generate a random source connection ID for the connection.
@@ -168,8 +167,6 @@ fn main() {
 
     debug!("written {}", write);
 
-    let req_start = std::time::Instant::now();
-
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
 
@@ -183,6 +180,7 @@ fn main() {
                 debug!("timed out");
 
                 conn.on_timeout();
+                debug!("Is connection closed after timeout: {}", conn.is_closed());
                 break 'read;
             }
 
@@ -220,6 +218,47 @@ fn main() {
             };
 
             debug!("processed {} bytes", read);
+
+            debug!("Is connection closed now after unicast: {}", conn.is_closed());
+        }
+
+        if let Some(mc_socket) = mc_socket_opt.as_mut() {
+            'mc_read: loop {
+                let (len, _) = match mc_socket.recv_from(&mut buf) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // There are no more UDP packets to read, so end the read
+                        // loop.
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            debug!("recv() would block");
+                            break 'mc_read;
+                        }
+
+                        panic!("recv() failed: {:?}", e);
+                    },
+                };
+
+                debug!("Multicast got {} bytes", len);
+
+                let recv_info = quiche::RecvInfo {
+                    to: mc_addr,
+                    from: peer_addr,
+                    from_mc: true,
+                };
+
+                info!("Multicat recv. {:?}", recv_info);
+
+                let read = match conn.mc_recv(&mut buf[..len], recv_info) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!("Multicast failed: {:?}", e);
+                        continue 'mc_read;
+                    },
+                };
+                debug!("Is connection closed now: {}", conn.is_closed());
+
+                debug!("Multicast processed {} bytes", read);
+            }
         }
 
         debug!("done reading");
@@ -230,9 +269,10 @@ fn main() {
         }
 
         // Process all readable streams.
+        debug!("Before reading the streams");
         for s in conn.readable() {
+            debug!("Can read stream {}", s);
             while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
-                debug!("received {} bytes", read);
 
                 let stream_buf = &buf[..read];
 
@@ -257,23 +297,28 @@ fn main() {
                 let mc_cid = ConnectionId::from_ref(&mc_announce_data.channel_id)
                     .into_owned();
                 // MC-TODO: do we have to put another address here?
-                conn.create_mc_path(&mc_cid, mc_addr.parse().unwrap(), peer_addr)
+                info!("Create second path. Client addr={:?}. Server addr={:?}", mc_addr, peer_addr);
+                conn.create_mc_path(&mc_cid, mc_addr, peer_addr)
                     .unwrap();
                 let group_ip =
                     net::Ipv4Addr::from(mc_announce_data.group_ip.to_owned());
                 let mc_group_sockaddr: net::SocketAddr = net::SocketAddr::V4(
                     net::SocketAddrV4::new(group_ip, mc_announce_data.udp_port),
                 );
+                let local_ip = net::Ipv4Addr::new(127, 0, 0, 1);
                 // MC-TODO: join the multicast group.
-                mc_socket =
-                    Some(mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap());
+                let mut mc_socket =
+                    mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
+                debug!("Multicast client binds on address: {:?}", mc_group_sockaddr);
+                mc_socket.join_multicast_v4(&group_ip, &local_ip).unwrap();
                 poll.registry()
                     .register(
-                        mc_socket.as_mut().unwrap(),
+                        &mut mc_socket,
                         mio::Token(1),
                         mio::Interest::READABLE,
                     )
                     .unwrap();
+                mc_socket_opt = Some(mc_socket);
             }
         }
 
@@ -295,6 +340,8 @@ fn main() {
                     break;
                 },
             };
+
+            debug!("Is connection closed now after send: {}", conn.is_closed());
 
             if let Err(e) = socket.send_to(&out[..write], send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
