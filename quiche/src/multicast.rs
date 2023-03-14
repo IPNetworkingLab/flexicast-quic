@@ -1266,7 +1266,11 @@ impl MulticastChannelSource {
             return Err(Error::CongestionControl);
         }
 
-        let scid = ConnectionId::from_ref(channel_id);
+        let mut scid = [0; 16];
+        ring::rand::SystemRandom::new()
+            .fill(&mut scid[..])
+            .unwrap();
+        let scid = ConnectionId::from_ref(&scid);
 
         // Add the keylog file.
         let key_file = std::fs::OpenOptions::new()
@@ -1304,10 +1308,10 @@ impl MulticastChannelSource {
         });
 
         // Add a new Connection ID for the multicast path.
-        let mut channel_id = [0; 16];
-        ring::rand::SystemRandom::new()
-            .fill(&mut channel_id[..])
-            .unwrap();
+        // let mut channel_id = [0; 16];
+        // ring::rand::SystemRandom::new()
+        //     .fill(&mut channel_id[..])
+        //     .unwrap();
         let channel_id = ConnectionId::from_ref(&channel_id);
         conn_server.new_source_cid(&channel_id, 0x1, true)?;
         conn_client.new_source_cid(&channel_id, 0x1, true)?;

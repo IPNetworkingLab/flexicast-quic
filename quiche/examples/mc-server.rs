@@ -675,13 +675,13 @@ fn get_multicast_channel(
     let mut client_config = get_test_mc_config(false, Some(&mc_client_tp), true);
 
     // Generate a random source connection ID for the connection.
-    let mut scid = [0; 16];
-    SystemRandom::new().fill(&mut scid[..]).unwrap();
+    let mut channel_id = [0; 16];
+    SystemRandom::new().fill(&mut channel_id[..]).unwrap();
 
-    let scid = quiche::ConnectionId::from_ref(&scid);
+    let channel_id = quiche::ConnectionId::from_ref(&channel_id);
 
     let mut mc_channel = MulticastChannelSource::new_with_tls(
-        &scid,
+        &channel_id,
         &mut server_config,
         &mut client_config,
         mc_addr,
@@ -692,7 +692,8 @@ fn get_multicast_channel(
     .unwrap();
 
     let mc_announce_data = McAnnounceData {
-        channel_id: mc_channel.mc_path_conn_id.0.as_ref().to_vec(),
+        // channel_id: mc_channel.mc_path_conn_id.0.as_ref().to_vec(),
+        channel_id: channel_id.as_ref().to_vec(),
         is_ipv6: false,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,
