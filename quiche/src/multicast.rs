@@ -727,18 +727,15 @@ impl MulticastConnection for Connection {
         }
 
         if let Some(multicast) = self.multicast.as_mut() {
-            match multicast.mc_role {
-                MulticastRole::Client(_) => {
+            if let MulticastRole::Client(_) = multicast.mc_role {
+                if let Some(key_vec) = mc_announce_data.public_key.as_ref() {
                     // Client generates the public key from the received vector.
-                    if let Some(key_vec) = mc_announce_data.public_key.as_ref() {
-                        multicast.mc_public_key =
-                            Some(signature::UnparsedPublicKey::new(
-                                &signature::ED25519,
-                                key_vec.to_owned(),
-                            ));
-                    }
-                },
-                _ => (),
+                    multicast.mc_public_key =
+                        Some(signature::UnparsedPublicKey::new(
+                            &signature::ED25519,
+                            key_vec.to_owned(),
+                        ));
+                }
             }
             multicast.mc_announce_data = Some(mc_announce_data.clone());
             multicast.mc_announce_is_processed = false; // New data!
@@ -3301,10 +3298,7 @@ mod tests {
 
         // New timer triggering but no expiration.
         let timer = time::Instant::now();
-        let timer = timer +
-            time::Duration::from_millis(
-                5,
-            );
+        let timer = timer + time::Duration::from_millis(5);
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
         assert_eq!(res, Ok((None, None, None)));
         assert_eq!(
