@@ -519,12 +519,12 @@ fn main() {
         // them on the UDP socket, until quiche reports that there are no more
         // packets to be sent.
         for client in clients.values_mut() {
-            if !active_video {
+            if !active_video && client.conn.is_established() {
+                let res = client.conn.close(true, 1, &[0, 1]);
                 info!(
-                    "Closing the the connection for {} because no active video",
-                    client.conn.trace_id()
+                    "Closing the the connection for {} because no active video.. Res={:?}",
+                    client.conn.trace_id(), res,
                 );
-                _ = client.conn.close(true, 1, &[0, 1]);
             }
             loop {
                 let (write, send_info) = match client.conn.send(&mut out) {

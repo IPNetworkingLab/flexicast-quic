@@ -1312,7 +1312,7 @@ impl MulticastChannelSource {
         // ring::rand::SystemRandom::new()
         //     .fill(&mut channel_id[..])
         //     .unwrap();
-        let channel_id = ConnectionId::from_ref(&channel_id);
+        let channel_id = ConnectionId::from_ref(channel_id);
         conn_server.new_source_cid(&channel_id, 0x1, true)?;
         conn_client.new_source_cid(&channel_id, 0x1, true)?;
         Self::advance(&mut conn_server, &mut conn_client)?;
