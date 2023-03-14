@@ -877,11 +877,8 @@ impl MulticastConnection for Connection {
 
             if let Ok(pns) = self.pkt_num_spaces.get(epoch, space_id) {
                 let nack_range = pns.recv_pkt_need_ack.get_missing();
-                if nack_range.len() == 0 {
-                    None
-                } else if multicast.mc_nack_ranges.as_ref() == Some(&nack_range) {
+                if nack_range.len() == 0 || multicast.mc_nack_ranges.as_ref() == Some(&nack_range) {
                     // Avoid sending exactly the same nack range as before.
-                    println!("Same ranges as before {:?}", nack_range);
                     None
                 } else {
                     Some(nack_range)
@@ -1025,10 +1022,6 @@ impl MulticastConnection for Connection {
                             .unwrap()
                             .mc_last_expired_needs_notif =
                             v.0.is_some() || v.1.is_some() || v.2.is_some();
-                        debug!(
-                            "Last expired data updated: {:?}",
-                            self.multicast.as_ref().unwrap().mc_last_expired
-                        );
                         self.update_tx_cap();
                         return Ok(v);
                     }
@@ -1295,6 +1288,21 @@ impl MulticastChannelSource {
         Self::handshake(&mut conn_server, &mut conn_client)?;
         Self::advance(&mut conn_server, &mut conn_client)?;
 
+        let exporter_secret =
+            MulticastChannelSource::get_exporter_secret(keylog_filename)?;
+
+        let signature_eddsa = if do_auth {
+            Some(MulticastChannelSource::compute_asymetric_signature_keys()?)
+        } else {
+            None
+        };
+
+        conn_server.multicast = Some(MulticastAttributes {
+            mc_private_key: signature_eddsa,
+            mc_role: MulticastRole::ServerMulticast,
+            ..Default::default()
+        });
+
         // Add a new Connection ID for the multicast path.
         let mut channel_id = [0; 16];
         ring::rand::SystemRandom::new()
@@ -1307,26 +1315,26 @@ impl MulticastChannelSource {
 
         // Probe the new path.
         conn_client.probe_path(peer2, peer2)?;
-        Self::advance(&mut conn_server, &mut conn_client)?;
-
         let pid_c2s_1 = conn_client
             .paths
             .path_id_from_addrs(&(peer2, peer2))
             .expect("no such path");
+        let mc_path_client = conn_client.paths.get_mut(pid_c2s_1)?;
+        mc_path_client.recovery.reset();
+        Self::advance(&mut conn_server, &mut conn_client)?;
+        let pid_s2c_1 = conn_server
+            .paths
+            .path_id_from_addrs(&(peer2, peer2))
+            .expect("no such path");
+        let mc_path_server = conn_client.paths.get_mut(pid_s2c_1)?;
+        mc_path_server.recovery.reset();
+
+        conn_server.multicast.as_mut().unwrap().mc_space_id = Some(pid_s2c_1);
 
         // Set the new path active.
         conn_client.set_active(peer2, peer2, true)?;
         conn_server.set_active(peer2, peer2, true)?;
         Self::advance(&mut conn_server, &mut conn_client)?;
-
-        let exporter_secret =
-            MulticastChannelSource::get_exporter_secret(keylog_filename)?;
-
-        let signature_eddsa = if do_auth {
-            Some(MulticastChannelSource::compute_asymetric_signature_keys()?)
-        } else {
-            None
-        };
 
         // // Create Connection ID and reset token.
         let cid = channel_id.clone().into_owned();
@@ -1334,13 +1342,6 @@ impl MulticastChannelSource {
         let mut reset_token = [0; 16];
         rand_bytes(&mut reset_token);
         let reset_token = u128::from_be_bytes(reset_token);
-
-        conn_server.multicast = Some(MulticastAttributes {
-            mc_private_key: signature_eddsa,
-            mc_role: MulticastRole::ServerMulticast,
-            mc_space_id: Some(pid_c2s_1),
-            ..Default::default()
-        });
 
         Ok(Self {
             channel: conn_server,
@@ -3317,6 +3318,49 @@ mod tests {
         assert_eq!(
             mc_pipe.source_send_single(None, signature_len),
             Err(Error::Done)
+        );
+    }
+
+    #[test]
+    fn test_mc_channel_cwnd() {
+        let use_auth = false;
+        let mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_channel_cwnd.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+
+        let mc_path_id = mc_pipe
+            .mc_channel
+            .channel
+            .multicast
+            .as_ref()
+            .unwrap()
+            .get_mc_space_id()
+            .unwrap();
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .paths
+                .get(mc_path_id)
+                .unwrap()
+                .recovery
+                .cwnd(),
+            usize::MAX - 1
+        );
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .paths
+                .get(mc_path_id)
+                .unwrap()
+                .recovery
+                .cwnd_available(),
+            usize::MAX - 1
         );
     }
 }

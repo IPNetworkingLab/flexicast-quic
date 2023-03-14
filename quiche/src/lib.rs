@@ -8428,7 +8428,7 @@ impl Connection {
             .filter(|(_, p)| p.active())
             .map(|(_, p)| p.recovery.cwnd_available())
             .filter(|cwnd| *cwnd != std::usize::MAX)
-            .sum();
+            .fold(0, |s: usize, v: usize| s.saturating_add(v));
         self.tx_cap = cmp::min(
             cwin_available,
             (self.max_tx_data - self.tx_data)
@@ -8563,6 +8563,18 @@ impl Connection {
         // This is a new path using an unassigned CID; create it!
         let mut path =
             path::Path::new(info.to, info.from, &self.recovery_config, false);
+
+        // Reset the congestion window for the multicast source.
+        // This calls the congestion control algorithm to set the congestion
+        // window.
+        if let Some(multicast) = self.multicast.as_ref() {
+            if let multicast::MulticastRole::ServerMulticast =
+                multicast.get_mc_role()
+            {
+                path.recovery.reset();
+                self.update_tx_cap();
+            }
+        }
 
         path.max_send_bytes = buf_len * MAX_AMPLIFICATION_FACTOR;
 

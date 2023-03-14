@@ -84,7 +84,8 @@ struct Args {
     #[clap(short = 'n', long, value_parser)]
     nb_frames: Option<u64>,
 
-    /// Delay between packets in case no trace is replayed and the source sends manual data. In ms.
+    /// Delay between packets in case no trace is replayed and the source sends
+    /// manual data. In ms.
     #[clap(short = 'd', long, value_parser, default_value = "1000")]
     delay_no_replay: u64,
 
@@ -131,7 +132,7 @@ fn main() {
         ])
         .unwrap();
 
-    config.set_max_idle_timeout(5000);
+    // config.set_max_idle_timeout(5000);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_initial_max_data(10_000_000);
@@ -160,7 +161,11 @@ fn main() {
     let (mut mc_socket_opt, mut mc_channel_opt, mc_announce_data_opt) =
         if args.multicast {
             debug!("Create multicast channel");
-            get_multicast_channel(&args.mc_keylog_file, args.authentication, args.ttl_data)
+            get_multicast_channel(
+                &args.mc_keylog_file,
+                args.authentication,
+                args.ttl_data,
+            )
         } else {
             (None, None, None)
         };
@@ -173,8 +178,12 @@ fn main() {
     }
 
     // Get multicast content: video sending timestamp and frame sizes.
-    let video_content =
-        replay_trace(args.trace_filename.as_deref(), args.nb_frames, args.delay_no_replay).unwrap();
+    let video_content = replay_trace(
+        args.trace_filename.as_deref(),
+        args.nb_frames,
+        args.delay_no_replay,
+    )
+    .unwrap();
     let mut video_content = video_content.iter();
     let starting_video = time::Instant::now();
     let mut active_video = true;
@@ -702,7 +711,8 @@ fn get_multicast_channel(
 
     mc_channel
         .channel
-        .mc_set_mc_announce_data(&mc_announce_data).unwrap();
+        .mc_set_mc_announce_data(&mc_announce_data)
+        .unwrap();
 
     (Some(socket), Some(mc_channel), Some(mc_announce_data))
 }
@@ -720,7 +730,7 @@ pub fn get_test_mc_config(
     config
         .set_application_protos(&[b"proto1", b"proto2"])
         .unwrap();
-    config.set_max_idle_timeout(5_000_000_000);
+    // config.set_max_idle_timeout(0);
     config.set_max_recv_udp_payload_size(1350);
     config.set_max_send_udp_payload_size(1350);
     config.set_initial_max_data(10_000_000);

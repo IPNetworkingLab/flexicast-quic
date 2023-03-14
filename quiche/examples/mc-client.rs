@@ -112,7 +112,7 @@ fn main() {
         ])
         .unwrap();
 
-    config.set_max_idle_timeout(5_000_000_000);
+    // config.set_max_idle_timeout(5_000_000_000);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_initial_max_data(10_000_000);
@@ -180,7 +180,10 @@ fn main() {
                 debug!("timed out");
 
                 conn.on_timeout();
-                debug!("Is connection closed after timeout: {}", conn.is_closed());
+                debug!(
+                    "Is connection closed after timeout: {}",
+                    conn.is_closed()
+                );
                 break 'read;
             }
 
@@ -258,7 +261,6 @@ fn main() {
         // Process all readable streams.
         for s in conn.readable() {
             while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
-
                 let stream_buf = &buf[..read];
 
                 debug!(
@@ -282,9 +284,11 @@ fn main() {
                 let mc_cid = ConnectionId::from_ref(&mc_announce_data.channel_id)
                     .into_owned();
                 // MC-TODO: do we have to put another address here?
-                info!("Create second path. Client addr={:?}. Server addr={:?}", mc_addr, peer_addr);
-                conn.create_mc_path(&mc_cid, mc_addr, peer_addr)
-                    .unwrap();
+                info!(
+                    "Create second path. Client addr={:?}. Server addr={:?}",
+                    mc_addr, peer_addr
+                );
+                conn.create_mc_path(&mc_cid, mc_addr, peer_addr).unwrap();
                 let group_ip =
                     net::Ipv4Addr::from(mc_announce_data.group_ip.to_owned());
                 let mc_group_sockaddr: net::SocketAddr = net::SocketAddr::V4(
@@ -294,7 +298,10 @@ fn main() {
                 // MC-TODO: join the multicast group.
                 let mut mc_socket =
                     mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
-                debug!("Multicast client binds on address: {:?}", mc_group_sockaddr);
+                debug!(
+                    "Multicast client binds on address: {:?}",
+                    mc_group_sockaddr
+                );
                 mc_socket.join_multicast_v4(&group_ip, &local_ip).unwrap();
                 poll.registry()
                     .register(
