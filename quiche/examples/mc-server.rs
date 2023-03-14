@@ -42,16 +42,8 @@ use ring::rand::*;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
-struct PartialResponse {
-    body: Vec<u8>,
-
-    written: usize,
-}
-
 struct Client {
     conn: quiche::Connection,
-
-    partial_responses: HashMap<u64, PartialResponse>,
 }
 
 type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
@@ -91,6 +83,14 @@ struct Args {
     /// Number of video frames to send. Used to shorten the trace.
     #[clap(short = 'n', long, value_parser)]
     nb_frames: Option<u64>,
+
+    /// Delay between packets in case no trace is replayed and the source sends manual data. In ms.
+    #[clap(short = 'd', long, value_parser, default_value = "1000")]
+    delay_no_replay: u64,
+
+    /// Time-to-live of video frames.
+    #[clap(long, value_parser, default_value = "600")]
+    ttl_data: u64,
 }
 
 fn main() {
@@ -138,8 +138,8 @@ fn main() {
     config.set_initial_max_stream_data_bidi_local(1_000_000);
     config.set_initial_max_stream_data_bidi_remote(1_000_000);
     config.set_initial_max_stream_data_uni(1_000_000);
-    config.set_initial_max_streams_bidi(100);
-    config.set_initial_max_streams_uni(100);
+    config.set_initial_max_streams_bidi(1_000_000);
+    config.set_initial_max_streams_uni(1_000_000);
     config.set_disable_active_migration(true);
     config.enable_early_data();
     if args.multicast {
@@ -160,7 +160,7 @@ fn main() {
     let (mut mc_socket_opt, mut mc_channel_opt, mc_announce_data_opt) =
         if args.multicast {
             debug!("Create multicast channel");
-            get_multicast_channel(&args.mc_keylog_file, args.authentication)
+            get_multicast_channel(&args.mc_keylog_file, args.authentication, args.ttl_data)
         } else {
             (None, None, None)
         };
@@ -174,7 +174,7 @@ fn main() {
 
     // Get multicast content: video sending timestamp and frame sizes.
     let video_content =
-        replay_trace(args.trace_filename.as_deref(), args.nb_frames).unwrap();
+        replay_trace(args.trace_filename.as_deref(), args.nb_frames, args.delay_no_replay).unwrap();
     let mut video_content = video_content.iter();
     let starting_video = time::Instant::now();
     let mut active_video = true;
@@ -183,7 +183,7 @@ fn main() {
 
     let (video_nxt_timestamp, mut video_nxt_nb_bytes) =
         *video_content.next().unwrap();
-    
+
     let mut video_nxt_timestamp = Some(video_nxt_timestamp);
 
     loop {
@@ -237,10 +237,7 @@ fn main() {
             let pkt_buf = &mut buf[..len];
 
             // Parse the QUIC packet's header.
-            let hdr = match quiche::Header::from_slice(
-                pkt_buf,
-                quiche::MAX_CONN_ID_LEN,
-            ) {
+            let hdr = match quiche::Header::from_slice(pkt_buf, 16) {
                 Ok(v) => v,
 
                 Err(e) => {
@@ -252,7 +249,7 @@ fn main() {
             trace!("got packet {:?}", hdr);
 
             let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
-            let conn_id = &conn_id.as_ref()[..quiche::MAX_CONN_ID_LEN];
+            let conn_id = &conn_id.as_ref()[..16];
             let conn_id = conn_id.to_vec().into();
 
             // Lookup a connection based on the packet's connection ID. If there
@@ -285,7 +282,7 @@ fn main() {
                     continue 'read;
                 }
 
-                let mut scid = [0; quiche::MAX_CONN_ID_LEN];
+                let mut scid = [0; 16];
                 scid.copy_from_slice(&conn_id);
 
                 let scid = quiche::ConnectionId::from_ref(&scid);
@@ -351,10 +348,7 @@ fn main() {
                 )
                 .unwrap();
 
-                let client = Client {
-                    conn,
-                    partial_responses: HashMap::new(),
-                };
+                let client = Client { conn };
 
                 clients.insert(scid.clone(), client);
 
@@ -403,11 +397,6 @@ fn main() {
             debug!("{} processed {} bytes", client.conn.trace_id(), read);
 
             if client.conn.is_in_early_data() || client.conn.is_established() {
-                // Handle writable streams.
-                for stream_id in client.conn.writable() {
-                    handle_writable(client, stream_id);
-                }
-
                 // Process all readable streams.
                 for s in client.conn.readable() {
                     while let Ok((read, fin)) =
@@ -429,7 +418,8 @@ fn main() {
                             fin
                         );
 
-                        handle_stream(client, s, stream_buf, "examples/root");
+                        // handle_stream(client, s, stream_buf,
+                        // "examples/root");
                     }
                 }
             }
@@ -443,8 +433,9 @@ fn main() {
 
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
-        if active_video && now.duration_since(starting_video) >=
-            time::Duration::from_millis(video_nxt_timestamp.unwrap())
+        if active_video &&
+            now.duration_since(starting_video) >=
+                time::Duration::from_millis(video_nxt_timestamp.unwrap())
         {
             // Send the video frame in a dedicated stream.
             let video_data = vec![0u8; video_nxt_nb_bytes];
@@ -464,7 +455,10 @@ fn main() {
                         .unwrap();
                 });
             }
-            debug!("Sent video frame {} in stream {}", sent_frames, video_stream_id);
+            debug!(
+                "Sent video frame {} in stream {}",
+                sent_frames, video_stream_id
+            );
 
             // Get next video values.
             if sent_frames >= video_content.len() {
@@ -481,7 +475,9 @@ fn main() {
         }
 
         // Generate outgoing Multicast-QUIC packets for the multicast channel.
-        if let (Some(mc_socket), Some(mc_channel)) = (mc_socket_opt.as_mut(), mc_channel_opt.as_mut()) {
+        if let (Some(mc_socket), Some(mc_channel)) =
+            (mc_socket_opt.as_mut(), mc_channel_opt.as_mut())
+        {
             loop {
                 let write = match mc_channel.mc_send(&mut out) {
                     Ok(v) => v,
@@ -492,10 +488,12 @@ fn main() {
                     Err(e) => {
                         error!("Multicast send failed: {:?}", e);
                         break;
-                    }
+                    },
                 };
 
-                if let Err(e) = mc_socket.send_to(&out[..write], mc_channel.mc_send_addr) {
+                if let Err(e) =
+                    mc_socket.send_to(&out[..write], mc_channel.mc_send_addr)
+                {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
                         debug!("send() would block");
                         break;
@@ -513,8 +511,11 @@ fn main() {
         // packets to be sent.
         for client in clients.values_mut() {
             if !active_video {
-                info!("Closing the the connection for {} because no active video", client.conn.trace_id());
-                client.conn.close(true, 1, &[0, 1]).unwrap();
+                info!(
+                    "Closing the the connection for {} because no active video",
+                    client.conn.trace_id()
+                );
+                _ = client.conn.close(true, 1, &[0, 1]);
             }
             loop {
                 let (write, send_info) = match client.conn.send(&mut out) {
@@ -619,93 +620,8 @@ fn validate_token<'a>(
     Some(quiche::ConnectionId::from_ref(&token[addr.len()..]))
 }
 
-/// Handles incoming HTTP/0.9 requests.
-fn handle_stream(client: &mut Client, stream_id: u64, buf: &[u8], root: &str) {
-    let conn = &mut client.conn;
-
-    if buf.len() > 4 && &buf[..4] == b"GET " {
-        let uri = &buf[4..buf.len()];
-        let uri = String::from_utf8(uri.to_vec()).unwrap();
-        let uri = String::from(uri.lines().next().unwrap());
-        let uri = std::path::Path::new(&uri);
-        let mut path = std::path::PathBuf::from(root);
-
-        for c in uri.components() {
-            if let std::path::Component::Normal(v) = c {
-                path.push(v)
-            }
-        }
-
-        info!(
-            "{} got GET request for {:?} on stream {}",
-            conn.trace_id(),
-            path,
-            stream_id
-        );
-
-        let body = std::fs::read(path.as_path())
-            .unwrap_or_else(|_| b"Not Found!\r\n".to_vec());
-
-        info!(
-            "{} sending response of size {} on stream {}",
-            conn.trace_id(),
-            body.len(),
-            stream_id
-        );
-
-        let written = match conn.stream_send(stream_id, &body, true) {
-            Ok(v) => v,
-
-            Err(quiche::Error::Done) => 0,
-
-            Err(e) => {
-                error!("{} stream send failed {:?}", conn.trace_id(), e);
-                return;
-            },
-        };
-
-        if written < body.len() {
-            let response = PartialResponse { body, written };
-            client.partial_responses.insert(stream_id, response);
-        }
-    }
-}
-
-/// Handles newly writable streams.
-fn handle_writable(client: &mut Client, stream_id: u64) {
-    let conn = &mut client.conn;
-
-    debug!("{} stream {} is writable", conn.trace_id(), stream_id);
-
-    if !client.partial_responses.contains_key(&stream_id) {
-        return;
-    }
-
-    let resp = client.partial_responses.get_mut(&stream_id).unwrap();
-    let body = &resp.body[resp.written..];
-
-    let written = match conn.stream_send(stream_id, body, true) {
-        Ok(v) => v,
-
-        Err(quiche::Error::Done) => 0,
-
-        Err(e) => {
-            client.partial_responses.remove(&stream_id);
-
-            error!("{} stream send failed {:?}", conn.trace_id(), e);
-            return;
-        },
-    };
-
-    resp.written += written;
-
-    if resp.written == resp.body.len() {
-        client.partial_responses.remove(&stream_id);
-    }
-}
-
 fn replay_trace(
-    filepath: Option<&str>, limit: Option<u64>,
+    filepath: Option<&str>, limit: Option<u64>, delay_no_replay: u64,
 ) -> Result<Vec<(u64, usize)>, std::io::Error> {
     if let Some(filepath) = filepath {
         let file = std::fs::File::open(filepath)?;
@@ -725,14 +641,15 @@ fn replay_trace(
             .collect::<Result<Vec<(u64, usize)>, std::io::Error>>()?;
 
         Ok(v[..limit.unwrap_or(v.len() as u64) as usize].into())
-            
     } else {
-        Ok((0..limit.unwrap_or(1000)).map(|i| (1000 * i, 1000)).collect())
+        Ok((0..limit.unwrap_or(1000))
+            .map(|i| (delay_no_replay * i, 1000))
+            .collect())
     }
 }
 
 fn get_multicast_channel(
-    mc_keylog_file: &str, authentication: bool,
+    mc_keylog_file: &str, authentication: bool, ttl_data: u64,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -754,7 +671,7 @@ fn get_multicast_channel(
 
     let scid = quiche::ConnectionId::from_ref(&scid);
 
-    let mc_channel = MulticastChannelSource::new_with_tls(
+    let mut mc_channel = MulticastChannelSource::new_with_tls(
         &scid,
         &mut server_config,
         &mut client_config,
@@ -766,7 +683,7 @@ fn get_multicast_channel(
     .unwrap();
 
     let mc_announce_data = McAnnounceData {
-        channel_id: scid.as_ref().to_vec(),
+        channel_id: mc_channel.mc_path_conn_id.0.as_ref().to_vec(),
         is_ipv6: false,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,
@@ -780,8 +697,12 @@ fn get_multicast_channel(
                 .unwrap()
                 .to_owned(),
         ),
-        ttl_data: 600,
+        ttl_data,
     };
+
+    mc_channel
+        .channel
+        .mc_set_mc_announce_data(&mc_announce_data).unwrap();
 
     (Some(socket), Some(mc_channel), Some(mc_announce_data))
 }
@@ -806,8 +727,8 @@ pub fn get_test_mc_config(
     config.set_initial_max_stream_data_bidi_local(1_000_000);
     config.set_initial_max_stream_data_bidi_remote(1_000_000);
     config.set_initial_max_stream_data_uni(1_000_000);
-    config.set_initial_max_streams_bidi(100);
-    config.set_initial_max_streams_uni(100);
+    config.set_initial_max_streams_bidi(1_000_000);
+    config.set_initial_max_streams_uni(1_000_000);
     config.set_active_connection_id_limit(5);
     config.verify_peer(false);
     config.set_multipath(true);

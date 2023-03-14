@@ -71,7 +71,7 @@ fn main() {
         ipv6_channels_allowed: true,
     };
     let mut mc_socket_opt: Option<mio::net::UdpSocket> = None;
-    let mc_addr = "0.0.0.0:8889".parse().unwrap();
+    let mc_addr = "127.0.0.1:8889".parse().unwrap();
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -119,8 +119,8 @@ fn main() {
     config.set_initial_max_stream_data_bidi_local(1_000_000);
     config.set_initial_max_stream_data_bidi_remote(1_000_000);
     config.set_initial_max_stream_data_uni(1_000_000);
-    config.set_initial_max_streams_bidi(100);
-    config.set_initial_max_streams_uni(100);
+    config.set_initial_max_streams_bidi(1_000_000);
+    config.set_initial_max_streams_uni(1_000_000);
     config.set_active_connection_id_limit(5);
     config.verify_peer(false);
 
@@ -135,7 +135,7 @@ fn main() {
     }
 
     // Generate a random source connection ID for the connection.
-    let mut scid = [0; quiche::MAX_CONN_ID_LEN];
+    let mut scid = [0; 16];
     SystemRandom::new().fill(&mut scid[..]).unwrap();
 
     let scid = quiche::ConnectionId::from_ref(&scid);
@@ -208,7 +208,7 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match conn.recv(&mut buf[..len], recv_info) {
+            let _read = match conn.recv(&mut buf[..len], recv_info) {
                 Ok(v) => v,
 
                 Err(e) => {
@@ -216,10 +216,6 @@ fn main() {
                     continue 'read;
                 },
             };
-
-            debug!("processed {} bytes", read);
-
-            debug!("Is connection closed now after unicast: {}", conn.is_closed());
         }
 
         if let Some(mc_socket) = mc_socket_opt.as_mut() {
@@ -238,30 +234,21 @@ fn main() {
                     },
                 };
 
-                debug!("Multicast got {} bytes", len);
-
                 let recv_info = quiche::RecvInfo {
                     to: mc_addr,
                     from: peer_addr,
                     from_mc: true,
                 };
 
-                info!("Multicat recv. {:?}", recv_info);
-
-                let read = match conn.mc_recv(&mut buf[..len], recv_info) {
+                let _read = match conn.mc_recv(&mut buf[..len], recv_info) {
                     Ok(v) => v,
                     Err(e) => {
                         error!("Multicast failed: {:?}", e);
                         continue 'mc_read;
                     },
                 };
-                debug!("Is connection closed now: {}", conn.is_closed());
-
-                debug!("Multicast processed {} bytes", read);
             }
         }
-
-        debug!("done reading");
 
         if conn.is_closed() {
             info!("connection closed, {:?}", conn.stats());
@@ -269,9 +256,7 @@ fn main() {
         }
 
         // Process all readable streams.
-        debug!("Before reading the streams");
         for s in conn.readable() {
-            debug!("Can read stream {}", s);
             while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
 
                 let stream_buf = &buf[..read];
@@ -341,8 +326,6 @@ fn main() {
                 },
             };
 
-            debug!("Is connection closed now after send: {}", conn.is_closed());
-
             if let Err(e) = socket.send_to(&out[..write], send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
                     debug!("send() would block");
@@ -351,8 +334,6 @@ fn main() {
 
                 panic!("send() failed: {:?}", e);
             }
-
-            debug!("written {}", write);
         }
 
         if conn.is_closed() {

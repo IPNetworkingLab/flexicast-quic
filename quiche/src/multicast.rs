@@ -728,10 +728,6 @@ impl MulticastConnection for Connection {
 
         if let Some(multicast) = self.multicast.as_mut() {
             match multicast.mc_role {
-                MulticastRole::ServerMulticast =>
-                    return Err(Error::Multicast(MulticastError::McInvalidRole(
-                        multicast.mc_role,
-                    ))),
                 MulticastRole::Client(_) => {
                     // Client generates the public key from the received vector.
                     if let Some(key_vec) = mc_announce_data.public_key.as_ref() {
@@ -1030,13 +1026,13 @@ impl MulticastConnection for Connection {
                         self.multicast
                             .as_mut()
                             .unwrap()
-                            .mc_last_expired_needs_notif = true;
-                        let mc_role = self.multicast.as_ref().unwrap().mc_role;
-                        println!(
-                            "J'ai update les valeurs avec {:?} mon role est {:?}",
-                            self.multicast.as_mut().unwrap().mc_last_expired,
-                            mc_role
+                            .mc_last_expired_needs_notif =
+                            v.0.is_some() || v.1.is_some() || v.2.is_some();
+                        debug!(
+                            "Last expired data updated: {:?}",
+                            self.multicast.as_ref().unwrap().mc_last_expired
                         );
+                        self.update_tx_cap();
                         return Ok(v);
                     }
                 }
@@ -3247,6 +3243,86 @@ mod tests {
         assert_eq!(
             uc_pipe.server.multicast.as_ref().unwrap().mc_role,
             MulticastRole::ServerUnicast(MulticastClientStatus::Left)
+        );
+    }
+
+    #[test]
+    /// Test the MC_EXPIRE mechanism. After a first MC_EXPIRE is sent, if no
+    /// further data is expired, the source must not send an MC_EXPIRE. This
+    /// test is created to fix an existing issue in the code at the time of
+    /// writing.
+    fn test_mc_expire_do_not_send_useless() {
+        let use_auth = true;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_expire_do_not_send_useless.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+
+        // Source sends one stream.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            Ok(348 + signature_len)
+        );
+
+        // Expiration of the stream.
+        let timer = time::Instant::now();
+        let timer = timer +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            );
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
+        assert_eq!(res, Ok((Some(2), Some(1), Some(0))));
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_last_expired,
+            Some((Some(2), Some(1), Some(0)))
+        );
+
+        // Multicast source sends an MC_EXPIRE to the client.
+        assert_eq!(
+            mc_pipe.source_send_single(None, signature_len),
+            Ok(57 + signature_len)
+        );
+
+        // Send new stream.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 5),
+            Ok(348 + signature_len)
+        );
+
+        // New timer triggering but no expiration.
+        let timer = time::Instant::now();
+        let timer = timer +
+            time::Duration::from_millis(
+                5,
+            );
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
+        assert_eq!(res, Ok((None, None, None)));
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_last_expired,
+            Some((None, None, None))
+        );
+
+        // The multicast source does not send any packet because no data
+        // expiration.
+        assert_eq!(
+            mc_pipe.source_send_single(None, signature_len),
+            Err(Error::Done)
         );
     }
 }
