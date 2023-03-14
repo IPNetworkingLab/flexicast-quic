@@ -877,7 +877,9 @@ impl MulticastConnection for Connection {
 
             if let Ok(pns) = self.pkt_num_spaces.get(epoch, space_id) {
                 let nack_range = pns.recv_pkt_need_ack.get_missing();
-                if nack_range.len() == 0 || multicast.mc_nack_ranges.as_ref() == Some(&nack_range) {
+                if nack_range.len() == 0 ||
+                    multicast.mc_nack_ranges.as_ref() == Some(&nack_range)
+                {
                     // Avoid sending exactly the same nack range as before.
                     None
                 } else {
@@ -1267,9 +1269,7 @@ impl MulticastChannelSource {
         }
 
         let mut scid = [0; 16];
-        ring::rand::SystemRandom::new()
-            .fill(&mut scid[..])
-            .unwrap();
+        ring::rand::SystemRandom::new().fill(&mut scid[..]).unwrap();
         let scid = ConnectionId::from_ref(&scid);
 
         // Add the keylog file.
