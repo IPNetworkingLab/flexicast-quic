@@ -80,6 +80,11 @@ pub const MC_KEY_CODE: u64 = 0xf5;
 /// MC_EXPIRE frame type.
 pub const MC_EXPIRE_CODE: u64 = 0xf6;
 
+/// The leaving action is requested by the client.
+pub const LEAVE_FROM_CLIENT: u64 = 0x0;
+/// The leaving action is requested by the server.
+pub const LEAVE_FROM_SERVER: u64 = 0x1;
+
 type ExpiredData = (Option<u64>, Option<u64>, Option<u64>);
 
 /// States of a multicast client.
@@ -302,11 +307,25 @@ impl MulticastAttributes {
             (
                 MulticastClientStatus::ListenMcPath,
                 MulticastClientAction::Leave,
-            ) if !is_server => MulticastClientStatus::Leaving(false),
-            (
-                MulticastClientStatus::ListenMcPath,
-                MulticastClientAction::Leave,
-            ) if is_server => MulticastClientStatus::Left,
+            ) => {
+                if let Some(leaving_from) = action_data {
+                    if leaving_from == LEAVE_FROM_CLIENT {
+                        if is_server {
+                            MulticastClientStatus::Left
+                        } else {
+                            MulticastClientStatus::Leaving(false)
+                        }
+                    } else {
+                        if is_server {
+                            MulticastClientStatus::Leaving(false)
+                        } else {
+                            MulticastClientStatus::Left
+                        }
+                    }
+                } else {
+                    return Err(Error::Multicast(MulticastError::McInvalidAction));
+                }
+            },
             (
                 MulticastClientStatus::Leaving(false),
                 MulticastClientAction::Leave,
@@ -346,6 +365,10 @@ impl MulticastAttributes {
                 MulticastClientStatus::JoinedAndKey
                     if self.mc_space_id.is_some() =>
                     true,
+                MulticastClientStatus::Leaving(false) => true,
+                _ => false,
+            },
+            MulticastRole::ServerUnicast(status) => match status {
                 MulticastClientStatus::Leaving(false) => true,
                 _ => false,
             },
@@ -570,8 +593,8 @@ pub trait MulticastConnection {
 
     /// Leaves a previously joined multicast channel.
     /// Returns an Error if:
-    /// * This is not a client
-    /// * There is no multicst state with valid MC_ANNOUNCE data
+    /// * This is not a client or a unicast server
+    /// * There is no multicast state with valid MC_ANNOUNCE data
     /// * The client did not joined the channel
     fn mc_leave_channel(&mut self) -> Result<MulticastClientStatus>;
 
@@ -806,13 +829,21 @@ impl MulticastConnection for Connection {
             Some(multicast) => match multicast.mc_role {
                 MulticastRole::Client(MulticastClientStatus::ListenMcPath) =>
                     multicast,
+                MulticastRole::ServerUnicast(
+                    MulticastClientStatus::ListenMcPath,
+                ) => multicast,
                 _ =>
                     return Err(Error::Multicast(MulticastError::McInvalidRole(
                         multicast.mc_role,
                     ))),
             },
         };
-        multicast.update_client_state(MulticastClientAction::Leave, None)
+        let leaving_action_from = if self.is_server {
+            LEAVE_FROM_SERVER
+        } else {
+            LEAVE_FROM_CLIENT
+        };
+        multicast.update_client_state(MulticastClientAction::Leave, Some(leaving_action_from))
     }
 
     fn mc_recv(&mut self, buf: &mut [u8], info: RecvInfo) -> Result<usize> {
@@ -1690,8 +1721,8 @@ mod tests {
             Ok(())
         }
 
-        /// UnicasT server sends multicast feedback control from the client to
-        /// the multicast source.
+        /// The unicast server sends multicast feedback control from the client
+        /// to the multicast source.
         fn server_control_to_mc_source(&mut self) -> Result<()> {
             let mc_channel = &mut self.mc_channel.channel;
             for (pipe, ..) in self.unicast_pipes.iter_mut() {
@@ -1699,6 +1730,19 @@ mod tests {
             }
 
             Ok(())
+        }
+
+        /// The unicast server specified by the index argument sends a single
+        /// stream to its client.
+        fn uc_server_send_single_stream(
+            &mut self, stream_id: u64, pipe_idx: usize,
+        ) -> Result<()> {
+            let mut buf = [0u8; 300];
+            ring::rand::SystemRandom::new().fill(&mut buf[..]).unwrap();
+
+            let pipe = &mut self.unicast_pipes.get_mut(pipe_idx).unwrap().0;
+            pipe.server.stream_send(stream_id, &buf, true)?;
+            pipe.advance()
         }
 
         // MC-TODO: maybe a new_from_mc_announce_data.
@@ -3362,5 +3406,88 @@ mod tests {
                 .cwnd_available(),
             usize::MAX - 1
         );
+    }
+
+    #[test]
+    /// This tests the multicast-as-a-service feature.
+    /// The client starts listening to the multicast channel. Due to poor
+    /// connectivity, the source decides to stop the transmission using the
+    /// multicast channel, and falls back on the unicast connection to
+    /// distribute the content.
+    fn test_mc_as_a_service_fallback() {
+        let use_auth = true;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_as_a_service_fallback.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            Ok(348 + signature_len)
+        );
+
+        // A second stream sent on the unicast connection.
+        assert_eq!(mc_pipe.uc_server_send_single_stream(5, 0), Ok(()));
+
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 9),
+            Ok(348 + signature_len)
+        );
+
+        // The client has two readable streams thanks to multipath.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 5, 9]);
+
+        // The server asks the client to leave the multicast channel.
+        let pipe = &mut mc_pipe.unicast_pipes[0].0;
+        assert_eq!(
+            pipe.server.mc_leave_channel(),
+            Ok(MulticastClientStatus::Leaving(false))
+        );
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // The client left the multicast channel.
+        assert_eq!(
+            pipe.server.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::ServerUnicast(MulticastClientStatus::Left)
+        );
+        assert_eq!(
+            pipe.client.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::Client(MulticastClientStatus::Left)
+        );
+
+        // The multicast path of the client is inactive.
+        let mc_space_id = pipe
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .get_mc_space_id()
+            .unwrap();
+        assert!(!pipe.client.paths.get(mc_space_id).unwrap().active());
+
+        // Data received on the multicast channel is not handled by the client.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 13),
+            Ok(348 + signature_len)
+        );
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 5, 9]); // No new stream is readable.
+
+        // The same data sent on the unicast connection is correctly received.
+        assert_eq!(mc_pipe.uc_server_send_single_stream(13, 0), Ok(()));
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 5, 9, 13]); // No new stream is readable.
+
     }
 }
