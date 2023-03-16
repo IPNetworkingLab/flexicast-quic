@@ -2609,6 +2609,16 @@ impl Connection {
         } else if info.from_mc {
             // The multicast channel uses the shared key.
             if let Some(multicast) = self.multicast.as_ref() {
+                // The client might not be able to process the packets because
+                // they left.
+                if !matches!(
+                    multicast.get_mc_role(),
+                    multicast::MulticastRole::Client(
+                        multicast::MulticastClientStatus::ListenMcPath
+                    )
+                ) {
+                    return Err(Error::Done);
+                }
                 debug!("USES THE MULTICAST CRYPTO CONTEXT");
                 multicast.get_mc_crypto_open()
             } else {
@@ -4359,7 +4369,9 @@ impl Connection {
                         multicast::MulticastRole::Client(
                             multicast::MulticastClientStatus::Leaving(false),
                         ) => (multicast::MulticastClientAction::Leave, None),
-                        multicast::MulticastRole::ServerUnicast(multicast::MulticastClientStatus::Leaving(false)) => (multicast::MulticastClientAction::Leave, None),
+                        multicast::MulticastRole::ServerUnicast(
+                            multicast::MulticastClientStatus::Leaving(false),
+                        ) => (multicast::MulticastClientAction::Leave, None),
                         _ =>
                             return Err(Error::Multicast(
                                 multicast::MulticastError::McInvalidRole(
@@ -8231,21 +8243,15 @@ impl Connection {
                 );
                 // The client can also receive an MC_STATE.
                 // It can be used to request for a channel leave.
-                // MC-TODO: implement this mechanism.
-                if !self.is_server {
-                    debug!("TODO: implement mechanism client receives MC_STATE");
+                if let Some(multicast) = self.multicast.as_mut() {
+                    multicast.update_client_state(
+                        action.try_into()?,
+                        Some(action_data),
+                    )?;
                 } else {
-                    match self.multicast.as_mut() {
-                        Some(multicast) =>
-                            _ = multicast.update_client_state(
-                                action.try_into()?,
-                                Some(action_data),
-                            )?,
-                        None =>
-                            return Err(Error::Multicast(
-                                multicast::MulticastError::McDisabled,
-                            )),
-                    }
+                    return Err(Error::Multicast(
+                        multicast::MulticastError::McDisabled,
+                    ));
                 }
             },
 
@@ -9936,8 +9942,6 @@ pub mod testing {
             None,
             aead,
         )?;
-
-        println!("SEKHLFJKHFJKAFHEJLFHEZJFHEJZALFEZJFHEZALFHEZ Also increases the packet number here. Now is {}", conn.pkt_num_spaces.get_mut(epoch, 0)?.next_pkt_num);
 
         conn.pkt_num_spaces.get_mut(epoch, 0)?.next_pkt_num += 1;
 

@@ -307,7 +307,7 @@ impl MulticastAttributes {
             (
                 MulticastClientStatus::ListenMcPath,
                 MulticastClientAction::Leave,
-            ) => {
+            ) =>
                 if let Some(leaving_from) = action_data {
                     if leaving_from == LEAVE_FROM_CLIENT {
                         if is_server {
@@ -315,17 +315,22 @@ impl MulticastAttributes {
                         } else {
                             MulticastClientStatus::Leaving(false)
                         }
-                    } else {
+                    } else if leaving_from == LEAVE_FROM_SERVER {
                         if is_server {
                             MulticastClientStatus::Leaving(false)
                         } else {
                             MulticastClientStatus::Left
                         }
+                    } else {
+                        return Err(Error::Multicast(
+                            MulticastError::McInvalidAction,
+                        ));
                     }
                 } else {
-                    return Err(Error::Multicast(MulticastError::McInvalidAction));
-                }
-            },
+                    return Err(Error::Multicast(
+                        MulticastError::McInvalidAction,
+                    ));
+                },
             (
                 MulticastClientStatus::Leaving(false),
                 MulticastClientAction::Leave,
@@ -368,10 +373,9 @@ impl MulticastAttributes {
                 MulticastClientStatus::Leaving(false) => true,
                 _ => false,
             },
-            MulticastRole::ServerUnicast(status) => match status {
-                MulticastClientStatus::Leaving(false) => true,
-                _ => false,
-            },
+            MulticastRole::ServerUnicast(MulticastClientStatus::Leaving(
+                false,
+            )) => true,
             _ => false,
         }
     }
@@ -843,7 +847,10 @@ impl MulticastConnection for Connection {
         } else {
             LEAVE_FROM_CLIENT
         };
-        multicast.update_client_state(MulticastClientAction::Leave, Some(leaving_action_from))
+        multicast.update_client_state(
+            MulticastClientAction::Leave,
+            Some(leaving_action_from),
+        )
     }
 
     fn mc_recv(&mut self, buf: &mut [u8], info: RecvInfo) -> Result<usize> {
@@ -2040,7 +2047,10 @@ mod tests {
         );
 
         assert_eq!(
-            multicast.update_client_state(MulticastClientAction::Leave, Some(LEAVE_FROM_CLIENT)),
+            multicast.update_client_state(
+                MulticastClientAction::Leave,
+                Some(LEAVE_FROM_CLIENT)
+            ),
             Ok(MulticastClientStatus::Leaving(false))
         );
 
@@ -3175,7 +3185,7 @@ mod tests {
         let use_auth = true;
         let mut mc_pipe = MulticastPipe::new(
             1,
-            "/tmp/source_does_not_generate_mc_fec_repair_for_expired.txt",
+            "/tmp/test_mc_client_first_pn_utility.txt",
             use_auth,
             true,
         )
@@ -3462,16 +3472,6 @@ mod tests {
             MulticastRole::Client(MulticastClientStatus::Left)
         );
 
-        // The multicast path of the client is inactive.
-        let mc_space_id = pipe
-            .client
-            .multicast
-            .as_ref()
-            .unwrap()
-            .get_mc_space_id()
-            .unwrap();
-        assert!(!pipe.client.paths.get(mc_space_id).unwrap().active());
-
         // Data received on the multicast channel is not handled by the client.
         assert_eq!(
             mc_pipe.source_send_single_stream(None, signature_len, 13),
@@ -3488,6 +3488,5 @@ mod tests {
         let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
         readables.sort();
         assert_eq!(readables, vec![1, 5, 9, 13]); // No new stream is readable.
-
     }
 }
