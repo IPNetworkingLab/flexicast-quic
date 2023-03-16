@@ -92,6 +92,11 @@ struct Args {
     /// Time-to-live of video frames.
     #[clap(long, value_parser, default_value = "600")]
     ttl_data: u64,
+
+    /// Close the multicast channel and stop the server when the video
+    /// transmission is completed.
+    #[clap(long)]
+    close_complete: bool,
 }
 
 fn main() {
@@ -521,7 +526,7 @@ fn main() {
         for client in clients.values_mut() {
             if !active_video && client.conn.is_established() {
                 let res = client.conn.close(true, 1, &[0, 1]);
-                info!(
+                debug!(
                     "Closing the the connection for {} because no active video.. Res={:?}",
                     client.conn.trace_id(), res,
                 );
@@ -570,6 +575,14 @@ fn main() {
 
             !c.conn.is_closed()
         });
+
+        // Exist the I/O loop when the transmission is finished and there are no
+        // more client. This may cause a problem if clients keep arriving
+        // even after the video transmission is complete, but this is a proof of
+        // concept... right?
+        if clients.is_empty() && !active_video {
+            break;
+        }
     }
 }
 

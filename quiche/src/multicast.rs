@@ -1308,10 +1308,6 @@ impl MulticastChannelSource {
         });
 
         // Add a new Connection ID for the multicast path.
-        // let mut channel_id = [0; 16];
-        // ring::rand::SystemRandom::new()
-        //     .fill(&mut channel_id[..])
-        //     .unwrap();
         let channel_id = ConnectionId::from_ref(channel_id);
         conn_server.new_source_cid(&channel_id, 0x1, true)?;
         conn_client.new_source_cid(&channel_id, 0x1, true)?;
