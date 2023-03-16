@@ -3027,6 +3027,10 @@ impl Connection {
                                     multicast::MulticastClientStatus::Leaving(
                                         true
                                     )
+                                ) | multicast::MulticastRole::ServerUnicast(
+                                    multicast::MulticastClientStatus::Leaving(
+                                        true
+                                    )
                                 )
                             ) && multicast::MulticastClientAction::try_from(
                                 action,
@@ -4355,6 +4359,7 @@ impl Connection {
                         multicast::MulticastRole::Client(
                             multicast::MulticastClientStatus::Leaving(false),
                         ) => (multicast::MulticastClientAction::Leave, None),
+                        multicast::MulticastRole::ServerUnicast(multicast::MulticastClientStatus::Leaving(false)) => (multicast::MulticastClientAction::Leave, None),
                         _ =>
                             return Err(Error::Multicast(
                                 multicast::MulticastError::McInvalidRole(

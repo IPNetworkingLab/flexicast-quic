@@ -2040,7 +2040,7 @@ mod tests {
         );
 
         assert_eq!(
-            multicast.update_client_state(MulticastClientAction::Leave, None),
+            multicast.update_client_state(MulticastClientAction::Leave, Some(LEAVE_FROM_CLIENT)),
             Ok(MulticastClientStatus::Leaving(false))
         );
 
