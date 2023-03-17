@@ -3421,72 +3421,85 @@ mod tests {
     #[test]
     /// This tests the multicast-as-a-service feature.
     /// The client starts listening to the multicast channel. Due to poor
-    /// connectivity, the source decides to stop the transmission using the
-    /// multicast channel, and falls back on the unicast connection to
+    /// connectivity, the server/client decides to stop the transmission using
+    /// the multicast channel, and falls back on the unicast connection to
     /// distribute the content.
     fn test_mc_as_a_service_fallback() {
-        let use_auth = true;
-        let mut mc_pipe = MulticastPipe::new(
-            1,
-            "/tmp/test_mc_as_a_service_fallback.txt",
-            use_auth,
-            true,
-        )
-        .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        for i in 0..2 {
+            let use_auth = true;
+            let mut mc_pipe = MulticastPipe::new(
+                1,
+                "/tmp/test_mc_as_a_service_fallback.txt",
+                use_auth,
+                true,
+            )
+            .unwrap();
+            let signature_len = if use_auth { 64 } else { 0 };
 
-        assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 1),
-            Ok(348 + signature_len)
-        );
+            assert_eq!(
+                mc_pipe.source_send_single_stream(None, signature_len, 1),
+                Ok(348 + signature_len)
+            );
 
-        // A second stream sent on the unicast connection.
-        assert_eq!(mc_pipe.uc_server_send_single_stream(5, 0), Ok(()));
+            // A second stream sent on the unicast connection.
+            assert_eq!(mc_pipe.uc_server_send_single_stream(5, 0), Ok(()));
 
-        assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 9),
-            Ok(348 + signature_len)
-        );
+            assert_eq!(
+                mc_pipe.source_send_single_stream(None, signature_len, 9),
+                Ok(348 + signature_len)
+            );
 
-        // The client has two readable streams thanks to multipath.
-        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
-        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
-        readables.sort();
-        assert_eq!(readables, vec![1, 5, 9]);
+            // The client has two readable streams thanks to multipath.
+            let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+            let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+            readables.sort();
+            assert_eq!(readables, vec![1, 5, 9]);
 
-        // The server asks the client to leave the multicast channel.
-        let pipe = &mut mc_pipe.unicast_pipes[0].0;
-        assert_eq!(
-            pipe.server.mc_leave_channel(),
-            Ok(MulticastClientStatus::Leaving(false))
-        );
-        assert_eq!(pipe.advance(), Ok(()));
+            // The server asks the client to leave the multicast channel.
+            let pipe = &mut mc_pipe.unicast_pipes[0].0;
+            if i == 0 {
+                // Server asks the client to leave the channel.
+                assert_eq!(
+                    pipe.server.mc_leave_channel(),
+                    Ok(MulticastClientStatus::Leaving(false))
+                );
+            } else {
+                // Client leaves the channel by itself.
+                assert_eq!(
+                    pipe.client.mc_leave_channel(),
+                    Ok(MulticastClientStatus::Leaving(false))
+                );
+            }
+            assert_eq!(pipe.advance(), Ok(()));
 
-        // The client left the multicast channel.
-        assert_eq!(
-            pipe.server.multicast.as_ref().unwrap().mc_role,
-            MulticastRole::ServerUnicast(MulticastClientStatus::Left)
-        );
-        assert_eq!(
-            pipe.client.multicast.as_ref().unwrap().mc_role,
-            MulticastRole::Client(MulticastClientStatus::Left)
-        );
+            // The client left the multicast channel.
+            assert_eq!(
+                pipe.server.multicast.as_ref().unwrap().mc_role,
+                MulticastRole::ServerUnicast(MulticastClientStatus::Left)
+            );
+            assert_eq!(
+                pipe.client.multicast.as_ref().unwrap().mc_role,
+                MulticastRole::Client(MulticastClientStatus::Left)
+            );
 
-        // Data received on the multicast channel is not handled by the client.
-        assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 13),
-            Ok(348 + signature_len)
-        );
-        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
-        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
-        readables.sort();
-        assert_eq!(readables, vec![1, 5, 9]); // No new stream is readable.
+            // Data received on the multicast channel is not handled by the
+            // client.
+            assert_eq!(
+                mc_pipe.source_send_single_stream(None, signature_len, 13),
+                Ok(348 + signature_len)
+            );
+            let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+            let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+            readables.sort();
+            assert_eq!(readables, vec![1, 5, 9]); // No new stream is readable.
 
-        // The same data sent on the unicast connection is correctly received.
-        assert_eq!(mc_pipe.uc_server_send_single_stream(13, 0), Ok(()));
-        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
-        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
-        readables.sort();
-        assert_eq!(readables, vec![1, 5, 9, 13]); // No new stream is readable.
+            // The same data sent on the unicast connection is correctly received.
+            assert_eq!(mc_pipe.uc_server_send_single_stream(13, 0), Ok(()));
+            let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+            let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+            readables.sort();
+            assert_eq!(readables, vec![1, 5, 9, 13]); // No new stream is
+                                                      // readable.
+        }
     }
 }
