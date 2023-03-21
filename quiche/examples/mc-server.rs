@@ -28,6 +28,7 @@
 extern crate log;
 
 use std::io::BufRead;
+use std::io::Write;
 use std::net;
 
 use quiche::multicast::McAnnounceData;
@@ -58,14 +59,23 @@ struct Args {
     #[clap(short = 't', long = "trace", value_parser)]
     trace_filename: Option<String>,
 
-    /// Sent video frames results.
+    /// Sent video frames results (timestamps sent on the wire).
     #[clap(
         short = 'r',
         long,
         value_parser,
-        default_value = "mc-server-result.txt"
+        default_value = "mc-server-result-wire.txt"
     )]
-    result_trace: String,
+    result_wire_trace: String,
+
+    /// Sent video frames results (timestamps sent to QUIC).
+    #[clap(
+        short = 's',
+        long,
+        value_parser,
+        default_value = "mc-server-result-quic.txt"
+    )]
+    result_quic_trace: String,
 
     /// Keylog file for multicast channel.
     #[clap(
@@ -204,6 +214,12 @@ fn main() {
     let mut sent_frames = 0;
     let mut video_stream_id = 1;
 
+    // Timestamp when we send the frame to QUIC.
+    let mut video_frame_to_quic = Vec::with_capacity(video_content.len());
+
+    // Timestamp when we actually send the frame on the wire.
+    let mut video_frame_to_wire = Vec::with_capacity(video_content.len());
+
     let (video_nxt_timestamp, mut video_nxt_nb_bytes) =
         *video_content.next().unwrap();
 
@@ -221,12 +237,11 @@ fn main() {
 
             timeout = [timeout, timeout_video].iter().flatten().min().copied();
 
-            debug!(
-                "Next timeout in {:?} (video is {:?})",
-                timeout, timeout_video
-            );
+            // debug!(
+            //     "Next timeout in {:?} (video is {:?})",
+            //     timeout, timeout_video
+            // );
         }
-
         poll.poll(&mut events, timeout).unwrap();
 
         // Read incoming UDP packets from the socket and feed them to quiche,
@@ -236,7 +251,7 @@ fn main() {
             // has expired, so handle it without attempting to read packets. We
             // will then proceed with the send loop.
             if events.is_empty() {
-                debug!("timed out");
+                // debug!("timed out");
 
                 clients.values_mut().for_each(|c| c.conn.on_timeout());
 
@@ -467,9 +482,12 @@ fn main() {
 
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
-        if active_video &&
+        // debug!("What is wrong: {}... {:?} >= {:?}", active_video,
+        // now.duration_since(starting_video.unwrap()),
+        // time::Duration::from_micros(video_nxt_timestamp.unwrap()));
+        let video_frame_to_send = if active_video &&
             now.duration_since(starting_video.unwrap()) >=
-                time::Duration::from_millis(video_nxt_timestamp.unwrap())
+                time::Duration::from_micros(video_nxt_timestamp.unwrap())
         {
             // Send the video frame in a dedicated stream.
             let video_data = vec![0u8; video_nxt_nb_bytes];
@@ -506,7 +524,12 @@ fn main() {
                 video_nxt_nb_bytes = tmp2;
                 video_stream_id += 4;
             }
-        }
+
+            video_frame_to_quic.push((video_stream_id - 4, time::Instant::now()));
+            true
+        } else {
+            false
+        };
 
         // Generate outgoing Multicast-QUIC packets for the multicast channel.
         if let (Some(mc_socket), Some(mc_channel)) =
@@ -581,6 +604,13 @@ fn main() {
             }
         }
 
+        // This could be improved. In case QUIC is unable to send the video frame
+        // (e.g., due to congestion control), we will record an invalid (too
+        // early) timestamp.
+        if video_frame_to_send {
+            video_frame_to_wire.push((video_stream_id - 4, time::Instant::now()));
+        }
+
         // Garbage collect closed connections.
         clients.retain(|_, ref mut c| {
             debug!("Collecting garbage");
@@ -603,6 +633,29 @@ fn main() {
         if clients.is_empty() && !active_video && starting_video.is_some() {
             break;
         }
+    }
+
+    // Record the timestamp results.
+    let mut file = std::fs::File::create(&args.result_wire_trace).unwrap();
+    for (stream_id, time) in &video_frame_to_wire {
+        writeln!(
+            file,
+            "{} {}",
+            (stream_id - 1) / 4,
+            time.duration_since(starting_video.unwrap()).as_micros()
+        )
+        .unwrap();
+    }
+
+    let mut file = std::fs::File::create(&args.result_quic_trace).unwrap();
+    for (stream_id, time) in &video_frame_to_quic {
+        writeln!(
+            file,
+            "{} {}",
+            (stream_id - 1) / 4,
+            time.duration_since(starting_video.unwrap()).as_micros()
+        )
+        .unwrap();
     }
 }
 
@@ -793,9 +846,15 @@ fn get_next_timeout_video(
 ) -> Option<time::Duration> {
     let now = time::Instant::now();
     match next_video {
-        Some(v) => Some(time::Duration::from_millis(
-            v.saturating_sub((now - start_video).as_millis() as u64),
-        )),
+        // Some(v) => Some(time::Duration::from_micros(
+        //     v.saturating_sub((now.duration_since(start_video)).as_micros() as
+        // u64), )),
+        Some(v) => Some(
+            start_video
+                .checked_add(time::Duration::from_micros(v))
+                .unwrap()
+                .duration_since(now),
+        ),
         None => None,
     }
 }
