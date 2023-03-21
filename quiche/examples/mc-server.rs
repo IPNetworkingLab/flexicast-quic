@@ -97,6 +97,12 @@ struct Args {
     /// transmission is completed.
     #[clap(long)]
     close_complete: bool,
+
+    /// Waits that at least a client connects before starting the video content.
+    /// If multicast is enabled, waits for a first multicast client to connect.
+    /// If multicast is disabled, waits for a first unicast client to connect.
+    #[clap(short, long = "wait-client")]
+    wait_first_client: bool,
 }
 
 fn main() {
@@ -190,8 +196,11 @@ fn main() {
     )
     .unwrap();
     let mut video_content = video_content.iter();
-    let starting_video = time::Instant::now();
-    let mut active_video = true;
+    let (mut starting_video, mut active_video) = if args.wait_first_client {
+        (None, false)
+    } else {
+        (Some(time::Instant::now()), true)
+    };
     let mut sent_frames = 0;
     let mut video_stream_id = 1;
 
@@ -204,16 +213,19 @@ fn main() {
         // Find the shorter timeout from all the active connections.
         //
         // TODO: use event loop that properly supports timers
-        let timeout = clients.values().filter_map(|c| c.conn.timeout()).min();
-        let timeout_video =
-            get_next_timeout_video(starting_video, video_nxt_timestamp);
+        let mut timeout = clients.values().filter_map(|c| c.conn.timeout()).min();
 
-        let timeout = [timeout, timeout_video].iter().flatten().min().copied();
+        if let Some(start) = starting_video {
+            let timeout_video =
+                get_next_timeout_video(start, video_nxt_timestamp);
 
-        debug!(
-            "Next timeout in {:?} (video is {:?})",
-            timeout, timeout_video
-        );
+            timeout = [timeout, timeout_video].iter().flatten().min().copied();
+
+            debug!(
+                "Next timeout in {:?} (video is {:?})",
+                timeout, timeout_video
+            );
+        }
 
         poll.poll(&mut events, timeout).unwrap();
 
@@ -383,6 +395,14 @@ fn main() {
                     debug!("Sets MC_ANNOUNCE data for new client");
                 }
 
+                // If it is the first client, start the multicast content
+                // directly.
+                if starting_video.is_none() {
+                    starting_video = Some(time::Instant::now());
+                    active_video = true;
+                    info!("Start the video content delivery");
+                }
+
                 client
             } else {
                 match clients.get_mut(&hdr.dcid) {
@@ -448,7 +468,7 @@ fn main() {
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
         if active_video &&
-            now.duration_since(starting_video) >=
+            now.duration_since(starting_video.unwrap()) >=
                 time::Duration::from_millis(video_nxt_timestamp.unwrap())
         {
             // Send the video frame in a dedicated stream.
@@ -580,7 +600,7 @@ fn main() {
         // more client. This may cause a problem if clients keep arriving
         // even after the video transmission is complete, but this is a proof of
         // concept... right?
-        if clients.is_empty() && !active_video {
+        if clients.is_empty() && !active_video && starting_video.is_some() {
             break;
         }
     }
