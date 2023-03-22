@@ -241,6 +241,9 @@ pub struct MulticastAttributes {
 
     /// Last expired data needs to trigger an MC_EXPIRE frame.
     pub(crate) mc_last_expired_needs_notif: bool,
+
+    /// Time at which the client received the last packet.
+    mc_last_recv_time: Option<time::Instant>,
 }
 
 impl MulticastAttributes {
@@ -525,6 +528,7 @@ impl Default for MulticastAttributes {
             mc_nack_ranges: None,
             mc_last_expired: None,
             mc_last_expired_needs_notif: false,
+            mc_last_recv_time: None,
         }
     }
 }
@@ -854,7 +858,12 @@ impl MulticastConnection for Connection {
 
     fn mc_recv(&mut self, buf: &mut [u8], info: RecvInfo) -> Result<usize> {
         let buf_len = if info.from_mc {
-            if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(multicast) = self.multicast.as_mut() {
+                // Update the last time the client received a packet on the
+                // multicast channel.
+                let now = time::Instant::now();
+                multicast.mc_last_recv_time = Some(now);
+
                 let len = buf.len();
                 if let Some(public_key) = multicast.mc_public_key.as_ref() {
                     debug!("mc_rev: Verify the signature of the received packet");
@@ -1026,20 +1035,34 @@ impl MulticastConnection for Connection {
 
     fn mc_timeout(&self) -> Option<time::Duration> {
         let space_id = self.multicast.as_ref()?.get_mc_space_id()?;
-        self.paths
-            .get(space_id)
-            .ok()?
-            .recovery
-            .mc_next_timeout()
-            .map(|timeout| {
-                let now = time::Instant::now();
 
-                if timeout <= now {
-                    time::Duration::ZERO
-                } else {
-                    timeout.duration_since(now)
-                }
-            })
+        let now = time::Instant::now();
+        // MC-TODO: should use mc_role instead of server.
+        if self.is_server {
+            self.paths
+                .get(space_id)
+                .ok()?
+                .recovery
+                .mc_next_timeout()
+                .map(|timeout| {
+                    if timeout <= now {
+                        time::Duration::ZERO
+                    } else {
+                        timeout.duration_since(now)
+                    }
+                })
+        } else {
+            let multicast = self.multicast.as_ref()?;
+            let timeout = multicast.mc_last_recv_time? +
+                time::Duration::from_millis(
+                    multicast.mc_announce_data.as_ref()?.ttl_data,
+                );
+            if timeout <= now {
+                Some(time::Duration::ZERO)
+            } else {
+                Some(timeout.duration_since(now))
+            }
+        }
     }
 
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData> {
@@ -1064,6 +1087,10 @@ impl MulticastConnection for Connection {
                         self.update_tx_cap();
                         return Ok(v);
                     }
+                }
+
+                if !self.is_server {
+                    self.mc_leave_channel()?;
                 }
             }
         }
@@ -3515,4 +3542,9 @@ mod tests {
                                                       // readable.
         }
     }
+
+    #[test]
+    /// Test that the client leaves the multicast channel on timeout.
+    /// A timeout occurs if the client does not receive data from the channel.
+    fn test_on_mc_timeout_client() {}
 }
