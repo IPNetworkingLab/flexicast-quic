@@ -66,7 +66,6 @@ pub enum MulticastError {
     /// Invalid multipath path used, or invalid space id.
     McPath,
 
-    #[cfg(test)]
     /// Error when initiating the multicast pipe.
     McPipe,
 }
@@ -1501,8 +1500,8 @@ impl MulticastChannelSource {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[doc(hidden)]
+pub mod testing {
     use std::collections::HashSet;
 
     use ring::rand::SecureRandom;
@@ -1641,7 +1640,7 @@ mod tests {
         ///
         /// `client_loss` is a RangeSet containing the indexes of clients that
         /// DO NOT receive the packet. `None` if all clients receive the packet.
-        fn source_send_single(
+        pub fn source_send_single(
             &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
         ) -> Result<usize> {
             let mut mc_buf = [0u8; 1500];
@@ -1683,7 +1682,7 @@ mod tests {
         ///
         /// `client_loss` is a RangeSet containing the indexes of clients that
         /// DO NOT receive the packet. `None` if all clients receive the packet.
-        fn source_send_single_stream(
+        pub fn source_send_single_stream(
             &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
             stream_id: u64,
         ) -> Result<usize> {
@@ -1702,7 +1701,7 @@ mod tests {
 
         /// The clients send feedback using the unicast connection to the
         /// server.
-        fn clients_send(&mut self) -> Result<()> {
+        pub fn clients_send(&mut self) -> Result<()> {
             let mut buf = [0u8; 1500];
             for (pipe, ..) in self.unicast_pipes.iter_mut() {
                 loop {
@@ -1730,7 +1729,7 @@ mod tests {
 
         /// The unicast server sends multicast feedback control from the client
         /// to the multicast source.
-        fn server_control_to_mc_source(&mut self) -> Result<()> {
+        pub fn server_control_to_mc_source(&mut self) -> Result<()> {
             let mc_channel = &mut self.mc_channel.channel;
             for (pipe, ..) in self.unicast_pipes.iter_mut() {
                 pipe.server.uc_to_mc_control(mc_channel)?;
@@ -1741,7 +1740,7 @@ mod tests {
 
         /// The unicast server specified by the index argument sends a single
         /// stream to its client.
-        fn uc_server_send_single_stream(
+        pub fn uc_server_send_single_stream(
             &mut self, stream_id: u64, pipe_idx: usize,
         ) -> Result<()> {
             let mut buf = [0u8; 300];
@@ -1793,7 +1792,7 @@ mod tests {
     }
 
     /// Simple McAnnounceData for testing the multicast extension only.
-    fn get_test_mc_announce_data() -> McAnnounceData {
+    pub fn get_test_mc_announce_data() -> McAnnounceData {
         McAnnounceData {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             is_ipv6: false,
@@ -1806,7 +1805,7 @@ mod tests {
     }
 
     /// Simple source multicast channel for the tests.
-    fn get_test_mc_channel_source(
+    pub fn get_test_mc_channel_source(
         config_server: &mut Config, config_client: &mut Config, do_auth: bool,
         keylog_filename: &str,
     ) -> Result<MulticastChannelSource> {
@@ -1839,6 +1838,20 @@ mod tests {
             do_auth,
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use ring::rand::SecureRandom;
+
+    use crate::testing;
+
+    use crate::multicast::testing::get_test_mc_announce_data;
+    use crate::multicast::testing::get_test_mc_channel_source;
+    use crate::multicast::testing::get_test_mc_config;
+    use crate::multicast::testing::MulticastPipe;
+
+    use super::*;
 
     #[test]
     /// The server adds MC_ANNOUNCE data and should send it to the client.
