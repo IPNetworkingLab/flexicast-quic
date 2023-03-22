@@ -6430,13 +6430,11 @@ impl Connection {
         let pid = match self.paths.path_id_from_addrs(&(local_addr, peer_addr)) {
             Some(pid) => pid,
             None => {
-                println!("Creates a path on the client");
                 self.create_path_on_client(local_addr, peer_addr)?
             },
         };
 
         let path = self.paths.get_mut(pid)?;
-        println!("Requests validation");
         path.request_validation();
 
         path.active_dcid_seq.ok_or(Error::InvalidState)
@@ -8260,7 +8258,7 @@ impl Connection {
                 key,
                 first_pn,
             } => {
-                println!(
+                debug!(
                     "Received an MC_KEY frame! channel ID: {:?}, key: {:?}, first_pn: {:?}",
                     channel_id, key, first_pn,
                 );
