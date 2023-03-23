@@ -657,7 +657,7 @@ pub trait MulticastConnection {
     /// Once the given duration has elapsted, the [`on_mc_timeout()`] method
     /// should be called. A timeout of `None` means that the timer should be
     /// disarmed.
-    fn mc_timeout(&self) -> Option<time::Duration>;
+    fn mc_timeout(&self, now: time::Instant) -> Option<time::Duration>;
 
     /// Processes a multicast timeout event.
     ///
@@ -1033,10 +1033,9 @@ impl MulticastConnection for Connection {
         Ok((pkt_num_opt, stream_id_opt, fec_metadata_opt))
     }
 
-    fn mc_timeout(&self) -> Option<time::Duration> {
+    fn mc_timeout(&self, now: time::Instant) -> Option<time::Duration> {
         let space_id = self.multicast.as_ref()?.get_mc_space_id()?;
 
-        let now = time::Instant::now();
         // MC-TODO: should use mc_role instead of server.
         if self.is_server {
             self.paths
@@ -1067,29 +1066,29 @@ impl MulticastConnection for Connection {
 
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData> {
         // Some data has expired.
-        if let Some(time::Duration::ZERO) = self.mc_timeout() {
+        if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
             if let Some(multicast) = self.multicast.as_ref() {
-                if let Some(space_id) = multicast.get_mc_space_id() {
-                    let res = self.mc_expire(
-                        Epoch::Application,
-                        space_id as u64,
-                        None,
-                        now,
-                    );
-                    if let Ok(v) = res {
-                        self.multicast.as_mut().unwrap().mc_last_expired =
-                            Some(v);
-                        self.multicast
-                            .as_mut()
-                            .unwrap()
-                            .mc_last_expired_needs_notif =
-                            v.0.is_some() || v.1.is_some() || v.2.is_some();
-                        self.update_tx_cap();
-                        return Ok(v);
+                if self.is_server {
+                    if let Some(space_id) = multicast.get_mc_space_id() {
+                        let res = self.mc_expire(
+                            Epoch::Application,
+                            space_id as u64,
+                            None,
+                            now,
+                        );
+                        if let Ok(v) = res {
+                            self.multicast.as_mut().unwrap().mc_last_expired =
+                                Some(v);
+                            self.multicast
+                                .as_mut()
+                                .unwrap()
+                                .mc_last_expired_needs_notif =
+                                v.0.is_some() || v.1.is_some() || v.2.is_some();
+                            self.update_tx_cap();
+                            return Ok(v);
+                        }
                     }
-                }
-
-                if !self.is_server {
+                } else {
                     self.mc_leave_channel()?;
                 }
             }
@@ -1683,9 +1682,9 @@ pub mod testing {
                 .filter(|&idx| !client_loss.contains(&(idx as u64)));
 
             for client_idx in idx_client_receive {
-                let mut recv_buf = mc_buf.clone();
+                let mut recv_buf = mc_buf;
                 let (pipe, client_addr, server_addr) =
-                    self.unicast_pipes.get_mut(client_idx as usize).unwrap();
+                    self.unicast_pipes.get_mut(client_idx).unwrap();
 
                 let recv_info = RecvInfo {
                     from: *server_addr,
@@ -1719,7 +1718,7 @@ pub mod testing {
                 .unwrap();
             self.mc_channel.channel.stream_send(
                 stream_id,
-                &mut mc_buf[..],
+                &mut mc_buf,
                 true,
             )?;
 
@@ -2365,7 +2364,7 @@ mod tests {
     fn test_on_mc_timeout() {
         let use_auth = false;
         let mut mc_pipe =
-            MulticastPipe::new(1, "/tmp/test_mc_expire.txt", use_auth, false)
+            MulticastPipe::new(1, "/tmp/test_on_mc_timeout.txt", use_auth, false)
                 .unwrap();
         let signature_len = if use_auth { 64 } else { 0 };
 
@@ -3546,5 +3545,66 @@ mod tests {
     #[test]
     /// Test that the client leaves the multicast channel on timeout.
     /// A timeout occurs if the client does not receive data from the channel.
-    fn test_on_mc_timeout_client() {}
+    fn test_on_mc_timeout_client() {
+        let use_auth = true;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_on_mc_timeout_client.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+        let signature_len = if use_auth { 64 } else { 0 };
+        let mut clients_losing_packets = RangeSet::default();
+        clients_losing_packets.insert(0..1);
+
+        // First stream is received.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            Ok(348 + signature_len)
+        );
+
+        // Second stream is lost.
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                Some(&clients_losing_packets),
+                signature_len,
+                5
+            ),
+            Ok(348 + signature_len)
+        );
+
+        // Timeout on the client: they leave the multicast channel because no data
+        // has been received for too long.
+        let now = time::Instant::now();
+        let expired_timer = now +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            ); // Margin
+
+        let pipe = &mut mc_pipe.unicast_pipes[0].0;
+        // The client does not generate expired data.
+        assert_eq!(
+            pipe.client.on_mc_timeout(expired_timer),
+            Ok((None, None, None))
+        );
+
+        // Upon timeout, the client leaves the multicast channel.
+        assert_eq!(
+            pipe.client.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::Client(MulticastClientStatus::Leaving(false))
+        );
+
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // The client has left the multicast channel.
+        assert_eq!(
+            pipe.client.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::Client(MulticastClientStatus::Left)
+        );
+        assert_eq!(
+            pipe.server.multicast.as_ref().unwrap().mc_role,
+            MulticastRole::ServerUnicast(MulticastClientStatus::Left)
+        );
+    }
 }
