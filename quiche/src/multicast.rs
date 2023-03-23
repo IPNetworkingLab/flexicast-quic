@@ -244,6 +244,10 @@ pub struct MulticastAttributes {
 
     /// Time at which the client received the last packet.
     mc_last_recv_time: Option<time::Instant>,
+
+    /// Set to true if the client just left the multicast channel and the
+    /// synchronisation step is not performed yet.
+    mc_client_left_need_sync: bool,
 }
 
 impl MulticastAttributes {
@@ -313,12 +317,14 @@ impl MulticastAttributes {
                 if let Some(leaving_from) = action_data {
                     if leaving_from == LEAVE_FROM_CLIENT {
                         if is_server {
+                            self.mc_client_left_need_sync = true;
                             MulticastClientStatus::Left
                         } else {
                             MulticastClientStatus::Leaving(false)
                         }
                     } else if leaving_from == LEAVE_FROM_SERVER {
                         if is_server {
+                            self.mc_client_left_need_sync = true;
                             MulticastClientStatus::Leaving(false)
                         } else {
                             MulticastClientStatus::Left
@@ -529,6 +535,7 @@ impl Default for MulticastAttributes {
             mc_last_expired: None,
             mc_last_expired_needs_notif: false,
             mc_last_recv_time: None,
+            mc_client_left_need_sync: false,
         }
     }
 }
@@ -1214,6 +1221,23 @@ impl MulticastConnection for Connection {
                     multicast.mc_last_expired = Some((Some(pn), None, None));
                 }
             }
+
+            // Unicast connection asks the multicast channel for open streams.
+            // This is only once when the client leaves the multicast channel
+            // and relies on the unicast connection to get the data.
+            // The unicast server must retransmit streams that are still valid
+            // but that the client did not get from the multicast channel.
+            if multicast.mc_client_left_need_sync {
+                multicast.mc_client_left_need_sync = false;
+
+                for (&stream_id, stream) in mc_channel.streams.iter() {
+                    let data_vec = stream.send.emit_poll();
+                    for data in &data_vec[..data_vec.len() - 1] {
+                        self.stream_send(stream_id, data, false)?;
+                    }
+                    self.stream_send(stream_id, data_vec.last().unwrap(), true)?;
+                }
+            }
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -1716,11 +1740,9 @@ pub mod testing {
             ring::rand::SystemRandom::new()
                 .fill(&mut mc_buf[..])
                 .unwrap();
-            self.mc_channel.channel.stream_send(
-                stream_id,
-                &mut mc_buf,
-                true,
-            )?;
+            self.mc_channel
+                .channel
+                .stream_send(stream_id, &mc_buf, true)?;
 
             self.source_send_single(client_loss, signature_len)
         }
@@ -3583,6 +3605,12 @@ mod tests {
             ); // Margin
 
         let pipe = &mut mc_pipe.unicast_pipes[0].0;
+
+        // The client has a single stream.
+        let mut readables = pipe.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1]);
+
         // The client does not generate expired data.
         assert_eq!(
             pipe.client.on_mc_timeout(expired_timer),
@@ -3606,5 +3634,30 @@ mod tests {
             pipe.server.multicast.as_ref().unwrap().mc_role,
             MulticastRole::ServerUnicast(MulticastClientStatus::Left)
         );
+
+        // The unicast server requests backup data from the multicast channel.
+        assert!(
+            pipe.server
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_client_left_need_sync
+        );
+        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        let pipe = &mut mc_pipe.unicast_pipes[0].0;
+        let open_streams = pipe
+            .server
+            .streams
+            .iter()
+            .map(|(sid, _)| *sid)
+            .collect::<Vec<_>>();
+        assert_eq!(open_streams, vec![1, 5]);
+
+        // The unicast server sends the streams. The client now has all the
+        // streams.
+        assert_eq!(pipe.advance(), Ok(()));
+        let mut readables = pipe.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 5]);
     }
 }

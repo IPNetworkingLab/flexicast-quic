@@ -1278,6 +1278,11 @@ impl SendBuf {
         Ok((out.len() - out_len, fin))
     }
 
+    /// Returns the range buffer.
+    pub fn emit_poll(&self) -> Vec<&[u8]> {
+        self.data.iter().map(|i| &i.data.as_ref()[..]).collect()
+    }
+
     /// Updates the max_data limit to the given value.
     pub fn update_max_data(&mut self, max_data: u64) {
         self.max_data = cmp::max(self.max_data, max_data);
