@@ -1550,7 +1550,8 @@ impl MulticastChannelSource {
     }
 }
 
-#[doc(hidden)]
+/// Provide structures and functions to help testing the multicast extension of
+/// QUIC.
 pub mod testing {
     use std::collections::HashSet;
 
@@ -1568,12 +1569,18 @@ pub mod testing {
     /// channel. Performs the multicast extension negociation for each client
     /// in the pipe.
     pub struct MulticastPipe {
+        /// All unicast connections between the clients and the server.
         pub unicast_pipes: Vec<(Pipe, SocketAddr, SocketAddr)>,
+
+        /// Multicast source channel.
         pub mc_channel: MulticastChannelSource,
+
+        /// Multicast channel infirmation (MC_ANNOUNCE data).
         pub mc_announce_data: McAnnounceData,
     }
 
     impl MulticastPipe {
+        /// Generates a new multicast pipe with already defined configuration.
         pub fn new(
             nb_clients: usize, keylog_filename: &str, do_auth: bool,
             use_fec: bool,
@@ -2382,7 +2389,9 @@ mod tests {
     #[test]
     /// Tests the process of MC_EXPIRE from the server to the client.
     /// The server sends an MC_EXPIRE when the data expires with the `ttl_data`
-    /// value of the multicast attributes.
+    /// value of the multicast attributes. Also tests that the multicast source
+    /// regularly sends MC_EXPIRE containing empty data if no new data is sent
+    /// to the client, to ensure that the multicast channel does not timeout.
     fn test_on_mc_timeout() {
         let use_auth = false;
         let mut mc_pipe =
@@ -2489,7 +2498,7 @@ mod tests {
         // The expiration timeout is exceeded. Closes the stream and removes the
         // packets from the sending queue.
         let now = time::Instant::now();
-        let expired_timer = now +
+        let mut expired_timer = now +
             time::Duration::from_millis(
                 mc_pipe.mc_announce_data.ttl_data + 100,
             ); // Margin
@@ -2519,6 +2528,85 @@ mod tests {
 
         // The stream is also closed on the client now.
         assert!(mc_pipe.unicast_pipes[0].0.client.stream_finished(3));
+
+        // The source did not send data for a long time. An MC_EXPIRE containing
+        // empty information is sent by the source.
+        let client_last_received = mc_pipe.unicast_pipes[0]
+            .0
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_last_recv_time;
+        expired_timer +=
+            time::Duration::from_millis(mc_pipe.mc_announce_data.ttl_data + 100);
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
+        assert_eq!(res, Ok((Some(11), None, None)));
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_last_expired,
+            Some((Some(11), None, None))
+        );
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(55));
+        let client_last_received_now = mc_pipe.unicast_pipes[0]
+            .0
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_last_recv_time;
+        assert!(client_last_received.is_some());
+        assert!(client_last_received_now.is_some());
+        assert!(
+            client_last_received_now
+                .unwrap()
+                .duration_since(client_last_received.unwrap()) >
+                time::Duration::ZERO
+        );
+
+        // Repeat the same thing...
+        let client_last_received = mc_pipe.unicast_pipes[0]
+            .0
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_last_recv_time;
+        expired_timer +=
+            time::Duration::from_millis(mc_pipe.mc_announce_data.ttl_data + 100);
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
+        assert_eq!(res, Ok((Some(12), None, None)));
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_last_expired,
+            Some((Some(12), None, None))
+        );
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(55));
+        let client_last_received_now = mc_pipe.unicast_pipes[0]
+            .0
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_last_recv_time;
+        assert!(client_last_received.is_some());
+        assert!(client_last_received_now.is_some());
+        assert!(
+            client_last_received_now
+                .unwrap()
+                .duration_since(client_last_received.unwrap()) >
+                time::Duration::ZERO
+        );
     }
 
     #[test]
