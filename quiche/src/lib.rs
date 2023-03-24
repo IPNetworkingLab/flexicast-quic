@@ -6429,9 +6429,7 @@ impl Connection {
         // We may want to probe an existing path.
         let pid = match self.paths.path_id_from_addrs(&(local_addr, peer_addr)) {
             Some(pid) => pid,
-            None => {
-                self.create_path_on_client(local_addr, peer_addr)?
-            },
+            None => self.create_path_on_client(local_addr, peer_addr)?,
         };
 
         let path = self.paths.get_mut(pid)?;
@@ -8025,6 +8023,18 @@ impl Connection {
                         },
                     }
                 }
+            },
+
+            frame::Frame::McAuth {
+                channel_id,
+                pn,
+                signatures,
+            } => {
+                debug!(
+                    "Must process McAuth frame: {:?} {:?} {:?}",
+                    channel_id, pn, signatures
+                );
+                todo!();
             },
 
             frame::Frame::SourceSymbol { source_symbol } =>

@@ -34,7 +34,9 @@ use std::convert::TryInto;
 use crate::Error;
 use crate::Result;
 
+use crate::multicast::sym_sign::McSign;
 use crate::multicast::MC_ANNOUNCE_CODE;
+use crate::multicast::MC_AUTH_CODE;
 use crate::multicast::MC_EXPIRE_CODE;
 use crate::multicast::MC_KEY_CODE;
 use crate::multicast::MC_STATE_CODE;
@@ -238,6 +240,12 @@ pub enum Frame {
         pkt_num: Option<u64>,
         stream_id: Option<u64>,
         fec_metadata: Option<u64>,
+    },
+
+    McAuth {
+        channel_id: Vec<u8>,
+        pn: u64,
+        signatures: Vec<McSign>,
     },
 
     Repair {
@@ -503,6 +511,10 @@ impl Frame {
                     stream_id,
                     fec_metadata,
                 }
+            },
+
+            MC_AUTH_CODE => {
+                todo!();
             },
 
             0x32 => {
@@ -895,6 +907,18 @@ impl Frame {
                 }
             },
 
+            Frame::McAuth {
+                channel_id,
+                pn,
+                signatures,
+            } => {
+                debug!(
+                    "Going to encode the MC_AUTH frame: {:?} {:?} {:?}",
+                    channel_id, pn, signatures
+                );
+                todo!();
+            },
+
             Frame::Repair { repair_symbol } => {
                 b.put_varint(0x32)?;
                 b.put_bytes(repair_symbol.get())?;
@@ -1246,6 +1270,15 @@ impl Frame {
                 fec_metadata_len
             },
 
+            Frame::McAuth {
+                channel_id,
+                pn,
+                signatures,
+            } => {
+                debug!("Going to give the length of the MC_AUTH frame: {:?} {:?} {:?}", channel_id, pn, signatures);
+                todo!();
+            },
+
             Frame::Repair { repair_symbol } => {
                 1 + // frame_type
                 repair_symbol.wire_len()
@@ -1577,6 +1610,12 @@ impl Frame {
                 raw: Some("103".to_string()),
             },
 
+            Frame::McAuth { .. } => QuicFrame::Unknown {
+                raw_frame_type: 0x33,
+                raw_length: Some(14),
+                raw: Some("104".to_string()),
+            },
+
             Frame::Repair { repair_symbol } => QuicFrame::Unknown {
                 raw_frame_type: 0x32,
                 raw_length: Some(repair_symbol.wire_len() as u32),
@@ -1850,6 +1889,18 @@ impl std::fmt::Debug for Frame {
                 fec_metadata,
             } => {
                 write!(f, "MC_EXPIRE channel ID={:?} expiration type: {:?} pkt_num: {:?} stream_id: {:?} fec_metadata: {:?}", channel_id, expiration_type, pkt_num, stream_id, fec_metadata)?;
+            },
+
+            Frame::McAuth {
+                channel_id,
+                pn,
+                signatures,
+            } => {
+                write!(
+                    f,
+                    "MC_AUTH channel ID={:?} pn={:?} signatures={:?}",
+                    channel_id, pn, signatures
+                )?;
             },
 
             Frame::Repair { repair_symbol } => {

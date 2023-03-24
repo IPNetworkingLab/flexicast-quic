@@ -78,6 +78,8 @@ pub const MC_STATE_CODE: u64 = 0xf4;
 pub const MC_KEY_CODE: u64 = 0xf5;
 /// MC_EXPIRE frame type.
 pub const MC_EXPIRE_CODE: u64 = 0xf6;
+/// MC_AUTH frame type.
+pub const MC_AUTH_CODE: u64 = 0xf7;
 
 /// The leaving action is requested by the client.
 pub const LEAVE_FROM_CLIENT: u64 = 0x0;
@@ -3749,3 +3751,5 @@ mod tests {
         assert_eq!(readables, vec![1, 5]);
     }
 }
+
+pub mod sym_sign;
