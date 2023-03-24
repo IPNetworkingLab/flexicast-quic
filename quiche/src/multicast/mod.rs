@@ -1,5 +1,6 @@
 //! Multicast extension for QUIC.
 
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::io::BufRead;
@@ -68,6 +69,9 @@ pub enum MulticastError {
 
     /// Error when initiating the multicast pipe.
     McPipe,
+
+    /// Invalid new client ID.
+    McInvalidClientId,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -1549,6 +1553,53 @@ impl MulticastChannelSource {
         self.channel
             .send_on_path(buf, Some(self.mc_path_peer), Some(self.mc_path_peer))
             .map(|(written, _)| written)
+    }
+}
+
+/// Client connection ID to client ID mapping. Used by the server to
+/// authenticate message with a symetric signature.
+pub struct McClientId {
+    max_client_id: u64,
+    id_to_cid: HashMap<u64, Vec<u8>>,
+    cid_to_id: HashMap<Vec<u8>, u64>,
+}
+
+impl McClientId {
+    /// Returns a new client ID based on a connection ID.
+    /// Ask for a slice of u8 because it may be more convenient in some cases.
+    ///
+    /// Inserts the new client ID in the map.
+    /// Returns an error if the connection ID is already in the map.
+    pub fn new_client(&mut self, cid: &[u8]) -> Result<u64> {
+        if self.cid_to_id.contains_key(cid) {
+            return Err(Error::Multicast(MulticastError::McInvalidClientId));
+        }
+
+        let client_id = self.max_client_id;
+        self.max_client_id += 1;
+        self.cid_to_id.insert(cid.to_vec(), client_id);
+        self.id_to_cid.insert(client_id, cid.to_vec());
+
+        Ok(client_id)
+    }
+
+    /// Retrieves the client ID based on the connection ID.
+    pub fn get_client_id(&self, cid: &[u8]) -> Option<u64> {
+        self.cid_to_id.get(cid).copied()
+    }
+
+    /// Retrieves the connection id based on the client ID.
+    pub fn get_client_cid(&self, client_id: u64) -> Option<&Vec<u8>> {
+        self.id_to_cid.get(&client_id)
+    }
+
+    /// Remove a client using the connection ID.
+    pub fn remove_from_cid(&mut self, cid: &[u8]) -> Option<u64> {
+        let client_id = self.cid_to_id.get(cid)?.to_owned();
+        self.cid_to_id.remove(cid)?;
+        self.id_to_cid.remove(&client_id);
+
+        Some(client_id)
     }
 }
 

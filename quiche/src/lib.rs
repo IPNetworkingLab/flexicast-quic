@@ -4422,6 +4422,7 @@ impl Connection {
                         channel_id: mc_announce_data.channel_id.clone(),
                         key: multicast.get_decryption_key_secret()?.to_vec(),
                         first_pn,
+                        client_id: 0,
                     };
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
@@ -8267,10 +8268,11 @@ impl Connection {
                 channel_id,
                 key,
                 first_pn,
+                client_id,
             } => {
                 debug!(
-                    "Received an MC_KEY frame! channel ID: {:?}, key: {:?}, first_pn: {:?}",
-                    channel_id, key, first_pn,
+                    "Received an MC_KEY frame! channel ID: {:?}, key: {:?}, first_pn: {:?} client id: {:?}",
+                    channel_id, key, first_pn, client_id,
                 );
                 if self.is_server {
                     return Err(Error::Multicast(
