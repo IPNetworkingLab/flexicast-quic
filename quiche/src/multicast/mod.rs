@@ -1269,7 +1269,7 @@ impl MulticastConnection for Connection {
                 let client_id = if let Some(McClientId::MulticastServer(map)) =
                     mc_channel.multicast.as_mut().unwrap().mc_client_id.as_mut()
                 {
-                    map.new_client(&self.source_id().as_ref())?
+                    map.new_client(self.source_id().as_ref())?
                 } else {
                     return Err(Error::Multicast(
                         MulticastError::McInvalidClientId,
@@ -1648,7 +1648,7 @@ impl McClientIdSource {
     /// Retrieves the connection id based on the client ID.
     pub fn get_client_cid(&self, client_id: u64) -> Option<&[u8]> {
         match self.id_to_cid.get(&client_id) {
-            Some(v) => Some(&v),
+            Some(v) => Some(v),
             None => None,
         }
     }
