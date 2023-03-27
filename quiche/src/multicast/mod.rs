@@ -254,6 +254,9 @@ pub struct MulticastAttributes {
     /// Set to true if the client just left the multicast channel and the
     /// synchronisation step is not performed yet.
     mc_client_left_need_sync: bool,
+
+    /// Multicast clients Ids.
+    mc_client_id: Option<McClientId>,
 }
 
 impl MulticastAttributes {
@@ -409,7 +412,7 @@ impl MulticastAttributes {
         matches!(
             self.mc_role,
             MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey)
-        )
+        ) && self.mc_client_id.is_some()
     }
 
     /// Read the last multicast decryption key secret.
@@ -522,6 +525,33 @@ impl MulticastAttributes {
 
         Ok(())
     }
+
+    /// Sets the client ID for the client and the unicast server (i.e., the id
+    /// of their client).
+    pub fn set_client_id(&mut self, client_id: u64) -> Result<()> {
+        if !matches!(
+            self.mc_role,
+            MulticastRole::Client(_) | MulticastRole::ServerUnicast(_)
+        ) {
+            return Err(Error::Multicast(MulticastError::McInvalidRole(
+                self.mc_role,
+            )));
+        }
+        self.mc_client_id = Some(McClientId::Client(client_id));
+
+        Ok(())
+    }
+
+    /// Gets the client ID.
+    pub fn get_self_client_id(&self) -> Result<u64> {
+        match self.mc_client_id {
+            Some(McClientId::Client(v)) => Ok(v),
+            Some(McClientId::MulticastServer(_)) => Err(Error::Multicast(
+                MulticastError::McInvalidRole(self.mc_role),
+            )),
+            None => Err(Error::Multicast(MulticastError::McInvalidClientId)),
+        }
+    }
 }
 
 impl Default for MulticastAttributes {
@@ -542,6 +572,7 @@ impl Default for MulticastAttributes {
             mc_last_expired_needs_notif: false,
             mc_last_recv_time: None,
             mc_client_left_need_sync: false,
+            mc_client_id: None,
         }
     }
 }
@@ -1228,11 +1259,34 @@ impl MulticastConnection for Connection {
                 }
             }
 
+            // Unicast connection asks the multicast channel for a new client ID.
+            // MC-TODO: now we assign a new client ID even before the client joins
+            // the multicast channel.
+            if matches!(
+                multicast.mc_role,
+                MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey)
+            ) {
+                let client_id = if let Some(McClientId::MulticastServer(map)) =
+                    mc_channel.multicast.as_mut().unwrap().mc_client_id.as_mut()
+                {
+                    map.new_client(self.source_id().as_ref())?
+                } else {
+                    return Err(Error::Multicast(
+                        MulticastError::McInvalidClientId,
+                    ));
+                };
+
+                let multicast = self.multicast.as_mut().unwrap();
+
+                multicast.mc_client_id = Some(McClientId::Client(client_id));
+            }
+
             // Unicast connection asks the multicast channel for open streams.
             // This is only once when the client leaves the multicast channel
             // and relies on the unicast connection to get the data.
             // The unicast server must retransmit streams that are still valid
             // but that the client did not get from the multicast channel.
+            let multicast = self.multicast.as_mut().unwrap();
             if multicast.mc_client_left_need_sync {
                 multicast.mc_client_left_need_sync = false;
 
@@ -1408,6 +1462,9 @@ impl MulticastChannelSource {
         conn_server.multicast = Some(MulticastAttributes {
             mc_private_key: signature_eddsa,
             mc_role: MulticastRole::ServerMulticast,
+            mc_client_id: Some(McClientId::MulticastServer(
+                McClientIdSource::default(),
+            )),
             ..Default::default()
         });
 
@@ -1601,13 +1658,13 @@ impl MulticastChannelSource {
 
 /// Client connection ID to client ID mapping. Used by the server to
 /// authenticate message with a symetric signature.
-pub struct McClientId {
+pub struct McClientIdSource {
     max_client_id: u64,
     id_to_cid: HashMap<u64, Vec<u8>>,
     cid_to_id: HashMap<Vec<u8>, u64>,
 }
 
-impl McClientId {
+impl McClientIdSource {
     /// Returns a new client ID based on a connection ID.
     /// Ask for a slice of u8 because it may be more convenient in some cases.
     ///
@@ -1632,8 +1689,11 @@ impl McClientId {
     }
 
     /// Retrieves the connection id based on the client ID.
-    pub fn get_client_cid(&self, client_id: u64) -> Option<&Vec<u8>> {
-        self.id_to_cid.get(&client_id)
+    pub fn get_client_cid(&self, client_id: u64) -> Option<&[u8]> {
+        match self.id_to_cid.get(&client_id) {
+            Some(v) => Some(v),
+            None => None,
+        }
     }
 
     /// Remove a client using the connection ID.
@@ -1644,6 +1704,26 @@ impl McClientId {
 
         Some(client_id)
     }
+}
+
+impl Default for McClientIdSource {
+    fn default() -> Self {
+        Self {
+            max_client_id: 0,
+            id_to_cid: HashMap::new(),
+            cid_to_id: HashMap::new(),
+        }
+    }
+}
+
+/// Client ID for the different multicast roles.
+pub enum McClientId {
+    /// Clients stores its client ID.
+    /// Unicast server store the client ID of its unicast client.
+    Client(u64),
+
+    /// The multicast server maintains a mapping for all its clients.
+    MulticastServer(McClientIdSource),
 }
 
 /// Provide structures and functions to help testing the multicast extension of
@@ -1735,10 +1815,16 @@ pub mod testing {
                         Some(mc_channel.master_secret.clone());
                     assert!(pipe.advance().is_ok());
 
-                    // Client joins the multicast channel, and the server gives
-                    // the master key.
+                    // Client joins the multicast channel.
                     pipe.client.mc_join_channel().unwrap();
                     pipe.advance().unwrap();
+
+                    // Server computes the client ID.
+                    pipe.server.uc_to_mc_control(&mut mc_channel.channel).unwrap();
+
+                    // The server gives the master key.
+                    pipe.advance().unwrap();
+
 
                     let client_mc_announce = pipe
                         .client
@@ -2262,6 +2348,8 @@ mod tests {
         let mc_channel_key: Vec<_> = (0..32).collect();
         multicast.mc_channel_key = Some(mc_channel_key.clone());
 
+        assert!(!pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
+        assert_eq!(pipe.server.multicast.as_mut().unwrap().set_client_id(0), Ok(()));
         assert!(pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
         assert_eq!(pipe.advance(), Ok(()));
 
@@ -3901,6 +3989,56 @@ mod tests {
         let mut readables = pipe.client.readable().collect::<Vec<_>>();
         readables.sort();
         assert_eq!(readables, vec![1, 5]);
+    }
+
+    #[test]
+    /// Tests the client ID given by the multicast source.
+    fn test_mc_client_id() {
+        let use_auth = true;
+        let mc_pipe =
+            MulticastPipe::new(5, "/tmp/test_mc_client_id.txt", use_auth, true)
+                .unwrap();
+
+        let client_id_map = mc_pipe
+            .mc_channel
+            .channel
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_client_id
+            .as_ref();
+        let client_id_map = match client_id_map {
+            Some(McClientId::MulticastServer(v)) => v,
+            _ => return assert!(false),
+        };
+        assert_eq!(client_id_map.max_client_id, 5);
+
+        for (i, pipe) in mc_pipe.unicast_pipes.iter().enumerate() {
+            let client_id = pipe
+                .0
+                .client
+                .multicast
+                .as_ref()
+                .unwrap()
+                .get_self_client_id();
+            assert_eq!(client_id, Ok(i as u64));
+
+            let client_id = pipe
+                .0
+                .server
+                .multicast
+                .as_ref()
+                .unwrap()
+                .get_self_client_id();
+            assert_eq!(client_id, Ok(i as u64));
+
+            let cid = client_id_map.get_client_cid(i as u64);
+            assert_eq!(cid, Some(pipe.0.server.source_id().as_ref()));
+            assert_eq!(
+                client_id_map.get_client_id(cid.unwrap()),
+                Some(client_id.unwrap())
+            );
+        }
     }
 }
 

@@ -4422,7 +4422,7 @@ impl Connection {
                         channel_id: mc_announce_data.channel_id.clone(),
                         key: multicast.get_decryption_key_secret()?.to_vec(),
                         first_pn,
-                        client_id: 0,
+                        client_id: multicast.get_self_client_id()?,
                     };
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
@@ -8284,6 +8284,7 @@ impl Connection {
                     ));
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     multicast.set_decryption_key_secret(key)?;
+                    multicast.set_client_id(client_id)?;
 
                     // Packets starting with this number will trigger MC_NACK in
                     // case of loss.
