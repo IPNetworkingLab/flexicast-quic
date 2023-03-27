@@ -315,6 +315,14 @@ impl MulticastAttributes {
     }
 
     #[inline]
+    /// Returns a reference to the MC_ANNOUNCE data given by the index.
+    pub fn get_mc_announce_data(
+        &self, idx: usize,
+    ) -> Option<&McAnnounceData> {
+        self.mc_announce_data.get(idx)
+    }
+
+    #[inline]
     /// Returns the current multicast role.
     pub fn get_mc_role(&self) -> MulticastRole {
         self.mc_role
@@ -1813,6 +1821,20 @@ pub mod testing {
                 get_test_mc_config(false, Some(&mc_client_tp), use_fec);
             let mut mc_announce_data = get_test_mc_announce_data();
 
+            // Create a new announce data if the channel uses symetric
+            // authentication.
+            let mut mc_data_auth = if authentication == McAuthType::SymSign {
+                let mut data = get_test_mc_announce_data();
+                data.udp_port += 10;
+                data.path_type = McPathType::Authentication;
+                data.channel_id =
+                    [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x44].to_vec();
+
+                Some(data)
+            } else {
+                None
+            };
+
             // Multicast path.
             let mut mc_channel = get_test_mc_channel_source(
                 &mut server_config,
@@ -1833,6 +1855,17 @@ pub mod testing {
                 .unwrap()
                 .mc_announce_data
                 .push(mc_announce_data.clone());
+
+            // Push the authentication data if it exists.
+            if let Some(mc_data) = mc_data_auth {
+                mc_channel
+                    .channel
+                    .multicast
+                    .as_mut()
+                    .unwrap()
+                    .mc_announce_data
+                    .push(mc_data.clone());
+            }
 
             // Copy the public key from the multicast channel.
             if let Some(public_key) = mc_channel
@@ -1857,6 +1890,9 @@ pub mod testing {
                     pipe.server
                         .mc_set_mc_announce_data(&mc_announce_data)
                         .unwrap();
+                    if let Some(mc_data) = &mc_data_auth.as_ref() {
+                        pipe.server.mc_set_mc_announce_data(mc_data).unwrap();
+                    }
                     let multicast = pipe.server.multicast.as_mut().unwrap();
                     multicast.mc_channel_key =
                         Some(mc_channel.master_secret.clone());
@@ -1879,8 +1915,7 @@ pub mod testing {
                         .multicast
                         .as_ref()
                         .unwrap()
-                        .mc_announce_data
-                        .get(0)
+                        .get_mc_announce_data_path()
                         .unwrap();
                     let cid =
                         ConnectionId::from_ref(&client_mc_announce.channel_id)
@@ -1904,6 +1939,10 @@ pub mod testing {
                         .as_mut()
                         .unwrap()
                         .set_mc_space_id(pid_c2s_1);
+                    
+                    if let Some(mc_data) = pipe.client.multicast.as_ref().unwrap().get_mc_announce_data(1) {
+
+                    }
 
                     assert_eq!(pipe.advance(), Ok(()));
 
