@@ -4318,12 +4318,12 @@ impl Connection {
                 }
             }
             // Create MC_ANNOUNCE frame.
-            if self.mc_should_send_mc_announce() {
+            if let Some(mc_data_idx) = self.mc_should_send_mc_announce() {
                 let multicast = self.multicast.as_mut().ok_or(
                     Error::Multicast(multicast::MulticastError::McDisabled),
                 )?;
                 let mc_announce_data =
-                    multicast.get_mut_mc_announce_data_path().ok_or(
+                    multicast.get_mut_mc_announce_data(mc_data_idx).ok_or(
                         Error::Multicast(multicast::MulticastError::McDisabled),
                     )?;
                 let frame = frame::Frame::McAnnounce {

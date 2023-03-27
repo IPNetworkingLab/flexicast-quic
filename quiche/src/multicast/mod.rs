@@ -307,6 +307,14 @@ impl MulticastAttributes {
     }
 
     #[inline]
+    /// Returns a mutable reference to the MC_ANNOUNCE data given by the index.
+    pub fn get_mut_mc_announce_data(
+        &mut self, idx: usize,
+    ) -> Option<&mut McAnnounceData> {
+        self.mc_announce_data.get_mut(idx)
+    }
+
+    #[inline]
     /// Returns the current multicast role.
     pub fn get_mc_role(&self) -> MulticastRole {
         self.mc_role
@@ -648,9 +656,9 @@ impl McAnnounceData {
 
 /// Multicast extension behaviour for the QUIC connection.
 pub trait MulticastConnection {
-    /// Whether the server should send MC_ANNOUNCE data to the client.
-    /// Always false for a client.
-    fn mc_should_send_mc_announce(&self) -> bool;
+    /// Returns the index of the first MC_ANNOUNCE data that should be
+    /// announced. Always `None` for a client.
+    fn mc_should_send_mc_announce(&self) -> Option<usize>;
 
     /// Sets the MC_ANNOUNCE data on the server and the client.
     /// Creates the multicast extension attributes if it does not exist yet.
@@ -778,26 +786,30 @@ pub trait MulticastConnection {
 }
 
 impl MulticastConnection for Connection {
-    fn mc_should_send_mc_announce(&self) -> bool {
+    fn mc_should_send_mc_announce(&self) -> Option<usize> {
         if !self.is_server {
-            return false;
+            return None;
         }
 
         if !(self.local_transport_params.multicast_server_params &&
             self.peer_transport_params.multicast_client_params.is_some())
         {
-            return false;
+            return None;
         }
 
         if let Some(multicast) = self.multicast.as_ref() {
-            multicast.mc_role ==
-                MulticastRole::ServerUnicast(MulticastClientStatus::Unaware) &&
+            if multicast.mc_role ==
+                MulticastRole::ServerUnicast(MulticastClientStatus::Unaware)
+            {
                 multicast
                     .mc_announce_data
                     .iter()
-                    .any(|mc_data| !mc_data.is_processed)
+                    .position(|mc_data| !mc_data.is_processed)
+            } else {
+                None
+            }
         } else {
-            false
+            None
         }
     }
 
@@ -888,7 +900,7 @@ impl MulticastConnection for Connection {
     fn mc_has_control_data(&self) -> bool {
         // MC-TODO: complete
         self.multicast.is_some() &&
-            (self.mc_should_send_mc_announce() ||
+            (self.mc_should_send_mc_announce().is_some() ||
                 match self.multicast.as_ref() {
                     None => false,
                     Some(multicast) =>
@@ -2148,8 +2160,8 @@ mod tests {
 
         assert!(pipe.server.multicast.is_none());
         assert!(pipe.client.multicast.is_none());
-        assert!(!pipe.server.mc_should_send_mc_announce());
-        assert!(!pipe.client.mc_should_send_mc_announce());
+        assert_eq!(pipe.server.mc_should_send_mc_announce(), None);
+        assert_eq!(pipe.client.mc_should_send_mc_announce(), None);
 
         assert!(pipe
             .server
@@ -2172,7 +2184,7 @@ mod tests {
             pipe.server.multicast.as_ref().unwrap().mc_role,
             MulticastRole::ServerUnicast(MulticastClientStatus::Unaware)
         );
-        assert!(pipe.server.mc_should_send_mc_announce());
+        assert_eq!(pipe.server.mc_should_send_mc_announce(), Some(0));
     }
 
     #[test]
@@ -2190,7 +2202,7 @@ mod tests {
             .mc_set_mc_announce_data(&mc_announce_data)
             .unwrap();
 
-        assert!(pipe.server.mc_should_send_mc_announce());
+        assert_eq!(pipe.server.mc_should_send_mc_announce(), Some(0));
         assert_eq!(
             pipe.server.multicast.as_ref().unwrap().mc_role,
             MulticastRole::ServerUnicast(MulticastClientStatus::Unaware)
@@ -2199,7 +2211,7 @@ mod tests {
 
         // MC_ANNOUNCE sent.
         // The client has the data, and the server should not send it anymore.
-        assert!(!pipe.server.mc_should_send_mc_announce());
+        assert_eq!(pipe.server.mc_should_send_mc_announce(), None);
         mc_announce_data.is_processed = true;
         // The reception created a MulticastAttributes in for client.
         assert!(pipe.client.multicast.is_some());
