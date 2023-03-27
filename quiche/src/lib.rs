@@ -4333,7 +4333,7 @@ impl Connection {
                     )?;
                 let frame = frame::Frame::McAnnounce {
                     channel_id: mc_announce_data.channel_id.clone(),
-                    path_type: multicast::McPathType::Data.into(),
+                    path_type: mc_announce_data.path_type.into(),
                     is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
                     source_ip: mc_announce_data.source_ip,
                     group_ip: mc_announce_data.group_ip,
@@ -4349,11 +4349,16 @@ impl Connection {
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    mc_announce_data.set_mc_announce_processed(true);
-                    multicast.update_client_state(
-                        multicast::MulticastClientAction::Notify,
-                        None,
-                    )?;
+                    if mc_announce_data.path_type == multicast::McPathType::Data {
+                        multicast.update_client_state(
+                            multicast::MulticastClientAction::Notify,
+                            None,
+                        )?;
+                    }
+
+                    self.multicast.as_mut().unwrap().mc_announce_data
+                        [mc_data_idx]
+                        .is_processed = true;
 
                     ack_eliciting = true;
                     in_flight = true;
@@ -8168,8 +8173,6 @@ impl Connection {
                             }
                         }
                     }
-                } else {
-                    println!("here");
                 }
 
                 // Once the handshake is confirmed, we can drop Handshake keys.
