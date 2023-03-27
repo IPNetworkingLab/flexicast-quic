@@ -1823,7 +1823,7 @@ pub mod testing {
 
             // Create a new announce data if the channel uses symetric
             // authentication.
-            let mut mc_data_auth = if authentication == McAuthType::SymSign {
+            let mc_data_auth = if authentication == McAuthType::SymSign {
                 let mut data = get_test_mc_announce_data();
                 data.udp_port += 10;
                 data.path_type = McPathType::Authentication;
@@ -1857,7 +1857,7 @@ pub mod testing {
                 .push(mc_announce_data.clone());
 
             // Push the authentication data if it exists.
-            if let Some(mc_data) = mc_data_auth {
+            if let Some(mc_data) = mc_data_auth.as_ref() {
                 mc_channel
                     .channel
                     .multicast
@@ -1941,7 +1941,11 @@ pub mod testing {
                         .set_mc_space_id(pid_c2s_1);
                     
                     if let Some(mc_data) = pipe.client.multicast.as_ref().unwrap().get_mc_announce_data(1) {
+                        let cid = ConnectionId::from_ref(&mc_data.channel_id).into_owned();
+                        let server_addr = testing::Pipe::server_addr();
+                        let client_addr_2 = "127.0.0.1:5679".parse().unwrap();
 
+                        pipe.client.create_mc_path(&cid, client_addr_2, server_addr).unwrap();
                     }
 
                     assert_eq!(pipe.advance(), Ok(()));
