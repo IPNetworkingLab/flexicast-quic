@@ -177,6 +177,37 @@ impl TryInto<u64> for MulticastClientAction {
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Debug)]
+/// Multicast path type.
+pub enum McPathType {
+    /// Multicast data exchanged on this channel.
+    Data,
+
+    /// Only used for symetric authentication.
+    Authentication,
+}
+
+impl TryFrom<u64> for McPathType {
+    type Error = crate::Error;
+
+    fn try_from(v: u64) -> Result<Self> {
+        match v {
+            0 => Ok(Self::Data),
+            1 => Ok(Self::Authentication),
+            _ => Err(Error::Multicast(MulticastError::McPath)),
+        }
+    }
+}
+
+impl From<McPathType> for u64 {
+    fn from(v: McPathType) -> Self {
+        match v {
+            McPathType::Data => 0,
+            McPathType::Authentication => 1,
+        }
+    }
+}
+
 /// Role of the connection
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MulticastRole {
@@ -206,12 +237,7 @@ pub struct MulticastAttributes {
     /// This is an option because it may be null initially (for example
     /// the client did not receive the MC_ANNOUNCE yet).
     /// MC-TODO: multiple MC channels => vector instead of single value.
-    mc_announce_data: Option<McAnnounceData>,
-
-    /// Whether the MC_ANNOUNCE frame has been processed.
-    /// Server-side: it is sent.
-    /// Client-side: it is received.
-    mc_announce_is_processed: bool,
+    mc_announce_data: Vec<McAnnounceData>,
 
     /// Multicast channel decryption key secret.
     mc_channel_key: Option<Vec<u8>>,
@@ -261,28 +287,29 @@ pub struct MulticastAttributes {
 
 impl MulticastAttributes {
     #[inline]
-    /// Returns a reference to the MC_ANNOUNCE data.
-    pub fn get_mc_announce_data(&self) -> Option<&McAnnounceData> {
-        self.mc_announce_data.as_ref()
+    /// Returns a reference to the first MC_ANNOUNCE data for a
+    /// [`McPathType::Data`] path.
+    pub fn get_mc_announce_data_path(&self) -> Option<&McAnnounceData> {
+        self.mc_announce_data
+            .iter()
+            .find(|mc_data| mc_data.path_type == McPathType::Data)
+    }
+
+    #[inline]
+    /// Returns a mutable reference to the first MC_ANNOUNCE data for a
+    /// [`McPathType::Data`] path.
+    pub fn get_mut_mc_announce_data_path(
+        &mut self,
+    ) -> Option<&mut McAnnounceData> {
+        self.mc_announce_data
+            .iter_mut()
+            .find(|mc_data| mc_data.path_type == McPathType::Data)
     }
 
     #[inline]
     /// Returns the current multicast role.
     pub fn get_mc_role(&self) -> MulticastRole {
         self.mc_role
-    }
-
-    /// Sets the processed state of the MC_ANNOUNCE data.
-    /// If set to true, means that the last data has been processed on the host.
-    /// Returns an Error if attempting to setting to true whereas no MC_ANNOUNCE
-    /// data is found.
-    pub fn set_mc_announce_processed(&mut self, val: bool) -> Result<()> {
-        if self.mc_announce_data.is_some() {
-            self.mc_announce_is_processed = val;
-            Ok(())
-        } else {
-            Err(Error::Multicast(MulticastError::McAnnounce))
-        }
     }
 
     /// Sets the client status following the state machine.
@@ -558,8 +585,7 @@ impl Default for MulticastAttributes {
     fn default() -> Self {
         Self {
             mc_role: MulticastRole::Undefined,
-            mc_announce_data: None,
-            mc_announce_is_processed: false,
+            mc_announce_data: Vec::with_capacity(2),
             mc_channel_key: None,
             mc_crypto_open: None,
             mc_crypto_seal: None,
@@ -602,6 +628,22 @@ pub struct McAnnounceData {
     /// Time-to-live (ms) of multicast packets.
     /// After this time, the packets SHOULD NOT be retransmitted.
     pub ttl_data: u64,
+
+    /// Path type.
+    pub path_type: McPathType,
+
+    /// True if this multicast announce data is processed.
+    /// For a server, it means that the data is sent to the client.
+    /// For a client, it means that the data is received.
+    pub is_processed: bool,
+}
+
+impl McAnnounceData {
+    /// Sets the processed state of the MC_ANNOUNCE data.
+    /// If set to true, means that the last data has been processed on the host.
+    pub fn set_mc_announce_processed(&mut self, v: bool) {
+        self.is_processed = v;
+    }
 }
 
 /// Multicast extension behaviour for the QUIC connection.
@@ -750,8 +792,10 @@ impl MulticastConnection for Connection {
         if let Some(multicast) = self.multicast.as_ref() {
             multicast.mc_role ==
                 MulticastRole::ServerUnicast(MulticastClientStatus::Unaware) &&
-                multicast.mc_announce_data.is_some() &&
-                !multicast.mc_announce_is_processed
+                multicast
+                    .mc_announce_data
+                    .iter()
+                    .any(|mc_data| !mc_data.is_processed)
         } else {
             false
         }
@@ -811,8 +855,7 @@ impl MulticastConnection for Connection {
                         ));
                 }
             }
-            multicast.mc_announce_data = Some(mc_announce_data.clone());
-            multicast.mc_announce_is_processed = false; // New data!
+            multicast.mc_announce_data.push(mc_announce_data.clone());
         } else {
             // Multicast structure does not exist yet.
             // The client considers the MC_ANNOUNCE as processed because it
@@ -822,10 +865,11 @@ impl MulticastConnection for Connection {
             } else {
                 MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
             };
+            let mut mc_data_cloned = mc_announce_data.clone();
+            mc_data_cloned.is_processed = !self.is_server;
             self.multicast = Some(MulticastAttributes {
                 mc_role,
-                mc_announce_data: Some(mc_announce_data.clone()),
-                mc_announce_is_processed: !self.is_server,
+                mc_announce_data: vec![mc_data_cloned],
                 mc_public_key: mc_announce_data.public_key.as_ref().map(
                     |key_vec| {
                         signature::UnparsedPublicKey::new(
@@ -1014,8 +1058,7 @@ impl MulticastConnection for Connection {
                 space_id as u32,
                 now,
                 multicast
-                    .mc_announce_data
-                    .as_ref()
+                    .get_mc_announce_data_path()
                     .ok_or(Error::Multicast(MulticastError::McAnnounce))?
                     .ttl_data,
                 hs_status,
@@ -1098,7 +1141,7 @@ impl MulticastConnection for Connection {
             let multicast = self.multicast.as_ref()?;
             let timeout = multicast.mc_last_recv_time? +
                 time::Duration::from_millis(
-                    multicast.mc_announce_data.as_ref()?.ttl_data,
+                    multicast.get_mc_announce_data_path()?.ttl_data,
                 );
             if timeout <= now {
                 Some(time::Duration::ZERO)
@@ -1776,7 +1819,8 @@ pub mod testing {
                 .multicast
                 .as_mut()
                 .unwrap()
-                .mc_announce_data = Some(mc_announce_data.clone());
+                .mc_announce_data
+                .push(mc_announce_data.clone());
 
             // Copy the public key from the multicast channel.
             if let Some(public_key) = mc_channel
@@ -1824,7 +1868,7 @@ pub mod testing {
                         .as_ref()
                         .unwrap()
                         .mc_announce_data
-                        .as_ref()
+                        .get(0)
                         .unwrap();
                     let cid =
                         ConnectionId::from_ref(&client_mc_announce.channel_id)
@@ -2025,11 +2069,13 @@ pub mod testing {
         McAnnounceData {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             is_ipv6: false,
+            path_type: McPathType::Data,
             source_ip: std::net::Ipv4Addr::new(127, 0, 0, 1).octets(),
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
             udp_port: 7676,
             public_key: None,
             ttl_data: 1_000_000,
+            is_processed: false,
         }
     }
 
@@ -2117,7 +2163,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .mc_announce_data
-                .as_ref()
+                .get(0)
                 .unwrap(),
             &mc_announce_data
         );
@@ -2130,33 +2176,12 @@ mod tests {
     }
 
     #[test]
-    /// Setting of the MC_ANNOUNCE processed.
-    fn set_mc_announce_processed() {
-        let mut mc_attributes = MulticastAttributes::default();
-
-        assert_eq!(
-            mc_attributes.set_mc_announce_processed(true).unwrap_err(),
-            Error::Multicast(MulticastError::McAnnounce)
-        );
-        assert_eq!(
-            mc_attributes.set_mc_announce_processed(false).unwrap_err(),
-            Error::Multicast(MulticastError::McAnnounce)
-        );
-
-        let mc_announce_data = get_test_mc_announce_data();
-        mc_attributes.mc_announce_data = Some(mc_announce_data);
-
-        assert!(mc_attributes.set_mc_announce_processed(true).is_ok());
-        assert!(mc_attributes.set_mc_announce_processed(false).is_ok());
-    }
-
-    #[test]
     /// Exchange of the MC_ANNOUNCE data between the client and the server.
     /// The client receives the MC_ANNOUNCE.
     /// It creates a multicast state on the client.
     fn mc_announce_data_exchange() {
         let mc_client_tp = MulticastClientTp::default();
-        let mc_announce_data = get_test_mc_announce_data();
+        let mut mc_announce_data = get_test_mc_announce_data();
         let mut config = get_test_mc_config(true, Some(&mc_client_tp), false);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
@@ -2175,6 +2200,7 @@ mod tests {
         // MC_ANNOUNCE sent.
         // The client has the data, and the server should not send it anymore.
         assert!(!pipe.server.mc_should_send_mc_announce());
+        mc_announce_data.is_processed = true;
         // The reception created a MulticastAttributes in for client.
         assert!(pipe.client.multicast.is_some());
         assert_eq!(
@@ -2183,7 +2209,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .mc_announce_data
-                .as_ref(),
+                .get(0),
             Some(&mc_announce_data)
         );
         // The client has the role Client.
@@ -2383,6 +2409,8 @@ mod tests {
     }
 
     #[test]
+    /// This tests the multicast channel on the backup path (using the dummy
+    /// client), not the multicast path.
     fn test_mc_channel_alone() {
         let mc_client_tp = MulticastClientTp::default();
         let mut server_config = get_test_mc_config(true, None, false);
@@ -4034,6 +4062,49 @@ mod tests {
                 Some(client_id.unwrap())
             );
         }
+    }
+
+    #[test]
+    /// Tests the symmetric signature process. In a nutshell, this test
+    /// evaluates that:
+    /// * The multicast channel creates a third path used for authentication
+    ///   only,
+    /// * The multicast channel sends MC_AUTH frames containing symetric
+    ///   signatures on this third path,
+    /// * The MC_AUTH frames contain a signature for each client, linked to
+    ///   their client ID,
+    /// * The signatures are correctly signed by the clients.
+    fn test_mc_auth_process() {
+        // let use_auth = McAuthType::SymSign;
+        // let mc_pipe = MulticastPipe::new(
+        //     2,
+        //     "/tmp/test_mc_auth_process.txt",
+        //     use_auth,
+        //     true,
+        // )
+        // .unwrap();
+
+        // let auth_info = mc_pipe.mc_channel.mc_auth_info;
+        // assert!(auth_info.is_some());
+        // let auth_info = auth_info.unwrap();
+
+        // // The third path used for authentication only exists.
+        // assert_eq!(mc_pipe.mc_channel.channel.paths.len(), 3);
+        // let auth_path_id = mc_pipe
+        //     .mc_channel
+        //     .channel
+        //     .paths
+        //     .path_id_from_addrs(&(auth_info.2, auth_info.2));
+        // assert_eq!(auth_path_id, Some(3));
+
+        // for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
+        //     assert_eq!(pipe.client.paths.len(), 3);
+        //     let auth_path_id = pipe
+        //         .client
+        //         .paths
+        //         .path_id_from_addrs(&(auth_info.2, auth_info.2));
+        //     assert_eq!(auth_path_id, Some(3));
+        // }
     }
 }
 

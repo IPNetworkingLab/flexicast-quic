@@ -279,7 +279,7 @@ fn main() {
             if conn.mc_join_channel().is_ok() {
                 let multicast = conn.get_multicast_attributes().unwrap();
                 let mc_announce_data =
-                    multicast.get_mc_announce_data().unwrap().to_owned();
+                    multicast.get_mc_announce_data_path().unwrap().to_owned();
                 // Did not join the multicast channel before.
                 let mc_cid = ConnectionId::from_ref(&mc_announce_data.channel_id)
                     .into_owned();

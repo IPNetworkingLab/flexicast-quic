@@ -4322,11 +4322,13 @@ impl Connection {
                 let multicast = self.multicast.as_mut().ok_or(
                     Error::Multicast(multicast::MulticastError::McDisabled),
                 )?;
-                let mc_announce_data = multicast.get_mc_announce_data().ok_or(
-                    Error::Multicast(multicast::MulticastError::McDisabled),
-                )?;
+                let mc_announce_data =
+                    multicast.get_mut_mc_announce_data_path().ok_or(
+                        Error::Multicast(multicast::MulticastError::McDisabled),
+                    )?;
                 let frame = frame::Frame::McAnnounce {
                     channel_id: mc_announce_data.channel_id.clone(),
+                    path_type: multicast::McPathType::Data.into(),
                     is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
                     source_ip: mc_announce_data.source_ip,
                     group_ip: mc_announce_data.group_ip,
@@ -4342,7 +4344,7 @@ impl Connection {
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    multicast.set_mc_announce_processed(true)?;
+                    mc_announce_data.set_mc_announce_processed(true);
                     multicast.update_client_state(
                         multicast::MulticastClientAction::Notify,
                         None,
@@ -4381,7 +4383,7 @@ impl Connection {
                     };
                     let frame = frame::Frame::McState {
                         channel_id: multicast
-                            .get_mc_announce_data()
+                            .get_mc_announce_data_path()
                             .ok_or(Error::Multicast(
                                 multicast::MulticastError::McAnnounce,
                             ))?
@@ -4407,7 +4409,7 @@ impl Connection {
             if let Some(multicast) = self.multicast.as_mut() {
                 if multicast.should_send_mc_key() {
                     let mc_announce_data = multicast
-                        .get_mc_announce_data()
+                        .get_mc_announce_data_path()
                         .ok_or(Error::Multicast(
                             multicast::MulticastError::McAnnounce,
                         ))?;
@@ -4458,7 +4460,7 @@ impl Connection {
                         expiration_type += 4;
                     }
                     let mc_announce_data = multicast
-                        .get_mc_announce_data()
+                        .get_mc_announce_data_path()
                         .ok_or(Error::Multicast(
                             multicast::MulticastError::McAnnounce,
                         ))?;
@@ -8211,6 +8213,7 @@ impl Connection {
 
             frame::Frame::McAnnounce {
                 channel_id,
+                path_type,
                 is_ipv6,
                 source_ip,
                 group_ip,
@@ -8226,6 +8229,7 @@ impl Connection {
 
                 let mc_announce_data = multicast::McAnnounceData {
                     channel_id,
+                    path_type: path_type.try_into()?,
                     is_ipv6: is_ipv6 == 1,
                     source_ip,
                     group_ip,
@@ -8236,6 +8240,7 @@ impl Connection {
                         Some(public_key)
                     },
                     ttl_data,
+                    is_processed: true,
                 };
 
                 self.mc_set_mc_announce_data(&mc_announce_data)?;

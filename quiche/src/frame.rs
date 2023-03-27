@@ -212,6 +212,7 @@ pub enum Frame {
 
     McAnnounce {
         channel_id: Vec<u8>,
+        path_type: u64,
         is_ipv6: u8,
         source_ip: [u8; 4],
         group_ip: [u8; 4],
@@ -433,6 +434,7 @@ impl Frame {
 
             MC_ANNOUNCE_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
+                let path_type = b.get_varint()?;
                 let is_ipv6 = b.get_u8()?;
                 let source_ip = b
                     .get_bytes(4)?
@@ -455,6 +457,7 @@ impl Frame {
 
                 Frame::McAnnounce {
                     channel_id,
+                    path_type,
                     is_ipv6,
                     source_ip,
                     group_ip,
@@ -838,6 +841,7 @@ impl Frame {
 
             Frame::McAnnounce {
                 channel_id,
+                path_type,
                 is_ipv6,
                 source_ip,
                 group_ip,
@@ -850,6 +854,7 @@ impl Frame {
                 b.put_varint(MC_ANNOUNCE_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
+                b.put_varint(*path_type)?;
                 b.put_u8(*is_ipv6)?;
                 b.put_bytes(source_ip)?;
                 b.put_bytes(group_ip)?;
@@ -1205,6 +1210,7 @@ impl Frame {
 
             Frame::McAnnounce {
                 channel_id,
+                path_type,
                 is_ipv6: _,
                 source_ip: _,
                 group_ip: _,
@@ -1214,9 +1220,11 @@ impl Frame {
             } => {
                 let public_key_len_size =
                     octets::varint_len(public_key.len() as u64);
+                let path_type_size = octets::varint_len(*path_type);
                 1 + // frame type
                 1 + // channel_id len
                 channel_id.len() +
+                path_type_size +
                 1 + // is_ipv6
                 4 + // source_ip
                 4 + // group_ip
@@ -1855,6 +1863,7 @@ impl std::fmt::Debug for Frame {
 
             Frame::McAnnounce {
                 channel_id,
+                path_type,
                 is_ipv6,
                 source_ip,
                 group_ip,
@@ -1862,7 +1871,7 @@ impl std::fmt::Debug for Frame {
                 ttl_data,
                 public_key: _,
             } => {
-                write!(f, "MC_ANNOUNCE channel ID={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}, ttl_data={}", channel_id, is_ipv6, source_ip, group_ip, udp_port, ttl_data)?;
+                write!(f, "MC_ANNOUNCE channel ID={:?}, path_type={} is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}, ttl_data={}", channel_id, path_type, is_ipv6, source_ip, group_ip, udp_port, ttl_data)?;
             },
 
             Frame::McState {
@@ -3590,6 +3599,7 @@ mod tests {
 
         let frame = Frame::McAnnounce {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
+            path_type: crate::multicast::McPathType::Data.into(),
             is_ipv6: 1,
             source_ip: [127, 0, 0, 1],
             group_ip: [244, 1, 1, 255],
@@ -3603,7 +3613,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 62);
+        assert_eq!(wire_len, 63);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
