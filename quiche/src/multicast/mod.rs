@@ -1321,6 +1321,13 @@ impl From<&MulticastClientTp> for Vec<u8> {
     }
 }
 
+#[doc(hidden)]
+pub struct McPathInfo<'a> {
+    pub local: SocketAddr,
+    pub peer: SocketAddr,
+    pub cid: &'a ConnectionId<'a>,
+}
+
 /// Represents a source multicast channel.
 /// A multicast channel is like a unicast connection without the handshake
 /// with the clients because it has no explicit set of connected client.
@@ -1346,14 +1353,18 @@ pub struct MulticastChannelSource {
 
     /// Multicast send address.
     pub mc_send_addr: SocketAddr,
+
+    /// Authentication channel information.
+    pub mc_auth_info: Option<(ConnectionId<'static>, u128, SocketAddr)>,
 }
 
 impl MulticastChannelSource {
     /// Creates a new source multicast channel.
     pub fn new_with_tls(
-        channel_id: &ConnectionId, config_server: &mut Config,
-        config_client: &mut Config, peer: SocketAddr, peer2: SocketAddr,
-        keylog_filename: &str, do_auth: bool,
+        mc_path_info: McPathInfo, config_server: &mut Config,
+        config_client: &mut Config, peer: SocketAddr, keylog_filename: &str,
+        authentication: authentication::McAuthType,
+        auth_path_info: Option<&McPathInfo>,
     ) -> Result<Self> {
         if !(config_client.cc_algorithm == CongestionControlAlgorithm::DISABLED &&
             config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED)
@@ -1388,10 +1399,10 @@ impl MulticastChannelSource {
         let exporter_secret =
             MulticastChannelSource::get_exporter_secret(keylog_filename)?;
 
-        let signature_eddsa = if do_auth {
-            Some(MulticastChannelSource::compute_asymetric_signature_keys()?)
-        } else {
-            None
+        let signature_eddsa = match authentication {
+            McAuthType::AsymSign =>
+                Some(MulticastChannelSource::compute_asymetric_signature_keys()?),
+            _ => None,
         };
 
         conn_server.multicast = Some(MulticastAttributes {
@@ -1400,24 +1411,28 @@ impl MulticastChannelSource {
             ..Default::default()
         });
 
+        let mut reset_token = [0; 16];
+        rand_bytes(&mut reset_token);
+        let reset_token = u128::from_be_bytes(reset_token);
+
         // Add a new Connection ID for the multicast path.
-        let channel_id = ConnectionId::from_ref(channel_id);
-        conn_server.new_source_cid(&channel_id, 0x1, true)?;
-        conn_client.new_source_cid(&channel_id, 0x1, true)?;
+        let channel_id = ConnectionId::from_ref(mc_path_info.cid);
+        conn_server.new_source_cid(&channel_id, reset_token, true)?;
+        conn_client.new_source_cid(&channel_id, reset_token, true)?;
         Self::advance(&mut conn_server, &mut conn_client)?;
 
         // Probe the new path.
-        conn_client.probe_path(peer2, peer2)?;
+        conn_client.probe_path(mc_path_info.local, mc_path_info.peer)?;
         let pid_c2s_1 = conn_client
             .paths
-            .path_id_from_addrs(&(peer2, peer2))
+            .path_id_from_addrs(&(mc_path_info.local, mc_path_info.peer))
             .expect("no such path");
         let mc_path_client = conn_client.paths.get_mut(pid_c2s_1)?;
         mc_path_client.recovery.reset();
         Self::advance(&mut conn_server, &mut conn_client)?;
         let pid_s2c_1 = conn_server
             .paths
-            .path_id_from_addrs(&(peer2, peer2))
+            .path_id_from_addrs(&(mc_path_info.peer, mc_path_info.local))
             .expect("no such path");
         let mc_path_server = conn_client.paths.get_mut(pid_s2c_1)?;
         mc_path_server.recovery.reset();
@@ -1425,24 +1440,52 @@ impl MulticastChannelSource {
         conn_server.multicast.as_mut().unwrap().mc_space_id = Some(pid_s2c_1);
 
         // Set the new path active.
-        conn_client.set_active(peer2, peer2, true)?;
-        conn_server.set_active(peer2, peer2, true)?;
+        conn_client.set_active(mc_path_info.local, mc_path_info.peer, true)?;
+        conn_server.set_active(mc_path_info.peer, mc_path_info.local, true)?;
         Self::advance(&mut conn_server, &mut conn_client)?;
 
-        // // Create Connection ID and reset token.
+        // Same with the authentication multicast path.
+        let mc_auth_info = if let Some(auth) = auth_path_info {
+            conn_server.new_source_cid(&auth.cid, reset_token, true)?;
+            conn_client.new_source_cid(&auth.cid, reset_token, true)?;
+            Self::advance(&mut conn_server, &mut conn_client)?;
+
+            conn_client.probe_path(auth.local, auth.peer)?;
+            let pid_c2s_1 = conn_client
+                .paths
+                .path_id_from_addrs(&(auth.local, auth.peer))
+                .expect("no such path");
+            let mc_path_client = conn_client.paths.get_mut(pid_c2s_1)?;
+            mc_path_client.recovery.reset();
+            Self::advance(&mut conn_server, &mut conn_client)?;
+            let pid_s2c_1 = conn_server
+                .paths
+                .path_id_from_addrs(&(auth.peer, auth.local))
+                .expect("no such path");
+            let mc_path_server = conn_client.paths.get_mut(pid_s2c_1)?;
+            mc_path_server.recovery.reset();
+
+            conn_server.multicast.as_mut().unwrap().mc_space_id = Some(pid_s2c_1);
+
+            // Set the new path active.
+            conn_client.set_active(auth.local, auth.peer, true)?;
+            conn_server.set_active(auth.peer, auth.local, true)?;
+            Self::advance(&mut conn_server, &mut conn_client)?;
+
+            Some((auth.cid.clone().into_owned(), reset_token, auth.peer))
+        } else {
+            None
+        };
+
         let cid = channel_id.clone().into_owned();
-
-        let mut reset_token = [0; 16];
-        rand_bytes(&mut reset_token);
-        let reset_token = u128::from_be_bytes(reset_token);
-
         Ok(Self {
             channel: conn_server,
             client_backup: conn_client,
             master_secret: exporter_secret,
             mc_path_conn_id: (cid, reset_token),
-            mc_path_peer: peer2,
+            mc_path_peer: mc_path_info.peer,
             mc_send_addr: peer,
+            mc_auth_info,
         })
     }
 
@@ -1635,7 +1678,7 @@ pub mod testing {
     impl MulticastPipe {
         /// Generates a new multicast pipe with already defined configuration.
         pub fn new(
-            nb_clients: usize, keylog_filename: &str, do_auth: bool,
+            nb_clients: usize, keylog_filename: &str, authentication: McAuthType,
             use_fec: bool,
         ) -> Result<MulticastPipe> {
             let mc_client_tp = MulticastClientTp::default();
@@ -1648,7 +1691,7 @@ pub mod testing {
             let mut mc_channel = get_test_mc_channel_source(
                 &mut server_config,
                 &mut client_config,
-                do_auth,
+                authentication,
                 keylog_filename,
             )
             .unwrap();
@@ -1914,8 +1957,8 @@ pub mod testing {
 
     /// Simple source multicast channel for the tests.
     pub fn get_test_mc_channel_source(
-        config_server: &mut Config, config_client: &mut Config, do_auth: bool,
-        keylog_filename: &str,
+        config_server: &mut Config, config_client: &mut Config,
+        authentication: McAuthType, keylog_filename: &str,
     ) -> Result<MulticastChannelSource> {
         // Set the disabled congestion control for the multicast channel.
         config_client.set_cc_algorithm(CongestionControlAlgorithm::DISABLED);
@@ -1936,14 +1979,20 @@ pub mod testing {
             dummy_port + 1,
         ));
 
+        let mc_path_info = McPathInfo {
+            local: to2,
+            peer: to2,
+            cid: &channel_id,
+        };
+
         MulticastChannelSource::new_with_tls(
-            &channel_id,
+            mc_path_info,
             config_server,
             config_client,
             to,
-            to2,
             keylog_filename,
-            do_auth,
+            authentication,
+            None,
         )
     }
 }
@@ -2244,7 +2293,7 @@ mod tests {
         let mc_channel = get_test_mc_channel_source(
             &mut server_config,
             &mut client_config,
-            false,
+            McAuthType::AsymSign,
             "/tmp/test_mc_channel_server_handshake.txt",
         );
         assert!(mc_channel.is_ok());
@@ -2259,7 +2308,7 @@ mod tests {
         let mut mc_channel = get_test_mc_channel_source(
             &mut server_config,
             &mut client_config,
-            false,
+            McAuthType::None,
             "/tmp/test_mc_channel_alone.txt",
         )
         .unwrap();
@@ -2309,8 +2358,12 @@ mod tests {
     /// Tests the authentication process for data sent over the multicast
     /// channel in the multicast path.
     fn test_mc_channel_auth() {
-        let mc_pipe =
-            MulticastPipe::new(1, "/tmp/test_mc_channel_auth.txt", true, false);
+        let mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_channel_auth.txt",
+            McAuthType::AsymSign,
+            false,
+        );
         assert!(mc_pipe.is_ok());
         let mut mc_pipe = mc_pipe.unwrap();
 
@@ -2380,11 +2433,15 @@ mod tests {
     #[test]
     /// Tests that the client will correctly generates an MC_NACK to the server.
     fn test_mc_nack() {
-        let use_auth = false;
+        let use_auth = McAuthType::None;
         let mut mc_pipe =
             MulticastPipe::new(1, "/tmp/test_mc_nack.txt", use_auth, false)
                 .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
 
         let mc_channel = &mut mc_pipe.mc_channel;
         let uc_pipe = &mut mc_pipe.unicast_pipes[0];
@@ -2446,11 +2503,15 @@ mod tests {
     /// regularly sends MC_EXPIRE containing empty data if no new data is sent
     /// to the client, to ensure that the multicast channel does not timeout.
     fn test_on_mc_timeout() {
-        let use_auth = false;
+        let use_auth = McAuthType::None;
         let mut mc_pipe =
             MulticastPipe::new(1, "/tmp/test_on_mc_timeout.txt", use_auth, false)
                 .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
 
         let mc_channel = &mut mc_pipe.mc_channel;
         let mut clients_losing_packets = RangeSet::default();
@@ -2666,7 +2727,7 @@ mod tests {
     /// Tests the multicast source sending multiple short streams and some of
     /// them expire.
     fn test_mc_multiple_streams_expire() {
-        let use_auth = false;
+        let use_auth = McAuthType::None;
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_mc_multiple_streams_expire.txt",
@@ -2674,7 +2735,11 @@ mod tests {
             false,
         )
         .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
 
         let mut clients_losing_packets = RangeSet::default();
         clients_losing_packets.insert(0..1);
@@ -2791,7 +2856,7 @@ mod tests {
 
     #[test]
     fn test_mc_client_nack_to_source_and_recovery() {
-        let use_auth = false;
+        let use_auth = McAuthType::None;
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_mc_client_nack_to_source_and_recovery.txt",
@@ -2799,7 +2864,11 @@ mod tests {
             true,
         )
         .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
         let mut clients_losing_packets = RangeSet::default();
         clients_losing_packets.insert(0..1);
 
@@ -2918,7 +2987,7 @@ mod tests {
     /// MC-TODO: currently with authentication the test fails because the
     /// signature takes too much room for the REPAIR frames.
     fn test_mc_fec_reliable_multiple_clients_with_auth() {
-        let use_auth = true;
+        let use_auth = McAuthType::AsymSign;
         let mut mc_pipe = MulticastPipe::new(
             2,
             "/tmp/test_mc_fec_reliable_multiple_clients_with_auth.txt",
@@ -2926,7 +2995,11 @@ mod tests {
             true,
         )
         .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
         let mut client_loss_0 = RangeSet::default();
         client_loss_0.insert(0..1);
         let mut client_loss_1 = RangeSet::default();
@@ -3064,7 +3137,7 @@ mod tests {
     #[test]
     /// Tests the reset of the FEC state upon data timeout.
     fn test_mc_fec_on_mc_timeout() {
-        let use_auth = true;
+        let use_auth = McAuthType::AsymSign;
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_mc_fec_on_mc_timeout.txt",
@@ -3072,7 +3145,11 @@ mod tests {
             true,
         )
         .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
         let mut clients_losing_packets = RangeSet::default();
         clients_losing_packets.insert(0..1);
 
@@ -3225,7 +3302,7 @@ mod tests {
     /// expired packet numbers. The server must not generate FEC repair symbols
     /// for these lost source symbols that are expired.
     fn source_does_not_generate_mc_fec_repair_for_expired() {
-        let use_auth = true;
+        let use_auth = McAuthType::AsymSign;
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/source_does_not_generate_mc_fec_repair_for_expired.txt",
@@ -3233,7 +3310,11 @@ mod tests {
             true,
         )
         .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
         let mut clients_losing_packets = RangeSet::default();
         clients_losing_packets.insert(0..1);
 
@@ -3384,7 +3465,7 @@ mod tests {
     /// The `first_pn` value of the MC_KEY frame enables the client to detect
     /// lost packets even if the first multicast packets are lost.
     fn test_mc_client_first_pn_utility() {
-        let use_auth = true;
+        let use_auth = McAuthType::AsymSign;
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_mc_client_first_pn_utility.txt",
@@ -3392,7 +3473,11 @@ mod tests {
             true,
         )
         .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
         let mut clients_losing_packets = RangeSet::default();
         clients_losing_packets.insert(0..1);
 
@@ -3441,7 +3526,7 @@ mod tests {
     #[test]
     /// Tests the client leaving the multicast channel.
     fn test_client_leave_mc_channel() {
-        let use_auth = true;
+        let use_auth = McAuthType::AsymSign;
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_client_leave_mc_channel.txt",
@@ -3449,7 +3534,11 @@ mod tests {
             true,
         )
         .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
 
         // First stream is received.
         assert_eq!(
@@ -3506,7 +3595,7 @@ mod tests {
     /// test is created to fix an existing issue in the code at the time of
     /// writing.
     fn test_mc_expire_do_not_send_useless() {
-        let use_auth = true;
+        let use_auth = McAuthType::AsymSign;
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_mc_expire_do_not_send_useless.txt",
@@ -3514,7 +3603,11 @@ mod tests {
             true,
         )
         .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
 
         // Source sends one stream.
         assert_eq!(
@@ -3579,7 +3672,7 @@ mod tests {
 
     #[test]
     fn test_mc_channel_cwnd() {
-        let use_auth = false;
+        let use_auth = McAuthType::None;
         let mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_mc_channel_cwnd.txt",
@@ -3628,7 +3721,7 @@ mod tests {
     /// distribute the content.
     fn test_mc_as_a_service_fallback() {
         for i in 0..2 {
-            let use_auth = true;
+            let use_auth = McAuthType::AsymSign;
             let mut mc_pipe = MulticastPipe::new(
                 1,
                 "/tmp/test_mc_as_a_service_fallback.txt",
@@ -3636,7 +3729,11 @@ mod tests {
                 true,
             )
             .unwrap();
-            let signature_len = if use_auth { 64 } else { 0 };
+            let signature_len = if use_auth == McAuthType::AsymSign {
+                64
+            } else {
+                0
+            };
 
             assert_eq!(
                 mc_pipe.source_send_single_stream(None, signature_len, 1),
@@ -3709,7 +3806,7 @@ mod tests {
     /// Test that the client leaves the multicast channel on timeout.
     /// A timeout occurs if the client does not receive data from the channel.
     fn test_on_mc_timeout_client() {
-        let use_auth = true;
+        let use_auth = McAuthType::AsymSign;
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_on_mc_timeout_client.txt",
@@ -3717,7 +3814,11 @@ mod tests {
             true,
         )
         .unwrap();
-        let signature_len = if use_auth { 64 } else { 0 };
+        let signature_len = if use_auth == McAuthType::AsymSign {
+            64
+        } else {
+            0
+        };
         let mut clients_losing_packets = RangeSet::default();
         clients_losing_packets.insert(0..1);
 
@@ -3803,4 +3904,5 @@ mod tests {
     }
 }
 
-pub mod sym_sign;
+pub mod authentication;
+use authentication::McAuthType;

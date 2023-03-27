@@ -34,7 +34,7 @@ use std::convert::TryInto;
 use crate::Error;
 use crate::Result;
 
-use crate::multicast::sym_sign::McSign;
+use crate::multicast::authentication::McSign;
 use crate::multicast::MC_ANNOUNCE_CODE;
 use crate::multicast::MC_AUTH_CODE;
 use crate::multicast::MC_EXPIRE_CODE;
@@ -3692,7 +3692,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 49);
+        assert_eq!(wire_len, 51);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

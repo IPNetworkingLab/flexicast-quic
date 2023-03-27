@@ -31,6 +31,7 @@ use std::io::BufRead;
 use std::io::Write;
 use std::net;
 
+use quiche::multicast;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastClientTp;
@@ -122,6 +123,12 @@ fn main() {
 
     let args = Args::parse();
 
+    let authentication = if args.authentication {
+        multicast::authentication::McAuthType::AsymSign
+    } else {
+        multicast::authentication::McAuthType::None
+    };
+
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
@@ -184,7 +191,7 @@ fn main() {
             debug!("Create multicast channel");
             get_multicast_channel(
                 &args.mc_keylog_file,
-                args.authentication,
+                authentication,
                 args.ttl_data,
             )
         } else {
@@ -744,7 +751,7 @@ fn replay_trace(
 }
 
 fn get_multicast_channel(
-    mc_keylog_file: &str, authentication: bool, ttl_data: u64,
+    mc_keylog_file: &str, authentication: multicast::authentication::McAuthType, ttl_data: u64,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -766,14 +773,20 @@ fn get_multicast_channel(
 
     let channel_id = quiche::ConnectionId::from_ref(&channel_id);
 
+    let mc_path_info = multicast::McPathInfo {
+        local: source_addr,
+        peer: source_addr,
+        cid: &channel_id,
+    };
+
     let mut mc_channel = MulticastChannelSource::new_with_tls(
-        &channel_id,
+        mc_path_info,
         &mut server_config,
         &mut client_config,
         mc_addr,
-        source_addr,
         mc_keylog_file,
         authentication,
+        None,
     )
     .unwrap();
 
