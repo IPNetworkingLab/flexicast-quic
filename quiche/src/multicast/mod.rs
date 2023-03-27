@@ -1503,8 +1503,8 @@ impl MulticastChannelSource {
 
         // Same with the authentication multicast path.
         let mc_auth_info = if let Some(auth) = auth_path_info {
-            conn_server.new_source_cid(&auth.cid, reset_token, true)?;
-            conn_client.new_source_cid(&auth.cid, reset_token, true)?;
+            conn_server.new_source_cid(auth.cid, reset_token, true)?;
+            conn_client.new_source_cid(auth.cid, reset_token, true)?;
             Self::advance(&mut conn_server, &mut conn_client)?;
 
             conn_client.probe_path(auth.local, auth.peer)?;
@@ -1656,6 +1656,7 @@ impl MulticastChannelSource {
     }
 }
 
+#[derive(Default)]
 /// Client connection ID to client ID mapping. Used by the server to
 /// authenticate message with a symetric signature.
 pub struct McClientIdSource {
@@ -1703,16 +1704,6 @@ impl McClientIdSource {
         self.id_to_cid.remove(&client_id);
 
         Some(client_id)
-    }
-}
-
-impl Default for McClientIdSource {
-    fn default() -> Self {
-        Self {
-            max_client_id: 0,
-            id_to_cid: HashMap::new(),
-            cid_to_id: HashMap::new(),
-        }
     }
 }
 
@@ -1820,11 +1811,12 @@ pub mod testing {
                     pipe.advance().unwrap();
 
                     // Server computes the client ID.
-                    pipe.server.uc_to_mc_control(&mut mc_channel.channel).unwrap();
+                    pipe.server
+                        .uc_to_mc_control(&mut mc_channel.channel)
+                        .unwrap();
 
                     // The server gives the master key.
                     pipe.advance().unwrap();
-
 
                     let client_mc_announce = pipe
                         .client
@@ -2349,7 +2341,10 @@ mod tests {
         multicast.mc_channel_key = Some(mc_channel_key.clone());
 
         assert!(!pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
-        assert_eq!(pipe.server.multicast.as_mut().unwrap().set_client_id(0), Ok(()));
+        assert_eq!(
+            pipe.server.multicast.as_mut().unwrap().set_client_id(0),
+            Ok(())
+        );
         assert!(pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
         assert_eq!(pipe.advance(), Ok(()));
 
@@ -3994,7 +3989,7 @@ mod tests {
     #[test]
     /// Tests the client ID given by the multicast source.
     fn test_mc_client_id() {
-        let use_auth = true;
+        let use_auth = McAuthType::AsymSign;
         let mc_pipe =
             MulticastPipe::new(5, "/tmp/test_mc_client_id.txt", use_auth, true)
                 .unwrap();
