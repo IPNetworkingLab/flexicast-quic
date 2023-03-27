@@ -1434,7 +1434,7 @@ impl From<&MulticastClientTp> for Vec<u8> {
 pub struct McPathInfo<'a> {
     pub local: SocketAddr,
     pub peer: SocketAddr,
-    pub cid: &'a ConnectionId<'a>,
+    pub cid: ConnectionId<'a>,
 }
 
 /// Represents a source multicast channel.
@@ -1473,7 +1473,7 @@ impl MulticastChannelSource {
         mc_path_info: McPathInfo, config_server: &mut Config,
         config_client: &mut Config, peer: SocketAddr, keylog_filename: &str,
         authentication: authentication::McAuthType,
-        auth_path_info: Option<&McPathInfo>,
+        auth_path_info: Option<McPathInfo>,
     ) -> Result<Self> {
         if !(config_client.cc_algorithm == CongestionControlAlgorithm::DISABLED &&
             config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED)
@@ -1528,7 +1528,7 @@ impl MulticastChannelSource {
         let reset_token = u128::from_be_bytes(reset_token);
 
         // Add a new Connection ID for the multicast path.
-        let channel_id = ConnectionId::from_ref(mc_path_info.cid);
+        let channel_id = ConnectionId::from_ref(mc_path_info.cid.as_ref());
         conn_server.new_source_cid(&channel_id, reset_token, true)?;
         conn_client.new_source_cid(&channel_id, reset_token, true)?;
         Self::advance(&mut conn_server, &mut conn_client)?;
@@ -1558,8 +1558,8 @@ impl MulticastChannelSource {
 
         // Same with the authentication multicast path.
         let mc_auth_info = if let Some(auth) = auth_path_info {
-            conn_server.new_source_cid(auth.cid, reset_token, true)?;
-            conn_client.new_source_cid(auth.cid, reset_token, true)?;
+            conn_server.new_source_cid(&auth.cid, reset_token, true)?;
+            conn_client.new_source_cid(&auth.cid, reset_token, true)?;
             Self::advance(&mut conn_server, &mut conn_client)?;
 
             conn_client.probe_path(auth.local, auth.peer)?;
@@ -2118,7 +2118,30 @@ pub mod testing {
         let mc_path_info = McPathInfo {
             local: to2,
             peer: to2,
-            cid: &channel_id,
+            cid: channel_id,
+        };
+
+        let mut channel_id_auth = [0; 16];
+        let auth_path_info = if authentication == McAuthType::SymSign {
+            ring::rand::SystemRandom::new()
+                .fill(&mut channel_id_auth[..])
+                .unwrap();
+            let channel_id = ConnectionId::from_ref(&channel_id_auth);
+
+            let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
+            let dummy_port = 1239;
+            let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+                dummy_ip,
+                dummy_port + 1,
+            ));
+
+            Some(McPathInfo {
+                local: to2,
+                peer: to2,
+                cid: channel_id,
+            })
+        } else {
+            None
         };
 
         MulticastChannelSource::new_with_tls(
@@ -2128,7 +2151,7 @@ pub mod testing {
             to,
             keylog_filename,
             authentication,
-            None,
+            auth_path_info,
         )
     }
 }
@@ -4087,27 +4110,27 @@ mod tests {
     ///   their client ID,
     /// * The signatures are correctly signed by the clients.
     fn test_mc_auth_process() {
-        // let use_auth = McAuthType::SymSign;
-        // let mc_pipe = MulticastPipe::new(
-        //     2,
-        //     "/tmp/test_mc_auth_process.txt",
-        //     use_auth,
-        //     true,
-        // )
-        // .unwrap();
+        let use_auth = McAuthType::SymSign;
+        let mc_pipe = MulticastPipe::new(
+            2,
+            "/tmp/test_mc_auth_process.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
 
-        // let auth_info = mc_pipe.mc_channel.mc_auth_info;
-        // assert!(auth_info.is_some());
-        // let auth_info = auth_info.unwrap();
+        let auth_info = mc_pipe.mc_channel.mc_auth_info;
+        assert!(auth_info.is_some());
+        let auth_info = auth_info.unwrap();
 
-        // // The third path used for authentication only exists.
-        // assert_eq!(mc_pipe.mc_channel.channel.paths.len(), 3);
-        // let auth_path_id = mc_pipe
-        //     .mc_channel
-        //     .channel
-        //     .paths
-        //     .path_id_from_addrs(&(auth_info.2, auth_info.2));
-        // assert_eq!(auth_path_id, Some(3));
+        // The third path used for authentication-only exists.
+        assert_eq!(mc_pipe.mc_channel.channel.paths.len(), 3);
+        let auth_path_id = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .path_id_from_addrs(&(auth_info.2, auth_info.2));
+        assert_eq!(auth_path_id, Some(2));
 
         // for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
         //     assert_eq!(pipe.client.paths.len(), 3);
@@ -4115,7 +4138,7 @@ mod tests {
         //         .client
         //         .paths
         //         .path_id_from_addrs(&(auth_info.2, auth_info.2));
-        //     assert_eq!(auth_path_id, Some(3));
+        //     assert_eq!(auth_path_id, Some(2));
         // }
     }
 }

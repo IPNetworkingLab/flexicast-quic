@@ -4317,8 +4317,13 @@ impl Connection {
                     break;
                 }
             }
+
             // Create MC_ANNOUNCE frame.
-            if let Some(mc_data_idx) = self.mc_should_send_mc_announce() {
+            // Send as many MC_ANNOUNCE frames as there are MC_ANNOUNCE data to
+            // send. We allow for multiple MC_ANNOUNCE frames in the
+            // same QUIC packet. MC-TODO: should we update the finite
+            // state machine to know when all data has been sent?
+            while let Some(mc_data_idx) = self.mc_should_send_mc_announce() {
                 let multicast = self.multicast.as_mut().ok_or(
                     Error::Multicast(multicast::MulticastError::McDisabled),
                 )?;

@@ -773,11 +773,12 @@ fn get_multicast_channel(
     SystemRandom::new().fill(&mut channel_id[..]).unwrap();
 
     let channel_id = quiche::ConnectionId::from_ref(&channel_id);
+    let channel_id_vec = channel_id.as_ref().to_vec();
 
     let mc_path_info = multicast::McPathInfo {
         local: source_addr,
         peer: source_addr,
-        cid: &channel_id,
+        cid: channel_id,
     };
 
     let mut mc_channel = MulticastChannelSource::new_with_tls(
@@ -793,7 +794,7 @@ fn get_multicast_channel(
 
     let mc_announce_data = McAnnounceData {
         // channel_id: mc_channel.mc_path_conn_id.0.as_ref().to_vec(),
-        channel_id: channel_id.as_ref().to_vec(),
+        channel_id: channel_id_vec,
         path_type: McPathType::Data,
         is_ipv6: false,
         source_ip: [127, 0, 0, 1],
