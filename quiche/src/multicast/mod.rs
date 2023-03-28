@@ -236,8 +236,7 @@ pub struct MulticastAttributes {
     /// Client-side: the received information.
     /// This is an option because it may be null initially (for example
     /// the client did not receive the MC_ANNOUNCE yet).
-    /// MC-TODO: multiple MC channels => vector instead of single value.
-    pub mc_announce_data: Vec<McAnnounceData>,
+    mc_announce_data: Vec<McAnnounceData>,
 
     /// Multicast channel decryption key secret.
     mc_channel_key: Option<Vec<u8>>,
@@ -260,8 +259,11 @@ pub struct MulticastAttributes {
     /// Only present for the multicast source.
     mc_private_key: Option<signature::Ed25519KeyPair>,
 
-    /// Space ID of the multicast path.
+    /// Space ID of the multicast data path.
     mc_space_id: Option<usize>,
+
+    /// Space ID of the multicast authentication path.
+    mc_auth_space_id: Option<usize>,
 
     /// Nack ranges received by the server from the client.
     /// Only present for the server unicast.
@@ -529,8 +531,11 @@ impl MulticastAttributes {
     /// Sets the multicast path space identifier.
     /// This is used to alwasy refer to the correct multicast path
     /// when processing packets.
-    pub fn set_mc_space_id(&mut self, space_id: usize) {
-        self.mc_space_id = Some(space_id);
+    pub fn set_mc_space_id(&mut self, space_id: usize, path_type: McPathType) {
+        match path_type {
+            McPathType::Data => self.mc_space_id = Some(space_id),
+            McPathType::Authentication => self.mc_auth_space_id = Some(space_id),
+        }
     }
 
     /// Gets the multicast space ID.
@@ -613,6 +618,7 @@ impl Default for MulticastAttributes {
             mc_last_recv_time: None,
             mc_client_left_need_sync: false,
             mc_client_id: None,
+            mc_auth_space_id: None,
         }
     }
 }
@@ -1265,11 +1271,6 @@ impl MulticastConnection for Connection {
                 .insert(first_pn..first_pn + 1);
         }
 
-        self.multicast
-            .as_mut()
-            .unwrap()
-            .set_mc_space_id(pid as usize);
-
         Ok(pid)
     }
 
@@ -1593,7 +1594,8 @@ impl MulticastChannelSource {
             let mc_path_server = conn_client.paths.get_mut(pid_s2c_1)?;
             mc_path_server.recovery.reset();
 
-            conn_server.multicast.as_mut().unwrap().mc_space_id = Some(pid_s2c_1);
+            conn_server.multicast.as_mut().unwrap().mc_auth_space_id =
+                Some(pid_s2c_1);
 
             // Set the new path active.
             conn_client.set_active(auth.local, auth.peer, true)?;
@@ -1956,7 +1958,7 @@ pub mod testing {
                         .multicast
                         .as_mut()
                         .unwrap()
-                        .set_mc_space_id(pid_c2s_1);
+                        .set_mc_space_id(pid_c2s_1, McPathType::Data);
 
                     if let Some(mc_data) = pipe
                         .client
@@ -1980,11 +1982,10 @@ pub mod testing {
                             .path_id_from_addrs(&(client_addr_2, server_addr))
                             .expect("no such path");
 
-                        pipe.client
-                            .multicast
-                            .as_mut()
-                            .unwrap()
-                            .set_mc_space_id(pid_c2s_1);
+                        pipe.client.multicast.as_mut().unwrap().set_mc_space_id(
+                            pid_c2s_1,
+                            McPathType::Authentication,
+                        );
                     }
 
                     assert_eq!(pipe.advance(), Ok(()));
@@ -4212,6 +4213,16 @@ mod tests {
             .paths
             .path_id_from_addrs(&(auth_info.2, auth_info.2));
         assert_eq!(auth_path_id, Some(2));
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_auth_space_id,
+            Some(2)
+        );
 
         for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
             assert_eq!(pipe.client.paths.len(), 3);
@@ -4220,6 +4231,10 @@ mod tests {
                 testing::Pipe::server_addr(),
             ));
             assert_eq!(auth_path_id, Some(2));
+            assert_eq!(
+                pipe.client.multicast.as_ref().unwrap().mc_auth_space_id,
+                Some(2)
+            );
         }
     }
 }

@@ -4349,16 +4349,14 @@ impl Connection {
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
+                    mc_announce_data.set_mc_announce_processed(true);
+
                     if mc_announce_data.path_type == multicast::McPathType::Data {
                         multicast.update_client_state(
                             multicast::MulticastClientAction::Notify,
                             None,
                         )?;
                     }
-
-                    self.multicast.as_mut().unwrap().mc_announce_data
-                        [mc_data_idx]
-                        .is_processed = true;
 
                     ack_eliciting = true;
                     in_flight = true;
