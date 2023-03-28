@@ -535,20 +535,20 @@ impl MulticastAttributes {
     /// be executed. For example, an asymetric authentication cannot be done
     /// if there is no private key. Returns [`McAuthType::None`] otherwise.
     pub fn get_mc_authentication_method(&self) -> McAuthType {
-        println!(
-            "auth type: {:?}, private is some: {}, public is: {}, role: {:?}",
-            self.mc_auth_type,
-            self.mc_private_key.is_some(),
-            self.mc_public_key.is_some(),
-            self.mc_role
-        );
         match self.mc_auth_type {
-            McAuthType::AsymSign if self.mc_public_key.is_some() =>
-                McAuthType::AsymSign,
             McAuthType::AsymSign
                 if self.mc_role == MulticastRole::ServerMulticast &&
                     self.mc_private_key.is_some() =>
                 McAuthType::AsymSign,
+            McAuthType::AsymSign => {
+                if matches!(self.mc_role, MulticastRole::Client(_)) &&
+                    self.mc_public_key.is_some()
+                {
+                    McAuthType::AsymSign
+                } else {
+                    McAuthType::None
+                }
+            },
             McAuthType::SymSign
                 if self
                     .mc_announce_data
@@ -4287,6 +4287,64 @@ mod tests {
                 pipe.server.multicast.as_ref().unwrap().mc_auth_type,
                 McAuthType::SymSign
             );
+        }
+    }
+
+    #[test]
+    fn test_mc_authentication_methods() {
+        let use_auth = McAuthType::AsymSign;
+        let mc_pipe = MulticastPipe::new(
+            2,
+            "/tmp/test_mc_authentication_methods.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+
+        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
+        assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
+        assert_eq!(multicast.mc_space_id, Some(1));
+        assert_eq!(multicast.mc_auth_space_id, None);
+        assert!(multicast.mc_private_key.is_some());
+
+        for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
+            let multicast = pipe.client.multicast.as_ref().unwrap();
+            assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
+            assert_eq!(multicast.mc_space_id, Some(1));
+            assert_eq!(multicast.mc_auth_space_id, None);
+            assert!(multicast.mc_public_key.is_some());
+
+            let multicast = pipe.client.multicast.as_ref().unwrap();
+            assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
+            assert_eq!(multicast.mc_space_id, Some(1));
+            assert_eq!(multicast.mc_auth_space_id, None);
+            assert!(multicast.mc_public_key.is_some());
+        }
+
+        let use_auth = McAuthType::SymSign;
+        let mc_pipe = MulticastPipe::new(
+            2,
+            "/tmp/test_authentication_methods.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+
+        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
+        assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
+        assert_eq!(multicast.mc_space_id, Some(1));
+        assert_eq!(multicast.mc_auth_space_id, Some(2));
+
+        for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
+            let multicast = pipe.client.multicast.as_ref().unwrap();
+            assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
+            assert_eq!(multicast.mc_space_id, Some(1));
+            assert_eq!(multicast.mc_auth_space_id, Some(2));
+
+            let multicast = pipe.client.multicast.as_ref().unwrap();
+            assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
+            assert_eq!(multicast.mc_space_id, Some(1));
+            assert_eq!(multicast.mc_auth_space_id, Some(2));
         }
     }
 }
