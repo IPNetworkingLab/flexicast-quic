@@ -4306,6 +4306,10 @@ mod tests {
         assert_eq!(multicast.mc_space_id, Some(1));
         assert_eq!(multicast.mc_auth_space_id, None);
         assert!(multicast.mc_private_key.is_some());
+        assert_eq!(
+            multicast.get_mc_authentication_method(),
+            McAuthType::AsymSign
+        );
 
         for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
             let multicast = pipe.client.multicast.as_ref().unwrap();
@@ -4313,6 +4317,10 @@ mod tests {
             assert_eq!(multicast.mc_space_id, Some(1));
             assert_eq!(multicast.mc_auth_space_id, None);
             assert!(multicast.mc_public_key.is_some());
+            assert_eq!(
+                multicast.get_mc_authentication_method(),
+                McAuthType::AsymSign
+            );
 
             let multicast = pipe.client.multicast.as_ref().unwrap();
             assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
@@ -4334,12 +4342,20 @@ mod tests {
         assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
         assert_eq!(multicast.mc_space_id, Some(1));
         assert_eq!(multicast.mc_auth_space_id, Some(2));
+        assert_eq!(
+            multicast.get_mc_authentication_method(),
+            McAuthType::SymSign
+        );
 
         for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
             let multicast = pipe.client.multicast.as_ref().unwrap();
             assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
             assert_eq!(multicast.mc_space_id, Some(1));
             assert_eq!(multicast.mc_auth_space_id, Some(2));
+            assert_eq!(
+                multicast.get_mc_authentication_method(),
+                McAuthType::SymSign
+            );
 
             let multicast = pipe.client.multicast.as_ref().unwrap();
             assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
