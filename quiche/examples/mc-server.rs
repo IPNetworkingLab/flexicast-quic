@@ -37,6 +37,7 @@ use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::McPathType;
+use quiche::multicast::authentication::McAuthType;
 use std::collections::HashMap;
 use std::time;
 
@@ -796,6 +797,7 @@ fn get_multicast_channel(
         // channel_id: mc_channel.mc_path_conn_id.0.as_ref().to_vec(),
         channel_id: channel_id_vec,
         path_type: McPathType::Data,
+        auth_type: McAuthType::AsymSign,
         is_ipv6: false,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,

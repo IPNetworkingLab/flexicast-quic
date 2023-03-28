@@ -72,6 +72,9 @@ pub enum MulticastError {
 
     /// Invalid new client ID.
     McInvalidClientId,
+
+    /// Invalid authentication information.
+    McInvalidAuth,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -285,6 +288,12 @@ pub struct MulticastAttributes {
 
     /// Multicast clients Ids.
     mc_client_id: Option<McClientId>,
+
+    /// Multicast authentication type.
+    /// Currently this disables the possibility to have a chain of
+    /// verifications, as we overwrite this value for each McPathType::Data
+    /// MC_ANNOUNCE data received.
+    mc_auth_type: McAuthType,
 }
 
 impl MulticastAttributes {
@@ -520,12 +529,37 @@ impl MulticastAttributes {
         }
     }
 
-    /// Whether authentication is used to send packets.
+    /// Returns the authentication method used.
     ///
-    /// Only true for a multicast source that has a non-empty signature key.
-    pub fn is_mc_source_and_auth(&self) -> bool {
-        self.mc_role == MulticastRole::ServerMulticast &&
-            self.mc_private_key.is_some()
+    /// Makes verification to ensure that the returned verification method can
+    /// be executed. For example, an asymetric authentication cannot be done
+    /// if there is no private key. Returns [`McAuthType::None`] otherwise.
+    pub fn get_mc_authentication_method(&self) -> McAuthType {
+        println!("auth type: {:?}, private is some: {}", self.mc_auth_type, self.mc_private_key.is_some());
+        match self.mc_auth_type {
+            McAuthType::AsymSign
+                if self.mc_role ==
+                    MulticastRole::Client(
+                        MulticastClientStatus::ListenMcPath,
+                    ) &&
+                    self.mc_public_key.is_some() =>
+                McAuthType::AsymSign,
+            McAuthType::AsymSign
+                if self.mc_role == MulticastRole::ServerMulticast &&
+                    self.mc_private_key.is_some() =>
+                McAuthType::AsymSign,
+            McAuthType::SymSign
+                if self
+                    .mc_announce_data
+                    .iter()
+                    .filter(|mc_data| {
+                        mc_data.path_type == McPathType::Authentication
+                    })
+                    .last()
+                    .is_some() =>
+                McAuthType::SymSign,
+            _ => McAuthType::None,
+        }
     }
 
     /// Sets the multicast path space identifier.
@@ -619,6 +653,7 @@ impl Default for MulticastAttributes {
             mc_client_left_need_sync: false,
             mc_client_id: None,
             mc_auth_space_id: None,
+            mc_auth_type: McAuthType::None,
         }
     }
 }
@@ -656,6 +691,9 @@ pub struct McAnnounceData {
     /// For a server, it means that the data is sent to the client.
     /// For a client, it means that the data is received.
     pub is_processed: bool,
+
+    /// Authentication used for this path.
+    pub auth_type: McAuthType,
 }
 
 impl McAnnounceData {
@@ -726,16 +764,6 @@ pub trait MulticastConnection {
     /// MC-TODO: only Ed25519 is used at the moment.
     /// The last bytes of the packet contain the signature.
     fn mc_recv(&mut self, buf: &mut [u8], info: RecvInfo) -> Result<usize>;
-
-    /// Generates a signature on the given QUIC packet.
-    /// The caller is responsible to give a mutable slice
-    /// with enough space to add the signature.
-    /// Otherwise, the method returns an Error [`BufferTooShort`].
-    /// Only available for the multicast source.
-    /// On success, returns the additional number of bytes used by the
-    /// signature. The signature is added at the end of the data in the
-    /// buffer.
-    fn mc_sign(&self, buf: &mut [u8], data_len: usize) -> Result<usize>;
 
     /// Returns an AckRange of packets that are considered as lost.
     /// Returns None if multicast is disabled or the caller has an invalid
@@ -916,6 +944,20 @@ impl MulticastConnection for Connection {
             });
         }
 
+        // Set the multicast path authentication method.
+        if let (Some(multicast), McPathType::Data) =
+            (self.multicast.as_mut(), mc_announce_data.path_type)
+        {
+            // Only allow for asymetric authentication if we have a key in the
+            // MC_ANNOUNCE.
+            if mc_announce_data.auth_type == McAuthType::AsymSign &&
+                multicast.mc_public_key.is_none()
+            {
+                return Err(Error::Multicast(MulticastError::McInvalidAuth));
+            }
+            multicast.mc_auth_type = mc_announce_data.auth_type;
+        }
+
         Ok(())
     }
 
@@ -987,17 +1029,22 @@ impl MulticastConnection for Connection {
                 multicast.mc_last_recv_time = Some(now);
 
                 let len = buf.len();
-                if let Some(public_key) = multicast.mc_public_key.as_ref() {
-                    debug!("mc_rev: Verify the signature of the received packet");
-                    let signature_len = 64;
-                    let buf_data_len = len - signature_len;
-
-                    let signature = &buf[buf_data_len..];
-                    public_key.verify(&buf[..buf_data_len], signature).map_err(
-                        |_| Error::Multicast(MulticastError::McInvalidSign),
-                    )?;
-
-                    len - signature_len
+                let auth_method = multicast.get_mc_authentication_method();
+                if auth_method == McAuthType::AsymSign {
+                    if let Some(public_key) = multicast.mc_public_key.as_ref() {
+                        debug!("mc_rev: Verify the signature of the received packet");
+                        let signature_len = 64;
+                        let buf_data_len = len - signature_len;
+    
+                        let signature = &buf[buf_data_len..];
+                        public_key.verify(&buf[..buf_data_len], signature).map_err(
+                            |_| Error::Multicast(MulticastError::McInvalidSign),
+                        )?;
+    
+                        len - signature_len
+                    } else {
+                        len
+                    }
                 } else {
                     len
                 }
@@ -1010,31 +1057,6 @@ impl MulticastConnection for Connection {
             buf.len()
         };
         self.recv(&mut buf[..buf_len], info)
-    }
-
-    fn mc_sign(&self, buf: &mut [u8], data_len: usize) -> Result<usize> {
-        if let Some(multicast) = self.multicast.as_ref() {
-            if multicast.mc_role != MulticastRole::ServerMulticast {
-                return Err(Error::Multicast(MulticastError::McInvalidRole(
-                    multicast.mc_role,
-                )));
-            }
-
-            // Asymmetric signature on the last bytes of the packet.
-            if let Some(private_key) = multicast.mc_private_key.as_ref() {
-                let signature = private_key.sign(&buf[..data_len]);
-                let signature_len = signature.as_ref().len();
-                assert_eq!(signature_len, 64);
-                buf[data_len..data_len + signature_len]
-                    .copy_from_slice(signature.as_ref());
-
-                Ok(signature_len)
-            } else {
-                Err(Error::Multicast(MulticastError::McInvalidAsymKey))
-            }
-        } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
-        }
     }
 
     fn mc_nack_range(&self, epoch: Epoch, space_id: u64) -> Option<RangeSet> {
@@ -1530,6 +1552,7 @@ impl MulticastChannelSource {
                 Some(MulticastChannelSource::compute_asymetric_signature_keys()?),
             _ => None,
         };
+        println!("Signature eddsa is some: {}", signature_eddsa.is_some());
 
         conn_server.multicast = Some(MulticastAttributes {
             mc_private_key: signature_eddsa,
@@ -1537,6 +1560,7 @@ impl MulticastChannelSource {
             mc_client_id: Some(McClientId::MulticastServer(
                 McClientIdSource::default(),
             )),
+            mc_auth_type: authentication,
             ..Default::default()
         });
 
@@ -1713,12 +1737,15 @@ impl MulticastChannelSource {
     /// specified during the source multicast channel configuration.
     ///
     /// This function is equivalent to [`send`] and authenticate
-    /// the source of the data. It uses the private key computed internaly
-    /// by the server to generate a signature of the packet.
-    /// This function is strictly equivalent to [`send`] if the server
-    /// does not authenticate data.
+    /// the source of the data. If the path authentication method is asymetric
+    /// signature, it uses the private key computed internaly by the server
+    /// to generate a signature of the packet. If it is symetric HMACs, signals
+    /// that an additional packet with the signatures must be sent by the source
+    /// on the authentication path. This function is strictly equivalent to
+    /// [`send`] if the server does not authenticate data.
     /// The client and server should have agreed on the use of authentication.
-    /// If the private is None, it means that we do not use authentication.
+    /// The choice of the authentication is done by
+    /// [`MulticastAttributes::mc_auth_type`].
     ///
     /// MC-TODO: only Ed25519 is used at the moment.
     /// The last bytes of the packet contain the signature.
@@ -1830,6 +1857,7 @@ pub mod testing {
             let mut client_config =
                 get_test_mc_config(false, Some(&mc_client_tp), use_fec);
             let mut mc_announce_data = get_test_mc_announce_data();
+            mc_announce_data.auth_type = authentication;
 
             // Create a new announce data if the channel uses symetric
             // authentication.
@@ -2170,6 +2198,7 @@ pub mod testing {
             public_key: None,
             ttl_data: 1_000_000,
             is_processed: false,
+            auth_type: McAuthType::None,
         }
     }
 
@@ -4223,6 +4252,16 @@ mod tests {
                 .mc_auth_space_id,
             Some(2)
         );
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_auth_type,
+            McAuthType::SymSign
+        );
 
         for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
             assert_eq!(pipe.client.paths.len(), 3);
@@ -4234,6 +4273,14 @@ mod tests {
             assert_eq!(
                 pipe.client.multicast.as_ref().unwrap().mc_auth_space_id,
                 Some(2)
+            );
+            assert_eq!(
+                pipe.client.multicast.as_ref().unwrap().mc_auth_type,
+                McAuthType::SymSign
+            );
+            assert_eq!(
+                pipe.server.multicast.as_ref().unwrap().mc_auth_type,
+                McAuthType::SymSign
             );
         }
     }

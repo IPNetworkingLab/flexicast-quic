@@ -3376,11 +3376,13 @@ impl Connection {
 
         // Detect if the packets to generate will be sent on the multicast channel
         // and need an authentication signature.
-        let mut is_mc_and_auth_packet = false;
+        let mut mc_used_auth_packet = McAuthType::None;
         if let Some(multicast) = self.multicast.as_ref() {
             if let Some(space_id) = multicast.get_mc_space_id() {
-                if space_id == send_pid && multicast.is_mc_source_and_auth() {
-                    is_mc_and_auth_packet = true;
+                if space_id == send_pid {
+                    mc_used_auth_packet =
+                        multicast.get_mc_authentication_method();
+                    println!("Authentication is {:?}", mc_used_auth_packet);
                 }
             }
         }
@@ -3388,7 +3390,7 @@ impl Connection {
         // Generate coalesced packets.
         while left > 0 {
             // Save room for the signature of multicast packets.
-            if is_mc_and_auth_packet {
+            if mc_used_auth_packet == McAuthType::AsymSign {
                 let signature_len = 64;
                 left -= signature_len;
             }
@@ -3409,9 +3411,9 @@ impl Connection {
             left -= written;
 
             // Multicast: generate the authentication signature if needed.
-            if is_mc_and_auth_packet {
+            if mc_used_auth_packet == McAuthType::AsymSign {
                 let sign_overhead =
-                    self.mc_sign(&mut out[done - written..], written)?;
+                    self.mc_sign_asym(&mut out[done - written..], written)?;
                 done += sign_overhead;
                 // We already removed the room for the multicast authentication
                 // signature.
@@ -4334,6 +4336,7 @@ impl Connection {
                 let frame = frame::Frame::McAnnounce {
                     channel_id: mc_announce_data.channel_id.clone(),
                     path_type: mc_announce_data.path_type.into(),
+                    auth_type: mc_announce_data.auth_type.into(),
                     is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
                     source_ip: mc_announce_data.source_ip,
                     group_ip: mc_announce_data.group_ip,
@@ -8220,6 +8223,7 @@ impl Connection {
             frame::Frame::McAnnounce {
                 channel_id,
                 path_type,
+                auth_type,
                 is_ipv6,
                 source_ip,
                 group_ip,
@@ -8227,7 +8231,7 @@ impl Connection {
                 ttl_data,
                 public_key,
             } => {
-                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, is_ipv6, source_ip, group_ip, udp_port);
+                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, path_type, auth_type, is_ipv6, source_ip, group_ip, udp_port);
                 if self.is_server {
                     error!("The server should not receive an MC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -8236,6 +8240,7 @@ impl Connection {
                 let mc_announce_data = multicast::McAnnounceData {
                     channel_id,
                     path_type: path_type.try_into()?,
+                    auth_type: auth_type.try_into()?,
                     is_ipv6: is_ipv6 == 1,
                     source_ip,
                     group_ip,
@@ -17278,6 +17283,8 @@ mod tests {
     }
 }
 
+use crate::multicast::authentication::McAuthType;
+use crate::multicast::authentication::McAuthentication;
 use crate::multicast::MulticastConnection;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;
