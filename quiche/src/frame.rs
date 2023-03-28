@@ -3624,7 +3624,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 65);
+        assert_eq!(wire_len, 64);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

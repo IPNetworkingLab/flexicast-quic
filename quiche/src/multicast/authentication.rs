@@ -138,7 +138,7 @@ impl McSymAuth for Connection {
             {
                 let mut signatures = Vec::with_capacity(map.cid_to_id.len());
 
-                for (cid_vec, client_id) in map.cid_to_id.iter().into_iter() {
+                for (cid_vec, client_id) in map.cid_to_id.iter() {
                     let cid = ConnectionId::from_ref(cid_vec);
                     let conn = clients.get(&cid).ok_or(Error::Multicast(
                         MulticastError::McInvalidClientId,

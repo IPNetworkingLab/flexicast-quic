@@ -535,14 +535,15 @@ impl MulticastAttributes {
     /// be executed. For example, an asymetric authentication cannot be done
     /// if there is no private key. Returns [`McAuthType::None`] otherwise.
     pub fn get_mc_authentication_method(&self) -> McAuthType {
-        println!("auth type: {:?}, private is some: {}", self.mc_auth_type, self.mc_private_key.is_some());
+        println!(
+            "auth type: {:?}, private is some: {}, public is: {}, role: {:?}",
+            self.mc_auth_type,
+            self.mc_private_key.is_some(),
+            self.mc_public_key.is_some(),
+            self.mc_role
+        );
         match self.mc_auth_type {
-            McAuthType::AsymSign
-                if self.mc_role ==
-                    MulticastRole::Client(
-                        MulticastClientStatus::ListenMcPath,
-                    ) &&
-                    self.mc_public_key.is_some() =>
+            McAuthType::AsymSign if self.mc_public_key.is_some() =>
                 McAuthType::AsymSign,
             McAuthType::AsymSign
                 if self.mc_role == MulticastRole::ServerMulticast &&
@@ -1032,15 +1033,19 @@ impl MulticastConnection for Connection {
                 let auth_method = multicast.get_mc_authentication_method();
                 if auth_method == McAuthType::AsymSign {
                     if let Some(public_key) = multicast.mc_public_key.as_ref() {
-                        debug!("mc_rev: Verify the signature of the received packet");
+                        debug!(
+                            "mc_rev: Verify the signature of the received packet"
+                        );
                         let signature_len = 64;
                         let buf_data_len = len - signature_len;
-    
+
                         let signature = &buf[buf_data_len..];
-                        public_key.verify(&buf[..buf_data_len], signature).map_err(
-                            |_| Error::Multicast(MulticastError::McInvalidSign),
-                        )?;
-    
+                        public_key
+                            .verify(&buf[..buf_data_len], signature)
+                            .map_err(|_| {
+                                Error::Multicast(MulticastError::McInvalidSign)
+                            })?;
+
                         len - signature_len
                     } else {
                         len
