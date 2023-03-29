@@ -639,6 +639,15 @@ impl MulticastAttributes {
             None => Err(Error::Multicast(MulticastError::McInvalidClientId)),
         }
     }
+
+    /// Whether the multicast source must send authentication packets with
+    /// symetric signature.
+    pub fn should_send_mc_auth_packets(&self) -> bool {
+        self.mc_role == MulticastRole::ServerMulticast &&
+            self.mc_auth_type == McAuthType::SymSign &&
+            self.mc_pn_need_sym_sign.is_some() &&
+            !self.mc_pn_need_sym_sign.as_ref().unwrap().is_empty()
+    }
 }
 
 impl Default for MulticastAttributes {
@@ -4309,6 +4318,7 @@ mod tests {
             pn_need_sign.iter().map(|i| *i).collect();
         pn_need_sign_vec.sort();
         assert_eq!(pn_need_sign_vec, vec![2, 3]);
+        assert!(multicast.should_send_mc_auth_packets());
     }
 
     #[test]
