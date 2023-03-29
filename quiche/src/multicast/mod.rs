@@ -4268,6 +4268,7 @@ mod tests {
             McAuthType::SymSign
         );
 
+        // There is a third path for symetric authentication.
         for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
             assert_eq!(pipe.client.paths.len(), 3);
             let auth_path_id = pipe.client.paths.path_id_from_addrs(&(
@@ -4357,10 +4358,10 @@ mod tests {
                 McAuthType::SymSign
             );
 
-            let multicast = pipe.client.multicast.as_ref().unwrap();
+            let multicast = pipe.server.multicast.as_ref().unwrap();
             assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
             assert_eq!(multicast.mc_space_id, Some(1));
-            assert_eq!(multicast.mc_auth_space_id, Some(2));
+            assert_eq!(multicast.mc_auth_space_id, None);
         }
     }
 }

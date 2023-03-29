@@ -58,8 +58,13 @@ impl From<McAuthType> for u64 {
 /// Structure containing symetric signatures for each of the multicast clients
 /// for a given packet number.
 pub struct McSymSignatures {
-    mc_client_id: u64,
-    sign: Vec<u8>,
+    /// Client ID given by the multicast source to the client.
+    /// The client uses this value instead of the Connection ID because it is
+    /// encoded in less bytes.
+    pub mc_client_id: u64,
+
+    /// HMAC signature using information from the unicast session.
+    pub sign: Vec<u8>,
 }
 
 /// Multicast authentication.

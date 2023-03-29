@@ -523,7 +523,22 @@ impl Frame {
             },
 
             MC_AUTH_CODE => {
-                todo!();
+                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
+                let pn = b.get_varint()?;
+                let nb_signatures = b.get_u8()?;
+                let signatures: Vec<_> = (0..nb_signatures)
+                    .map(|_| {
+                        let mc_client_id = b.get_varint()?;
+                        let sign = b.get_bytes_with_u8_length()?.to_vec();
+                        Ok(McSymSignatures { mc_client_id, sign })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                Frame::McAuth {
+                    channel_id,
+                    pn,
+                    signatures,
+                }
             },
 
             0x32 => {
@@ -931,7 +946,16 @@ impl Frame {
                     "Going to encode the MC_AUTH frame: {:?} {:?} {:?}",
                     channel_id, pn, signatures
                 );
-                todo!();
+                b.put_varint(MC_AUTH_CODE)?;
+                b.put_u8(channel_id.len() as u8)?;
+                b.put_bytes(channel_id.as_ref())?;
+                b.put_varint(*pn)?;
+                b.put_u8(signatures.len() as u8)?;
+                for signature in signatures.iter() {
+                    b.put_varint(signature.mc_client_id)?;
+                    b.put_u8(signature.sign.len() as u8)?;
+                    b.put_bytes(&signature.sign)?;
+                }
             },
 
             Frame::Repair { repair_symbol } => {
@@ -1300,7 +1324,21 @@ impl Frame {
                 signatures,
             } => {
                 debug!("Going to give the length of the MC_AUTH frame: {:?} {:?} {:?}", channel_id, pn, signatures);
-                todo!();
+                let pn_len = octets::varint_len(*pn);
+                let signatures_size: usize = signatures
+                    .iter()
+                    .map(|sign| {
+                        octets::varint_len(sign.mc_client_id) +
+                            1 +
+                            sign.sign.len()
+                    })
+                    .sum();
+                1 + // frame type
+                1 + // channel_id len
+                channel_id.len() +
+                pn_len +
+                1 + // signatures len
+                signatures_size
             },
 
             Frame::Repair { repair_symbol } => {
@@ -3760,6 +3798,59 @@ mod tests {
         };
 
         assert_eq!(wire_len, 19);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
+                .is_err()
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
+                .is_ok()
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            &get_decoder()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mc_auth() {
+        let mut d = [41; 400];
+
+        let frame = Frame::McAuth {
+            channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
+            pn: 0xff383c,
+            signatures: vec![
+                McSymSignatures {
+                    mc_client_id: 1,
+                    sign: vec![0xff, 0xdd, 0xee],
+                },
+                McSymSignatures {
+                    mc_client_id: 3,
+                    sign: vec![0xaf, 0xdd, 0x32, 43],
+                },
+            ],
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 26);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
