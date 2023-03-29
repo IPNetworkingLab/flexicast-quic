@@ -1,6 +1,7 @@
 //! Multicast extension for QUIC.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::io::BufRead;
@@ -294,6 +295,11 @@ pub struct MulticastAttributes {
     /// verifications, as we overwrite this value for each McPathType::Data
     /// MC_ANNOUNCE data received.
     mc_auth_type: McAuthType,
+
+    /// Packet number of packets sent on the multicast data channel that must be
+    /// authenticated with a symetric MC_AUTH frame on the authentication
+    /// channel.
+    pub(crate) mc_pn_need_sym_sign: Option<VecDeque<u64>>,
 }
 
 impl MulticastAttributes {
@@ -655,6 +661,7 @@ impl Default for MulticastAttributes {
             mc_client_id: None,
             mc_auth_space_id: None,
             mc_auth_type: McAuthType::None,
+            mc_pn_need_sym_sign: None,
         }
     }
 }
@@ -1566,6 +1573,7 @@ impl MulticastChannelSource {
                 McClientIdSource::default(),
             )),
             mc_auth_type: authentication,
+            mc_pn_need_sym_sign: Some(VecDeque::new()),
             ..Default::default()
         });
 
@@ -4227,7 +4235,7 @@ mod tests {
     /// * The signatures are correctly signed by the clients.
     fn test_mc_auth_process() {
         let use_auth = McAuthType::SymSign;
-        let mc_pipe = MulticastPipe::new(
+        let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_mc_auth_process.txt",
             use_auth,
@@ -4235,7 +4243,7 @@ mod tests {
         )
         .unwrap();
 
-        let auth_info = mc_pipe.mc_channel.mc_auth_info;
+        let auth_info = mc_pipe.mc_channel.mc_auth_info.as_ref();
         assert!(auth_info.is_some());
         let auth_info = auth_info.unwrap();
 
@@ -4289,6 +4297,18 @@ mod tests {
                 McAuthType::SymSign
             );
         }
+
+        // Multicast source sends two data packets.
+        assert_eq!(mc_pipe.source_send_single_stream(None, 0, 1), Ok(348));
+        assert_eq!(mc_pipe.source_send_single_stream(None, 0, 5), Ok(348));
+
+        // Multicast source must send authentication packets.
+        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
+        let pn_need_sign = multicast.mc_pn_need_sym_sign.as_ref().unwrap();
+        let mut pn_need_sign_vec: Vec<_> =
+            pn_need_sign.iter().map(|i| *i).collect();
+        pn_need_sign_vec.sort();
+        assert_eq!(pn_need_sign_vec, vec![2, 3]);
     }
 
     #[test]

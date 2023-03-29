@@ -3382,7 +3382,6 @@ impl Connection {
                 if space_id == send_pid {
                     mc_used_auth_packet =
                         multicast.get_mc_authentication_method();
-                    println!("Authentication is {:?}", mc_used_auth_packet);
                 }
             }
         }
@@ -3411,12 +3410,19 @@ impl Connection {
             left -= written;
 
             // Multicast: generate the authentication signature if needed.
-            if mc_used_auth_packet == McAuthType::AsymSign {
-                let sign_overhead =
-                    self.mc_sign_asym(&mut out[done - written..], written)?;
-                done += sign_overhead;
-                // We already removed the room for the multicast authentication
-                // signature.
+            match mc_used_auth_packet {
+                McAuthType::AsymSign => {
+                    let sign_overhead =
+                        self.mc_sign_asym(&mut out[done - written..], written)?;
+                    done += sign_overhead;
+                    // We already removed the room for the multicast
+                    // authentication signature.
+                },
+                // We should also put the code here for the symetric
+                // authentication, but here we do not have access to the packet
+                // number of the packet we just sent. Instead, we put the
+                // corresponding code in send_single.
+                _ => (),
             }
 
             match ty {
@@ -5237,6 +5243,28 @@ impl Connection {
 
         if ack_eliciting {
             self.ack_eliciting_sent = true;
+        }
+
+        // Multicast.
+        // If symetric authentication is used, record that this packet number must
+        // be authenticated.
+        if let Some(multicast) = self.multicast.as_mut() {
+            let mut mc_used_auth_packet = McAuthType::None;
+            if let Some(space_id) = multicast.get_mc_space_id() {
+                if space_id == send_pid {
+                    mc_used_auth_packet =
+                        multicast.get_mc_authentication_method();
+                }
+            }
+            if mc_used_auth_packet == McAuthType::SymSign {
+                if let Some(vec_pn) = multicast.mc_pn_need_sym_sign.as_mut() {
+                    vec_pn.push_back(pn);
+                } else {
+                    return Err(Error::Multicast(
+                        multicast::MulticastError::McInvalidSign,
+                    ));
+                }
+            }
         }
 
         Ok((pkt_type, written))
