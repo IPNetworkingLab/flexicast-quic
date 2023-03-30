@@ -34,7 +34,8 @@ use ring::rand::*;
 
 use clap::Parser;
 use quiche::multicast::MulticastConnection;
-use quiche::multicast::{self,};
+use quiche::multicast::McPathType;
+use quiche::multicast;
 use quiche::ConnectionId;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -207,7 +208,7 @@ fn main() {
             let recv_info = quiche::RecvInfo {
                 to: socket.local_addr().unwrap(),
                 from,
-                from_mc: false,
+                from_mc: None,
             };
 
             // Process potentially coalesced packets.
@@ -240,7 +241,7 @@ fn main() {
                 let recv_info = quiche::RecvInfo {
                     to: mc_addr,
                     from: peer_addr,
-                    from_mc: true,
+                    from_mc: Some(McPathType::Data),
                 };
 
                 let _read = match conn.mc_recv(&mut buf[..len], recv_info) {

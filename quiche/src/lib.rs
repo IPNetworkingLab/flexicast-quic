@@ -94,7 +94,7 @@
 //! loop {
 //!     let (read, from) = socket.recv_from(&mut buf).unwrap();
 //!
-//!     let recv_info = quiche::RecvInfo { from, to, from_mc: false, };
+//!     let recv_info = quiche::RecvInfo { from, to, from_mc: None, };
 //!
 //!     let read = match conn.recv(&mut buf[..read], recv_info) {
 //!         Ok(v) => v,
@@ -644,7 +644,8 @@ pub struct RecvInfo {
     pub to: SocketAddr,
 
     /// Whether this packet was received on a multicast channel.
-    pub from_mc: bool,
+    /// If some, gives the multicast path type.
+    pub from_mc: Option<McPathType>,
 }
 
 /// Ancillary information about outgoing packets.
@@ -2168,7 +2169,7 @@ impl Connection {
     ///     let recv_info = quiche::RecvInfo {
     ///         from,
     ///         to: local,
-    ///         from_mc: false,
+    ///         from_mc: None,
     ///     };
     ///
     ///     let read = match conn.recv(&mut buf[..read], recv_info) {
@@ -2606,8 +2607,9 @@ impl Connection {
         let aead = if hdr.ty == packet::Type::ZeroRTT {
             // Only use 0-RTT key if incoming packet is 0-RTT.
             self.pkt_num_spaces.crypto(epoch).crypto_0rtt_open.as_ref()
-        } else if info.from_mc {
+        } else if info.from_mc.is_some() {
             // The multicast channel uses the shared key.
+            // All multicast paths use the same shared key for encryption.
             if let Some(multicast) = self.multicast.as_ref() {
                 // The client might not be able to process the packets because
                 // they left.
@@ -3493,6 +3495,25 @@ impl Connection {
             return Err(Error::Done);
         }
 
+        // Multicast.
+        let mut mc_used_auth_packet = McAuthType::None;
+        let mut mc_path_type = None;
+        if let Some(multicast) = self.multicast.as_mut() {
+            if let Some(space_id) = multicast.get_mc_space_id() {
+                if space_id == send_pid {
+                    mc_used_auth_packet =
+                        multicast.get_mc_authentication_method();
+                    mc_path_type = Some(McPathType::Data);
+                } else if let Some(auth_space_id) =
+                    multicast.get_mc_auth_space_id()
+                {
+                    if auth_space_id == send_pid {
+                        mc_path_type = Some(McPathType::Authentication);
+                    }
+                }
+            }
+        }
+
         let is_closing = self.local_error.is_some();
 
         let mut b = octets::OctetsMut::with_slice(out);
@@ -3799,6 +3820,19 @@ impl Connection {
         let payload_offset = b.off();
 
         let left_before_packing_ack_frame = left;
+
+        // Crate MC_AUTH frame.
+        //
+        // Only sent on a multicast authentication path
+        // ([`McPathType::Authentication`]). MC_AUTH frames are the first
+        // frames of the packet because the main priority of this path is to
+        // authenticate data form the multicast data path.
+        if let Some(McPathType::Authentication) = mc_path_type {
+            if let Some(multicast) = self.multicast.as_mut() {
+                
+            }
+        }
+
 
         // Create ACK frame.
         //
@@ -5249,13 +5283,6 @@ impl Connection {
         // If symetric authentication is used, record that this packet number must
         // be authenticated.
         if let Some(multicast) = self.multicast.as_mut() {
-            let mut mc_used_auth_packet = McAuthType::None;
-            if let Some(space_id) = multicast.get_mc_space_id() {
-                if space_id == send_pid {
-                    mc_used_auth_packet =
-                        multicast.get_mc_authentication_method();
-                }
-            }
             if mc_used_auth_packet == McAuthType::SymSign {
                 if let Some(vec_pn) = multicast.mc_pn_need_sym_sign.as_mut() {
                     vec_pn.push_back(pn);
@@ -9817,7 +9844,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: server_path.peer_addr(),
                 from: server_path.local_addr(),
-                from_mc: false,
+                from_mc: None,
             };
 
             self.client.recv(buf, info)
@@ -9828,7 +9855,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: client_path.peer_addr(),
                 from: client_path.local_addr(),
-                from_mc: false,
+                from_mc: None,
             };
 
             self.server.recv(buf, info)
@@ -9850,7 +9877,7 @@ pub mod testing {
         let info = RecvInfo {
             to: active_path.local_addr(),
             from: active_path.peer_addr(),
-            from_mc: false,
+            from_mc: None,
         };
 
         conn.recv(&mut buf[..len], info)?;
@@ -9875,7 +9902,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: si.to,
                 from: si.from,
-                from_mc: false,
+                from_mc: None,
             };
 
             conn.recv(&mut pkt, info)?;
@@ -17313,6 +17340,7 @@ mod tests {
 
 use crate::multicast::authentication::McAuthType;
 use crate::multicast::authentication::McAuthentication;
+use crate::multicast::McPathType;
 use crate::multicast::MulticastConnection;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;

@@ -292,7 +292,7 @@ fn main() {
             let recv_info = quiche::RecvInfo {
                 to: socket.local_addr().unwrap(),
                 from,
-                from_mc: false,
+                from_mc: None,
             };
 
             // Process potentially coalesced packets.

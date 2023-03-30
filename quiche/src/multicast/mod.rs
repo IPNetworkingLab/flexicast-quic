@@ -584,6 +584,11 @@ impl MulticastAttributes {
         self.mc_space_id
     }
 
+    /// Gets the multicast authentication path space ID.
+    pub fn get_mc_auth_space_id(&self) -> Option<usize> {
+        self.mc_auth_space_id
+    }
+
     /// Sets the multicast nack ranges received from the client.
     /// Returns an error if it is not a [`ServerUnicast`].
     pub fn set_mc_nack_ranges(
@@ -1038,7 +1043,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_recv(&mut self, buf: &mut [u8], info: RecvInfo) -> Result<usize> {
-        let buf_len = if info.from_mc {
+        let buf_len = if info.from_mc.is_some() {
             if let Some(multicast) = self.multicast.as_mut() {
                 // Update the last time the client received a packet on the
                 // multicast channel.
@@ -2083,7 +2088,7 @@ pub mod testing {
                 let recv_info = RecvInfo {
                     from: *server_addr,
                     to: *client_addr,
-                    from_mc: true,
+                    from_mc: Some(McPathType::Data),
                 };
 
                 let res = pipe
@@ -2132,7 +2137,7 @@ pub mod testing {
                     let recv_info = RecvInfo {
                         from: send_info.from,
                         to: send_info.to,
-                        from_mc: false,
+                        from_mc: None,
                     };
                     pipe.server.recv(&mut buf[..written], recv_info)?;
 
@@ -2601,7 +2606,7 @@ mod tests {
         let recv_info = RecvInfo {
             from: to.from,
             to: to.to,
-            from_mc: false,
+            from_mc: None,
         };
         let res = mc_channel
             .client_backup
@@ -2623,7 +2628,7 @@ mod tests {
         let recv_info = RecvInfo {
             from: to.from,
             to: to.to,
-            from_mc: false,
+            from_mc: None,
         };
         let res = mc_channel
             .client_backup
@@ -2664,7 +2669,7 @@ mod tests {
         let recv_info = RecvInfo {
             from: server_addr,
             to: client_addr_2,
-            from_mc: true,
+            from_mc: Some(McPathType::Data),
         };
 
         // First a message with an invalid authentication signature.
@@ -2736,7 +2741,7 @@ mod tests {
         let recv_info = RecvInfo {
             from: server_addr,
             to: client_addr_2,
-            from_mc: true,
+            from_mc: Some(McPathType::Data),
         };
 
         let client_mc_space_id =
