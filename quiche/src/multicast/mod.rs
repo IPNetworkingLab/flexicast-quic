@@ -1800,6 +1800,22 @@ impl MulticastChannelSource {
             .send_on_path(buf, Some(self.mc_path_peer), Some(self.mc_path_peer))
             .map(|(written, _)| written)
     }
+
+    /// Equivalent of the [`MulticastChannelSource::mc_send`] method but for
+    /// authentication packetss. Send on the authentication multicast path if it
+    /// exists.
+    ///
+    /// Generates a [`MulticastError::McInvalidAuth`] error if the
+    /// authentication method is not symetric signature.
+    pub fn mc_send_sym_auth(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if let Some(mc_auth) = self.mc_auth_info.as_ref() {
+            self.channel
+                .send_on_path(buf, Some(mc_auth.2), Some(mc_auth.2))
+                .map(|(written, _)| written)
+        } else {
+            Err(Error::Multicast(MulticastError::McInvalidAuth))
+        }
+    }
 }
 
 #[derive(Default)]
@@ -2192,7 +2208,38 @@ pub mod testing {
             pipe.advance()
         }
 
-        // MC-TODO: maybe a new_from_mc_announce_data.
+        /// The multicast source sends as much authentication packets as needed.
+        pub fn mc_source_sends_auth_packets(
+            &mut self, client_loss: Option<&RangeSet>,
+        ) -> Result<()> {
+            let mut mc_buf = [0u8; 1500];
+            let _written = self.mc_channel.mc_send_sym_auth(&mut mc_buf[..])?;
+
+            // This is not optimal but it works...
+            let client_loss = if let Some(client_loss) = client_loss {
+                client_loss.flatten().collect()
+            } else {
+                HashSet::new()
+            };
+            let idx_client_receive = (0..self.unicast_pipes.len())
+                .filter(|&idx| !client_loss.contains(&(idx as u64)));
+
+            for client_idx in idx_client_receive {
+                let _recv_buf = mc_buf;
+                let (_pipe, client_addr, server_addr) =
+                    self.unicast_pipes.get_mut(client_idx).unwrap();
+
+                let _recv_info = RecvInfo {
+                    from: *server_addr,
+                    to: *client_addr,
+                    from_mc: Some(McPathType::Authentication),
+                };
+
+                // MC-TODO: clients receive the authentication tag.
+            }
+
+            Ok(())
+        }
     }
 
     /// Simple config used for testing the multicast extension only.
@@ -4451,6 +4498,20 @@ mod tests {
 
         // Multicast source has packets to send on the authentication path.
         assert!(mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
+
+        // Multicast source sends the authentication packets to the clients.
+        // MC-TODO: actually send to the clients.
+        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(()));
+
+        // Multicast source must not send any authentication packet because
+        // everything as been sent.
+        assert!(!mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
+        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
+        assert_eq!(multicast.mc_pn_need_sym_sign, Some(VecDeque::new()));
+        let signatures = multicast.mc_sym_signs.as_ref();
+        assert!(signatures.is_some());
+        let signatures = signatures.unwrap();
+        assert_eq!(signatures.len(), 0);
     }
 }
 
