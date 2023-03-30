@@ -296,10 +296,10 @@ pub struct MulticastAttributes {
     /// MC_ANNOUNCE data received.
     mc_auth_type: McAuthType,
 
-    /// Packet number of packets sent on the multicast data channel that must be
-    /// authenticated with a symetric MC_AUTH frame on the authentication
-    /// channel.
-    pub(crate) mc_pn_need_sym_sign: Option<VecDeque<u64>>,
+    /// Packet number and packet content sent on the multicast data channel that
+    /// must be authenticated with a symetric MC_AUTH frame on the
+    /// authentication channel.
+    pub(crate) mc_pn_need_sym_sign: Option<VecDeque<(u64, Vec<u8>)>>,
 
     /// All symetric signatures that must be sent inside MC_AUTH frames on a
     /// multicast authentication path. Only `Some` for a multicast source.
@@ -2310,6 +2310,7 @@ pub mod testing {
 mod tests {
     use ring::rand::SecureRandom;
 
+    use crate::multicast::authentication::McSymAuth;
     use crate::testing;
 
     use crate::multicast::testing::get_test_mc_announce_data;
@@ -4250,6 +4251,80 @@ mod tests {
     }
 
     #[test]
+    fn test_mc_authentication_methods() {
+        let use_auth = McAuthType::AsymSign;
+        let mc_pipe = MulticastPipe::new(
+            2,
+            "/tmp/test_mc_authentication_methods.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+
+        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
+        assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
+        assert_eq!(multicast.mc_space_id, Some(1));
+        assert_eq!(multicast.mc_auth_space_id, None);
+        assert!(multicast.mc_private_key.is_some());
+        assert_eq!(
+            multicast.get_mc_authentication_method(),
+            McAuthType::AsymSign
+        );
+
+        for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
+            let multicast = pipe.client.multicast.as_ref().unwrap();
+            assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
+            assert_eq!(multicast.mc_space_id, Some(1));
+            assert_eq!(multicast.mc_auth_space_id, None);
+            assert!(multicast.mc_public_key.is_some());
+            assert_eq!(
+                multicast.get_mc_authentication_method(),
+                McAuthType::AsymSign
+            );
+
+            let multicast = pipe.client.multicast.as_ref().unwrap();
+            assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
+            assert_eq!(multicast.mc_space_id, Some(1));
+            assert_eq!(multicast.mc_auth_space_id, None);
+            assert!(multicast.mc_public_key.is_some());
+        }
+
+        let use_auth = McAuthType::SymSign;
+        let mc_pipe = MulticastPipe::new(
+            2,
+            "/tmp/test_authentication_methods.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
+
+        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
+        assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
+        assert_eq!(multicast.mc_space_id, Some(1));
+        assert_eq!(multicast.mc_auth_space_id, Some(2));
+        assert_eq!(
+            multicast.get_mc_authentication_method(),
+            McAuthType::SymSign
+        );
+
+        for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
+            let multicast = pipe.client.multicast.as_ref().unwrap();
+            assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
+            assert_eq!(multicast.mc_space_id, Some(1));
+            assert_eq!(multicast.mc_auth_space_id, Some(2));
+            assert_eq!(
+                multicast.get_mc_authentication_method(),
+                McAuthType::SymSign
+            );
+
+            let multicast = pipe.server.multicast.as_ref().unwrap();
+            assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
+            assert_eq!(multicast.mc_space_id, Some(1));
+            assert_eq!(multicast.mc_auth_space_id, None);
+        }
+    }
+
+    #[test]
     /// Tests the symmetric signature process. In a nutshell, this test
     /// evaluates that:
     /// * The multicast channel creates a third path used for authentication
@@ -4332,84 +4407,17 @@ mod tests {
         let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
         let pn_need_sign = multicast.mc_pn_need_sym_sign.as_ref().unwrap();
         let mut pn_need_sign_vec: Vec<_> =
-            pn_need_sign.iter().map(|i| *i).collect();
+            pn_need_sign.iter().map(|(i, _)| *i).collect();
         pn_need_sign_vec.sort();
         assert_eq!(pn_need_sign_vec, vec![2, 3]);
         assert!(multicast.should_send_mc_auth_packets());
-    }
 
-    #[test]
-    fn test_mc_authentication_methods() {
-        let use_auth = McAuthType::AsymSign;
-        let mc_pipe = MulticastPipe::new(
-            2,
-            "/tmp/test_mc_authentication_methods.txt",
-            use_auth,
-            true,
-        )
-        .unwrap();
-
-        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
-        assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
-        assert_eq!(multicast.mc_space_id, Some(1));
-        assert_eq!(multicast.mc_auth_space_id, None);
-        assert!(multicast.mc_private_key.is_some());
-        assert_eq!(
-            multicast.get_mc_authentication_method(),
-            McAuthType::AsymSign
-        );
-
-        for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
-            let multicast = pipe.client.multicast.as_ref().unwrap();
-            assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
-            assert_eq!(multicast.mc_space_id, Some(1));
-            assert_eq!(multicast.mc_auth_space_id, None);
-            assert!(multicast.mc_public_key.is_some());
-            assert_eq!(
-                multicast.get_mc_authentication_method(),
-                McAuthType::AsymSign
-            );
-
-            let multicast = pipe.client.multicast.as_ref().unwrap();
-            assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
-            assert_eq!(multicast.mc_space_id, Some(1));
-            assert_eq!(multicast.mc_auth_space_id, None);
-            assert!(multicast.mc_public_key.is_some());
-        }
-
-        let use_auth = McAuthType::SymSign;
-        let mc_pipe = MulticastPipe::new(
-            2,
-            "/tmp/test_authentication_methods.txt",
-            use_auth,
-            true,
-        )
-        .unwrap();
-
-        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
-        assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
-        assert_eq!(multicast.mc_space_id, Some(1));
-        assert_eq!(multicast.mc_auth_space_id, Some(2));
-        assert_eq!(
-            multicast.get_mc_authentication_method(),
-            McAuthType::SymSign
-        );
-
-        for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
-            let multicast = pipe.client.multicast.as_ref().unwrap();
-            assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
-            assert_eq!(multicast.mc_space_id, Some(1));
-            assert_eq!(multicast.mc_auth_space_id, Some(2));
-            assert_eq!(
-                multicast.get_mc_authentication_method(),
-                McAuthType::SymSign
-            );
-
-            let multicast = pipe.server.multicast.as_ref().unwrap();
-            assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
-            assert_eq!(multicast.mc_space_id, Some(1));
-            assert_eq!(multicast.mc_auth_space_id, None);
-        }
+        // Multicast source generates the authentication tag.
+        let clients: Vec<_> = mc_pipe.unicast_pipes.iter_mut().map(|(conn, ..)| &mut conn.server).collect();
+        assert_eq!(mc_pipe
+            .mc_channel
+            .channel
+            .mc_sym_sign(&clients), Ok(()));
     }
 }
 
@@ -4417,4 +4425,3 @@ pub mod authentication;
 use authentication::McAuthType;
 
 use self::authentication::McSymSignPn;
-use self::authentication::McSymSignatures;

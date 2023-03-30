@@ -3829,19 +3829,23 @@ impl Connection {
         // authenticate data form the multicast data path.
         if let Some(McPathType::Authentication) = mc_path_type {
             if let Some(multicast) = self.multicast.as_mut() {
-                let channel_id = multicast.get_mc_announce_data_path().ok_or(Error::Multicast(
-                    multicast::MulticastError::McAnnounce,
-                ))?.channel_id.clone();
-                if let Some(mc_signs) = multicast.mc_sym_signs.as_mut() {
-                    // MC-TODO: consume the signatures!!!
-                    for (pn, signs) in mc_signs.iter() {
-                        let frame = frame::Frame::McAuth {
-                            channel_id: channel_id.clone(),
-                            pn: *pn,
-                            signatures: signs.to_vec(),
-                        };
-
-                        // MC-TODO: push frame.
+                if let Some(mc_announce_data) = multicast.get_mc_announce_data_path() {
+                    let channel_id = mc_announce_data.channel_id.clone();
+                    if let Some(mc_signs) = multicast.mc_sym_signs.as_mut() {
+                        // MC-TODO: consume the signatures!!!
+                        while let Some((pn, signs)) = mc_signs.pop_front() {
+                            let frame = frame::Frame::McAuth {
+                                channel_id: channel_id.clone(),
+                                pn,
+                                signatures: signs.to_vec(),
+                            };
+        
+                            if push_frame_to_pkt!(b, frames, frame, left) {
+                                ack_eliciting = false;
+                                in_flight = true;
+                            }
+    
+                        }
                     }
                 }
             }
@@ -5298,7 +5302,7 @@ impl Connection {
         if let Some(multicast) = self.multicast.as_mut() {
             if mc_used_auth_packet == McAuthType::SymSign {
                 if let Some(vec_pn) = multicast.mc_pn_need_sym_sign.as_mut() {
-                    vec_pn.push_back(pn);
+                    vec_pn.push_back((pn, out[..written].to_vec()));
                 } else {
                     return Err(Error::Multicast(
                         multicast::MulticastError::McInvalidSign,

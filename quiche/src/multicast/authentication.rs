@@ -3,10 +3,12 @@ use crate::multicast::McClientId;
 use crate::multicast::MulticastError;
 use crate::multicast::MulticastRole;
 use crate::Connection;
-use crate::ConnectionId;
 use crate::Error;
 use crate::Result;
-use std::collections::HashMap;
+use ring::hmac;
+use ring::rand;
+use ring::rand::SecureRandom;
+use std::collections::VecDeque;
 use std::convert::TryFrom;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -110,53 +112,95 @@ impl McAuthentication for Connection {
         }
     }
 
-    fn mc_sign_sym_slice(&self, _buf: &[u8]) -> Result<Vec<u8>> {
+    fn mc_sign_sym_slice(&self, buf: &[u8]) -> Result<Vec<u8>> {
         // MC-TODO: give a valid signature.
-        Ok(self.source_id().as_ref().to_vec())
+        // Ok(self.source_id().as_ref().to_vec())
+
+        let mut key_value = [0u8; 48];
+        let rng = rand::SystemRandom::new();
+        rng.fill(&mut key_value)
+            .map_err(|_| Error::Multicast(MulticastError::McInvalidSymKey))?;
+        let key = hmac::Key::new(hmac::HMAC_SHA256, &key_value);
+        let signature = hmac::sign(&key, buf);
+
+        Ok(signature.as_ref().to_vec())
     }
 }
 
+#[doc(hidden)]
 pub type McSymSignPn = (u64, Vec<McSymSignatures>);
+
+#[doc(hidden)]
+pub type ClientMap<'a> = Vec<&'a mut Connection>;
 
 /// Symetric signature for the multicast source channel.
 /// Handles the generation of the signatures for all clients in the mapping.
 pub trait McSymAuth {
-    /// Generates HMAC for each connection in the connection mapping.
-    fn mc_sym_sign(
-        &mut self, data: &[u8], pn: u64,
-        clients: &HashMap<ConnectionId<'static>, Connection>,
-    ) -> Result<McSymSignPn>;
+    /// Generates HMAC for each connection in the connection mapping for all
+    /// packets sent on the multicast channel that still need to be
+    /// authenticated using symetric signatures.
+    fn mc_sym_sign(&mut self, clients: &ClientMap) -> Result<()>;
+
+    /// Generates HMAC for each connection in the connection mapping for the
+    /// given slice and packet number.
+    ///
+    /// This function assumes that all check related to the role of the caller
+    /// is performed, i.e., that the caller is the multicast source.
+    fn mc_sym_sign_single(
+        &self, data: &[u8], clients: &ClientMap,
+    ) -> Result<Vec<McSymSignatures>>;
 }
 
 impl McSymAuth for Connection {
-    fn mc_sym_sign(
-        &mut self, data: &[u8], pn: u64,
-        clients: &HashMap<ConnectionId<'static>, Connection>,
-    ) -> Result<McSymSignPn> {
-        if let Some(multicast) = self.multicast.as_ref() {
+    fn mc_sym_sign(&mut self, clients: &ClientMap) -> Result<()> {
+        if let Some(multicast) = self.multicast.as_mut() {
             if !matches!(multicast.mc_role, MulticastRole::ServerMulticast) {
                 return Err(Error::Multicast(MulticastError::McInvalidRole(
                     multicast.mc_role,
                 )));
             }
 
+            if let Some(mut need_sign) = multicast.mc_pn_need_sym_sign.take() {
+                let mut signatures_pn = Vec::with_capacity(need_sign.len());
+                while let Some((pn, data)) = need_sign.pop_front() {
+                    signatures_pn
+                        .push((pn, self.mc_sym_sign_single(&data, clients)?));
+                }
+
+                // Reset the state because of ownership we took.
+                let mut multicast = self.multicast.as_mut().unwrap();
+                multicast.mc_sym_signs = Some(VecDeque::from(signatures_pn));
+                multicast.mc_pn_need_sym_sign = Some(VecDeque::new());
+            }
+
+            Ok(())
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
+    }
+
+    fn mc_sym_sign_single(
+        &self, data: &[u8], clients: &ClientMap,
+    ) -> Result<Vec<McSymSignatures>> {
+        if let Some(multicast) = self.multicast.as_ref() {
             if let Some(McClientId::MulticastServer(map)) =
                 multicast.mc_client_id.as_ref()
             {
                 let mut signatures = Vec::with_capacity(map.cid_to_id.len());
 
-                for (cid_vec, client_id) in map.cid_to_id.iter() {
-                    let cid = ConnectionId::from_ref(cid_vec);
-                    let conn = clients.get(&cid).ok_or(Error::Multicast(
-                        MulticastError::McInvalidClientId,
-                    ))?;
+                for conn in clients.iter() {
+                    let cid = conn.source_id();
+                    let cid = cid.as_ref();
+                    let client_id = map.cid_to_id.get(cid).ok_or(
+                        Error::Multicast(MulticastError::McInvalidClientId),
+                    )?;
                     signatures.push(McSymSignatures {
                         mc_client_id: *client_id,
                         sign: conn.mc_sign_sym_slice(data)?,
                     })
                 }
 
-                Ok((pn, signatures))
+                Ok(signatures)
             } else {
                 Err(Error::Multicast(MulticastError::McInvalidClientId))
             }
