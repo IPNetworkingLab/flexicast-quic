@@ -3829,10 +3829,23 @@ impl Connection {
         // authenticate data form the multicast data path.
         if let Some(McPathType::Authentication) = mc_path_type {
             if let Some(multicast) = self.multicast.as_mut() {
-                
+                let channel_id = multicast.get_mc_announce_data_path().ok_or(Error::Multicast(
+                    multicast::MulticastError::McAnnounce,
+                ))?.channel_id.clone();
+                if let Some(mc_signs) = multicast.mc_sym_signs.as_mut() {
+                    // MC-TODO: consume the signatures!!!
+                    for (pn, signs) in mc_signs.iter() {
+                        let frame = frame::Frame::McAuth {
+                            channel_id: channel_id.clone(),
+                            pn: *pn,
+                            signatures: signs.to_vec(),
+                        };
+
+                        // MC-TODO: push frame.
+                    }
+                }
             }
         }
-
 
         // Create ACK frame.
         //

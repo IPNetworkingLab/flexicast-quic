@@ -116,21 +116,23 @@ impl McAuthentication for Connection {
     }
 }
 
+pub type McSymSignPn = (u64, Vec<McSymSignatures>);
+
 /// Symetric signature for the multicast source channel.
 /// Handles the generation of the signatures for all clients in the mapping.
 pub trait McSymAuth {
     /// Generates HMAC for each connection in the connection mapping.
     fn mc_sym_sign(
-        &mut self, data: &[u8],
+        &mut self, data: &[u8], pn: u64,
         clients: &HashMap<ConnectionId<'static>, Connection>,
-    ) -> Result<Vec<McSymSignatures>>;
+    ) -> Result<McSymSignPn>;
 }
 
 impl McSymAuth for Connection {
     fn mc_sym_sign(
-        &mut self, data: &[u8],
+        &mut self, data: &[u8], pn: u64,
         clients: &HashMap<ConnectionId<'static>, Connection>,
-    ) -> Result<Vec<McSymSignatures>> {
+    ) -> Result<McSymSignPn> {
         if let Some(multicast) = self.multicast.as_ref() {
             if !matches!(multicast.mc_role, MulticastRole::ServerMulticast) {
                 return Err(Error::Multicast(MulticastError::McInvalidRole(
@@ -154,7 +156,7 @@ impl McSymAuth for Connection {
                     })
                 }
 
-                Ok(signatures)
+                Ok((pn, signatures))
             } else {
                 Err(Error::Multicast(MulticastError::McInvalidClientId))
             }

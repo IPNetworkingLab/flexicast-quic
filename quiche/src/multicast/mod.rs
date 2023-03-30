@@ -300,6 +300,16 @@ pub struct MulticastAttributes {
     /// authenticated with a symetric MC_AUTH frame on the authentication
     /// channel.
     pub(crate) mc_pn_need_sym_sign: Option<VecDeque<u64>>,
+
+    /// All symetric signatures that must be sent inside MC_AUTH frames on a
+    /// multicast authentication path. Only `Some` for a multicast source.
+    ///
+    /// It is up to the application to fill this vector with signatures to send
+    /// to the clients. This design choice ensures that the [`send`] methods
+    /// from the library must not take a reference to all the clients of the
+    /// channel. Instead, this library provides a function MC-TODO to fill this
+    /// vector by the application before calling the send functions.
+    pub(crate) mc_sym_signs: Option<VecDeque<McSymSignPn>>,
 }
 
 impl MulticastAttributes {
@@ -676,6 +686,7 @@ impl Default for MulticastAttributes {
             mc_auth_space_id: None,
             mc_auth_type: McAuthType::None,
             mc_pn_need_sym_sign: None,
+            mc_sym_signs: None,
         }
     }
 }
@@ -1588,6 +1599,7 @@ impl MulticastChannelSource {
             )),
             mc_auth_type: authentication,
             mc_pn_need_sym_sign: Some(VecDeque::new()),
+            mc_sym_signs: Some(VecDeque::new()),
             ..Default::default()
         });
 
@@ -4403,3 +4415,6 @@ mod tests {
 
 pub mod authentication;
 use authentication::McAuthType;
+
+use self::authentication::McSymSignPn;
+use self::authentication::McSymSignatures;
