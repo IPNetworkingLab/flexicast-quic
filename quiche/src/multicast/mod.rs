@@ -660,8 +660,8 @@ impl MulticastAttributes {
     pub fn should_send_mc_auth_packets(&self) -> bool {
         self.mc_role == MulticastRole::ServerMulticast &&
             self.mc_auth_type == McAuthType::SymSign &&
-            self.mc_pn_need_sym_sign.is_some() &&
-            !self.mc_pn_need_sym_sign.as_ref().unwrap().is_empty()
+            self.mc_sym_signs.is_some() &&
+            !self.mc_sym_signs.as_ref().unwrap().is_empty()
     }
 }
 
@@ -766,7 +766,7 @@ pub trait MulticastConnection {
     fn mc_set_multicast_receiver(&mut self, secret: &[u8]) -> Result<()>;
 
     /// Returns true if the multicast extension has control data to send.
-    fn mc_has_control_data(&self) -> bool;
+    fn mc_has_control_data(&self, send_pid: usize) -> bool;
 
     /// Joins a multicast channel advertised by a server.
     /// Returns an Error if:
@@ -994,22 +994,29 @@ impl MulticastConnection for Connection {
         Ok(())
     }
 
-    fn mc_has_control_data(&self) -> bool {
-        // MC-TODO: complete
-        self.multicast.is_some() &&
-            (self.mc_should_send_mc_announce().is_some() ||
-                match self.multicast.as_ref() {
-                    None => false,
-                    Some(multicast) =>
-                        multicast.should_send_mc_state() ||
-                            multicast.should_send_mc_key() ||
-                            self.mc_nack_range(
-                                Epoch::Application,
-                                multicast.mc_space_id.unwrap_or(0) as u64,
-                            )
-                            .is_some() ||
-                            multicast.mc_last_expired_needs_notif,
-                })
+    fn mc_has_control_data(&self, send_pid: usize) -> bool {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(mc_auth_space_id) = multicast.mc_auth_space_id {
+                if mc_auth_space_id == send_pid &&
+                    multicast.should_send_mc_auth_packets()
+                {
+                    return true;
+                } else {
+                    // Do not send other information on the authentication path.
+                    return false;
+                }
+            }
+            return self.mc_should_send_mc_announce().is_some() ||
+                multicast.should_send_mc_state() ||
+                multicast.should_send_mc_key() ||
+                self.mc_nack_range(
+                    Epoch::Application,
+                    multicast.mc_space_id.unwrap_or(0) as u64,
+                )
+                .is_some() ||
+                multicast.mc_last_expired_needs_notif;
+        }
+        false
     }
 
     fn mc_join_channel(&mut self) -> Result<MulticastClientStatus> {
@@ -4399,6 +4406,11 @@ mod tests {
             );
         }
 
+        // Multicast source has no data to send on the authentication path.
+        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
+        let auth_pid = multicast.mc_auth_space_id.unwrap();
+        assert!(!mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
+
         // Multicast source sends two data packets.
         assert_eq!(mc_pipe.source_send_single_stream(None, 0, 1), Ok(348));
         assert_eq!(mc_pipe.source_send_single_stream(None, 0, 5), Ok(348));
@@ -4410,7 +4422,6 @@ mod tests {
             pn_need_sign.iter().map(|(i, _)| *i).collect();
         pn_need_sign_vec.sort();
         assert_eq!(pn_need_sign_vec, vec![2, 3]);
-        assert!(multicast.should_send_mc_auth_packets());
 
         // Multicast source generates the authentication tag.
         let clients: Vec<_> = mc_pipe
@@ -4437,6 +4448,9 @@ mod tests {
             ids.sort();
             assert_eq!(ids, vec![0, 1]);
         }
+
+        // Multicast source has packets to send on the authentication path.
+        assert!(mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
     }
 }
 

@@ -7541,7 +7541,7 @@ impl Connection {
                 self.paths.has_path_status() ||
                 send_path.needs_ack_eliciting ||
                 send_path.probing_required() ||
-                self.mc_has_control_data() ||
+                self.mc_has_control_data(send_pid) ||
                 (can_send_fec &&
                     self.should_send_repair_symbol(send_pid)?) ||
                 self.should_probe_bw())
