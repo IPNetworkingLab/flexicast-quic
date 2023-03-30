@@ -4337,7 +4337,7 @@ mod tests {
     fn test_mc_auth_process() {
         let use_auth = McAuthType::SymSign;
         let mut mc_pipe = MulticastPipe::new(
-            1,
+            2,
             "/tmp/test_mc_auth_process.txt",
             use_auth,
             true,
@@ -4413,11 +4413,30 @@ mod tests {
         assert!(multicast.should_send_mc_auth_packets());
 
         // Multicast source generates the authentication tag.
-        let clients: Vec<_> = mc_pipe.unicast_pipes.iter_mut().map(|(conn, ..)| &mut conn.server).collect();
-        assert_eq!(mc_pipe
-            .mc_channel
-            .channel
-            .mc_sym_sign(&clients), Ok(()));
+        let clients: Vec<_> = mc_pipe
+            .unicast_pipes
+            .iter_mut()
+            .map(|(conn, ..)| &mut conn.server)
+            .collect();
+        assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
+        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
+
+        // All packets that needed to be authenticated have been processed.
+        assert_eq!(multicast.mc_pn_need_sym_sign, Some(VecDeque::new()));
+
+        // Two packets have been signed, for pn=2 and pn=3.
+        let signatures = multicast.mc_sym_signs.as_ref();
+        assert!(signatures.is_some());
+        let signatures = signatures.unwrap();
+        assert_eq!(signatures.len(), 2);
+        for (i, (pn, sign)) in signatures.iter().enumerate() {
+            assert_eq!(i as u64 + 2, *pn);
+            assert_eq!(sign.len(), 2);
+            let mut ids: Vec<_> =
+                sign.iter().map(|mc_sym| mc_sym.mc_client_id).collect();
+            ids.sort();
+            assert_eq!(ids, vec![0, 1]);
+        }
     }
 }
 

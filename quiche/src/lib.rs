@@ -3412,20 +3412,17 @@ impl Connection {
             left -= written;
 
             // Multicast: generate the authentication signature if needed.
-            match mc_used_auth_packet {
-                McAuthType::AsymSign => {
-                    let sign_overhead =
-                        self.mc_sign_asym(&mut out[done - written..], written)?;
-                    done += sign_overhead;
-                    // We already removed the room for the multicast
-                    // authentication signature.
-                },
-                // We should also put the code here for the symetric
-                // authentication, but here we do not have access to the packet
-                // number of the packet we just sent. Instead, we put the
-                // corresponding code in send_single.
-                _ => (),
+            if mc_used_auth_packet == McAuthType::AsymSign {
+                let sign_overhead =
+                    self.mc_sign_asym(&mut out[done - written..], written)?;
+                done += sign_overhead;
+                // We already removed the room for the multicast
+                // authentication signature.
             }
+            // We should also put the code here for the symetric
+            // authentication, but here we do not have access to the packet
+            // number of the packet we just sent. Instead, we put the
+            // corresponding code in send_single.
 
             match ty {
                 packet::Type::Initial => has_initial = true,
@@ -3829,7 +3826,9 @@ impl Connection {
         // authenticate data form the multicast data path.
         if let Some(McPathType::Authentication) = mc_path_type {
             if let Some(multicast) = self.multicast.as_mut() {
-                if let Some(mc_announce_data) = multicast.get_mc_announce_data_path() {
+                if let Some(mc_announce_data) =
+                    multicast.get_mc_announce_data_path()
+                {
                     let channel_id = mc_announce_data.channel_id.clone();
                     if let Some(mc_signs) = multicast.mc_sym_signs.as_mut() {
                         // MC-TODO: consume the signatures!!!
@@ -3839,12 +3838,11 @@ impl Connection {
                                 pn,
                                 signatures: signs.to_vec(),
                             };
-        
+
                             if push_frame_to_pkt!(b, frames, frame, left) {
                                 ack_eliciting = false;
                                 in_flight = true;
                             }
-    
                         }
                     }
                 }
