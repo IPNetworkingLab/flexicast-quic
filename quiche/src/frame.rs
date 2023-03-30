@@ -1324,6 +1324,7 @@ impl Frame {
                 signatures,
             } => {
                 debug!("Going to give the length of the MC_AUTH frame: {:?} {:?} {:?}", channel_id, pn, signatures);
+                let frame_type_size = octets::varint_len(MC_AUTH_CODE);
                 let pn_len = octets::varint_len(*pn);
                 let signatures_size: usize = signatures
                     .iter()
@@ -1333,7 +1334,7 @@ impl Frame {
                             sign.sign.len()
                     })
                     .sum();
-                1 + // frame type
+                frame_type_size +
                 1 + // channel_id len
                 channel_id.len() +
                 pn_len +

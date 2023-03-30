@@ -1,6 +1,8 @@
 use std::fmt::Display;
 
+use quiche::multicast::MulticastConnection;
 use quiche::multicast::authentication::McAuthType;
+use quiche::multicast::authentication::McSymAuth;
 use quiche::multicast::testing::get_test_mc_config;
 use quiche::multicast::testing::MulticastPipe;
 use quiche::testing::Pipe;
@@ -12,7 +14,7 @@ use criterion::BenchmarkId;
 use criterion::Criterion;
 
 const BENCH_STREAM_SIZE: usize = 1_000_000_000;
-const BENCH_NB_RECV_MAX: usize = 30;
+const BENCH_NB_RECV_MAX: usize = 10;
 const BENCH_STEP_RECV: usize = 5;
 
 fn setup_mc(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastPipe {
@@ -27,7 +29,7 @@ fn setup_mc(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastPipe {
 fn setup_uc(buf: &[u8], nb_recv: usize) -> Vec<quiche::Connection> {
     (0..nb_recv)
         .map(|_| {
-            let mut config = get_test_mc_config(false, None, false);
+            let mut config = get_test_mc_config(false, None, false, McAuthType::None);
             config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
             let mut pipe = Pipe::with_config(&mut config).unwrap();
             pipe.handshake().unwrap();
@@ -63,7 +65,8 @@ fn mc_channel_bench(c: &mut Criterion) {
     let buf = vec![0; BENCH_STREAM_SIZE];
 
     let mut group = c.benchmark_group("multicast-1G");
-    for &auth in &[McAuthType::AsymSign, McAuthType::None] {
+    for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::SymSign] {
+    // for &auth in &[McAuthType::SymSign] {
         for nb_recv in (1..2).chain(
             (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV),
         ) {
@@ -74,6 +77,11 @@ fn mc_channel_bench(c: &mut Criterion) {
                     b.iter_batched(
                         || setup_mc(&buf, nb_recv, auth),
                         |mut conn| {
+                            let clients: Vec<_> = conn
+                                .unicast_pipes
+                                .iter_mut()
+                                .map(|(conn, ..)| &mut conn.server)
+                                .collect();
                             // Ask quiche to generate the outgoing packets with
                             // authentication.
                             let mut buffer = [0u8; 1500];
@@ -82,6 +90,17 @@ fn mc_channel_bench(c: &mut Criterion) {
                                     Ok(_) => (),
                                     Err(quiche::Error::Done) => break,
                                     Err(e) => panic!("Error: {}", e),
+                                }
+
+                                if auth == McAuthType::SymSign {
+                                    // Generate the signatures.
+                                    conn.mc_channel
+                                        .channel
+                                        .mc_sym_sign(&clients)
+                                        .unwrap();
+                                    conn.mc_channel
+                                        .mc_send_sym_auth(&mut buffer[..])
+                                        .unwrap();
                                 }
                             }
                         },
@@ -129,5 +148,5 @@ fn uc_channel_bench(c: &mut Criterion) {
 }
 
 criterion_group!(benches, mc_channel_bench, uc_channel_bench);
-// criterion_group!(benches, uc_channel_bench);
+// criterion_group!(benches, mc_channel_bench);
 criterion_main!(benches);

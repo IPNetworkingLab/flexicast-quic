@@ -321,6 +321,7 @@ impl Seal {
         };
 
         if rc != 1 {
+            println!("Crypto fail here 2");
             return Err(Error::CryptoFail);
         }
 

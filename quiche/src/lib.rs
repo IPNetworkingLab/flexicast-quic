@@ -3831,7 +3831,6 @@ impl Connection {
                 {
                     let channel_id = mc_announce_data.channel_id.clone();
                     if let Some(mc_signs) = multicast.mc_sym_signs.as_mut() {
-                        // MC-TODO: consume the signatures!!!
                         while let Some((pn, signs)) = mc_signs.pop_front() {
                             let frame = frame::Frame::McAuth {
                                 channel_id: channel_id.clone(),
@@ -3843,6 +3842,7 @@ impl Connection {
                                 ack_eliciting = false;
                                 in_flight = true;
                             }
+                            break;
                         }
                     }
                 }
