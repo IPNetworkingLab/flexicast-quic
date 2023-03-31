@@ -83,7 +83,9 @@ pub trait McAuthentication {
     fn mc_sign_asym(&self, buf: &mut [u8], data_len: usize) -> Result<usize>;
 
     /// Sign a slice using the session key.
-    fn mc_sign_sym_slice(&self, buf: &[u8]) -> Result<Vec<u8>>;
+    fn mc_sign_sym_slice(
+        &self, buf: &[u8], key: Option<&hmac::Key>,
+    ) -> Result<Vec<u8>>;
 }
 
 impl McAuthentication for Connection {
@@ -112,16 +114,25 @@ impl McAuthentication for Connection {
         }
     }
 
-    fn mc_sign_sym_slice(&self, buf: &[u8]) -> Result<Vec<u8>> {
+    fn mc_sign_sym_slice(
+        &self, buf: &[u8], key: Option<&hmac::Key>,
+    ) -> Result<Vec<u8>> {
         // MC-TODO: give a valid signature.
         // Ok(self.source_id().as_ref().to_vec())
-
-        let mut key_value = [0u8; 48];
-        let rng = rand::SystemRandom::new();
-        rng.fill(&mut key_value)
-            .map_err(|_| Error::Multicast(MulticastError::McInvalidSymKey))?;
-        let key = hmac::Key::new(hmac::HMAC_SHA256, &key_value);
-        let signature = hmac::sign(&key, buf);
+        let signature = if let Some(k) = key {
+            hmac::sign(k, buf)
+        } else {
+            if true {
+                panic!();
+            }
+            let mut key_value = [0u8; 48];
+                let rng = rand::SystemRandom::new();
+                rng.fill(&mut key_value).map_err(|_| {
+                    Error::Multicast(MulticastError::McInvalidSymKey)
+                })?;
+                let k = hmac::Key::new(hmac::HMAC_SHA256, &key_value);
+                hmac::sign(&k, buf)
+        };
 
         Ok(signature.as_ref().to_vec())
     }
@@ -188,15 +199,22 @@ impl McSymAuth for Connection {
             {
                 let mut signatures = Vec::with_capacity(map.cid_to_id.len());
 
-                for conn in clients.iter() {
-                    let cid = conn.source_id();
-                    let cid = cid.as_ref();
-                    let client_id = map.cid_to_id.get(cid).ok_or(
-                        Error::Multicast(MulticastError::McInvalidClientId),
-                    )?;
+                for (i, conn) in clients.iter().enumerate() {
+                    // let cid = conn.source_id();
+                    // let cid = cid.as_ref();
+                    // let client_id = map.cid_to_id.get(cid).ok_or(
+                    //     Error::Multicast(MulticastError::McInvalidClientId),
+                    // )?;
+                    let key = if let Some(v) = multicast.hmac_keys.as_ref() {
+                        v.get(i)
+                    } else {
+                        None
+                    };
+                    let sign = conn.mc_sign_sym_slice(data, key)?;
                     signatures.push(McSymSignatures {
-                        mc_client_id: *client_id,
-                        sign: conn.mc_sign_sym_slice(data)?,
+                        mc_client_id: i as u64,
+                        // sign: vec![0u8;16],//conn.mc_sign_sym_slice(data, key)?,
+                        sign,
                     })
                 }
 

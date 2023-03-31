@@ -3824,6 +3824,7 @@ impl Connection {
         // ([`McPathType::Authentication`]). MC_AUTH frames are the first
         // frames of the packet because the main priority of this path is to
         // authenticate data form the multicast data path.
+        let mut sent_mc_auth = false;
         if let Some(McPathType::Authentication) = mc_path_type {
             if let Some(multicast) = self.multicast.as_mut() {
                 if let Some(mc_announce_data) =
@@ -3838,11 +3839,15 @@ impl Connection {
                                 signatures: signs.to_vec(),
                             };
 
+                            let before = left;
+
                             if push_frame_to_pkt!(b, frames, frame, left) {
                                 ack_eliciting = false;
                                 in_flight = true;
+                                // println!("MC_AUTH frame took {}", before - left);
+                                sent_mc_auth = true;
+                                break;
                             }
-                            break;
                         }
                     }
                 }
@@ -4864,7 +4869,7 @@ impl Connection {
             !fec_only_path &&
             !dgram_emitted &&
             (self.paths.consider_standby_paths() ||
-                !self.paths.get(send_pid)?.is_standby())
+                !self.paths.get(send_pid)?.is_standby()) && !sent_mc_auth
         {
             // first, do bandwidth probing if needed and possible
             if !self.streams.has_flushable() {
@@ -5206,6 +5211,12 @@ impl Connection {
         )?;
 
         let pkt_num = recovery::SpacedPktNum::new(space_id as u32, pn);
+
+        if sent_mc_auth {
+            //println!("On auth path: {:?}", frames);
+        } else {
+            //println!("On data path: {:?}", frames);
+        }
 
         let sent_pkt = recovery::Sent {
             pkt_num,

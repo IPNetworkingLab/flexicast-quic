@@ -19,6 +19,7 @@ use ring::rand;
 use ring::rand::SecureRandom;
 use ring::signature;
 use ring::signature::KeyPair;
+use ring::hmac;
 
 use crate::accept;
 use crate::connect;
@@ -310,6 +311,9 @@ pub struct MulticastAttributes {
     /// channel. Instead, this library provides a function MC-TODO to fill this
     /// vector by the application before calling the send functions.
     pub(crate) mc_sym_signs: Option<VecDeque<McSymSignPn>>,
+
+    /// Tmp HMAC keys for benchmark.
+    pub hmac_keys: Option<Vec<hmac::Key>>,
 }
 
 impl MulticastAttributes {
@@ -687,6 +691,7 @@ impl Default for MulticastAttributes {
             mc_auth_type: McAuthType::None,
             mc_pn_need_sym_sign: None,
             mc_sym_signs: None,
+            hmac_keys: None,
         }
     }
 }
@@ -2082,6 +2087,15 @@ pub mod testing {
                     Some((pipe, client_addr_2, server_addr))
                 })
                 .collect();
+            
+            let rng = rand::SystemRandom::new();
+            let mut key = [0u8; 20];
+            let keys: Vec<_> = (0..nb_clients).map(|_| {
+                rng.fill(&mut key).unwrap();
+                hmac::Key::new(hmac::HMAC_SHA256, &key)
+            }).collect();
+
+            mc_channel.channel.multicast.as_mut().unwrap().hmac_keys = Some(keys);
 
             if pipes.len() != nb_clients {
                 return Err(Error::Multicast(MulticastError::McPipe));
