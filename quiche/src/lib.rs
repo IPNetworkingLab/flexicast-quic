@@ -3839,14 +3839,10 @@ impl Connection {
                                 signatures: signs.to_vec(),
                             };
 
-                            let before = left;
-
                             if push_frame_to_pkt!(b, frames, frame, left) {
                                 ack_eliciting = false;
                                 in_flight = true;
-                                // println!("MC_AUTH frame took {}", before - left);
                                 sent_mc_auth = true;
-                                break;
                             }
                         }
                     }
@@ -4869,7 +4865,8 @@ impl Connection {
             !fec_only_path &&
             !dgram_emitted &&
             (self.paths.consider_standby_paths() ||
-                !self.paths.get(send_pid)?.is_standby()) && !sent_mc_auth
+                !self.paths.get(send_pid)?.is_standby()) &&
+            !sent_mc_auth
         {
             // first, do bandwidth probing if needed and possible
             if !self.streams.has_flushable() {
@@ -5213,9 +5210,9 @@ impl Connection {
         let pkt_num = recovery::SpacedPktNum::new(space_id as u32, pn);
 
         if sent_mc_auth {
-            //println!("On auth path: {:?}", frames);
+            // println!("On auth path: {:?}", frames);
         } else {
-            //println!("On data path: {:?}", frames);
+            // println!("On data path: {:?}", frames);
         }
 
         let sent_pkt = recovery::Sent {

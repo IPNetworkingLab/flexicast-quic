@@ -4518,7 +4518,7 @@ mod tests {
 
         // Multicast source sends the authentication packets to the clients.
         // MC-TODO: actually send to the clients.
-        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(212));
+        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(148));
 
         // Multicast source must not send any authentication packet because
         // everything as been sent.

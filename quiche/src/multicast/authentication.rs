@@ -5,9 +5,8 @@ use crate::multicast::MulticastRole;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
+use crate::packet::Epoch;
 use ring::hmac;
-use ring::rand;
-use ring::rand::SecureRandom;
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 
@@ -84,7 +83,7 @@ pub trait McAuthentication {
 
     /// Sign a slice using the session key.
     fn mc_sign_sym_slice(
-        &self, buf: &[u8], key: Option<&hmac::Key>,
+        &self, buf: &[u8], key: Option<&hmac::Key>, pn: u64,
     ) -> Result<Vec<u8>>;
 }
 
@@ -115,26 +114,34 @@ impl McAuthentication for Connection {
     }
 
     fn mc_sign_sym_slice(
-        &self, buf: &[u8], key: Option<&hmac::Key>,
+        &self, buf: &[u8], key: Option<&hmac::Key>, pn: u64,
     ) -> Result<Vec<u8>> {
-        // MC-TODO: give a valid signature.
-        // Ok(self.source_id().as_ref().to_vec())
-        let signature = if let Some(k) = key {
-            hmac::sign(k, buf)
-        } else {
-            if true {
-                panic!();
-            }
-            let mut key_value = [0u8; 48];
-                let rng = rand::SystemRandom::new();
-                rng.fill(&mut key_value).map_err(|_| {
-                    Error::Multicast(MulticastError::McInvalidSymKey)
-                })?;
-                let k = hmac::Key::new(hmac::HMAC_SHA256, &key_value);
-                hmac::sign(&k, buf)
-        };
+        let aead = self
+            .pkt_num_spaces
+            .crypto(Epoch::Application)
+            .crypto_seal
+            .as_ref()
+            .unwrap();
+        let tag_len = aead.alg().tag_len();
+        // Copy like a shlag.
+        let mut my_buf_vec = vec![0u8; buf.len() + tag_len + 100];
+        my_buf_vec[..buf.len()].copy_from_slice(buf);
+        let mut my_buf = octets::OctetsMut::with_slice(&mut my_buf_vec);
+        let pn_len = octets::varint_len(pn);
+        let space_id = self.multicast.as_ref().unwrap().mc_space_id.unwrap();
+        let hdr = [0u8; 0];
 
-        Ok(signature.as_ref().to_vec())
+        let written = aead.seal_with_u64_counter(
+            space_id as u32,
+            pn,
+            hdr.as_ref(),
+            my_buf.as_mut(),
+            buf.len(),
+            None,
+        )?;
+
+        Ok(my_buf_vec[buf.len()..written].to_vec())
+
     }
 }
 
@@ -158,7 +165,7 @@ pub trait McSymAuth {
     /// This function assumes that all check related to the role of the caller
     /// is performed, i.e., that the caller is the multicast source.
     fn mc_sym_sign_single(
-        &self, data: &[u8], clients: &ClientMap,
+        &self, data: &[u8], clients: &ClientMap, pn: u64,
     ) -> Result<Vec<McSymSignatures>>;
 }
 
@@ -175,7 +182,7 @@ impl McSymAuth for Connection {
                 let mut signatures_pn = Vec::with_capacity(need_sign.len());
                 while let Some((pn, data)) = need_sign.pop_front() {
                     signatures_pn
-                        .push((pn, self.mc_sym_sign_single(&data, clients)?));
+                        .push((pn, self.mc_sym_sign_single(&data, clients, pn)?));
                 }
 
                 // Reset the state because of ownership we took.
@@ -191,7 +198,7 @@ impl McSymAuth for Connection {
     }
 
     fn mc_sym_sign_single(
-        &self, data: &[u8], clients: &ClientMap,
+        &self, data: &[u8], clients: &ClientMap, pn: u64,
     ) -> Result<Vec<McSymSignatures>> {
         if let Some(multicast) = self.multicast.as_ref() {
             if let Some(McClientId::MulticastServer(map)) =
@@ -210,10 +217,11 @@ impl McSymAuth for Connection {
                     } else {
                         None
                     };
-                    let sign = conn.mc_sign_sym_slice(data, key)?;
+                    let sign = conn.mc_sign_sym_slice(data, key, pn)?;
                     signatures.push(McSymSignatures {
                         mc_client_id: i as u64,
-                        // sign: vec![0u8;16],//conn.mc_sign_sym_slice(data, key)?,
+                        // sign: vec![0u8;16],//conn.mc_sign_sym_slice(data,
+                        // key)?,
                         sign,
                     })
                 }
