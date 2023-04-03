@@ -1222,15 +1222,19 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_timeout(&self, now: time::Instant) -> Option<time::Duration> {
-        let space_id = self.multicast.as_ref()?.get_mc_space_id()?;
+        // May be None if we do not use symetric authentication.
+        let auth_id = self.multicast.as_ref()?.mc_auth_space_id;
+        let space_id = Some(self.multicast.as_ref()?.get_mc_space_id()?);
+        let space_ids = [auth_id, space_id];
 
         // MC-TODO: should use mc_role instead of server.
         if self.is_server {
-            self.paths
-                .get(space_id)
-                .ok()?
-                .recovery
-                .mc_next_timeout()
+            space_ids
+                .iter()
+                .flatten()
+                .map(|&sid| self.paths.get(sid).ok()?.recovery.mc_next_timeout())
+                .min()
+                .flatten()
                 .map(|timeout| {
                     if timeout <= now {
                         time::Duration::ZERO
@@ -1257,6 +1261,7 @@ impl MulticastConnection for Connection {
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
             if let Some(multicast) = self.multicast.as_ref() {
                 if self.is_server {
+                    let mc_auth_space_id = multicast.mc_auth_space_id;
                     if let Some(space_id) = multicast.get_mc_space_id() {
                         let res = self.mc_expire(
                             Epoch::Application,
@@ -1275,6 +1280,17 @@ impl MulticastConnection for Connection {
                             self.update_tx_cap();
                             return Ok(v);
                         }
+                    }
+
+                    // Expire packets from the authentication path.
+                    if let Some(auth_id) = mc_auth_space_id {
+                        // We expire packets but do not record them.
+                        self.mc_expire(
+                            Epoch::Application,
+                            auth_id as u64,
+                            None,
+                            now,
+                        )?;
                     }
                 } else {
                     self.mc_leave_channel()?;
