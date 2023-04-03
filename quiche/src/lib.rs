@@ -5209,12 +5209,6 @@ impl Connection {
 
         let pkt_num = recovery::SpacedPktNum::new(space_id as u32, pn);
 
-        if sent_mc_auth {
-            // println!("On auth path: {:?}", frames);
-        } else {
-            // println!("On data path: {:?}", frames);
-        }
-
         let sent_pkt = recovery::Sent {
             pkt_num,
             frames,

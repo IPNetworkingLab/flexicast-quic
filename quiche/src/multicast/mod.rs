@@ -15,11 +15,11 @@ use crate::ranges::RangeSet;
 use crate::recovery::multicast::MulticastRecovery;
 use crate::CongestionControlAlgorithm;
 use networkcoding::source_symbol_metadata_from_u64;
+use ring::hmac;
 use ring::rand;
 use ring::rand::SecureRandom;
 use ring::signature;
 use ring::signature::KeyPair;
-use ring::hmac;
 
 use crate::accept;
 use crate::connect;
@@ -1002,15 +1002,11 @@ impl MulticastConnection for Connection {
     fn mc_has_control_data(&self, send_pid: usize) -> bool {
         if let Some(multicast) = self.multicast.as_ref() {
             if let Some(mc_auth_space_id) = multicast.mc_auth_space_id {
-                if mc_auth_space_id == send_pid &&
-                    multicast.should_send_mc_auth_packets()
-                {
-                    return true;
-                } else {
-                    // Do not send other information on the authentication path.
-                    return false;
-                }
+                // Do not send other information on the authentication path.
+                return mc_auth_space_id == send_pid &&
+                    multicast.should_send_mc_auth_packets();
             }
+
             return self.mc_should_send_mc_announce().is_some() ||
                 multicast.should_send_mc_state() ||
                 multicast.should_send_mc_key() ||
@@ -1422,6 +1418,30 @@ impl MulticastConnection for Connection {
                 let multicast = self.multicast.as_mut().unwrap();
 
                 multicast.mc_client_id = Some(McClientId::Client(client_id));
+            }
+
+            // Unicast connection asks the multicast channel to remove its client
+            // ID. This is done because the client left the multicast
+            // channel.
+            let multicast = self.multicast.as_ref().unwrap();
+            if matches!(
+                multicast.mc_role,
+                MulticastRole::ServerUnicast(MulticastClientStatus::Left)
+            ) && multicast.mc_client_id.is_some()
+            {
+                if let Some(McClientId::MulticastServer(map)) =
+                    mc_channel.multicast.as_mut().unwrap().mc_client_id.as_mut()
+                {
+                    map.remove_from_cid(self.source_id().as_ref()).ok_or(
+                        Error::Multicast(MulticastError::McInvalidClientId),
+                    )?;
+
+                    // Remove the client ID from the server.
+                    // MC-TODO: this currently disables the possibility of a
+                    // client re-joinging the channel.
+                    let multicast = self.multicast.as_mut().unwrap();
+                    multicast.mc_client_id = None;
+                }
             }
 
             // Unicast connection asks the multicast channel for open streams.
@@ -1871,6 +1891,15 @@ impl McClientIdSource {
 
         Some(client_id)
     }
+
+    /// Remove a client using the client ID.
+    pub fn remove_from_id(&mut self, id: u64) -> Option<u64> {
+        let cid = self.id_to_cid.get(&id)?;
+        self.cid_to_id.remove(cid)?;
+        self.id_to_cid.remove(&id)?;
+
+        Some(id)
+    }
 }
 
 /// Client ID for the different multicast roles.
@@ -1919,9 +1948,14 @@ pub mod testing {
             use_fec: bool,
         ) -> Result<MulticastPipe> {
             let mc_client_tp = MulticastClientTp::default();
-            let mut server_config = get_test_mc_config(true, None, use_fec, authentication);
-            let mut client_config =
-                get_test_mc_config(false, Some(&mc_client_tp), use_fec, authentication);
+            let mut server_config =
+                get_test_mc_config(true, None, use_fec, authentication);
+            let mut client_config = get_test_mc_config(
+                false,
+                Some(&mc_client_tp),
+                use_fec,
+                authentication,
+            );
             let mut mc_announce_data = get_test_mc_announce_data();
             mc_announce_data.auth_type = authentication;
 
@@ -1994,8 +2028,12 @@ pub mod testing {
 
             let pipes: Vec<_> = (0..nb_clients)
                 .flat_map(|_| {
-                    let mut config =
-                        get_test_mc_config(true, Some(&mc_client_tp), true, authentication);
+                    let mut config = get_test_mc_config(
+                        true,
+                        Some(&mc_client_tp),
+                        true,
+                        authentication,
+                    );
                     let mut pipe =
                         Pipe::with_config_and_scid_lengths(&mut config, 16, 16)
                             .ok()?;
@@ -2087,13 +2125,15 @@ pub mod testing {
                     Some((pipe, client_addr_2, server_addr))
                 })
                 .collect();
-            
+
             let rng = rand::SystemRandom::new();
             let mut key = [0u8; 20];
-            let keys: Vec<_> = (0..nb_clients).map(|_| {
-                rng.fill(&mut key).unwrap();
-                hmac::Key::new(hmac::HMAC_SHA256, &key)
-            }).collect();
+            let keys: Vec<_> = (0..nb_clients)
+                .map(|_| {
+                    rng.fill(&mut key).unwrap();
+                    hmac::Key::new(hmac::HMAC_SHA256, &key)
+                })
+                .collect();
 
             mc_channel.channel.multicast.as_mut().unwrap().hmac_keys = Some(keys);
 
@@ -2257,7 +2297,8 @@ pub mod testing {
 
     /// Simple config used for testing the multicast extension only.
     pub fn get_test_mc_config(
-        mc_server: bool, mc_client: Option<&MulticastClientTp>, use_fec: bool, auth: McAuthType,
+        mc_server: bool, mc_client: Option<&MulticastClientTp>, use_fec: bool,
+        auth: McAuthType,
     ) -> Config {
         let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
         config
@@ -2398,7 +2439,12 @@ mod tests {
     fn mc_announce_data_init() {
         let mc_client_tp = MulticastClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
-        let mut config = get_test_mc_config(true, Some(&mc_client_tp), false, McAuthType::None);
+        let mut config = get_test_mc_config(
+            true,
+            Some(&mc_client_tp),
+            false,
+            McAuthType::None,
+        );
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -2439,7 +2485,12 @@ mod tests {
     fn mc_announce_data_exchange() {
         let mc_client_tp = MulticastClientTp::default();
         let mut mc_announce_data = get_test_mc_announce_data();
-        let mut config = get_test_mc_config(true, Some(&mc_client_tp), false, McAuthType::None);
+        let mut config = get_test_mc_config(
+            true,
+            Some(&mc_client_tp),
+            false,
+            McAuthType::None,
+        );
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -2492,7 +2543,12 @@ mod tests {
     fn client_join_mc_channel() {
         let mc_client_tp = MulticastClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
-        let mut config = get_test_mc_config(true, Some(&mc_client_tp), false, McAuthType::None);
+        let mut config = get_test_mc_config(
+            true,
+            Some(&mc_client_tp),
+            false,
+            McAuthType::None,
+        );
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -2605,7 +2661,12 @@ mod tests {
     fn test_mc_key() {
         let mc_client_tp = MulticastClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
-        let mut config = get_test_mc_config(true, Some(&mc_client_tp), false, McAuthType::None);
+        let mut config = get_test_mc_config(
+            true,
+            Some(&mc_client_tp),
+            false,
+            McAuthType::None,
+        );
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -2652,9 +2713,14 @@ mod tests {
     /// of the server.
     fn test_mc_channel_server_handshake() {
         let mc_client_tp = MulticastClientTp::default();
-        let mut server_config = get_test_mc_config(true, None, false, McAuthType::None);
-        let mut client_config =
-            get_test_mc_config(false, Some(&mc_client_tp), false, McAuthType::None);
+        let mut server_config =
+            get_test_mc_config(true, None, false, McAuthType::None);
+        let mut client_config = get_test_mc_config(
+            false,
+            Some(&mc_client_tp),
+            false,
+            McAuthType::None,
+        );
 
         let mc_channel = get_test_mc_channel_source(
             &mut server_config,
@@ -2670,9 +2736,14 @@ mod tests {
     /// client), not the multicast path.
     fn test_mc_channel_alone() {
         let mc_client_tp = MulticastClientTp::default();
-        let mut server_config = get_test_mc_config(true, None, false, McAuthType::None);
-        let mut client_config =
-            get_test_mc_config(false, Some(&mc_client_tp), false, McAuthType::None);
+        let mut server_config =
+            get_test_mc_config(true, None, false, McAuthType::None);
+        let mut client_config = get_test_mc_config(
+            false,
+            Some(&mc_client_tp),
+            false,
+            McAuthType::None,
+        );
         let mut mc_channel = get_test_mc_channel_source(
             &mut server_config,
             &mut client_config,
@@ -4275,9 +4346,14 @@ mod tests {
     /// Tests the client ID given by the multicast source.
     fn test_mc_client_id() {
         let use_auth = McAuthType::AsymSign;
-        let mc_pipe =
-            MulticastPipe::new(5, "/tmp/test_mc_client_id.txt", use_auth, true)
-                .unwrap();
+        let nb_clients = 5;
+        let mut mc_pipe = MulticastPipe::new(
+            nb_clients,
+            "/tmp/test_mc_client_id.txt",
+            use_auth,
+            true,
+        )
+        .unwrap();
 
         let client_id_map = mc_pipe
             .mc_channel
@@ -4318,6 +4394,34 @@ mod tests {
                 client_id_map.get_client_id(cid.unwrap()),
                 Some(client_id.unwrap())
             );
+        }
+
+        // A client leave the multicast channel. The multicast source removes
+        // the associated client ID.
+        assert_eq!(
+            mc_pipe.unicast_pipes[2].0.client.mc_leave_channel(),
+            Ok(MulticastClientStatus::Leaving(false))
+        );
+        assert_eq!(mc_pipe.unicast_pipes[2].0.advance(), Ok(()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        if let Some(McClientId::MulticastServer(map)) = mc_pipe
+            .mc_channel
+            .channel
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_client_id
+            .as_ref()
+        {
+            assert_eq!(map.cid_to_id.len(), nb_clients - 1);
+            assert_eq!(map.id_to_cid.len(), nb_clients - 1);
+            let mut ids: Vec<_> = map.id_to_cid.keys().map(|&i| i).collect();
+            ids.sort();
+            assert_eq!(ids, vec![0, 1, 3, 4]);
+
+            let mut ids: Vec<_> = map.cid_to_id.values().map(|&i| i).collect();
+            ids.sort();
+            assert_eq!(ids, vec![0, 1, 3, 4]);
         }
     }
 

@@ -2,11 +2,10 @@
 use crate::multicast::McClientId;
 use crate::multicast::MulticastError;
 use crate::multicast::MulticastRole;
+use crate::packet::Epoch;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
-use crate::packet::Epoch;
-use ring::hmac;
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 
@@ -82,9 +81,7 @@ pub trait McAuthentication {
     fn mc_sign_asym(&self, buf: &mut [u8], data_len: usize) -> Result<usize>;
 
     /// Sign a slice using the session key.
-    fn mc_sign_sym_slice(
-        &self, buf: &[u8], key: Option<&hmac::Key>, pn: u64,
-    ) -> Result<Vec<u8>>;
+    fn mc_sign_sym_slice(&self, buf: &[u8], pn: u64) -> Result<Vec<u8>>;
 }
 
 impl McAuthentication for Connection {
@@ -113,9 +110,7 @@ impl McAuthentication for Connection {
         }
     }
 
-    fn mc_sign_sym_slice(
-        &self, buf: &[u8], key: Option<&hmac::Key>, pn: u64,
-    ) -> Result<Vec<u8>> {
+    fn mc_sign_sym_slice(&self, buf: &[u8], pn: u64) -> Result<Vec<u8>> {
         let aead = self
             .pkt_num_spaces
             .crypto(Epoch::Application)
@@ -127,7 +122,6 @@ impl McAuthentication for Connection {
         let mut my_buf_vec = vec![0u8; buf.len() + tag_len + 100];
         my_buf_vec[..buf.len()].copy_from_slice(buf);
         let mut my_buf = octets::OctetsMut::with_slice(&mut my_buf_vec);
-        let pn_len = octets::varint_len(pn);
         let space_id = self.multicast.as_ref().unwrap().mc_space_id.unwrap();
         let hdr = [0u8; 0];
 
@@ -141,7 +135,6 @@ impl McAuthentication for Connection {
         )?;
 
         Ok(my_buf_vec[buf.len()..written].to_vec())
-
     }
 }
 
@@ -207,21 +200,9 @@ impl McSymAuth for Connection {
                 let mut signatures = Vec::with_capacity(map.cid_to_id.len());
 
                 for (i, conn) in clients.iter().enumerate() {
-                    // let cid = conn.source_id();
-                    // let cid = cid.as_ref();
-                    // let client_id = map.cid_to_id.get(cid).ok_or(
-                    //     Error::Multicast(MulticastError::McInvalidClientId),
-                    // )?;
-                    let key = if let Some(v) = multicast.hmac_keys.as_ref() {
-                        v.get(i)
-                    } else {
-                        None
-                    };
-                    let sign = conn.mc_sign_sym_slice(data, key, pn)?;
+                    let sign = conn.mc_sign_sym_slice(data, pn)?;
                     signatures.push(McSymSignatures {
                         mc_client_id: i as u64,
-                        // sign: vec![0u8;16],//conn.mc_sign_sym_slice(data,
-                        // key)?,
                         sign,
                     })
                 }
