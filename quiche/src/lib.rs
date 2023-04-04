@@ -3835,10 +3835,11 @@ impl Connection {
                         sym_signs,
                     ) = &mut multicast.mc_sym_signs
                     {
-                        while let Some((pn, next_sign)) = sym_signs.pop_front() {
+                        while let Some((pn, next_sign, pkt_hash)) = sym_signs.pop_front() {
                             let frame = frame::Frame::McAuth {
                                 channel_id: channel_id.clone(),
                                 pn,
+                                pkt_hash,
                                 signatures: next_sign.to_vec(),
                             };
 
@@ -8121,6 +8122,7 @@ impl Connection {
             frame::Frame::McAuth {
                 channel_id,
                 pn,
+                pkt_hash,
                 signatures,
             } => {
                 debug!(
@@ -8149,7 +8151,7 @@ impl Connection {
                         auth_tags,
                     ) = &mut multicast.mc_sym_signs
                     {
-                        auth_tags.push_back((pn, signature.sign.to_owned()));
+                        auth_tags.push_back((pn, signature.sign.to_owned(), pkt_hash));
                     } else {
                         return Err(Error::Multicast(
                             multicast::MulticastError::McInvalidSign,

@@ -7,6 +7,8 @@ use crate::packet::Epoch;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
+use ring::digest;
+use ring::digest::digest;
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 
@@ -64,7 +66,7 @@ pub struct McSymSignature {
     /// encoded in less bytes.
     pub mc_client_id: u64,
 
-    /// HMAC signature using information from the unicast session.
+    /// AEAD tag using information from the unicast session.
     pub sign: Vec<u8>,
 }
 
@@ -186,18 +188,22 @@ impl McAuthentication for Connection {
     fn mc_verify_sym(&mut self, buf: &[u8]) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             if let McSymSign::Client(signatures) = &mut multicast.mc_sym_signs {
-                // MC-TODO: for now, assume that the first received signature
-                // maps to the buffer. This is not really good but for now that
-                // will work.
-                let recv_tag = signatures
-                    .pop_front()
-                    .ok_or(Error::Multicast(MulticastError::McNoAuthPacket))?;
-                let tag = self.mc_sign_sym_slice(buf, recv_tag.0)?;
-                println!("Recv tag: {:?}. Computed tag: {:?}", recv_tag, tag);
-                if recv_tag.1 == tag {
-                    Ok(())
+                // Recompute the packet hash. This will be used to find the
+                // correct packet to authenticate.
+                let pkt_hash_digest = digest(&digest::SHA256, buf);
+                let pkt_hash = pkt_hash_digest.as_ref();
+                let recv_tag_idx =
+                    signatures.iter().position(|sign| sign.2 == pkt_hash);
+                if let Some(idx) = recv_tag_idx {
+                    let recv_tag = signatures.remove(idx).unwrap();
+                    let tag = self.mc_sign_sym_slice(buf, recv_tag.0)?;
+                    if recv_tag.1 == tag {
+                        Ok(())
+                    } else {
+                        Err(Error::Multicast(MulticastError::McInvalidSign))
+                    }
                 } else {
-                    Err(Error::Multicast(MulticastError::McInvalidSign))
+                    Err(Error::Multicast(MulticastError::McNoAuthPacket))
                 }
             } else {
                 Err(Error::Multicast(MulticastError::McInvalidSign))
@@ -208,19 +214,16 @@ impl McAuthentication for Connection {
     }
 }
 
-#[doc(hidden)]
-pub type McSymSignPn = (u64, Vec<McSymSignature>);
-
 /// Multicast symmetric signatures.
 /// For the multicast source, it is a Vec of signatures for each packet and each
 /// client. For the clients, it is a Vec of signatures for each packet only.
 pub enum McSymSign {
     /// The client must only remember which packet number corresponds to a given
     /// tag.
-    Client(VecDeque<(u64, Vec<u8>)>),
+    Client(VecDeque<(u64, Vec<u8>, Vec<u8>)>),
 
     /// The multicast source must remember the tag for each of its clients.
-    McSource(VecDeque<(u64, Vec<McSymSignature>)>),
+    McSource(VecDeque<(u64, Vec<McSymSignature>, Vec<u8>)>),
 }
 
 #[doc(hidden)]
@@ -256,8 +259,15 @@ impl McSymAuth for Connection {
             if let Some(mut need_sign) = multicast.mc_pn_need_sym_sign.take() {
                 let mut signatures_pn = Vec::with_capacity(need_sign.len());
                 while let Some((pn, data)) = need_sign.pop_front() {
-                    signatures_pn
-                        .push((pn, self.mc_sym_sign_single(&data, clients, pn)?));
+                    // Compute the packet hash.
+                    let pkt_hash = digest::digest(&digest::SHA256, &data);
+
+                    // Compute the AEAD tag.
+                    signatures_pn.push((
+                        pn,
+                        self.mc_sym_sign_single(&data, clients, pn)?,
+                        pkt_hash.as_ref().to_vec(),
+                    ));
                 }
 
                 // Reset the state because of ownership we took.
@@ -338,7 +348,7 @@ mod tests {
         assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
 
         // Multicast source sends the authentication packet.
-        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(145)); // 145 for 5 clients. 73 for a single client.
+        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(178)); // 145 for 5 clients. 73 for a single client.
 
         // The clients verify the authentication of the multicast data packets
         // with the received tags.

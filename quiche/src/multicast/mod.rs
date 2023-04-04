@@ -4637,7 +4637,7 @@ mod tests {
         // Two packets have been signed, for pn=2 and pn=3.
         if let McSymSign::McSource(signatures) = &multicast.mc_sym_signs {
             assert_eq!(signatures.len(), 2);
-            for (i, (pn, sign)) in signatures.iter().enumerate() {
+            for (i, (pn, sign, ..)) in signatures.iter().enumerate() {
                 assert_eq!(i as u64 + 2, *pn);
                 assert_eq!(sign.len(), 2);
                 let mut ids: Vec<_> =
@@ -4653,8 +4653,7 @@ mod tests {
         assert!(mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
 
         // Multicast source sends the authentication packets to the clients.
-        // MC-TODO: actually send to the clients.
-        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(148));
+        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(214));
 
         // Multicast source must not send any authentication packet because
         // everything as been sent.

@@ -248,6 +248,7 @@ pub enum Frame {
     McAuth {
         channel_id: Vec<u8>,
         pn: u64,
+        pkt_hash: Vec<u8>,
         signatures: Vec<McSymSignature>,
     },
 
@@ -525,6 +526,7 @@ impl Frame {
             MC_AUTH_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
                 let pn = b.get_varint()?;
+                let pkt_hash = b.get_bytes_with_u8_length()?.to_vec();
                 let nb_signatures = b.get_u8()?;
                 let signatures: Vec<_> = (0..nb_signatures)
                     .map(|_| {
@@ -537,6 +539,7 @@ impl Frame {
                 Frame::McAuth {
                     channel_id,
                     pn,
+                    pkt_hash,
                     signatures,
                 }
             },
@@ -940,6 +943,7 @@ impl Frame {
             Frame::McAuth {
                 channel_id,
                 pn,
+                pkt_hash,
                 signatures,
             } => {
                 debug!(
@@ -950,6 +954,8 @@ impl Frame {
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
                 b.put_varint(*pn)?;
+                b.put_u8(pkt_hash.len() as u8)?;
+                b.put_bytes(pkt_hash)?;
                 b.put_u8(signatures.len() as u8)?;
                 for signature in signatures.iter() {
                     b.put_varint(signature.mc_client_id)?;
@@ -1321,6 +1327,7 @@ impl Frame {
             Frame::McAuth {
                 channel_id,
                 pn,
+                pkt_hash,
                 signatures,
             } => {
                 debug!("Going to give the length of the MC_AUTH frame: {:?} {:?} {:?}", channel_id, pn, signatures);
@@ -1338,6 +1345,8 @@ impl Frame {
                 1 + // channel_id len
                 channel_id.len() +
                 pn_len +
+                1 + // pkt_hash len
+                pkt_hash.len() +
                 1 + // signatures len
                 signatures_size
             },
@@ -1960,12 +1969,13 @@ impl std::fmt::Debug for Frame {
             Frame::McAuth {
                 channel_id,
                 pn,
+                pkt_hash,
                 signatures,
             } => {
                 write!(
                     f,
-                    "MC_AUTH channel ID={:?} pn={:?} signatures={:?}",
-                    channel_id, pn, signatures
+                    "MC_AUTH channel ID={:?} pn={:?} pkt_hash={:?} signatures={:?}",
+                    channel_id, pn, pkt_hash, signatures
                 )?;
             },
 
@@ -3834,6 +3844,7 @@ mod tests {
         let frame = Frame::McAuth {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             pn: 0xff383c,
+            pkt_hash: [0xab, 0xcd, 0xef].to_vec(),
             signatures: vec![
                 McSymSignature {
                     mc_client_id: 1,
@@ -3851,7 +3862,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 26);
+        assert_eq!(wire_len, 30);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
