@@ -1,4 +1,5 @@
 //! Handles the signatures for authentication of the multicast source.
+use crate::crypto::mc_crypto::McVerifySymSign;
 use crate::multicast::McClientId;
 use crate::multicast::MulticastError;
 use crate::multicast::MulticastRole;
@@ -92,9 +93,7 @@ pub trait McAuthentication {
     /// Verify a symmetric signature.
     ///
     /// Requires that the client has a valid multicast client ID.
-    fn mc_verify_sym(
-        &mut self, buf: &[u8],
-    ) -> Result<()>;
+    fn mc_verify_sym(&mut self, buf: &[u8]) -> Result<()>;
 }
 
 impl McAuthentication for Connection {
@@ -137,25 +136,31 @@ impl McAuthentication for Connection {
         let hdr = [0u8; 0];
         let mut my_buf = octets::OctetsMut::with_slice(&mut my_buf_vec);
 
-        let (nonce, ctx) = if self.is_server {
-            (&aead.nonce, &aead.ctx)
+        let written = if self.is_server {
+            aead.seal_with_u64_counter(
+                space_id as u32,
+                pn,
+                hdr.as_ref(),
+                my_buf.as_mut(),
+                buf.len(),
+                None,
+            )?
         } else {
-            let open = &self.pkt_num_spaces.crypto(Epoch::Application).crypto_open.as_ref().unwrap();
-            (&open.nonce, &open.ctx)
+            let open = &self
+                .pkt_num_spaces
+                .crypto(Epoch::Application)
+                .crypto_open
+                .as_ref()
+                .unwrap();
+            open.mc_seal_with_u64_counter(
+                space_id as u32,
+                pn,
+                hdr.as_ref(),
+                my_buf.as_mut(),
+                buf.len(),
+                None,
+            )?
         };
-
-        println!("Is server: {}. nonce is {:?}", self.is_server, nonce);
-
-        let written = aead.seal_with_u64_counter_with_nonce(
-            space_id as u32,
-            pn,
-            hdr.as_ref(),
-            my_buf.as_mut(),
-            buf.len(),
-            None,
-            nonce,
-            ctx,
-        )?;
 
         Ok(my_buf_vec[buf.len()..written].to_vec())
     }
@@ -178,15 +183,15 @@ impl McAuthentication for Connection {
         }
     }
 
-    fn mc_verify_sym(
-        &mut self, buf: &[u8],
-    ) -> Result<()> {
+    fn mc_verify_sym(&mut self, buf: &[u8]) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             if let McSymSign::Client(signatures) = &mut multicast.mc_sym_signs {
                 // MC-TODO: for now, assume that the first received signature
                 // maps to the buffer. This is not really good but for now that
                 // will work.
-                let recv_tag = signatures.pop_front().ok_or(Error::Multicast(MulticastError::McNoAuthPacket))?;
+                let recv_tag = signatures
+                    .pop_front()
+                    .ok_or(Error::Multicast(MulticastError::McNoAuthPacket))?;
                 let tag = self.mc_sign_sym_slice(buf, recv_tag.0)?;
                 println!("Recv tag: {:?}. Computed tag: {:?}", recv_tag, tag);
                 if recv_tag.1 == tag {
@@ -335,13 +340,15 @@ mod tests {
         // Multicast source sends the authentication packet.
         assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(145)); // 145 for 5 clients. 73 for a single client.
 
-        // The clients verify the authentication of the multicast data packets with the
-        // received tags.
+        // The clients verify the authentication of the multicast data packets
+        // with the received tags.
         for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
             assert_eq!(pipe.client.mc_verify_sym(&mc_buf[..339]), Ok(()));
 
             // No more authentication packet for the client.
-            let sign = if let McSymSign::Client(c) = &pipe.client.multicast.as_ref().unwrap().mc_sym_signs {
+            let sign = if let McSymSign::Client(c) =
+                &pipe.client.multicast.as_ref().unwrap().mc_sym_signs
+            {
                 c
             } else {
                 panic!()

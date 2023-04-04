@@ -671,7 +671,7 @@ impl MulticastAttributes {
                 return !v.is_empty();
             }
         }
-        return false;
+        false
     }
 }
 
@@ -2301,7 +2301,10 @@ pub mod testing {
                     from_mc: Some(McPathType::Authentication),
                 };
 
-                let res = pipe.client.mc_recv(&mut recv_buf[..written], recv_info).unwrap();
+                let res = pipe
+                    .client
+                    .mc_recv(&mut recv_buf[..written], recv_info)
+                    .unwrap();
                 assert_eq!(res, written);
             }
 
