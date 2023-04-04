@@ -34,7 +34,7 @@ use std::convert::TryInto;
 use crate::Error;
 use crate::Result;
 
-use crate::multicast::authentication::McSymSignatures;
+use crate::multicast::authentication::McSymSignature;
 use crate::multicast::MC_ANNOUNCE_CODE;
 use crate::multicast::MC_AUTH_CODE;
 use crate::multicast::MC_EXPIRE_CODE;
@@ -248,7 +248,7 @@ pub enum Frame {
     McAuth {
         channel_id: Vec<u8>,
         pn: u64,
-        signatures: Vec<McSymSignatures>,
+        signatures: Vec<McSymSignature>,
     },
 
     Repair {
@@ -530,7 +530,7 @@ impl Frame {
                     .map(|_| {
                         let mc_client_id = b.get_varint()?;
                         let sign = b.get_bytes_with_u8_length()?.to_vec();
-                        Ok(McSymSignatures { mc_client_id, sign })
+                        Ok(McSymSignature { mc_client_id, sign })
                     })
                     .collect::<Result<Vec<_>>>()?;
 
@@ -3835,11 +3835,11 @@ mod tests {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             pn: 0xff383c,
             signatures: vec![
-                McSymSignatures {
+                McSymSignature {
                     mc_client_id: 1,
                     sign: vec![0xff, 0xdd, 0xee],
                 },
-                McSymSignatures {
+                McSymSignature {
                     mc_client_id: 3,
                     sign: vec![0xaf, 0xdd, 0x32, 43],
                 },

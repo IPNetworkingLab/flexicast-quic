@@ -33,9 +33,9 @@ use std::net::{self,};
 use ring::rand::*;
 
 use clap::Parser;
-use quiche::multicast::MulticastConnection;
-use quiche::multicast::McPathType;
 use quiche::multicast;
+use quiche::multicast::McPathType;
+use quiche::multicast::MulticastConnection;
 use quiche::ConnectionId;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;

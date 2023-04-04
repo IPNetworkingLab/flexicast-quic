@@ -57,7 +57,7 @@ impl From<McAuthType> for u64 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Structure containing symetric signatures for each of the multicast clients
 /// for a given packet number.
-pub struct McSymSignatures {
+pub struct McSymSignature {
     /// Client ID given by the multicast source to the client.
     /// The client uses this value instead of the Connection ID because it is
     /// encoded in less bytes.
@@ -84,9 +84,17 @@ pub trait McAuthentication {
     fn mc_sign_sym_slice(&self, buf: &[u8], pn: u64) -> Result<Vec<u8>>;
 
     /// Verify an asymmetric signature.
+    ///
     /// Returns the length of the buffer payload, i.e., without the signature.
     /// The signature is assumed to be in the last bytes of the buffer.
     fn mc_verify_asym(&self, buf: &[u8]) -> Result<usize>;
+
+    /// Verify a symmetric signature.
+    ///
+    /// Requires that the client has a valid multicast client ID.
+    fn mc_verify_sym(
+        &mut self, buf: &[u8],
+    ) -> Result<()>;
 }
 
 impl McAuthentication for Connection {
@@ -125,17 +133,28 @@ impl McAuthentication for Connection {
         // Copy like a shlag.
         let mut my_buf_vec = vec![0u8; buf.len() + tag_len];
         my_buf_vec[..buf.len()].copy_from_slice(buf);
-        let mut my_buf = octets::OctetsMut::with_slice(&mut my_buf_vec);
         let space_id = self.multicast.as_ref().unwrap().mc_space_id.unwrap();
         let hdr = [0u8; 0];
+        let mut my_buf = octets::OctetsMut::with_slice(&mut my_buf_vec);
 
-        let written = aead.seal_with_u64_counter(
+        let (nonce, ctx) = if self.is_server {
+            (&aead.nonce, &aead.ctx)
+        } else {
+            let open = &self.pkt_num_spaces.crypto(Epoch::Application).crypto_open.as_ref().unwrap();
+            (&open.nonce, &open.ctx)
+        };
+
+        println!("Is server: {}. nonce is {:?}", self.is_server, nonce);
+
+        let written = aead.seal_with_u64_counter_with_nonce(
             space_id as u32,
             pn,
             hdr.as_ref(),
             my_buf.as_mut(),
             buf.len(),
             None,
+            nonce,
+            ctx,
         )?;
 
         Ok(my_buf_vec[buf.len()..written].to_vec())
@@ -158,10 +177,46 @@ impl McAuthentication for Connection {
             Err(Error::Multicast(MulticastError::McInvalidAsymKey))
         }
     }
+
+    fn mc_verify_sym(
+        &mut self, buf: &[u8],
+    ) -> Result<()> {
+        if let Some(multicast) = self.multicast.as_mut() {
+            if let McSymSign::Client(signatures) = &mut multicast.mc_sym_signs {
+                // MC-TODO: for now, assume that the first received signature
+                // maps to the buffer. This is not really good but for now that
+                // will work.
+                let recv_tag = signatures.pop_front().ok_or(Error::Multicast(MulticastError::McNoAuthPacket))?;
+                let tag = self.mc_sign_sym_slice(buf, recv_tag.0)?;
+                println!("Recv tag: {:?}. Computed tag: {:?}", recv_tag, tag);
+                if recv_tag.1 == tag {
+                    Ok(())
+                } else {
+                    Err(Error::Multicast(MulticastError::McInvalidSign))
+                }
+            } else {
+                Err(Error::Multicast(MulticastError::McInvalidSign))
+            }
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
+    }
 }
 
 #[doc(hidden)]
-pub type McSymSignPn = (u64, Vec<McSymSignatures>);
+pub type McSymSignPn = (u64, Vec<McSymSignature>);
+
+/// Multicast symmetric signatures.
+/// For the multicast source, it is a Vec of signatures for each packet and each
+/// client. For the clients, it is a Vec of signatures for each packet only.
+pub enum McSymSign {
+    /// The client must only remember which packet number corresponds to a given
+    /// tag.
+    Client(VecDeque<(u64, Vec<u8>)>),
+
+    /// The multicast source must remember the tag for each of its clients.
+    McSource(VecDeque<(u64, Vec<McSymSignature>)>),
+}
 
 #[doc(hidden)]
 pub type ClientMap<'a> = Vec<&'a mut Connection>;
@@ -169,19 +224,19 @@ pub type ClientMap<'a> = Vec<&'a mut Connection>;
 /// Symetric signature for the multicast source channel.
 /// Handles the generation of the signatures for all clients in the mapping.
 pub trait McSymAuth {
-    /// Generates HMAC for each connection in the connection mapping for all
-    /// packets sent on the multicast channel that still need to be
+    /// Generates an AEAD taf for each connection in the connection mapping for
+    /// all packets sent on the multicast channel that still need to be
     /// authenticated using symetric signatures.
     fn mc_sym_sign(&mut self, clients: &ClientMap) -> Result<()>;
 
-    /// Generates HMAC for each connection in the connection mapping for the
+    /// Generates an AEAD for each connection in the connection mapping for the
     /// given slice and packet number.
     ///
     /// This function assumes that all check related to the role of the caller
     /// is performed, i.e., that the caller is the multicast source.
     fn mc_sym_sign_single(
         &self, data: &[u8], clients: &ClientMap, pn: u64,
-    ) -> Result<Vec<McSymSignatures>>;
+    ) -> Result<Vec<McSymSignature>>;
 }
 
 impl McSymAuth for Connection {
@@ -202,7 +257,8 @@ impl McSymAuth for Connection {
 
                 // Reset the state because of ownership we took.
                 let mut multicast = self.multicast.as_mut().unwrap();
-                multicast.mc_sym_signs = Some(VecDeque::from(signatures_pn));
+                multicast.mc_sym_signs =
+                    McSymSign::McSource(VecDeque::from(signatures_pn));
                 multicast.mc_pn_need_sym_sign = Some(VecDeque::new());
             }
 
@@ -214,7 +270,7 @@ impl McSymAuth for Connection {
 
     fn mc_sym_sign_single(
         &self, data: &[u8], clients: &ClientMap, pn: u64,
-    ) -> Result<Vec<McSymSignatures>> {
+    ) -> Result<Vec<McSymSignature>> {
         if let Some(multicast) = self.multicast.as_ref() {
             if let Some(McClientId::MulticastServer(map)) =
                 multicast.mc_client_id.as_ref()
@@ -223,7 +279,7 @@ impl McSymAuth for Connection {
 
                 for (i, conn) in clients.iter().enumerate() {
                     let sign = conn.mc_sign_sym_slice(data, pn)?;
-                    signatures.push(McSymSignatures {
+                    signatures.push(McSymSignature {
                         mc_client_id: i as u64,
                         sign,
                     })
@@ -235,6 +291,62 @@ impl McSymAuth for Connection {
             }
         } else {
             Err(Error::Multicast(MulticastError::McDisabled))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::multicast::testing::MulticastPipe;
+
+    use super::*;
+
+    #[test]
+    /// The multicast source sends multicast traffic with a symmetric
+    /// authentication method. The clients verify the signatures to assert
+    /// that the packets are correctly authenticated.
+    fn test_mc_sym_auth_sign() {
+        let use_auth = McAuthType::SymSign;
+        let mut mc_pipe = MulticastPipe::new(
+            5,
+            "/tmp/test_mc_sym_auth_sign.txt",
+            use_auth,
+            false,
+        )
+        .unwrap();
+
+        let mut mc_buf = [0u8; 1500];
+
+        // Multicast source sends a multicast stream.
+        assert_eq!(mc_pipe.source_send_single_stream(false, None, 0, 1), Ok(0));
+        assert_eq!(
+            mc_pipe.source_send_single_from_buf(None, 0, &mut mc_buf),
+            Ok(339)
+        );
+
+        // Multicast source generates the AEAD tags for the clients.
+        let clients: Vec<_> = mc_pipe
+            .unicast_pipes
+            .iter_mut()
+            .map(|(conn, ..)| &mut conn.server)
+            .collect();
+        assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
+
+        // Multicast source sends the authentication packet.
+        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(145)); // 145 for 5 clients. 73 for a single client.
+
+        // The clients verify the authentication of the multicast data packets with the
+        // received tags.
+        for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
+            assert_eq!(pipe.client.mc_verify_sym(&mc_buf[..339]), Ok(()));
+
+            // No more authentication packet for the client.
+            let sign = if let McSymSign::Client(c) = &pipe.client.multicast.as_ref().unwrap().mc_sym_signs {
+                c
+            } else {
+                panic!()
+            };
+            assert!(sign.is_empty());
         }
     }
 }

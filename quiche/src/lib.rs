@@ -3831,12 +3831,15 @@ impl Connection {
                     multicast.get_mc_announce_data_path()
                 {
                     let channel_id = mc_announce_data.channel_id.clone();
-                    if let Some(mc_signs) = multicast.mc_sym_signs.as_mut() {
-                        while let Some((pn, signs)) = mc_signs.pop_front() {
+                    if let multicast::authentication::McSymSign::McSource(
+                        sym_signs,
+                    ) = &mut multicast.mc_sym_signs
+                    {
+                        while let Some((pn, next_sign)) = sym_signs.pop_front() {
                             let frame = frame::Frame::McAuth {
                                 channel_id: channel_id.clone(),
                                 pn,
-                                signatures: signs.to_vec(),
+                                signatures: next_sign.to_vec(),
                             };
 
                             if push_frame_to_pkt!(b, frames, frame, left) {
@@ -3845,6 +3848,10 @@ impl Connection {
                                 sent_mc_auth = true;
                             }
                         }
+                    } else {
+                        return Err(Error::Multicast(
+                            multicast::MulticastError::McInvalidSign,
+                        ));
                     }
                 }
             }
@@ -8120,7 +8127,39 @@ impl Connection {
                     "Must process McAuth frame: {:?} {:?} {:?}",
                     channel_id, pn, signatures
                 );
-                todo!();
+
+                // Store the signature of the client for later authentication.
+                // Generates an error if the client does not use symmetric
+                // authentication, or does not have a valid client ID.
+                if let Some(multicast) = self.multicast.as_mut() {
+                    if multicast.mc_auth_type != McAuthType::SymSign {
+                        return Err(Error::Multicast(
+                            multicast::MulticastError::McInvalidAuth,
+                        ));
+                    }
+
+                    let client_id = multicast.get_self_client_id()?;
+                    let signature = signatures
+                        .iter()
+                        .find(|sign| sign.mc_client_id == client_id)
+                        .ok_or(Error::Multicast(
+                            multicast::MulticastError::McInvalidClientId,
+                        ))?;
+                    if let multicast::authentication::McSymSign::Client(
+                        auth_tags,
+                    ) = &mut multicast.mc_sym_signs
+                    {
+                        auth_tags.push_back((pn, signature.sign.to_owned()));
+                    } else {
+                        return Err(Error::Multicast(
+                            multicast::MulticastError::McInvalidSign,
+                        ));
+                    }
+                } else {
+                    return Err(Error::Multicast(
+                        multicast::MulticastError::McDisabled,
+                    ));
+                }
             },
 
             frame::Frame::SourceSymbol { source_symbol } =>

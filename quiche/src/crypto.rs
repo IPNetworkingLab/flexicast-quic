@@ -129,11 +129,11 @@ impl Algorithm {
 pub struct Open {
     alg: Algorithm,
 
-    ctx: EVP_AEAD_CTX,
+    pub(crate) ctx: EVP_AEAD_CTX,
 
     hp_key: aead::quic::HeaderProtectionKey,
 
-    nonce: Vec<u8>,
+    pub(crate) nonce: Vec<u8>,
 }
 
 impl Open {
@@ -231,11 +231,11 @@ impl Open {
 pub struct Seal {
     alg: Algorithm,
 
-    ctx: EVP_AEAD_CTX,
+    pub(crate) ctx: EVP_AEAD_CTX,
 
     hp_key: aead::quic::HeaderProtectionKey,
 
-    nonce: Vec<u8>,
+    pub(crate) nonce: Vec<u8>,
 }
 
 impl Seal {
@@ -300,6 +300,7 @@ impl Seal {
             return Err(Error::CryptoFail);
         }
 
+        // let nonce = make_nonce(&self.nonce, path_seq, counter);
         let nonce = make_nonce(&self.nonce, path_seq, counter);
 
         let rc = unsafe {
@@ -343,6 +344,64 @@ impl Seal {
 
     pub fn alg(&self) -> Algorithm {
         self.alg
+    }
+
+    pub fn seal_with_u64_counter_with_nonce(
+        &self, path_seq: u32, counter: u64, ad: &[u8], buf: &mut [u8],
+        in_len: usize, extra_in: Option<&[u8]>, nonce_seed: &[u8], ctx: &EVP_AEAD_CTX,
+    ) -> Result<usize> {
+        if cfg!(feature = "fuzzing") {
+            if let Some(extra) = extra_in {
+                buf[in_len..in_len + extra.len()].copy_from_slice(extra);
+                return Ok(in_len + extra.len());
+            }
+
+            return Ok(in_len);
+        }
+
+        let tag_len = self.alg().tag_len();
+
+        let mut out_tag_len = tag_len;
+
+        let (extra_in_ptr, extra_in_len) = match extra_in {
+            Some(v) => (v.as_ptr(), v.len()),
+
+            None => (std::ptr::null(), 0),
+        };
+
+        // Make sure all the outputs combined fit in the buffer.
+        if in_len + tag_len + extra_in_len > buf.len() {
+            return Err(Error::CryptoFail);
+        }
+
+        // let nonce = make_nonce(&self.nonce, path_seq, counter);
+        let nonce = make_nonce(nonce_seed, path_seq, counter);
+        println!("Informations. buf: {:?}, out_tag_len: {}, max_out_tag_len: {}", &buf[..], out_tag_len, tag_len + extra_in_len);
+
+        let rc = unsafe {
+            EVP_AEAD_CTX_seal_scatter(
+                ctx,                  // ctx
+                buf.as_mut_ptr(),           // out
+                buf[in_len..].as_mut_ptr(), // out_tag
+                &mut out_tag_len,           // out_tag_len
+                tag_len + extra_in_len,     // max_out_tag_len
+                nonce[..].as_ptr(),         // nonce
+                nonce.len(),                // nonce_len
+                buf.as_ptr(),               // inp
+                in_len,                     // in_len
+                extra_in_ptr,               // extra_in
+                extra_in_len,               // extra_in_len
+                ad.as_ptr(),                // ad
+                ad.len(),                   // ad_len
+            )
+        };
+
+        if rc != 1 {
+            println!("Crypto fail here 2");
+            return Err(Error::CryptoFail);
+        }
+
+        Ok(in_len + out_tag_len)
     }
 }
 
@@ -558,7 +617,7 @@ struct EVP_AEAD(c_void);
 // statically allocate it. While it is not often modified upstream, it needs to
 // be kept in sync.
 #[repr(C)]
-struct EVP_AEAD_CTX {
+pub struct EVP_AEAD_CTX {
     aead: libc::uintptr_t,
     opaque: [u8; 580],
     alignment: u64,

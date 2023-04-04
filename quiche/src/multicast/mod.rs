@@ -76,6 +76,10 @@ pub enum MulticastError {
 
     /// Invalid authentication information.
     McInvalidAuth,
+
+    /// No authentication packet available to verify the source of the multicast
+    /// data packet.
+    McNoAuthPacket,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -294,7 +298,7 @@ pub struct MulticastAttributes {
     /// Currently this disables the possibility to have a chain of
     /// verifications, as we overwrite this value for each McPathType::Data
     /// MC_ANNOUNCE data received.
-    mc_auth_type: McAuthType,
+    pub(crate) mc_auth_type: McAuthType,
 
     /// Packet number and packet content sent on the multicast data channel that
     /// must be authenticated with a symetric MC_AUTH frame on the
@@ -302,14 +306,16 @@ pub struct MulticastAttributes {
     pub(crate) mc_pn_need_sym_sign: Option<VecDeque<(u64, Vec<u8>)>>,
 
     /// All symetric signatures that must be sent inside MC_AUTH frames on a
-    /// multicast authentication path. Only `Some` for a multicast source.
+    /// multicast authentication path.
+    /// For a client, it contains the set of received signatures concerning this
+    /// client.
     ///
     /// It is up to the application to fill this vector with signatures to send
     /// to the clients. This design choice ensures that the [`send`] methods
     /// from the library must not take a reference to all the clients of the
     /// channel. Instead, this library provides a function MC-TODO to fill this
     /// vector by the application before calling the send functions.
-    pub(crate) mc_sym_signs: Option<VecDeque<McSymSignPn>>,
+    pub(crate) mc_sym_signs: McSymSign,
 }
 
 impl MulticastAttributes {
@@ -658,10 +664,14 @@ impl MulticastAttributes {
     /// Whether the multicast source must send authentication packets with
     /// symetric signature.
     pub fn should_send_mc_auth_packets(&self) -> bool {
-        self.mc_role == MulticastRole::ServerMulticast &&
-            self.mc_auth_type == McAuthType::SymSign &&
-            self.mc_sym_signs.is_some() &&
-            !self.mc_sym_signs.as_ref().unwrap().is_empty()
+        if self.mc_role == MulticastRole::ServerMulticast &&
+            self.mc_auth_type == McAuthType::SymSign
+        {
+            if let McSymSign::McSource(v) = &self.mc_sym_signs {
+                return !v.is_empty();
+            }
+        }
+        return false;
     }
 }
 
@@ -686,7 +696,7 @@ impl Default for MulticastAttributes {
             mc_auth_space_id: None,
             mc_auth_type: McAuthType::None,
             mc_pn_need_sym_sign: None,
-            mc_sym_signs: None,
+            mc_sym_signs: McSymSign::Client(VecDeque::new()),
         }
     }
 }
@@ -1624,7 +1634,6 @@ impl MulticastChannelSource {
             )),
             mc_auth_type: authentication,
             mc_pn_need_sym_sign: Some(VecDeque::new()),
-            mc_sym_signs: Some(VecDeque::new()),
             ..Default::default()
         });
 
@@ -2131,15 +2140,16 @@ pub mod testing {
             })
         }
 
-        /// The multicast source sends a single packet.
-        /// Returns the number of bytes sent by the source.
+        /// The multicast source sends a single packet using the buffer given as
+        /// argument. Returns the number of bytes sent by the source and writes
+        /// the packet content in the input buffer.
         ///
         /// `client_loss` is a RangeSet containing the indexes of clients that
         /// DO NOT receive the packet. `None` if all clients receive the packet.
-        pub fn source_send_single(
+        pub fn source_send_single_from_buf(
             &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
+            mc_buf: &mut [u8],
         ) -> Result<usize> {
-            let mut mc_buf = [0u8; 1500];
             let written = self.mc_channel.mc_send(&mut mc_buf[..])?;
 
             // This is not optimal but it works...
@@ -2152,7 +2162,7 @@ pub mod testing {
                 .filter(|&idx| !client_loss.contains(&(idx as u64)));
 
             for client_idx in idx_client_receive {
-                let mut recv_buf = mc_buf;
+                let mut recv_buf = mc_buf.to_owned();
                 let (pipe, client_addr, server_addr) =
                     self.unicast_pipes.get_mut(client_idx).unwrap();
 
@@ -2172,6 +2182,22 @@ pub mod testing {
             Ok(written)
         }
 
+        /// The multicast source sends a single packet.
+        /// Returns the number of bytes sent by the source.
+        ///
+        /// `client_loss` is a RangeSet containing the indexes of clients that
+        /// DO NOT receive the packet. `None` if all clients receive the packet.
+        pub fn source_send_single(
+            &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
+        ) -> Result<usize> {
+            let mut mc_buf = [0u8; 1500];
+            self.source_send_single_from_buf(
+                client_loss,
+                signature_len,
+                &mut mc_buf,
+            )
+        }
+
         /// The multicast source sends a single small stream of 300 bytes to fit
         /// in a single QUIC packet.
         /// Calls [`MulticastPipe::source_send_single`].
@@ -2179,8 +2205,8 @@ pub mod testing {
         /// `client_loss` is a RangeSet containing the indexes of clients that
         /// DO NOT receive the packet. `None` if all clients receive the packet.
         pub fn source_send_single_stream(
-            &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
-            stream_id: u64,
+            &mut self, send: bool, client_loss: Option<&RangeSet>,
+            signature_len: usize, stream_id: u64,
         ) -> Result<usize> {
             let mut mc_buf = [0u8; 300];
             ring::rand::SystemRandom::new()
@@ -2190,7 +2216,11 @@ pub mod testing {
                 .channel
                 .stream_send(stream_id, &mc_buf, true)?;
 
-            self.source_send_single(client_loss, signature_len)
+            if send {
+                self.source_send_single(client_loss, signature_len)
+            } else {
+                Ok(0)
+            }
         }
 
         /// The clients send feedback using the unicast connection to the
@@ -2261,17 +2291,18 @@ pub mod testing {
                 .filter(|&idx| !client_loss.contains(&(idx as u64)));
 
             for client_idx in idx_client_receive {
-                let _recv_buf = mc_buf;
-                let (_pipe, client_addr, server_addr) =
+                let mut recv_buf = mc_buf;
+                let (pipe, client_addr, server_addr) =
                     self.unicast_pipes.get_mut(client_idx).unwrap();
 
-                let _recv_info = RecvInfo {
+                let recv_info = RecvInfo {
                     from: *server_addr,
                     to: *client_addr,
                     from_mc: Some(McPathType::Authentication),
                 };
 
-                // MC-TODO: clients receive the authentication tag.
+                let res = pipe.client.mc_recv(&mut recv_buf[..written], recv_info).unwrap();
+                assert_eq!(res, written);
             }
 
             Ok(written)
@@ -3168,13 +3199,14 @@ mod tests {
 
         // First stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 1),
             Ok(339)
         );
 
         // Second stream is not received.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 3
@@ -3185,6 +3217,7 @@ mod tests {
         // Third stream is not received.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 5
@@ -3194,13 +3227,13 @@ mod tests {
 
         // Fourth stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 7),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 7),
             Ok(339)
         );
 
         // Fifth stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 9),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 9),
             Ok(339)
         );
 
@@ -3246,7 +3279,7 @@ mod tests {
 
         // Sixth stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 11),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 11),
             Ok(339)
         );
 
@@ -3296,17 +3329,18 @@ mod tests {
 
         // First two streams are received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 1),
             Ok(348)
         );
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 3),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 3),
             Ok(348)
         );
 
         // Third and fourth streams are lost.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 5
@@ -3315,6 +3349,7 @@ mod tests {
         );
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 7
@@ -3324,7 +3359,7 @@ mod tests {
 
         // Fifth stream is received and triggers NACK from the client.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 9),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 9),
             Ok(348)
         );
 
@@ -3431,13 +3466,14 @@ mod tests {
 
         // First stream is received by both clients.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 1),
             Ok(348 + signature_len)
         );
 
         // Second stream is received by the second client only.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&client_loss_0),
                 signature_len,
                 3
@@ -3448,6 +3484,7 @@ mod tests {
         // Third stream is lost by the first client only.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&client_loss_1),
                 signature_len,
                 5
@@ -3458,6 +3495,7 @@ mod tests {
         // Fourth stream is received by none client.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&client_loss_all),
                 signature_len,
                 7
@@ -3467,7 +3505,7 @@ mod tests {
 
         // Fifth stream is received by both.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 9),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 9),
             Ok(348 + signature_len)
         );
 
@@ -3577,13 +3615,14 @@ mod tests {
 
         // First stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 1),
             Ok(348 + signature_len)
         );
 
         // Two consecutive streams are lost.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 3
@@ -3592,6 +3631,7 @@ mod tests {
         );
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 5
@@ -3601,7 +3641,7 @@ mod tests {
 
         // A last stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 7),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 7),
             Ok(348 + signature_len)
         );
 
@@ -3742,13 +3782,14 @@ mod tests {
 
         // First stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 1),
             Ok(348 + signature_len)
         );
 
         // Two consecutive streams are lost.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 3
@@ -3757,6 +3798,7 @@ mod tests {
         );
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 5
@@ -3766,7 +3808,7 @@ mod tests {
 
         // A last stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 7),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 7),
             Ok(348 + signature_len)
         );
 
@@ -3906,6 +3948,7 @@ mod tests {
         // First two streams are lost.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 1
@@ -3914,6 +3957,7 @@ mod tests {
         );
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 3
@@ -3923,7 +3967,7 @@ mod tests {
 
         // Third stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 5),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 5),
             Ok(348 + signature_len)
         );
 
@@ -3964,13 +4008,13 @@ mod tests {
 
         // First stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 1),
             Ok(348 + signature_len)
         );
 
         // Second stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 3),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 3),
             Ok(348 + signature_len)
         );
 
@@ -4033,7 +4077,7 @@ mod tests {
 
         // Source sends one stream.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 1),
             Ok(348 + signature_len)
         );
 
@@ -4064,7 +4108,7 @@ mod tests {
 
         // Send new stream.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 5),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 5),
             Ok(348 + signature_len)
         );
 
@@ -4158,7 +4202,7 @@ mod tests {
             };
 
             assert_eq!(
-                mc_pipe.source_send_single_stream(None, signature_len, 1),
+                mc_pipe.source_send_single_stream(true, None, signature_len, 1),
                 Ok(348 + signature_len)
             );
 
@@ -4166,7 +4210,7 @@ mod tests {
             assert_eq!(mc_pipe.uc_server_send_single_stream(5, 0), Ok(()));
 
             assert_eq!(
-                mc_pipe.source_send_single_stream(None, signature_len, 9),
+                mc_pipe.source_send_single_stream(true, None, signature_len, 9),
                 Ok(348 + signature_len)
             );
 
@@ -4206,7 +4250,7 @@ mod tests {
             // Data received on the multicast channel is not handled by the
             // client.
             assert_eq!(
-                mc_pipe.source_send_single_stream(None, signature_len, 13),
+                mc_pipe.source_send_single_stream(true, None, signature_len, 13),
                 Ok(348 + signature_len)
             );
             let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
@@ -4246,13 +4290,14 @@ mod tests {
 
         // First stream is received.
         assert_eq!(
-            mc_pipe.source_send_single_stream(None, signature_len, 1),
+            mc_pipe.source_send_single_stream(true, None, signature_len, 1),
             Ok(348 + signature_len)
         );
 
         // Second stream is lost.
         assert_eq!(
             mc_pipe.source_send_single_stream(
+                true,
                 Some(&clients_losing_packets),
                 signature_len,
                 5
@@ -4492,11 +4537,11 @@ mod tests {
     /// * The MC_AUTH frames contain a signature for each client, linked to
     ///   their client ID,
     /// * The signatures are correctly signed by the clients.
-    fn test_mc_auth_process() {
+    fn test_mc_auth_sym_process() {
         let use_auth = McAuthType::SymSign;
         let mut mc_pipe = MulticastPipe::new(
             2,
-            "/tmp/test_mc_auth_process.txt",
+            "/tmp/test_mc_auth_sym_process.txt",
             use_auth,
             false,
         )
@@ -4563,8 +4608,8 @@ mod tests {
         assert!(!mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
 
         // Multicast source sends two data packets.
-        assert_eq!(mc_pipe.source_send_single_stream(None, 0, 1), Ok(339));
-        assert_eq!(mc_pipe.source_send_single_stream(None, 0, 5), Ok(339));
+        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 1), Ok(339));
+        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 5), Ok(339));
 
         // Multicast source must send authentication packets.
         let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
@@ -4587,17 +4632,18 @@ mod tests {
         assert_eq!(multicast.mc_pn_need_sym_sign, Some(VecDeque::new()));
 
         // Two packets have been signed, for pn=2 and pn=3.
-        let signatures = multicast.mc_sym_signs.as_ref();
-        assert!(signatures.is_some());
-        let signatures = signatures.unwrap();
-        assert_eq!(signatures.len(), 2);
-        for (i, (pn, sign)) in signatures.iter().enumerate() {
-            assert_eq!(i as u64 + 2, *pn);
-            assert_eq!(sign.len(), 2);
-            let mut ids: Vec<_> =
-                sign.iter().map(|mc_sym| mc_sym.mc_client_id).collect();
-            ids.sort();
-            assert_eq!(ids, vec![0, 1]);
+        if let McSymSign::McSource(signatures) = &multicast.mc_sym_signs {
+            assert_eq!(signatures.len(), 2);
+            for (i, (pn, sign)) in signatures.iter().enumerate() {
+                assert_eq!(i as u64 + 2, *pn);
+                assert_eq!(sign.len(), 2);
+                let mut ids: Vec<_> =
+                    sign.iter().map(|mc_sym| mc_sym.mc_client_id).collect();
+                ids.sort();
+                assert_eq!(ids, vec![0, 1]);
+            }
+        } else {
+            assert!(false);
         }
 
         // Multicast source has packets to send on the authentication path.
@@ -4612,10 +4658,12 @@ mod tests {
         assert!(!mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
         let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
         assert_eq!(multicast.mc_pn_need_sym_sign, Some(VecDeque::new()));
-        let signatures = multicast.mc_sym_signs.as_ref();
-        assert!(signatures.is_some());
-        let signatures = signatures.unwrap();
-        assert_eq!(signatures.len(), 0);
+        let signatures = &multicast.mc_sym_signs;
+        if let McSymSign::McSource(signatures) = signatures {
+            assert_eq!(signatures.len(), 0);
+        } else {
+            assert!(false);
+        }
     }
 
     #[test]
@@ -4648,4 +4696,4 @@ pub mod authentication;
 use authentication::McAuthType;
 
 use self::authentication::McAuthentication;
-use self::authentication::McSymSignPn;
+use self::authentication::McSymSign;
