@@ -97,7 +97,6 @@ impl McAuthentication for Connection {
             if let Some(private_key) = multicast.mc_private_key.as_ref() {
                 let signature = private_key.sign(&buf[..data_len]);
                 let signature_len = signature.as_ref().len();
-                assert_eq!(signature_len, 64);
                 buf[data_len..data_len + signature_len]
                     .copy_from_slice(signature.as_ref());
 
@@ -119,7 +118,7 @@ impl McAuthentication for Connection {
             .unwrap();
         let tag_len = aead.alg().tag_len();
         // Copy like a shlag.
-        let mut my_buf_vec = vec![0u8; buf.len() + tag_len + 100];
+        let mut my_buf_vec = vec![0u8; buf.len() + tag_len];
         my_buf_vec[..buf.len()].copy_from_slice(buf);
         let mut my_buf = octets::OctetsMut::with_slice(&mut my_buf_vec);
         let space_id = self.multicast.as_ref().unwrap().mc_space_id.unwrap();
