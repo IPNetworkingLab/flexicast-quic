@@ -82,6 +82,11 @@ pub trait McAuthentication {
 
     /// Sign a slice using the session key.
     fn mc_sign_sym_slice(&self, buf: &[u8], pn: u64) -> Result<Vec<u8>>;
+
+    /// Verify an asymmetric signature.
+    /// Returns the length of the buffer payload, i.e., without the signature.
+    /// The signature is assumed to be in the last bytes of the buffer.
+    fn mc_verify_asym(&self, buf: &[u8]) -> Result<usize>;
 }
 
 impl McAuthentication for Connection {
@@ -134,6 +139,24 @@ impl McAuthentication for Connection {
         )?;
 
         Ok(my_buf_vec[buf.len()..written].to_vec())
+    }
+
+    #[inline]
+    fn mc_verify_asym(&self, buf: &[u8]) -> Result<usize> {
+        if let Some(public_key) =
+            self.multicast.as_ref().unwrap().mc_public_key.as_ref()
+        {
+            let signature_len = 64;
+            let buf_data_len = buf.len() - signature_len;
+
+            let signature = &buf[buf_data_len..];
+            public_key
+                .verify(&buf[..buf_data_len], signature)
+                .map_err(|_| Error::Multicast(MulticastError::McInvalidSign))?;
+            Ok(buf_data_len)
+        } else {
+            Err(Error::Multicast(MulticastError::McInvalidAsymKey))
+        }
     }
 }
 

@@ -1067,24 +1067,7 @@ impl MulticastConnection for Connection {
                 let len = buf.len();
                 let auth_method = multicast.get_mc_authentication_method();
                 if auth_method == McAuthType::AsymSign {
-                    if let Some(public_key) = multicast.mc_public_key.as_ref() {
-                        debug!(
-                            "mc_rev: Verify the signature of the received packet"
-                        );
-                        let signature_len = 64;
-                        let buf_data_len = len - signature_len;
-
-                        let signature = &buf[buf_data_len..];
-                        public_key
-                            .verify(&buf[..buf_data_len], signature)
-                            .map_err(|_| {
-                                Error::Multicast(MulticastError::McInvalidSign)
-                            })?;
-
-                        len - signature_len
-                    } else {
-                        len
-                    }
+                    self.mc_verify_asym(buf)?
                 } else {
                     len
                 }
@@ -4664,4 +4647,5 @@ mod tests {
 pub mod authentication;
 use authentication::McAuthType;
 
+use self::authentication::McAuthentication;
 use self::authentication::McSymSignPn;
