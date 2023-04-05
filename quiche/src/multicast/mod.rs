@@ -2292,12 +2292,12 @@ pub mod testing {
 
             for client_idx in idx_client_receive {
                 let mut recv_buf = mc_buf;
-                let (pipe, client_addr, server_addr) =
+                let (pipe, _, server_addr) =
                     self.unicast_pipes.get_mut(client_idx).unwrap();
 
                 let recv_info = RecvInfo {
                     from: *server_addr,
-                    to: *client_addr,
+                    to: "127.0.0.1:5679".parse().unwrap(),
                     from_mc: Some(McPathType::Authentication),
                 };
 

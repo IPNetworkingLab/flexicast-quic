@@ -267,6 +267,7 @@ impl McSymAuth for Connection {
                         pn,
                         self.mc_sym_sign_single(&data, clients, pn)?,
                         pkt_hash.as_ref().to_vec(),
+                        // (0..16).collect::<Vec<_>>(),
                     ));
                 }
 
