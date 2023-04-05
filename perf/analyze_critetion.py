@@ -64,5 +64,10 @@ def cmp_mc_uc(root):
 
     plt.savefig("test.pdf")
 
+
+def cmp_mc_uc_client(root):
+    pass
+
 if __name__ == "__main__":
     cmp_mc_uc("../target/criterion")
+    cmp_mc_uc_client("../target/criterion")

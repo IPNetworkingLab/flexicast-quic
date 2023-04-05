@@ -65,9 +65,9 @@ fn mc_channel_bench(c: &mut Criterion) {
     let buf = vec![0; BENCH_STREAM_SIZE];
 
     let mut group = c.benchmark_group("multicast-1G");
-    for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::SymSign]
-    {
-    // for &auth in &[McAuthType::SymSign] {
+    // for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::SymSign]
+    // {
+    for &auth in &[McAuthType::SymSign] {
         for nb_recv in (1..2).chain(
             (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1)
                 .step_by(BENCH_STEP_RECV))
@@ -149,6 +149,6 @@ fn uc_channel_bench(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, mc_channel_bench, uc_channel_bench);
-// criterion_group!(benches, mc_channel_bench);
+//criterion_group!(benches, mc_channel_bench, uc_channel_bench);
+criterion_group!(benches, mc_channel_bench);
 criterion_main!(benches);
