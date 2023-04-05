@@ -1928,6 +1928,9 @@ pub mod testing {
 
     use super::*;
 
+    #[doc(hidden)]
+    pub const CLIENT_AUTH_ADDR: &str = "127.0.0.1:5679";
+
     /// Multicast extension of crate::testing::Pipe.
     ///
     /// Contains a Pipe for each unicast connection and multicast source
@@ -2105,7 +2108,7 @@ pub mod testing {
                         let cid = ConnectionId::from_ref(&mc_data.channel_id)
                             .into_owned();
                         let server_addr = testing::Pipe::server_addr();
-                        let client_addr_2 = "127.0.0.1:5679".parse().unwrap();
+                        let client_addr_2 = CLIENT_AUTH_ADDR.parse().unwrap();
 
                         pipe.client
                             .create_mc_path(&cid, client_addr_2, server_addr)
@@ -2297,7 +2300,7 @@ pub mod testing {
 
                 let recv_info = RecvInfo {
                     from: *server_addr,
-                    to: "127.0.0.1:5679".parse().unwrap(),
+                    to: CLIENT_AUTH_ADDR.parse().unwrap(),
                     from_mc: Some(McPathType::Authentication),
                 };
 
@@ -2440,6 +2443,7 @@ mod tests {
     use ring::rand::SecureRandom;
 
     use crate::multicast::authentication::McSymAuth;
+    use crate::multicast::testing::CLIENT_AUTH_ADDR;
     use crate::testing;
 
     use crate::multicast::testing::get_test_mc_announce_data;
@@ -4587,7 +4591,7 @@ mod tests {
         for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
             assert_eq!(pipe.client.paths.len(), 3);
             let auth_path_id = pipe.client.paths.path_id_from_addrs(&(
-                "127.0.0.1:5679".parse().unwrap(),
+                CLIENT_AUTH_ADDR.parse().unwrap(),
                 testing::Pipe::server_addr(),
             ));
             assert_eq!(auth_path_id, Some(2));
