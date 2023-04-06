@@ -65,7 +65,7 @@ def cmp_mc_uc(root):
     ax.set_xlabel("Number of receivers")
     ax.set_ylabel("Time to send 1GB [s]")
 
-    plt.savefig("test.pdf")
+    plt.savefig("bench-server.pdf")
 
 
 def cmp_mc_uc_client(root):
@@ -92,7 +92,7 @@ def cmp_mc_uc_client(root):
     ax.set_ylabel("Time to send 1GB [s]")
     ax.set_title("Client")
 
-    plt.savefig("test-client.pdf")
+    plt.savefig("bench-client.pdf")
 
 if __name__ == "__main__":
     cmp_mc_uc("../target/criterion")
