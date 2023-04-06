@@ -32,12 +32,13 @@ use std::io::Write;
 use std::net;
 
 use quiche::multicast;
+use quiche::multicast::authentication::McAuthType;
+use quiche::multicast::authentication::McSymAuth;
 use quiche::multicast::McAnnounceData;
+use quiche::multicast::McPathType;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
-use quiche::multicast::McPathType;
-use quiche::multicast::authentication::McAuthType;
 use std::collections::HashMap;
 use std::time;
 
@@ -89,9 +90,12 @@ struct Args {
     )]
     mc_keylog_file: String,
 
-    /// Do source authentication.
-    #[clap(short = 'a', long)]
-    authentication: bool,
+    /// Multicast source authentication.
+    /// Choices are: asymmetric, symmetric, none.
+    /// This argument is read only if multicast is enabled.
+    /// Default is `none`.
+    #[clap(short = 'a', long, default_value = "none")]
+    authentication: McAuthType,
 
     /// Number of video frames to send. Used to shorten the trace.
     #[clap(short = 'n', long, value_parser)]
@@ -125,11 +129,7 @@ fn main() {
 
     let args = Args::parse();
 
-    let authentication = if args.authentication {
-        multicast::authentication::McAuthType::AsymSign
-    } else {
-        multicast::authentication::McAuthType::None
-    };
+    let authentication = args.authentication;
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -188,17 +188,22 @@ fn main() {
     let local_addr = socket.local_addr().unwrap();
 
     // Multicast channel and sockets.
-    let (mut mc_socket_opt, mut mc_channel_opt, mc_announce_data_opt) =
-        if args.multicast {
-            debug!("Create multicast channel");
-            get_multicast_channel(
-                &args.mc_keylog_file,
-                authentication,
-                args.ttl_data,
-            )
-        } else {
-            (None, None, None)
-        };
+    let (
+        mut mc_socket_opt,
+        mut mc_channel_opt,
+        mc_announce_data_opt,
+        mc_announce_auth_opt,
+    ) = if args.multicast {
+        debug!("Create multicast channel");
+        get_multicast_channel(
+            &args.mc_keylog_file,
+            authentication,
+            args.ttl_data,
+            &rng,
+        )
+    } else {
+        (None, None, None, None)
+    };
 
     // Register multicast socket to the poll.
     if let Some(mc_socket) = mc_socket_opt.as_mut() {
@@ -410,13 +415,26 @@ fn main() {
                 {
                     client
                         .conn
-                        .mc_set_mc_announce_data(&mc_announce_data)
+                        .mc_set_mc_announce_data(mc_announce_data)
                         .unwrap();
                     client
                         .conn
                         .mc_set_multicast_receiver(&mc_channel.master_secret)
                         .unwrap();
                     debug!("Sets MC_ANNOUNCE data for new client");
+
+                    // Add the multicast authetication channel announcement if
+                    // symmetric authentication is used.
+                    if let Some(mc_announce_auth) = mc_announce_auth_opt.as_ref()
+                    {
+                        client
+                            .conn
+                            .mc_set_mc_announce_data(mc_announce_auth)
+                            .unwrap();
+                        debug!(
+                            "Sets the MC_ANNOUNCE authentication for new client"
+                        );
+                    }
                 }
 
                 // If it is the first client, start the multicast content
@@ -569,6 +587,54 @@ fn main() {
                 }
 
                 debug!("Multicast written {} bytes", write);
+            }
+
+            // If symmetric authentication is used alongside multicast, generate
+            // authentication packets and send them on the multicast
+            // authentication path.
+            if let (McAuthType::SymSign, Some(mc_auth_info)) =
+                (authentication, mc_channel.mc_auth_info.as_ref())
+            {
+                mc_channel
+                    .channel
+                    .mc_sym_sign(
+                        &clients
+                            .values_mut()
+                            .map(|client| &mut client.conn)
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap();
+
+                let mc_auth_addr = mc_auth_info.2;
+
+                loop {
+                    let write = match mc_channel.mc_send_sym_auth(&mut out) {
+                        Ok(v) => v,
+                        Err(quiche::Error::Done) => {
+                            debug!("Multicast done writing authentication");
+                            break;
+                        },
+                        Err(e) => {
+                            error!("Multicast send auth failed: {:?}", e);
+                            break;
+                        },
+                    };
+
+                    if let Err(e) = mc_socket.send_to(&out[..write], mc_auth_addr)
+                    {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            debug!("send() auth would block");
+                            break;
+                        }
+
+                        panic!("send() auth failed: {:?}", e);
+                    }
+
+                    debug!(
+                        "Multicast written {} bytes on authentication channel",
+                        write
+                    );
+                }
             }
         }
 
@@ -753,11 +819,13 @@ fn replay_trace(
 }
 
 fn get_multicast_channel(
-    mc_keylog_file: &str, authentication: multicast::authentication::McAuthType, ttl_data: u64,
+    mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
+    ttl_data: u64, rng: &SystemRandom,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
-    Option<McAnnounceData>,
+    Option<McAnnounceData>, // Data.
+    Option<McAnnounceData>, // Authentication.
 ) {
     let mc_addr = "224.3.0.225:8889".parse().unwrap();
     let mc_addr_bytes = [224, 3, 0, 225];
@@ -771,7 +839,7 @@ fn get_multicast_channel(
 
     // Generate a random source connection ID for the connection.
     let mut channel_id = [0; 16];
-    SystemRandom::new().fill(&mut channel_id[..]).unwrap();
+    rng.fill(&mut channel_id[..]).unwrap();
 
     let channel_id = quiche::ConnectionId::from_ref(&channel_id);
     let channel_id_vec = channel_id.as_ref().to_vec();
@@ -782,6 +850,28 @@ fn get_multicast_channel(
         cid: channel_id,
     };
 
+    // Authentication path information if symmetric authentication is used.
+    let mut channel_id_auth = [0; 16];
+    let mc_auth_info = if authentication == McAuthType::SymSign {
+        rng.fill(&mut channel_id_auth).unwrap();
+        let channel_id = quiche::ConnectionId::from_ref(&channel_id_auth);
+
+        let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
+        let dummy_port = 1239;
+        let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+            dummy_ip,
+            dummy_port + 1,
+        ));
+
+        Some(multicast::McPathInfo {
+            local: to2,
+            peer: to2,
+            cid: channel_id,
+        })
+    } else {
+        None
+    };
+
     let mut mc_channel = MulticastChannelSource::new_with_tls(
         mc_path_info,
         &mut server_config,
@@ -789,7 +879,7 @@ fn get_multicast_channel(
         mc_addr,
         mc_keylog_file,
         authentication,
-        None,
+        mc_auth_info,
     )
     .unwrap();
 
@@ -797,7 +887,7 @@ fn get_multicast_channel(
         // channel_id: mc_channel.mc_path_conn_id.0.as_ref().to_vec(),
         channel_id: channel_id_vec,
         path_type: McPathType::Data,
-        auth_type: McAuthType::AsymSign,
+        auth_type: authentication,
         is_ipv6: false,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,
@@ -820,7 +910,30 @@ fn get_multicast_channel(
         .mc_set_mc_announce_data(&mc_announce_data)
         .unwrap();
 
-    (Some(socket), Some(mc_channel), Some(mc_announce_data))
+    // MC_ANNOUNCE data of the authentication path.
+    let mc_announce_auth = if authentication == McAuthType::SymSign {
+        Some(McAnnounceData {
+            channel_id: channel_id_auth.to_vec(),
+            path_type: McPathType::Authentication,
+            auth_type: McAuthType::None,
+            is_ipv6: false,
+            source_ip: [127, 0, 0, 1],
+            group_ip: mc_addr_bytes,
+            udp_port: mc_port + 1,
+            public_key: None,
+            ttl_data,
+            is_processed: false,
+        })
+    } else {
+        None
+    };
+
+    (
+        Some(socket),
+        Some(mc_channel),
+        Some(mc_announce_data),
+        mc_announce_auth,
+    )
 }
 
 pub fn get_test_mc_config(

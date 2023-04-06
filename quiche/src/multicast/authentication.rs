@@ -7,10 +7,13 @@ use crate::packet::Epoch;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
+
 use ring::digest;
 use ring::digest::digest;
+
 use std::collections::VecDeque;
 use std::convert::TryFrom;
+use std::str::FromStr;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 /// Authentication type used for the multicast channel.
@@ -53,6 +56,23 @@ impl From<McAuthType> for u64 {
             McAuthType::SymSign => 1,
             McAuthType::Dynamic(_) => 2,
             McAuthType::None => 3,
+        }
+    }
+}
+
+impl FromStr for McAuthType {
+    type Err = Error;
+
+    /// Converts a string to `McAuthType`.
+    ///
+    /// If `name` is not valid,
+    /// `Error::Multicast(MulticastError::McInvalidAuth)` is returned.
+    fn from_str(name: &str) -> Result<Self> {
+        match name {
+            "asymmetric" => Ok(McAuthType::AsymSign),
+            "symmetric" => Ok(McAuthType::SymSign),
+            "none" => Ok(McAuthType::None),
+            _ => Err(Error::Multicast(MulticastError::McInvalidAuth)),
         }
     }
 }
