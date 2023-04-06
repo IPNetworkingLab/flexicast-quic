@@ -9,6 +9,8 @@ use crate::Connection;
 use crate::Error;
 use crate::Result;
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::str::FromStr;
@@ -130,6 +132,14 @@ pub trait McAuthentication {
     /// // We assume having only valid packets, i.e., this is a
     /// [`crate::packet::Type::Short`] header.
     fn mc_get_pn(&self, buf: &[u8]) -> Result<u64>;
+
+    /// Returns an immutable reference to the client HashSet containing the
+    /// packet number of packets that can be authenticated with the symmetric
+    /// tag.
+    ///
+    /// This is used to fasten the processing of non-authenticated packets in
+    /// the application. Returns an error if the role is invalid.
+    fn mc_get_client_auth_tags(&self) -> Result<HashSet<u64>>;
 }
 
 impl McAuthentication for Connection {
@@ -224,12 +234,10 @@ impl McAuthentication for Connection {
             if let McSymSign::Client(signatures) = &mut multicast.mc_sym_signs {
                 // Recompute the packet hash. This will be used to find the
                 // correct packet to authenticate.
-                let recv_tag_idx =
-                    signatures.iter().position(|sign| sign.0 == pn);
-                if let Some(idx) = recv_tag_idx {
-                    let recv_tag = signatures.remove(idx).unwrap();
+                if signatures.contains_key(&pn) {
+                    let recv_tag = signatures.remove(&pn).unwrap();
                     let tag = self.mc_sign_sym_slice(buf, pn)?;
-                    if recv_tag.1 == tag {
+                    if recv_tag == tag {
                         Ok(())
                     } else {
                         Err(Error::Multicast(MulticastError::McInvalidSign))
@@ -269,6 +277,20 @@ impl McAuthentication for Connection {
             Err(Error::Multicast(MulticastError::McDisabled))
         }
     }
+
+    fn mc_get_client_auth_tags(&self) -> Result<HashSet<u64>> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            match &multicast.mc_sym_signs {
+                McSymSign::Client(m) =>
+                    Ok(m.keys().map(|i| *i).collect::<HashSet<u64>>()),
+                _ => Err(Error::Multicast(MulticastError::McInvalidRole(
+                    multicast.mc_role,
+                ))),
+            }
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
+    }
 }
 
 /// Multicast symmetric signatures.
@@ -277,7 +299,7 @@ impl McAuthentication for Connection {
 pub enum McSymSign {
     /// The client must only remember which packet number corresponds to a given
     /// tag.
-    Client(VecDeque<(u64, Vec<u8>)>),
+    Client(HashMap<u64, Vec<u8>>),
 
     /// The multicast source must remember the tag for each of its clients.
     McSource(VecDeque<(u64, Vec<McSymSignature>)>),

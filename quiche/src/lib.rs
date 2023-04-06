@@ -8149,7 +8149,7 @@ impl Connection {
                         auth_tags,
                     ) = &mut multicast.mc_sym_signs
                     {
-                        auth_tags.push_back((pn, signature.sign.to_owned()));
+                        auth_tags.insert(pn, signature.sign.to_owned());
                     } else {
                         return Err(Error::Multicast(
                             multicast::MulticastError::McInvalidSign,

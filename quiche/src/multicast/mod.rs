@@ -359,6 +359,12 @@ impl MulticastAttributes {
         self.mc_role
     }
 
+    #[inline]
+    /// Returns the multicast authentication method.
+    pub fn get_mc_auth_type(&self) -> McAuthType {
+        self.mc_auth_type
+    }
+
     /// Sets the client status following the state machine.
     /// Returns an error if the client would do an invalid move in the state
     /// machine. MC-TODO: complete the finite state machine.
@@ -696,7 +702,7 @@ impl Default for MulticastAttributes {
             mc_auth_space_id: None,
             mc_auth_type: McAuthType::None,
             mc_pn_need_sym_sign: None,
-            mc_sym_signs: McSymSign::Client(VecDeque::new()),
+            mc_sym_signs: McSymSign::Client(HashMap::new()),
         }
     }
 }
