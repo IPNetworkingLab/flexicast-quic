@@ -1323,7 +1323,6 @@ impl Frame {
                 pn,
                 signatures,
             } => {
-                debug!("Going to give the length of the MC_AUTH frame: {:?} {:?} {:?}", channel_id, pn, signatures);
                 let frame_type_size = octets::varint_len(MC_AUTH_CODE);
                 let pn_len = octets::varint_len(*pn);
                 let signatures_size: usize = signatures

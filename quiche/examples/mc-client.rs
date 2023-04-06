@@ -259,7 +259,7 @@ fn main() {
                 };
 
                 // If symmetric authentication is used, buffer the packets as long
-                // as the authentication packet is not received.
+                // as the corresponding authentication packet is not received.
                 let can_read_pkt = if conn
                     .get_multicast_attributes()
                     .unwrap()
@@ -293,6 +293,7 @@ fn main() {
                 };
 
                 if can_read_pkt {
+                    debug!("Can read incomming packet");
                     let recv_info = quiche::RecvInfo {
                         to: mc_addr,
                         from: peer_addr,
@@ -328,6 +329,8 @@ fn main() {
                     },
                 };
 
+                debug!("Recv a packet on the authentication path");
+
                 let recv_info = quiche::RecvInfo {
                     to: mc_addr_auth,
                     from: peer_addr,
@@ -359,6 +362,7 @@ fn main() {
                     }
 
                     if can_read_pkt {
+                        debug!("Can read packet 2 with pn={}", pn);
                         let recv_info = quiche::RecvInfo {
                             to: mc_addr,
                             from: peer_addr,

@@ -419,7 +419,14 @@ fn main() {
                         .unwrap();
                     client
                         .conn
-                        .mc_set_multicast_receiver(&mc_channel.master_secret)
+                        .mc_set_multicast_receiver(
+                            &mc_channel.master_secret,
+                            mc_channel
+                                .channel
+                                .get_multicast_attributes()
+                                .unwrap()
+                                .get_mc_space_id().unwrap() as usize,
+                        )
                         .unwrap();
                     debug!("Sets MC_ANNOUNCE data for new client");
 
@@ -677,6 +684,15 @@ fn main() {
 
                 debug!("{} written {} bytes", client.conn.trace_id(), write);
             }
+
+            // Communication between the unicast session and the multicast
+            // channel.
+            if let Some(mc_channel) = mc_channel_opt.as_mut() {
+                client
+                    .conn
+                    .uc_to_mc_control(&mut mc_channel.channel)
+                    .unwrap();
+            }
         }
 
         // This could be improved. In case QUIC is unable to send the video frame
@@ -909,7 +925,7 @@ fn get_multicast_channel(
 
     // MC_ANNOUNCE data of the authentication path.
     let mc_announce_auth = if authentication == McAuthType::SymSign {
-        Some(McAnnounceData {
+        let data = McAnnounceData {
             channel_id: channel_id_auth.to_vec(),
             path_type: McPathType::Authentication,
             auth_type: McAuthType::None,
@@ -920,7 +936,11 @@ fn get_multicast_channel(
             public_key: None,
             ttl_data,
             is_processed: false,
-        })
+        };
+
+        mc_channel.channel.mc_set_mc_announce_data(&data).unwrap();
+
+        Some(data)
     } else {
         None
     };
