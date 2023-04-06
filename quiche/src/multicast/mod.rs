@@ -803,6 +803,7 @@ pub trait MulticastConnection {
     /// If the received key is None, it means that we do not use authentication.
     /// Returns an Error [`McInvalidSign`] if the signature is incorrect,
     /// and do not process the packet.
+    /// MC-TODO: symmetric authentication documentation.
     ///
     /// MC-TODO: only Ed25519 is used at the moment.
     /// The last bytes of the packet contain the signature.
@@ -4657,7 +4658,7 @@ mod tests {
         assert!(mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
 
         // Multicast source sends the authentication packets to the clients.
-        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(214));
+        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(148));
 
         // Multicast source must not send any authentication packet because
         // everything as been sent.

@@ -4,12 +4,10 @@ use crate::multicast::McClientId;
 use crate::multicast::MulticastError;
 use crate::multicast::MulticastRole;
 use crate::packet::Epoch;
+use crate::packet::MAX_PKT_NUM_LEN;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
-
-use ring::digest;
-use ring::digest::digest;
 
 use std::collections::VecDeque;
 use std::convert::TryFrom;
@@ -112,10 +110,26 @@ pub trait McAuthentication {
     /// The signature is assumed to be in the last bytes of the buffer.
     fn mc_verify_asym(&self, buf: &[u8]) -> Result<usize>;
 
-    /// Verify a symmetric signature.
+    /// Verify a symmetric signature given the packet slice and its packet
+    /// number.
     ///
     /// Requires that the client has a valid multicast client ID.
-    fn mc_verify_sym(&mut self, buf: &[u8]) -> Result<()>;
+    fn mc_verify_sym(&mut self, buf: &[u8], pn: u64) -> Result<()>;
+
+    /// Receive a multicast data packet that is authenticated with
+    /// [`McAuthType::SymSign`].
+    ///
+    /// This function decrypts the header of the packet and retrieves the packet
+    /// number. This packet decryption is not performed on the original
+    /// packet. Hence, it must be performed again by the library. Even this is
+    /// not optimal (because we decrypt the packet header twice) and it requires
+    /// some code dupplication, it simplifies a lot the processing as there
+    /// is no requirement to further change the quiche library :-).
+    /// Concerning the code duplication, it is a modified version of
+    /// [`crate::packet::decrypt_hdr`].
+    /// // We assume having only valid packets, i.e., this is a
+    /// [`crate::packet::Type::Short`] header.
+    fn mc_get_pn(&self, buf: &[u8]) -> Result<u64>;
 }
 
 impl McAuthentication for Connection {
@@ -205,18 +219,16 @@ impl McAuthentication for Connection {
         }
     }
 
-    fn mc_verify_sym(&mut self, buf: &[u8]) -> Result<()> {
+    fn mc_verify_sym(&mut self, buf: &[u8], pn: u64) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             if let McSymSign::Client(signatures) = &mut multicast.mc_sym_signs {
                 // Recompute the packet hash. This will be used to find the
                 // correct packet to authenticate.
-                let pkt_hash_digest = digest(&digest::SHA256, buf);
-                let pkt_hash = pkt_hash_digest.as_ref();
                 let recv_tag_idx =
-                    signatures.iter().position(|sign| sign.2 == pkt_hash);
+                    signatures.iter().position(|sign| sign.0 == pn);
                 if let Some(idx) = recv_tag_idx {
                     let recv_tag = signatures.remove(idx).unwrap();
-                    let tag = self.mc_sign_sym_slice(buf, recv_tag.0)?;
+                    let tag = self.mc_sign_sym_slice(buf, pn)?;
                     if recv_tag.1 == tag {
                         Ok(())
                     } else {
@@ -232,6 +244,31 @@ impl McAuthentication for Connection {
             Err(Error::Multicast(MulticastError::McDisabled))
         }
     }
+
+    fn mc_get_pn(&self, buf: &[u8]) -> Result<u64> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            let cid_len = multicast
+                .get_mc_announce_data_path()
+                .ok_or(Error::Multicast(MulticastError::McAnnounce))?
+                .channel_id
+                .len();
+
+            // Copy the strict minimum: packet type (1) + packet num max length +
+            // cid_length + minimum payload length (16).
+            let mut hdr_copy =
+                buf[..1 + MAX_PKT_NUM_LEN + cid_len + 16].to_owned();
+            let mut b = octets::OctetsMut::with_slice(&mut hdr_copy);
+            let mut header = crate::packet::Header::from_bytes(&mut b, cid_len)?;
+            let aead = multicast
+                .get_mc_crypto_open()
+                .ok_or(Error::Multicast(MulticastError::McDisabled))?;
+
+            crate::packet::decrypt_hdr(&mut b, &mut header, aead)?;
+            Ok(header.pkt_num)
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
+    }
 }
 
 /// Multicast symmetric signatures.
@@ -240,10 +277,10 @@ impl McAuthentication for Connection {
 pub enum McSymSign {
     /// The client must only remember which packet number corresponds to a given
     /// tag.
-    Client(VecDeque<(u64, Vec<u8>, Vec<u8>)>),
+    Client(VecDeque<(u64, Vec<u8>)>),
 
     /// The multicast source must remember the tag for each of its clients.
-    McSource(VecDeque<(u64, Vec<McSymSignature>, Vec<u8>)>),
+    McSource(VecDeque<(u64, Vec<McSymSignature>)>),
 }
 
 #[doc(hidden)]
@@ -279,16 +316,9 @@ impl McSymAuth for Connection {
             if let Some(mut need_sign) = multicast.mc_pn_need_sym_sign.take() {
                 let mut signatures_pn = Vec::with_capacity(need_sign.len());
                 while let Some((pn, data)) = need_sign.pop_front() {
-                    // Compute the packet hash.
-                    let pkt_hash = digest::digest(&digest::SHA256, &data);
-
                     // Compute the AEAD tag.
-                    signatures_pn.push((
-                        pn,
-                        self.mc_sym_sign_single(&data, clients, pn)?,
-                        pkt_hash.as_ref().to_vec(),
-                        // (0..16).collect::<Vec<_>>(),
-                    ));
+                    signatures_pn
+                        .push((pn, self.mc_sym_sign_single(&data, clients, pn)?));
                 }
 
                 // Reset the state because of ownership we took.
@@ -334,8 +364,50 @@ impl McSymAuth for Connection {
 #[cfg(test)]
 mod tests {
     use crate::multicast::testing::MulticastPipe;
+    use crate::multicast::McPathType;
+    use crate::multicast::MulticastConnection;
+    use crate::RecvInfo;
 
     use super::*;
+
+    #[test]
+    fn test_mc_get_pn() {
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_get_pn.txt",
+            McAuthType::SymSign,
+            false,
+        )
+        .unwrap();
+        assert_eq!(mc_pipe.source_send_single_stream(false, None, 0, 1), Ok(0));
+
+        let mut buf = [0u8; 1500];
+        let written = mc_pipe.mc_channel.mc_send(&mut buf);
+        assert_eq!(written, Ok(339));
+
+        // Get the packet number without impacting the original packet.
+        let pn = mc_pipe.unicast_pipes[0]
+            .0
+            .client
+            .mc_get_pn(&buf[..written.unwrap()]);
+        assert_eq!(pn, Ok(2));
+
+        // The client decrypts the packet without alteration.
+        let recv_info = RecvInfo {
+            from: mc_pipe.unicast_pipes[0].2,
+            to: mc_pipe.unicast_pipes[0].1,
+            from_mc: Some(McPathType::Data),
+        };
+        assert_eq!(
+            mc_pipe.unicast_pipes[0]
+                .0
+                .client
+                .mc_recv(&mut buf[..written.unwrap()], recv_info),
+            Ok(339)
+        );
+        // No harm. Nice.
+        assert_eq!(mc_pipe.unicast_pipes[0].0.client.readable().next(), Some(1));
+    }
 
     #[test]
     /// The multicast source sends multicast traffic with a symmetric
@@ -355,10 +427,8 @@ mod tests {
 
         // Multicast source sends a multicast stream.
         assert_eq!(mc_pipe.source_send_single_stream(false, None, 0, 1), Ok(0));
-        assert_eq!(
-            mc_pipe.source_send_single_from_buf(None, 0, &mut mc_buf),
-            Ok(339)
-        );
+        let written = mc_pipe.source_send_single_from_buf(None, 0, &mut mc_buf);
+        assert_eq!(written, Ok(339));
 
         // Multicast source generates the AEAD tags for the clients.
         let clients: Vec<_> = mc_pipe
@@ -369,12 +439,18 @@ mod tests {
         assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
 
         // Multicast source sends the authentication packet.
-        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(178)); // 145 for 5 clients. 73 for a single client.
+        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(145));
 
         // The clients verify the authentication of the multicast data packets
         // with the received tags.
         for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
-            assert_eq!(pipe.client.mc_verify_sym(&mc_buf[..339]), Ok(()));
+            // Get the packet number of the received (and unauthenticated) packet.
+            let pn = pipe.client.mc_get_pn(&mc_buf[..written.unwrap()]).unwrap();
+
+            assert_eq!(
+                pipe.client.mc_verify_sym(&mc_buf[..written.unwrap()], pn),
+                Ok(())
+            );
 
             // No more authentication packet for the client.
             let sign = if let McSymSign::Client(c) =
