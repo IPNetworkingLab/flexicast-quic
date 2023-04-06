@@ -892,15 +892,12 @@ fn get_multicast_channel(
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,
         udp_port: mc_port,
-        public_key: Some(
-            mc_channel
-                .channel
-                .get_multicast_attributes()
-                .unwrap()
-                .get_mc_pub_key()
-                .unwrap()
-                .to_owned(),
-        ),
+        public_key: mc_channel
+            .channel
+            .get_multicast_attributes()
+            .unwrap()
+            .get_mc_pub_key()
+            .map(|i| i.to_vec()),
         ttl_data,
         is_processed: false,
     };

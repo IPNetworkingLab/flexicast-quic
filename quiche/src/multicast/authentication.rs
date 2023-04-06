@@ -269,7 +269,7 @@ impl McAuthentication for Connection {
             let mut header = crate::packet::Header::from_bytes(&mut b, cid_len)?;
             let aead = multicast
                 .get_mc_crypto_open()
-                .ok_or(Error::Multicast(MulticastError::McDisabled))?;
+                .ok_or(Error::Multicast(MulticastError::McInvalidCrypto))?;
 
             crate::packet::decrypt_hdr(&mut b, &mut header, aead)?;
             Ok(header.pkt_num)

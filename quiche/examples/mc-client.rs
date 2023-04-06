@@ -268,7 +268,13 @@ fn main() {
                 {
                     // Get the packet number used as identifier. Woops for the
                     // unwrap.
-                    let pn = conn.mc_get_pn(&buf[..len]).unwrap();
+                    let pn = match conn.mc_get_pn(&buf[..len]) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!("Error when reading the packet number: {:?}", e);
+                            continue 'mc_read;
+                        }
+                    };
 
                     // Maybe the application already received the authentication
                     // tag?

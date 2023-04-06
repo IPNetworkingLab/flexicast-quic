@@ -80,6 +80,9 @@ pub enum MulticastError {
     /// No authentication packet available to verify the source of the multicast
     /// data packet.
     McNoAuthPacket,
+
+    /// Invalid crypto context on the multicast channel.
+    McInvalidCrypto,
 }
 
 /// MC_ANNOUNCE frame type.
