@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use quiche::multicast::authentication::McAuthType;
+use quiche::multicast::authentication::McSymAuth;
 use quiche::multicast::testing::get_test_mc_config;
 use quiche::multicast::testing::MulticastPipe;
 use quiche::multicast::testing::CLIENT_AUTH_ADDR;
@@ -52,6 +53,12 @@ fn setup_mc(
         }
         if auth == McAuthType::SymSign {
             let mut buf = vec![0u8; 1500];
+            let clients: Vec<_> = pipe
+            .unicast_pipes
+            .iter_mut()
+            .map(|(conn, ..)| &mut conn.server)
+            .collect();
+            pipe.mc_channel.channel.mc_sym_sign(&clients).unwrap();
             match pipe.mc_channel.mc_send_sym_auth(&mut buf) {
                 Ok(w) => packets_auth.push_back(buf[..w].to_vec()),
                 Err(e) => panic!("Setup mc auth error: {}", e),
@@ -133,7 +140,8 @@ fn mc_client_bench(c: &mut Criterion) {
     let buf = vec![0; BENCH_STREAM_SIZE];
 
     let mut group = c.benchmark_group("multicast-client-1G");
-    for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::SymSign] {
+    // for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::SymSign] {
+        for &auth in &[McAuthType::AsymSign, McAuthType::None] {
         // for &auth in &[McAuthType::SymSign] {
         for nb_recv in (1..2).chain(
             (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV),
@@ -195,4 +203,5 @@ fn uc_client_bench(c: &mut Criterion) {
 }
 
 criterion_group!(benches, mc_client_bench, uc_client_bench);
+// criterion_group!(benches, mc_client_bench);
 criterion_main!(benches);

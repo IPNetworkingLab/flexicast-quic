@@ -66,7 +66,30 @@ def cmp_mc_uc(root):
 
 
 def cmp_mc_uc_client(root):
-    pass
+    mc_auth_asym, mc_auth_sym, mc_no_auth = read_multicast(os.path.join(root, "multicast-client-1G"))
+    uc = read_unicast(os.path.join(root, "unicast-client-1G"))
+
+    data = [
+        (uc, "Unicast"),
+        (mc_auth_asym, "Multicast asymetric"),
+        (mc_auth_sym, "Multicast symetric"),
+        (mc_no_auth, "Multicast no authentication")
+    ]
+
+    fig, ax = plt.subplots()
+    for d, label in data:
+        k = sorted(d.keys())
+        v = [d[i][0] for i in k]
+        std = [d[i][1] for i in k]
+
+        ax.errorbar(k, v, yerr=std, label=label, fmt="-o")
+
+    ax.legend()
+    ax.set_xlabel("Number of receivers")
+    ax.set_ylabel("Time to send 1GB [s]")
+    ax.set_title("Client")
+
+    plt.savefig("test-client.pdf")
 
 if __name__ == "__main__":
     cmp_mc_uc("../target/criterion")
