@@ -3,6 +3,9 @@ import os
 import json
 import numpy as np
 
+COLORS = ["#e66101", "#fdb863", "#b2abd2", "#5e3c99"]
+MARKERS = ["^", "v", ">", "<"]
+
 
 def parse_json(filename):
     with open(filename) as fd:
@@ -51,12 +54,12 @@ def cmp_mc_uc(root):
     ]
 
     fig, ax = plt.subplots()
-    for d, label in data:
+    for i, (d, label) in enumerate(data):
         k = sorted(d.keys())
         v = [d[i][0] for i in k]
         std = [d[i][1] for i in k]
 
-        ax.errorbar(k, v, yerr=std, label=label, fmt="-o")
+        ax.errorbar(k, v, yerr=std, label=label, fmt=f"-{MARKERS[i]}", color=COLORS[i])
 
     ax.legend()
     ax.set_xlabel("Number of receivers")
@@ -77,12 +80,12 @@ def cmp_mc_uc_client(root):
     ]
 
     fig, ax = plt.subplots()
-    for d, label in data:
+    for i, (d, label) in enumerate(data):
         k = sorted(d.keys())
         v = [d[i][0] for i in k]
         std = [d[i][1] for i in k]
 
-        ax.errorbar(k, v, yerr=std, label=label, fmt="-o")
+        ax.errorbar(k, v, yerr=std, label=label, fmt=f"-{MARKERS[i]}", color=COLORS[i])
 
     ax.legend()
     ax.set_xlabel("Number of receivers")
