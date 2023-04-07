@@ -30,6 +30,7 @@ extern crate log;
 use std::collections::HashMap;
 use std::net;
 use std::net::ToSocketAddrs;
+use std::io::Write;
 
 use quiche::multicast::authentication::McAuthentication;
 use quiche::multicast::MulticastError;
@@ -69,6 +70,9 @@ fn main() {
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
     let args = Args::parse();
+
+    // Video output.
+    let mut video_frame_recv = Vec::with_capacity(100);
 
     let mc_client_params = multicast::MulticastClientTp {
         ipv4_channels_allowed: true,
@@ -506,18 +510,39 @@ fn main() {
         }
 
         // Process all readable streams.
-        for s in conn.readable() {
-            while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
-                let stream_buf = &buf[..read];
+        'read_stream: for s in conn.readable() {
+            if !conn.stream_complete(s) {
+                continue 'read_stream;
+            }
 
-                debug!(
-                    "stream {} has {} bytes (fin? {})",
-                    s,
-                    stream_buf.len(),
-                    fin
-                );
+            if !conn.stream_readable(s) {
+                // Application only reads full video frame.
+                continue 'read_stream;
+            }
+            let mut total = 0;
+            
+            while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
+                total += read;
+                if fin {
+                    debug!("Add a new stream in the list of received.");
+                    let now = std::time::SystemTime::now();
+                    video_frame_recv.push((s, now, total));
+                }
             }
         }
+    }
+
+    // Record the timestamp results.
+    let mut file = std::fs::File::create(&args.output_latency).unwrap();
+    for (stream_id, time, nb_bytes) in &video_frame_recv {
+        writeln!(
+            file,
+            "{} {} {}",
+            (stream_id - 1) / 4,
+            time.duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            nb_bytes
+        )
+        .unwrap();
     }
 }
 

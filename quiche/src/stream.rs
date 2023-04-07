@@ -1099,6 +1099,11 @@ impl RecvBuf {
 
         buf.off() == self.off
     }
+
+    /// Returns whether the final size of the stream is known.
+    pub fn has_fin(&self) -> bool {
+        self.fin_off.is_some()
+    }
 }
 
 /// Send-side stream buffer.

@@ -178,8 +178,6 @@ impl McAuthentication for Connection {
         // Copy like a shlag.
         let mut my_buf_vec = vec![0u8; buf.len() + tag_len];
         my_buf_vec[..buf.len()].copy_from_slice(buf);
-        println!("Is multicast some: {}", self.multicast.is_some());
-        println!("Is space id some: {:?}", self.multicast.as_ref().unwrap().mc_space_id);
         let space_id = self.multicast.as_ref().unwrap().mc_space_id.unwrap();
         let hdr = [0u8; 0];
         let mut my_buf = octets::OctetsMut::with_slice(&mut my_buf_vec);
