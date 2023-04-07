@@ -254,10 +254,10 @@ fn main() {
 
             timeout = [timeout, timeout_video].iter().flatten().min().copied();
 
-            // debug!(
-            //     "Next timeout in {:?} (video is {:?})",
-            //     timeout, timeout_video
-            // );
+            debug!(
+                "Next timeout in {:?} (video is {:?})",
+                timeout, timeout_video
+            );
         }
         poll.poll(&mut events, timeout).unwrap();
 
@@ -551,6 +551,7 @@ fn main() {
             );
 
             // Get next video values.
+            let previous_nb_bytes = video_nxt_nb_bytes;
             if sent_frames >= video_content.len() {
                 active_video = false;
                 info!("SET ACTIVE VIDEO TO FALSE");
@@ -563,7 +564,7 @@ fn main() {
                 video_stream_id += 4;
             }
 
-            video_frame_to_quic.push((video_stream_id - 4, time::Instant::now()));
+            video_frame_to_quic.push((video_stream_id - 4, time::Instant::now(), previous_nb_bytes));
             true
         } else {
             false
@@ -706,7 +707,7 @@ fn main() {
         // (e.g., due to congestion control), we will record an invalid (too
         // early) timestamp.
         if video_frame_to_send {
-            video_frame_to_wire.push((video_stream_id - 4, time::Instant::now()));
+            video_frame_to_wire.push((video_stream_id - 4, time::Instant::now(), video_nxt_nb_bytes));
         }
 
         // Garbage collect closed connections.
@@ -735,23 +736,25 @@ fn main() {
 
     // Record the timestamp results.
     let mut file = std::fs::File::create(&args.result_wire_trace).unwrap();
-    for (stream_id, time) in &video_frame_to_wire {
+    for (stream_id, time, nb_bytes) in &video_frame_to_wire {
         writeln!(
             file,
-            "{} {}",
+            "{} {} {}",
             (stream_id - 1) / 4,
-            time.duration_since(starting_video.unwrap()).as_micros()
+            time.duration_since(starting_video.unwrap()).as_micros(),
+            nb_bytes,
         )
         .unwrap();
     }
 
     let mut file = std::fs::File::create(&args.result_quic_trace).unwrap();
-    for (stream_id, time) in &video_frame_to_quic {
+    for (stream_id, time, nb_bytes) in &video_frame_to_quic {
         writeln!(
             file,
-            "{} {}",
+            "{} {} {}",
             (stream_id - 1) / 4,
-            time.duration_since(starting_video.unwrap()).as_micros()
+            time.duration_since(starting_video.unwrap()).as_micros(),
+            nb_bytes
         )
         .unwrap();
     }
@@ -904,8 +907,6 @@ fn get_multicast_channel(
         mc_auth_info,
     )
     .unwrap();
-
-    assert!(mc_channel.channel.get_multicast_attributes().unwrap().get_mc_pub_key().is_some());
 
     let mc_announce_data = McAnnounceData {
         // channel_id: mc_channel.mc_path_conn_id.0.as_ref().to_vec(),
