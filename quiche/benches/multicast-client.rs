@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 
 const BENCH_STREAM_SIZE: usize = 10_000_000;
 const BENCH_NB_RECV_MAX: usize = 40;
-const BENCH_STEP_RECV: usize = 40;
+const BENCH_STEP_RECV: usize = 10;
 
 /// Sets up the benchmark for multicast.
 /// This function emulates the client sending [`BENCH_STREAM_SIZE`] bytes in a
@@ -141,8 +141,8 @@ fn mc_client_bench(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("multicast-client-1G");
     // for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::SymSign] {
-        for &auth in &[McAuthType::AsymSign, McAuthType::None] {
-        // for &auth in &[McAuthType::SymSign] {
+        // for &auth in &[McAuthType::AsymSign, McAuthType::None] {
+    for &auth in &[McAuthType::SymSign] {
         for nb_recv in (1..2).chain(
             (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV),
         ) {
@@ -202,6 +202,7 @@ fn uc_client_bench(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, mc_client_bench, uc_client_bench);
-// criterion_group!(benches, mc_client_bench);
+// criterion_group!(benches, mc_client_bench, uc_client_bench);
+criterion_group!(benches, mc_client_bench);
+// criterion_group!(benches, uc_client_bench);
 criterion_main!(benches);

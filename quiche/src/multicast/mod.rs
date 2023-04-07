@@ -878,6 +878,12 @@ pub trait MulticastConnection {
 
     /// Returns the multicast attributes.
     fn get_multicast_attributes(&self) -> Option<&MulticastAttributes>;
+
+    /// Sets the multicast path ID. Internally calls
+    /// [`MulticastAttributes::set_mc_space_id`].
+    fn set_mc_space_id(
+        &mut self, space_id: u64, path_type: McPathType,
+    ) -> Result<()>;
 }
 
 impl MulticastConnection for Connection {
@@ -1489,6 +1495,17 @@ impl MulticastConnection for Connection {
 
     fn get_multicast_attributes(&self) -> Option<&MulticastAttributes> {
         self.multicast.as_ref()
+    }
+
+    fn set_mc_space_id(
+        &mut self, space_id: u64, path_type: McPathType,
+    ) -> Result<()> {
+        if let Some(multicast) = self.multicast.as_mut() {
+            multicast.set_mc_space_id(space_id as usize, path_type);
+            Ok(())
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
     }
 }
 

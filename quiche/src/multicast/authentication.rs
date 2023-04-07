@@ -284,7 +284,7 @@ impl McAuthentication for Connection {
         if let Some(multicast) = self.multicast.as_ref() {
             match &multicast.mc_sym_signs {
                 McSymSign::Client(m) =>
-                    Ok(m.keys().map(|i| *i).collect::<HashSet<u64>>()),
+                    Ok(m.keys().copied().collect::<HashSet<u64>>()),
                 _ => Err(Error::Multicast(MulticastError::McInvalidRole(
                     multicast.mc_role,
                 ))),
@@ -295,6 +295,7 @@ impl McAuthentication for Connection {
     }
 }
 
+#[derive(Debug)]
 /// Multicast symmetric signatures.
 /// For the multicast source, it is a Vec of signatures for each packet and each
 /// client. For the clients, it is a Vec of signatures for each packet only.
@@ -486,6 +487,18 @@ mod tests {
                 panic!()
             };
             assert!(sign.is_empty());
+        }
+
+        // Unicast connection stops the communication.
+        for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
+            assert_eq!(pipe.server.close(false, 0x1234, b"done"), Ok(()));
+            assert_eq!(pipe.server.close(false, 0x1234, b"done"), Err(Error::Done));
+
+            assert_eq!(pipe.advance(), Ok(()));
+            assert_eq!(pipe.advance(), Ok(()));
+
+            assert!(pipe.client.is_closed() || pipe.client.is_draining());
+            assert!(pipe.server.is_closed() || pipe.server.is_draining());
         }
     }
 }

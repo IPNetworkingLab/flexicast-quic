@@ -213,7 +213,7 @@ fn main() {
                     // There are no more UDP packets to read, so end the read
                     // loop.
                     if e.kind() == std::io::ErrorKind::WouldBlock {
-                        debug!("recv() would block");
+                        //debug!("recv() would block");
                         break 'read;
                     }
 
@@ -229,6 +229,8 @@ fn main() {
                 from_mc: None,
             };
 
+            debug!("Received a packet on the unicast channel. Is it closed? {}", conn.is_closed());
+
             // Process potentially coalesced packets.
             let _read = match conn.recv(&mut buf[..len], recv_info) {
                 Ok(v) => v,
@@ -238,6 +240,7 @@ fn main() {
                     continue 'read;
                 },
             };
+
         }
 
         // Read incomming UDP packets from the multicast data socket and feed them
@@ -250,7 +253,7 @@ fn main() {
                         // There are no more UDP packets to read, so end the read
                         // loop.
                         if e.kind() == std::io::ErrorKind::WouldBlock {
-                            debug!("recv() would block");
+                            // debug!("recv() would block");
                             break 'mc_read;
                         }
 
@@ -275,6 +278,8 @@ fn main() {
                             continue 'mc_read;
                         }
                     };
+
+                    debug!("Recv data packet with pn={}", pn);
 
                     // Maybe the application already received the authentication
                     // tag?
@@ -321,7 +326,7 @@ fn main() {
                         // There are no more UDP packet to read, so end the read
                         // loop.
                         if e.kind() == std::io::ErrorKind::WouldBlock {
-                            debug!("recv() would block for auth mc");
+                            // debug!("recv() would block for auth mc");
                             break 'mc_read_auth;
                         }
 
@@ -329,13 +334,13 @@ fn main() {
                     },
                 };
 
-                debug!("Recv a packet on the authentication path");
-
                 let recv_info = quiche::RecvInfo {
                     to: mc_addr_auth,
                     from: peer_addr,
                     from_mc: Some(McPathType::Authentication),
                 };
+                
+                debug!("Recv a packet on the authentication path. Use {:?} recv_info", recv_info);
 
                 let _read = match conn.mc_recv(&mut buf[..len], recv_info) {
                     Ok(v) => v,
@@ -349,19 +354,15 @@ fn main() {
                 let recv_tags = conn.mc_get_client_auth_tags().unwrap();
                 let pn_na_packets: Vec<_> = mc_na_packets.keys().map(|i| *i).collect();
                 for pn in pn_na_packets {
-                    let mut can_read_pkt = false;
                     if recv_tags.contains(&pn) {
                         // This packet can be authenticated and processed.
-                        let pkt_na = mc_na_packets.remove(&pn).unwrap();
+                        let mut pkt_na = mc_na_packets.remove(&pn).unwrap();
                         match conn.mc_verify_sym(&pkt_na, pn) {
-                            Ok(()) => can_read_pkt = true,
+                            Ok(()) => (),
                             Err(quiche::Error::Multicast(MulticastError::McInvalidSign)) => error!("Packet {} has invalid authentication!", pn),
                             Err(e) => 
                                 error!("Unknown error when authenticating a previously received packet with symmetric tags: {:?}", e)
                         }
-                    }
-
-                    if can_read_pkt {
                         debug!("Can read packet 2 with pn={}", pn);
                         let recv_info = quiche::RecvInfo {
                             to: mc_addr,
@@ -369,35 +370,23 @@ fn main() {
                             from_mc: Some(McPathType::Data),
                         };
         
-                        let _read = match conn.mc_recv(&mut buf[..len], recv_info) {
+                        let read = match conn.mc_recv(&mut pkt_na[..], recv_info) {
                             Ok(v) => v,
                             Err(e) => {
                                 error!("Multicast failed: {:?}", e);
                                 continue;
                             },
                         };
+                        debug!("Multicast QUIC read {} bytes", read);
+                        debug!("Readable streams: {:?}", conn.readable().collect::<Vec<_>>());
                     }
                 } 
             }
         }
 
-        if conn.is_closed() {
+        if conn.is_closed() || conn.is_draining() {
             info!("connection closed, {:?}", conn.stats());
             break;
-        }
-
-        // Process all readable streams.
-        for s in conn.readable() {
-            while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
-                let stream_buf = &buf[..read];
-
-                debug!(
-                    "stream {} has {} bytes (fin? {})",
-                    s,
-                    stream_buf.len(),
-                    fin
-                );
-            }
         }
 
         // Process multicast events.
@@ -416,7 +405,8 @@ fn main() {
                     "Create second path. Client addr={:?}. Server addr={:?}",
                     mc_addr, peer_addr
                 );
-                conn.create_mc_path(&mc_cid, mc_addr, peer_addr).unwrap();
+                let mc_space_id = conn.create_mc_path(&mc_cid, mc_addr, peer_addr).unwrap();
+                conn.set_mc_space_id(mc_space_id, McPathType::Data).unwrap();
                 let group_ip =
                     net::Ipv4Addr::from(mc_announce_data.group_ip.to_owned());
                 let mc_group_sockaddr: net::SocketAddr = net::SocketAddr::V4(
@@ -451,9 +441,10 @@ fn main() {
                 let mc_announce_auth = mc_announce_auth.to_owned();
                 let auth_cid =
                     ConnectionId::from_ref(&mc_announce_auth.channel_id);
-                info!("Create third path for authentication. Client addr={:?}. Server addr={:?}", mc_addr_auth, peer_addr);
-                conn.create_mc_path(&auth_cid, mc_addr_auth, peer_addr)
+                debug!("Create third path for authentication. Client addr={:?}. Server addr={:?}", mc_addr_auth, peer_addr);
+                let mc_space_id = conn.create_mc_path(&auth_cid, mc_addr_auth, peer_addr)
                     .unwrap();
+                conn.set_mc_space_id(mc_space_id, McPathType::Authentication).unwrap();
                 let group_ip =
                     net::Ipv4Addr::from(mc_announce_auth.group_ip.to_owned());
                 let mc_group_sockaddr = net::SocketAddr::V4(
@@ -487,7 +478,7 @@ fn main() {
                 Ok(v) => v,
 
                 Err(quiche::Error::Done) => {
-                    debug!("done writing");
+                    //debug!("done writing");
                     break;
                 },
 
@@ -501,7 +492,7 @@ fn main() {
 
             if let Err(e) = socket.send_to(&out[..write], send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    debug!("send() would block");
+                    // debug!("send() would block");
                     break;
                 }
 
@@ -512,6 +503,20 @@ fn main() {
         if conn.is_closed() {
             info!("connection closed, {:?}", conn.stats());
             break;
+        }
+
+        // Process all readable streams.
+        for s in conn.readable() {
+            while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
+                let stream_buf = &buf[..read];
+
+                debug!(
+                    "stream {} has {} bytes (fin? {})",
+                    s,
+                    stream_buf.len(),
+                    fin
+                );
+            }
         }
     }
 }

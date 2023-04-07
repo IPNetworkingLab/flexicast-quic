@@ -2621,7 +2621,6 @@ impl Connection {
                 ) {
                     return Err(Error::Done);
                 }
-                debug!("USES THE MULTICAST CRYPTO CONTEXT");
                 multicast.get_mc_crypto_open()
             } else {
                 return Err(Error::Multicast(
@@ -3818,7 +3817,7 @@ impl Connection {
 
         let left_before_packing_ack_frame = left;
 
-        // Crate MC_AUTH frame.
+        // Create MC_AUTH frame.
         //
         // Only sent on a multicast authentication path
         // ([`McPathType::Authentication`]). MC_AUTH frames are the first

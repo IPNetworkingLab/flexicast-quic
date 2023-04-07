@@ -172,6 +172,7 @@ fn main() {
     config.set_initial_max_streams_bidi(1_000_000);
     config.set_initial_max_streams_uni(1_000_000);
     config.set_disable_active_migration(true);
+    config.set_active_connection_id_limit(5);
     config.enable_early_data();
     if args.multicast {
         config.set_multipath(true);
@@ -204,6 +205,8 @@ fn main() {
     } else {
         (None, None, None, None)
     };
+
+    debug!("AFTER MULTICAST CHANNEL SETUP");
 
     // Register multicast socket to the poll.
     if let Some(mc_socket) = mc_socket_opt.as_mut() {
@@ -425,7 +428,8 @@ fn main() {
                                 .channel
                                 .get_multicast_attributes()
                                 .unwrap()
-                                .get_mc_space_id().unwrap() as usize,
+                                .get_mc_space_id()
+                                .unwrap() as usize,
                         )
                         .unwrap();
                     debug!("Sets MC_ANNOUNCE data for new client");
@@ -593,7 +597,10 @@ fn main() {
                     panic!("send() failed: {:?}", e);
                 }
 
-                debug!("Multicast written {} bytes", write);
+                debug!(
+                    "Multicast written {} bytes to {:?}",
+                    write, mc_channel.mc_send_addr
+                );
             }
 
             // If symmetric authentication is used alongside multicast, generate
@@ -638,8 +645,8 @@ fn main() {
                     }
 
                     debug!(
-                        "Multicast written {} bytes on authentication channel",
-                        write
+                        "Multicast written {} bytes on authentication channel at address {:?}",
+                        write, mc_auth_addr
                     );
                 }
             }
@@ -872,11 +879,10 @@ fn get_multicast_channel(
         rng.fill(&mut channel_id_auth).unwrap();
         let channel_id = quiche::ConnectionId::from_ref(&channel_id_auth);
 
-        let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
-        let dummy_port = 1239;
+        let dummy_ip = std::net::Ipv4Addr::new(224, 3, 0, 225);
         let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
             dummy_ip,
-            dummy_port + 1,
+            mc_port + 1,
         ));
 
         Some(multicast::McPathInfo {
