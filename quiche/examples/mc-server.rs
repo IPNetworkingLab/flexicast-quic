@@ -905,6 +905,8 @@ fn get_multicast_channel(
     )
     .unwrap();
 
+    assert!(mc_channel.channel.get_multicast_attributes().unwrap().get_mc_pub_key().is_some());
+
     let mc_announce_data = McAnnounceData {
         // channel_id: mc_channel.mc_path_conn_id.0.as_ref().to_vec(),
         channel_id: channel_id_vec,
@@ -923,6 +925,8 @@ fn get_multicast_channel(
         ttl_data,
         is_processed: false,
     };
+
+    println!("MC KEY: {:?}", mc_announce_data.public_key.as_ref());
 
     mc_channel
         .channel

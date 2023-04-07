@@ -1014,7 +1014,8 @@ impl MulticastConnection for Connection {
         {
             // Only allow for asymetric authentication if we have a key in the
             // MC_ANNOUNCE.
-            if mc_announce_data.auth_type == McAuthType::AsymSign &&
+            if matches!(multicast.mc_role, MulticastRole::Client(_)) &&
+                mc_announce_data.auth_type == McAuthType::AsymSign &&
                 multicast.mc_public_key.is_none()
             {
                 return Err(Error::Multicast(MulticastError::McInvalidAuth));
@@ -1657,6 +1658,8 @@ impl MulticastChannelSource {
                 Some(MulticastChannelSource::compute_asymetric_signature_keys()?),
             _ => None,
         };
+
+        println!("Signature eddsa: {}", signature_eddsa.is_some());
 
         conn_server.multicast = Some(MulticastAttributes {
             mc_private_key: signature_eddsa,
