@@ -539,7 +539,7 @@ fn main() {
             file,
             "{} {} {}",
             (stream_id - 1) / 4,
-            time.duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            time.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros(),
             nb_bytes
         )
         .unwrap();

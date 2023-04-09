@@ -39,6 +39,7 @@ use quiche::multicast::McPathType;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
+use quiche::multicast::MulticastRole;
 use std::collections::HashMap;
 use std::time;
 
@@ -448,14 +449,6 @@ fn main() {
                     }
                 }
 
-                // If it is the first client, start the multicast content
-                // directly.
-                if starting_video.is_none() {
-                    starting_video = Some(time::Instant::now());
-                    active_video = true;
-                    info!("Start the video content delivery");
-                }
-
                 client
             } else {
                 match clients.get_mut(&hdr.dcid) {
@@ -508,6 +501,33 @@ fn main() {
                         // handle_stream(client, s, stream_buf,
                         // "examples/root");
                     }
+                }
+            }
+
+            // If it is the first client, start the multicast content
+            // directly.
+            if starting_video.is_none() {
+                // Is the client listening to the multicast content?
+                let uc_server_role = client
+                    .conn
+                    .get_multicast_attributes()
+                    .map(|mc| mc.get_mc_role());
+                println!("Server unicast role: {:?}", uc_server_role);
+                if uc_server_role ==
+                    Some(MulticastRole::ServerUnicast(
+                        multicast::MulticastClientStatus::ListenMcPath,
+                    ))
+                {
+                    starting_video = Some(time::Instant::now());
+                    active_video = true;
+                    info!("Start the video content delivery");
+                }
+
+                // Is multicast disabled?
+                if !args.multicast && client.conn.is_established() {
+                    starting_video = Some(time::Instant::now());
+                    active_video = true;
+                    info!("Start the video content delivery for unicast");
                 }
             }
         }
@@ -564,7 +584,11 @@ fn main() {
                 video_stream_id += 4;
             }
 
-            video_frame_to_quic.push((video_stream_id - 4, time::Instant::now(), previous_nb_bytes));
+            video_frame_to_quic.push((
+                video_stream_id - 4,
+                time::Instant::now(),
+                previous_nb_bytes,
+            ));
             true
         } else {
             false
@@ -657,7 +681,10 @@ fn main() {
         // them on the UDP socket, until quiche reports that there are no more
         // packets to be sent.
         for client in clients.values_mut() {
-            if !active_video && client.conn.is_established() {
+            if !active_video &&
+                starting_video.is_some() &&
+                client.conn.is_established()
+            {
                 let res = client.conn.close(true, 1, &[0, 1]);
                 debug!(
                     "Closing the the connection for {} because no active video.. Res={:?}",
@@ -691,15 +718,16 @@ fn main() {
                 }
 
                 debug!("{} written {} bytes", client.conn.trace_id(), write);
-            }
 
-            // Communication between the unicast session and the multicast
-            // channel.
-            if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                client
-                    .conn
-                    .uc_to_mc_control(&mut mc_channel.channel)
-                    .unwrap();
+                // Communication between the unicast session and the multicast
+                // channel.
+                if let Some(mc_channel) = mc_channel_opt.as_mut() {
+                    debug!("J'appelle le control to multicast");
+                    client
+                        .conn
+                        .uc_to_mc_control(&mut mc_channel.channel)
+                        .unwrap();
+                }
             }
         }
 
@@ -707,7 +735,11 @@ fn main() {
         // (e.g., due to congestion control), we will record an invalid (too
         // early) timestamp.
         if video_frame_to_send {
-            video_frame_to_wire.push((video_stream_id - 4, time::Instant::now(), video_nxt_nb_bytes));
+            video_frame_to_wire.push((
+                video_stream_id - 4,
+                time::Instant::now(),
+                video_nxt_nb_bytes,
+            ));
         }
 
         // Garbage collect closed connections.

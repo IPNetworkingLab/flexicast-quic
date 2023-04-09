@@ -1880,7 +1880,7 @@ impl MulticastChannelSource {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// Client connection ID to client ID mapping. Used by the server to
 /// authenticate message with a symetric signature.
 pub struct McClientIdSource {
@@ -1940,6 +1940,7 @@ impl McClientIdSource {
     }
 }
 
+#[derive(Debug)]
 /// Client ID for the different multicast roles.
 pub enum McClientId {
     /// Clients stores its client ID.
