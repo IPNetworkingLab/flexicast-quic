@@ -28,9 +28,9 @@
 extern crate log;
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::net;
 use std::net::ToSocketAddrs;
-use std::io::Write;
 
 use quiche::multicast::authentication::McAuthentication;
 use quiche::multicast::MulticastError;
@@ -217,7 +217,7 @@ fn main() {
                     // There are no more UDP packets to read, so end the read
                     // loop.
                     if e.kind() == std::io::ErrorKind::WouldBlock {
-                        //debug!("recv() would block");
+                        // debug!("recv() would block");
                         break 'read;
                     }
 
@@ -233,7 +233,10 @@ fn main() {
                 from_mc: None,
             };
 
-            debug!("Received a packet on the unicast channel. Is it closed? {}", conn.is_closed());
+            debug!(
+                "Received a packet on the unicast channel. Is it closed? {}",
+                conn.is_closed()
+            );
 
             // Process potentially coalesced packets.
             let _read = match conn.recv(&mut buf[..len], recv_info) {
@@ -244,7 +247,6 @@ fn main() {
                     continue 'read;
                 },
             };
-
         }
 
         // Read incomming UDP packets from the multicast data socket and feed them
@@ -278,9 +280,12 @@ fn main() {
                     let pn = match conn.mc_get_pn(&buf[..len]) {
                         Ok(v) => v,
                         Err(e) => {
-                            error!("Error when reading the packet number: {:?}", e);
+                            error!(
+                                "Error when reading the packet number: {:?}",
+                                e
+                            );
                             continue 'mc_read;
-                        }
+                        },
                     };
 
                     debug!("Recv data packet with pn={}", pn);
@@ -289,13 +294,18 @@ fn main() {
                     // tag?
                     match conn.mc_verify_sym(&buf[..len], pn) {
                         Ok(()) => true,
-                        Err(quiche::Error::Multicast(MulticastError::McNoAuthPacket)) => {
+                        Err(quiche::Error::Multicast(
+                            MulticastError::McNoAuthPacket,
+                        )) => {
                             // The authentication packet is not received yet.
                             // Store the packet until we receive it.
                             mc_na_packets.insert(pn, buf[..len].to_vec());
                             false
                         },
-                        Err(e) => panic!("Err trying to authenticate with symmetric tag: {:?}", e),
+                        Err(e) => panic!(
+                            "Err trying to authenticate with symmetric tag: {:?}",
+                            e
+                        ),
                     }
                 } else {
                     true
@@ -308,7 +318,7 @@ fn main() {
                         from: peer_addr,
                         from_mc: Some(McPathType::Data),
                     };
-    
+
                     let _read = match conn.mc_recv(&mut buf[..len], recv_info) {
                         Ok(v) => v,
                         Err(e) => {
@@ -316,7 +326,8 @@ fn main() {
                             continue 'mc_read;
                         },
                     };
-                } // Else: it is buffered until we receive the authentication tag.
+                } // Else: it is buffered until we receive the authentication
+                  // tag.
             }
         }
 
@@ -343,7 +354,7 @@ fn main() {
                     from: peer_addr,
                     from_mc: Some(McPathType::Authentication),
                 };
-                
+
                 debug!("Recv a packet on the authentication path. Use {:?} recv_info", recv_info);
 
                 let _read = match conn.mc_recv(&mut buf[..len], recv_info) {
@@ -354,9 +365,11 @@ fn main() {
                     },
                 };
 
-                // Check if some previously non-authenticated packets can now be processed.
+                // Check if some previously non-authenticated packets can now be
+                // processed.
                 let recv_tags = conn.mc_get_client_auth_tags().unwrap();
-                let pn_na_packets: Vec<_> = mc_na_packets.keys().map(|i| *i).collect();
+                let pn_na_packets: Vec<_> =
+                    mc_na_packets.keys().map(|i| *i).collect();
                 for pn in pn_na_packets {
                     if recv_tags.contains(&pn) {
                         // This packet can be authenticated and processed.
@@ -364,8 +377,7 @@ fn main() {
                         match conn.mc_verify_sym(&pkt_na, pn) {
                             Ok(()) => (),
                             Err(quiche::Error::Multicast(MulticastError::McInvalidSign)) => error!("Packet {} has invalid authentication!", pn),
-                            Err(e) => 
-                                error!("Unknown error when authenticating a previously received packet with symmetric tags: {:?}", e)
+                            Err(e) => error!("Unknown error when authenticating a previously received packet with symmetric tags: {:?}", e)
                         }
                         debug!("Can read packet 2 with pn={}", pn);
                         let recv_info = quiche::RecvInfo {
@@ -373,8 +385,9 @@ fn main() {
                             from: peer_addr,
                             from_mc: Some(McPathType::Data),
                         };
-        
-                        let read = match conn.mc_recv(&mut pkt_na[..], recv_info) {
+
+                        let read = match conn.mc_recv(&mut pkt_na[..], recv_info)
+                        {
                             Ok(v) => v,
                             Err(e) => {
                                 error!("Multicast failed: {:?}", e);
@@ -382,9 +395,12 @@ fn main() {
                             },
                         };
                         debug!("Multicast QUIC read {} bytes", read);
-                        debug!("Readable streams: {:?}", conn.readable().collect::<Vec<_>>());
+                        debug!(
+                            "Readable streams: {:?}",
+                            conn.readable().collect::<Vec<_>>()
+                        );
                     }
-                } 
+                }
             }
         }
 
@@ -409,13 +425,27 @@ fn main() {
                     "Create second path. Client addr={:?}. Server addr={:?}",
                     mc_addr, peer_addr
                 );
-                let mc_space_id = conn.create_mc_path(&mc_cid, mc_addr, peer_addr).unwrap();
+                let mc_space_id =
+                    conn.create_mc_path(&mc_cid, mc_addr, peer_addr).unwrap();
                 conn.set_mc_space_id(mc_space_id, McPathType::Data).unwrap();
-                let group_ip =
-                    net::Ipv4Addr::from(mc_announce_data.group_ip.to_owned());
-                let mc_group_sockaddr: net::SocketAddr = net::SocketAddr::V4(
-                    net::SocketAddrV4::new(group_ip, mc_announce_data.udp_port),
-                );
+
+                // If soft-multicast is used by the source, the client will
+                // receive multicast QUIC packets with its unicast
+                // address as destination of the IP packet. Bind the socket to the
+                // local address with the multicast destination port.
+                let mc_group_sockaddr: net::SocketAddr = if mc_announce_data
+                    .is_ipv6
+                {
+                    let ip = socket.local_addr().unwrap().ip();
+                    net::SocketAddr::new(ip, mc_announce_data.udp_port)
+                } else {
+                    let group_ip =
+                        net::Ipv4Addr::from(mc_announce_data.group_ip.to_owned());
+                    net::SocketAddr::V4(net::SocketAddrV4::new(
+                        group_ip,
+                        mc_announce_data.udp_port,
+                    ))
+                };
                 let local_ip = net::Ipv4Addr::new(127, 0, 0, 1);
                 // MC-TODO: join the multicast group.
                 let mut mc_socket =
@@ -424,7 +454,17 @@ fn main() {
                     "Multicast client binds on address: {:?}",
                     mc_group_sockaddr
                 );
-                mc_socket.join_multicast_v4(&group_ip, &local_ip).unwrap();
+                if !mc_announce_data.is_ipv6 {
+                    mc_socket
+                        .join_multicast_v4(
+                            &net::Ipv4Addr::from(
+                                mc_announce_data.group_ip.to_owned(),
+                            ),
+                            &local_ip,
+                        )
+                        .unwrap();
+                }
+
                 poll.registry()
                     .register(
                         &mut mc_socket,
@@ -446,14 +486,22 @@ fn main() {
                 let auth_cid =
                     ConnectionId::from_ref(&mc_announce_auth.channel_id);
                 debug!("Create third path for authentication. Client addr={:?}. Server addr={:?}", mc_addr_auth, peer_addr);
-                let mc_space_id = conn.create_mc_path(&auth_cid, mc_addr_auth, peer_addr)
+                let mc_space_id = conn
+                    .create_mc_path(&auth_cid, mc_addr_auth, peer_addr)
                     .unwrap();
-                conn.set_mc_space_id(mc_space_id, McPathType::Authentication).unwrap();
-                let group_ip =
-                    net::Ipv4Addr::from(mc_announce_auth.group_ip.to_owned());
-                let mc_group_sockaddr = net::SocketAddr::V4(
-                    net::SocketAddrV4::new(group_ip, mc_announce_auth.udp_port),
-                );
+                conn.set_mc_space_id(mc_space_id, McPathType::Authentication)
+                    .unwrap();
+                let mc_group_sockaddr = if mc_announce_auth.is_ipv6 {
+                    let ip = socket.local_addr().unwrap().ip();
+                    net::SocketAddr::new(ip, mc_announce_auth.udp_port)
+                } else {
+                    let group_ip =
+                        net::Ipv4Addr::from(mc_announce_auth.group_ip.to_owned());
+                    net::SocketAddr::V4(net::SocketAddrV4::new(
+                        group_ip,
+                        mc_announce_auth.udp_port,
+                    ))
+                };
                 let local_ip = net::Ipv4Addr::new(127, 0, 0, 1);
                 let mut mc_socket_auth =
                     mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
@@ -461,9 +509,16 @@ fn main() {
                     "Multicast client binds on address for authentication: {:?}",
                     mc_group_sockaddr
                 );
-                mc_socket_auth
-                    .join_multicast_v4(&group_ip, &local_ip)
-                    .unwrap();
+                if !mc_announce_auth.is_ipv6 {
+                    mc_socket_auth
+                        .join_multicast_v4(
+                            &net::Ipv4Addr::from(
+                                mc_announce_auth.group_ip.to_owned(),
+                            ),
+                            &local_ip,
+                        )
+                        .unwrap();
+                }
                 poll.registry()
                     .register(
                         &mut mc_socket_auth,
@@ -482,7 +537,7 @@ fn main() {
                 Ok(v) => v,
 
                 Err(quiche::Error::Done) => {
-                    //debug!("done writing");
+                    // debug!("done writing");
                     break;
                 },
 
@@ -520,7 +575,7 @@ fn main() {
                 continue 'read_stream;
             }
             let mut total = 0;
-            
+
             while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
                 total += read;
                 if fin {
@@ -539,7 +594,9 @@ fn main() {
             file,
             "{} {} {}",
             (stream_id - 1) / 4,
-            time.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros(),
+            time.duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros(),
             nb_bytes
         )
         .unwrap();

@@ -50,6 +50,8 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 
 struct Client {
     conn: quiche::Connection,
+    soft_mc_addr: net::SocketAddr,
+    soft_mc_addr_auth: net::SocketAddr,
 }
 
 type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
@@ -121,6 +123,19 @@ struct Args {
     /// If multicast is disabled, waits for a first unicast client to connect.
     #[clap(short, long = "wait-client")]
     wait_first_client: bool,
+
+    /// Soft-multicast option.
+    /// If set alongside the `--multicast` flag, uses multicast QUIC with
+    /// unicast delivery. This option enables to use multicast QUIC without
+    /// IP multicast (or equivalent) support. The multicast QUIC packets are
+    /// delivered on the unicast address given by the client, using the
+    /// multicast port advertised in the MC_ANNOUNCE data.
+    ///
+    /// For the time beeing, use the `is_ipv6` field of the MC_ANNOUNCE data
+    /// frame to advertise the client if soft multicast is used. This is
+    /// necessary so that the client knows which address they should listen to.
+    #[clap(short = 'u', long = "soft-mc")]
+    soft_mc: bool,
 }
 
 fn main() {
@@ -202,6 +217,7 @@ fn main() {
             authentication,
             args.ttl_data,
             &rng,
+            args.soft_mc,
         )
     } else {
         (None, None, None, None)
@@ -407,7 +423,11 @@ fn main() {
                 )
                 .unwrap();
 
-                let client = Client { conn };
+                let client = Client {
+                    conn,
+                    soft_mc_addr: net::SocketAddr::new(from.ip(), 8889),
+                    soft_mc_addr_auth: net::SocketAddr::new(from.ip(), 8890),
+                };
 
                 clients.insert(scid.clone(), client);
 
@@ -540,9 +560,6 @@ fn main() {
 
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
-        // debug!("What is wrong: {}... {:?} >= {:?}", active_video,
-        // now.duration_since(starting_video.unwrap()),
-        // time::Duration::from_micros(video_nxt_timestamp.unwrap()));
         let video_frame_to_send = if active_video &&
             now.duration_since(starting_video.unwrap()) >=
                 time::Duration::from_micros(video_nxt_timestamp.unwrap())
@@ -611,9 +628,25 @@ fn main() {
                     },
                 };
 
-                if let Err(e) =
-                    mc_socket.send_to(&out[..write], mc_channel.mc_send_addr)
-                {
+                // If soft-multicast is used, send individually to each client.
+                // The SocketAddr is created using the client unicast address and
+                // the multicast destination port.
+                let err = if args.soft_mc {
+                    clients
+                        .values()
+                        .map(|client| {
+                            socket
+                                .send_to(&out[..write], client.soft_mc_addr)
+                                .map(|_| ())
+                        })
+                        .collect::<Result<_, _>>()
+                } else {
+                    mc_socket
+                        .send_to(&out[..write], mc_channel.mc_send_addr)
+                        .map(|_| ())
+                };
+
+                if let Err(e) = err {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
                         debug!("send() would block");
                         break;
@@ -659,7 +692,26 @@ fn main() {
                         },
                     };
 
-                    if let Err(e) = mc_socket.send_to(&out[..write], mc_auth_addr)
+                    // If soft-multicast is used, send individually to each
+                    // client. The SocketAddr is created using
+                    // the client unicast address and
+                    // the multicast destination port.
+                    let err = if args.soft_mc {
+                        clients
+                            .values()
+                            .map(|client| {
+                                socket
+                                    .send_to(&out[..write], client.soft_mc_addr_auth)
+                                    .map(|_| ())
+                            })
+                            .collect::<Result<_, _>>()
+                    } else {
+                        mc_socket
+                            .send_to(&out[..write], mc_auth_addr)
+                            .map(|_| ())
+                    };
+
+                    if let Err(e) = err
                     {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
                             debug!("send() auth would block");
@@ -878,7 +930,7 @@ fn replay_trace(
 
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
-    ttl_data: u64, rng: &SystemRandom,
+    ttl_data: u64, rng: &SystemRandom, soft_mc: bool,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -945,7 +997,7 @@ fn get_multicast_channel(
         channel_id: channel_id_vec,
         path_type: McPathType::Data,
         auth_type: authentication,
-        is_ipv6: false,
+        is_ipv6: soft_mc,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,
         udp_port: mc_port,
@@ -972,7 +1024,7 @@ fn get_multicast_channel(
             channel_id: channel_id_auth.to_vec(),
             path_type: McPathType::Authentication,
             auth_type: McAuthType::None,
-            is_ipv6: false,
+            is_ipv6: soft_mc,
             source_ip: [127, 0, 0, 1],
             group_ip: mc_addr_bytes,
             udp_port: mc_port + 1,
