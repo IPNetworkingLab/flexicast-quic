@@ -4,3 +4,7 @@
 **/*.*qlog
 
 **/*.txt
+**/*.log
+**/*.trace
+**/*.pcap
+perf/venv
