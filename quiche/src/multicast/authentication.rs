@@ -401,6 +401,7 @@ mod tests {
             "/tmp/test_mc_get_pn.txt",
             McAuthType::SymSign,
             false,
+            false,
         )
         .unwrap();
         assert_eq!(mc_pipe.source_send_single_stream(false, None, 0, 1), Ok(0));
@@ -443,6 +444,7 @@ mod tests {
             5,
             "/tmp/test_mc_sym_auth_sign.txt",
             use_auth,
+            false,
             false,
         )
         .unwrap();
@@ -490,7 +492,10 @@ mod tests {
         // Unicast connection stops the communication.
         for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
             assert_eq!(pipe.server.close(false, 0x1234, b"done"), Ok(()));
-            assert_eq!(pipe.server.close(false, 0x1234, b"done"), Err(Error::Done));
+            assert_eq!(
+                pipe.server.close(false, 0x1234, b"done"),
+                Err(Error::Done)
+            );
 
             assert_eq!(pipe.advance(), Ok(()));
             assert_eq!(pipe.advance(), Ok(()));

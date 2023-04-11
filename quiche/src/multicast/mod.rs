@@ -863,7 +863,7 @@ pub trait MulticastConnection {
     /// source.
     fn create_mc_path(
         &mut self, cid: &ConnectionId, client_addr: SocketAddr,
-        server_addr: SocketAddr,
+        server_addr: SocketAddr, to_uc_server: bool,
     ) -> Result<u64>;
 
     /// The unicast server connection sends control messages to the multicast
@@ -1322,7 +1322,7 @@ impl MulticastConnection for Connection {
 
     fn create_mc_path(
         &mut self, cid: &ConnectionId, client_addr: SocketAddr,
-        server_addr: SocketAddr,
+        server_addr: SocketAddr, to_uc_server: bool,
     ) -> Result<u64> {
         if let Some(multicast) = self.multicast.as_ref() {
             if !matches!(multicast.mc_role, MulticastRole::Client(_)) {
@@ -1330,6 +1330,10 @@ impl MulticastConnection for Connection {
                     multicast.mc_role,
                 )));
             }
+        }
+
+        if to_uc_server {
+            todo!();
         }
 
         // Add the connection ID for the client without advertising it to the
@@ -1987,7 +1991,7 @@ pub mod testing {
         /// Generates a new multicast pipe with already defined configuration.
         pub fn new(
             nb_clients: usize, keylog_filename: &str, authentication: McAuthType,
-            use_fec: bool,
+            use_fec: bool, probe_mc_path: bool,
         ) -> Result<MulticastPipe> {
             let mc_client_tp = MulticastClientTp::default();
             let mut server_config =
@@ -2119,7 +2123,12 @@ pub mod testing {
                     let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
 
                     pipe.client
-                        .create_mc_path(&cid, client_addr_2, server_addr)
+                        .create_mc_path(
+                            &cid,
+                            client_addr_2,
+                            server_addr,
+                            probe_mc_path,
+                        )
                         .unwrap();
 
                     let pid_c2s_1 = pipe
@@ -2147,7 +2156,12 @@ pub mod testing {
                         let client_addr_2 = CLIENT_AUTH_ADDR.parse().unwrap();
 
                         pipe.client
-                            .create_mc_path(&cid, client_addr_2, server_addr)
+                            .create_mc_path(
+                                &cid,
+                                client_addr_2,
+                                server_addr,
+                                probe_mc_path,
+                            )
                             .unwrap();
 
                         let pid_c2s_1 = pipe
@@ -2859,6 +2873,7 @@ mod tests {
             "/tmp/test_mc_channel_auth.txt",
             McAuthType::AsymSign,
             false,
+            false,
         );
         assert!(mc_pipe.is_ok());
         let mut mc_pipe = mc_pipe.unwrap();
@@ -2930,9 +2945,14 @@ mod tests {
     /// Tests that the client will correctly generates an MC_NACK to the server.
     fn test_mc_nack() {
         let use_auth = McAuthType::None;
-        let mut mc_pipe =
-            MulticastPipe::new(1, "/tmp/test_mc_nack.txt", use_auth, false)
-                .unwrap();
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_nack.txt",
+            use_auth,
+            false,
+            false,
+        )
+        .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
             64
         } else {
@@ -3000,9 +3020,14 @@ mod tests {
     /// to the client, to ensure that the multicast channel does not timeout.
     fn test_on_mc_timeout() {
         let use_auth = McAuthType::None;
-        let mut mc_pipe =
-            MulticastPipe::new(1, "/tmp/test_on_mc_timeout.txt", use_auth, false)
-                .unwrap();
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_on_mc_timeout.txt",
+            use_auth,
+            false,
+            false,
+        )
+        .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
             64
         } else {
@@ -3229,6 +3254,7 @@ mod tests {
             "/tmp/test_mc_multiple_streams_expire.txt",
             use_auth,
             false,
+            false,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3360,6 +3386,7 @@ mod tests {
             "/tmp/test_mc_client_nack_to_source_and_recovery.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3493,6 +3520,7 @@ mod tests {
             "/tmp/test_mc_fec_reliable_multiple_clients_with_auth.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3646,6 +3674,7 @@ mod tests {
             "/tmp/test_mc_fec_on_mc_timeout.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3813,6 +3842,7 @@ mod tests {
             "/tmp/source_does_not_generate_mc_fec_repair_for_expired.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3978,6 +4008,7 @@ mod tests {
             "/tmp/test_mc_client_first_pn_utility.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4041,6 +4072,7 @@ mod tests {
             "/tmp/test_client_leave_mc_channel.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4110,6 +4142,7 @@ mod tests {
             "/tmp/test_mc_expire_do_not_send_useless.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4187,6 +4220,7 @@ mod tests {
             "/tmp/test_mc_channel_cwnd.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
 
@@ -4236,6 +4270,7 @@ mod tests {
                 "/tmp/test_mc_as_a_service_fallback.txt",
                 use_auth,
                 true,
+                false,
             )
             .unwrap();
             let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4321,6 +4356,7 @@ mod tests {
             "/tmp/test_on_mc_timeout_client.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4423,6 +4459,7 @@ mod tests {
             "/tmp/test_mc_client_id.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
 
@@ -4504,6 +4541,7 @@ mod tests {
             "/tmp/test_mc_authentication_methods.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
 
@@ -4541,6 +4579,7 @@ mod tests {
             "/tmp/test_authentication_methods.txt",
             use_auth,
             true,
+            false,
         )
         .unwrap();
 
@@ -4586,6 +4625,7 @@ mod tests {
             2,
             "/tmp/test_mc_auth_sym_process.txt",
             use_auth,
+            false,
             false,
         )
         .unwrap();
@@ -4711,7 +4751,8 @@ mod tests {
     #[test]
     fn my_test_mc() {
         let auth = McAuthType::SymSign;
-        let mut pipe = MulticastPipe::new(2, "/tmp/bench", auth, false).unwrap();
+        let mut pipe =
+            MulticastPipe::new(2, "/tmp/bench", auth, false, false).unwrap();
 
         let stream = vec![0u8; 1_000_000];
         pipe.mc_channel
@@ -4731,6 +4772,28 @@ mod tests {
             pipe.mc_channel.channel.mc_sym_sign(&clients).unwrap();
             pipe.mc_channel.mc_send_sym_auth(&mut buf[..]).unwrap();
         }
+    }
+
+    #[test]
+    /// The default behaviour of a QUIC-multicast client is to simulate the
+    /// creation of a new path without probing it with the (unicast) server.
+    /// This allows for fewer RTTs to setup the multicast channel. However, due
+    /// to several mechanisms (e.g., NAT), opening the new path at a new address
+    /// (because of multipath) is not always possible. The [`create_mc_path`]
+    /// function is extended to also do the real path probing with the unicast
+    /// server. This test evaluates that the behaviour of the multicast
+    /// extension works as expected even if the unicast server is fully aware of
+    /// the (potentially two) added path(s).
+    fn test_mc_create_mc_paths_probe() {
+        // let use_auth = McAuthType::AsymSign;
+        // let _mc_pipe = MulticastPipe::new(
+        //     2,
+        //     "/tmp/test_mc_create_mc_paths_probe.txt",
+        //     use_auth,
+        //     true,
+        //     true,
+        // )
+        // .unwrap();
     }
 }
 

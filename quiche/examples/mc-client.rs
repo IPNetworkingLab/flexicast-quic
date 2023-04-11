@@ -425,8 +425,14 @@ fn main() {
                     "Create second path. Client addr={:?}. Server addr={:?}",
                     mc_addr, peer_addr
                 );
-                let mc_space_id =
-                    conn.create_mc_path(&mc_cid, mc_addr, peer_addr).unwrap();
+                let mc_space_id = conn
+                    .create_mc_path(
+                        &mc_cid,
+                        mc_addr,
+                        peer_addr,
+                        mc_announce_data.is_ipv6,
+                    )
+                    .unwrap();
                 conn.set_mc_space_id(mc_space_id, McPathType::Data).unwrap();
 
                 // If soft-multicast is used by the source, the client will
@@ -487,7 +493,12 @@ fn main() {
                     ConnectionId::from_ref(&mc_announce_auth.channel_id);
                 debug!("Create third path for authentication. Client addr={:?}. Server addr={:?}", mc_addr_auth, peer_addr);
                 let mc_space_id = conn
-                    .create_mc_path(&auth_cid, mc_addr_auth, peer_addr)
+                    .create_mc_path(
+                        &auth_cid,
+                        mc_addr_auth,
+                        peer_addr,
+                        mc_announce_auth.is_ipv6,
+                    )
                     .unwrap();
                 conn.set_mc_space_id(mc_space_id, McPathType::Authentication)
                     .unwrap();
