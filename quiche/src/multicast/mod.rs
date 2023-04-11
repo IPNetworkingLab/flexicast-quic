@@ -4808,8 +4808,8 @@ mod tests {
     /// extension works as expected even if the unicast server is fully aware of
     /// the (potentially two) added path(s).
     fn test_mc_create_mc_paths_probe() {
-        let use_auth = McAuthType::AsymSign;
-        let _mc_pipe = MulticastPipe::new(
+        let use_auth = McAuthType::SymSign;
+        let mut mc_pipe = MulticastPipe::new(
             2,
             "/tmp/test_mc_create_mc_paths_probe.txt",
             use_auth,
@@ -4817,6 +4817,26 @@ mod tests {
             true,
         )
         .unwrap();
+
+        let stream = vec![0u8; 1_000_000];
+        mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(1, &stream, true)
+            .unwrap();
+        let mut buf = [0u8; 4000];
+
+        let clients: Vec<_> = mc_pipe
+            .unicast_pipes
+            .iter_mut()
+            .map(|(conn, ..)| &mut conn.server)
+            .collect();
+
+        for _ in 0..100 {
+            mc_pipe.mc_channel.mc_send(&mut buf).unwrap();
+            mc_pipe.mc_channel.channel.mc_sym_sign(&clients).unwrap();
+            mc_pipe.mc_channel.mc_send_sym_auth(&mut buf[..]).unwrap();
+        }
     }
 }
 

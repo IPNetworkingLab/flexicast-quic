@@ -3379,10 +3379,12 @@ impl Connection {
         // and need an authentication signature.
         let mut mc_used_auth_packet = McAuthType::None;
         if let Some(multicast) = self.multicast.as_ref() {
-            if let Some(space_id) = multicast.get_mc_space_id() {
-                if space_id == send_pid {
-                    mc_used_auth_packet =
-                        multicast.get_mc_authentication_method();
+            if matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerMulticast) {
+                if let Some(space_id) = multicast.get_mc_space_id() {
+                    if space_id == send_pid {
+                        mc_used_auth_packet =
+                            multicast.get_mc_authentication_method();
+                    }
                 }
             }
         }
@@ -3495,16 +3497,18 @@ impl Connection {
         let mut mc_used_auth_packet = McAuthType::None;
         let mut mc_path_type = None;
         if let Some(multicast) = self.multicast.as_mut() {
-            if let Some(space_id) = multicast.get_mc_space_id() {
-                if space_id == send_pid {
-                    mc_used_auth_packet =
-                        multicast.get_mc_authentication_method();
-                    mc_path_type = Some(McPathType::Data);
-                } else if let Some(auth_space_id) =
-                    multicast.get_mc_auth_space_id()
-                {
-                    if auth_space_id == send_pid {
-                        mc_path_type = Some(McPathType::Authentication);
+            if matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerMulticast) {
+                if let Some(space_id) = multicast.get_mc_space_id() {
+                    if space_id == send_pid {
+                        mc_used_auth_packet =
+                            multicast.get_mc_authentication_method();
+                        mc_path_type = Some(McPathType::Data);
+                    } else if let Some(auth_space_id) =
+                        multicast.get_mc_auth_space_id()
+                    {
+                        if auth_space_id == send_pid {
+                            mc_path_type = Some(McPathType::Authentication);
+                        }
                     }
                 }
             }
@@ -8853,10 +8857,14 @@ impl Connection {
 
         // If multicast is enabled, send packets on the client anywhere but on the
         // multicast path.
-        // MC-TODO: this could be simplified if the client does a [`send_on_path`]
-        // instead of [`send`].
-        if !self.is_server {
-            if let Some(multicast) = self.multicast.as_ref() {
+        // MC-TODO: this could be simplified if the client/unicast server does a
+        // [`send_on_path`] instead of [`send`].
+        if let Some(multicast) = self.multicast.as_ref() {
+            if matches!(
+                multicast.get_mc_role(),
+                multicast::MulticastRole::Client(_) |
+                    multicast::MulticastRole::ServerUnicast(_)
+            ) {
                 if let Some(mc_path) = multicast.get_mc_space_id() {
                     return Ok(self
                         .pkt_num_spaces
