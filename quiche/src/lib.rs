@@ -3411,7 +3411,7 @@ impl Connection {
             left -= written;
 
             // Multicast: generate the authentication signature if needed.
-            if mc_used_auth_packet == McAuthType::AsymSign {
+            if mc_used_auth_packet == McAuthType::AsymSign && self.is_server {
                 let sign_overhead =
                     self.mc_sign_asym(&mut out[done - written..], written)?;
                 done += sign_overhead;
@@ -8042,6 +8042,54 @@ impl Connection {
             },
 
             frame::Frame::PathResponse { data } => {
+                // For soft-multicast, add the path information once the path has
+                // been accepted by the unicast server.
+                if self.multicast.is_some() &&
+                    matches!(
+                        self.multicast.as_ref().unwrap().get_mc_role(),
+                        multicast::MulticastRole::Client(_)
+                    ) &&
+                    self.multicast
+                        .as_ref()
+                        .unwrap()
+                        .get_mc_announce_data_path()
+                        .unwrap()
+                        .is_ipv6
+                {
+                    let challenge_pending = self
+                        .paths
+                        .iter_mut()
+                        .find(|(_, p)| p.has_pending_challenge(data));
+                    if let Some((pid, p)) = challenge_pending {
+                        let local_addr = p.local_addr();
+                        let peer_addr = p.peer_addr();
+                        self.set_active(local_addr, peer_addr, true)?;
+                        let path = self.paths.get_mut(pid)?;
+                        let pid =
+                            path.active_dcid_seq.ok_or(Error::InvalidState)?;
+
+                        // Add the first packet number of interest for the new
+                        // path if possible.
+                        if let Some((Some(first_pn), ..)) =
+                            self.multicast.as_ref().unwrap().mc_last_expired
+                        {
+                            self.pkt_num_spaces
+                                .get_mut_or_create(
+                                    packet::Epoch::Application,
+                                    pid,
+                                )
+                                .recv_pkt_need_ack
+                                .insert(first_pn..first_pn + 1);
+                        }
+
+                        // // Find the multicast path that received a response.
+                        // self.multicast
+                        //     .as_mut()
+                        //     .unwrap()
+                        //     .set_mc_space_id_from_addr(local_addr, pid)?;
+                    }
+                }
+
                 self.paths.on_response_received(data)?;
             },
 

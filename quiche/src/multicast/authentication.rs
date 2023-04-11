@@ -367,7 +367,6 @@ impl McSymAuth for Connection {
                 let mut signatures = Vec::with_capacity(map.cid_to_id.len());
 
                 for (i, conn) in clients.iter().enumerate() {
-                    println!("Will sign: {:?}", multicast.get_mc_space_id());
                     let sign = conn.mc_sign_sym_slice(data, pn)?;
                     signatures.push(McSymSignature {
                         mc_client_id: i as u64,

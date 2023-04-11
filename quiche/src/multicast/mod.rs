@@ -682,6 +682,23 @@ impl MulticastAttributes {
         }
         false
     }
+
+    /// Sets the [`MulticastAttributes::mc_space_id`] or
+    /// [`MulticastAttributes::mc_space_id_auth`] depending on the given local
+    /// address from the quiche library.
+    pub fn set_mc_space_id_from_addr(
+        &mut self, local_addr: SocketAddr, pid: u64,
+    ) -> Result<()> {
+        for mc_data in self.mc_announce_data.iter() {
+            let ip = std::net::Ipv4Addr::from(mc_data.group_ip.to_owned());
+            if local_addr.ip() == ip && local_addr.port() == mc_data.udp_port {
+                self.set_mc_space_id(pid as usize, mc_data.path_type);
+                return Ok(());
+            }
+        }
+
+        Err(Error::Multicast(MulticastError::McPath))
+    }
 }
 
 impl Default for MulticastAttributes {
@@ -1332,10 +1349,6 @@ impl MulticastConnection for Connection {
             }
         }
 
-        if to_uc_server {
-            todo!();
-        }
-
         // Add the connection ID for the client without advertising it to the
         // unicast server.
         let mut reset_token = [0; 16];
@@ -1351,12 +1364,18 @@ impl MulticastConnection for Connection {
         let conn_id = cid.as_ref().to_owned();
         self.ids.new_dcid(conn_id.into(), seq_num, reset_token, 0)?;
 
-        // Create a new path on the client.
-        let pid = self.create_path_on_client(client_addr, server_addr)?;
-        self.set_active(client_addr, server_addr, true)?;
+        let pid = if to_uc_server {
+            self.probe_path(client_addr, server_addr)
+        } else {
+            // Create a new path on the client.
+            let pid = self.create_path_on_client(client_addr, server_addr)?;
+            self.set_active(client_addr, server_addr, true)?;
 
-        let path = self.paths.get_mut(pid)?;
-        let pid = path.active_dcid_seq.ok_or(Error::InvalidState)?;
+            let path = self.paths.get_mut(pid)?;
+            let pid = path.active_dcid_seq.ok_or(Error::InvalidState)?;
+
+            Ok(pid)
+        }?;
 
         // Add the first packet number of interest for the new path if possible.
         if let Some((Some(first_pn), ..)) =
@@ -2143,6 +2162,8 @@ pub mod testing {
                         .unwrap()
                         .set_mc_space_id(pid_c2s_1, McPathType::Data);
 
+                    assert_eq!(pipe.advance(), Ok(()));
+
                     if let Some(mc_data) = pipe
                         .client
                         .multicast
@@ -2174,6 +2195,8 @@ pub mod testing {
                             pid_c2s_1,
                             McPathType::Authentication,
                         );
+
+                        assert_eq!(pipe.advance(), Ok(()));
                     }
 
                     assert_eq!(pipe.advance(), Ok(()));
@@ -4785,15 +4808,15 @@ mod tests {
     /// extension works as expected even if the unicast server is fully aware of
     /// the (potentially two) added path(s).
     fn test_mc_create_mc_paths_probe() {
-        // let use_auth = McAuthType::AsymSign;
-        // let _mc_pipe = MulticastPipe::new(
-        //     2,
-        //     "/tmp/test_mc_create_mc_paths_probe.txt",
-        //     use_auth,
-        //     true,
-        //     true,
-        // )
-        // .unwrap();
+        let use_auth = McAuthType::AsymSign;
+        let _mc_pipe = MulticastPipe::new(
+            2,
+            "/tmp/test_mc_create_mc_paths_probe.txt",
+            use_auth,
+            true,
+            true,
+        )
+        .unwrap();
     }
 }
 
