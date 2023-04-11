@@ -560,7 +560,23 @@ fn main() {
                 },
             };
 
-            if let Err(e) = socket.send_to(&out[..write], send_info.to) {
+            // Depending on the send_info, use the associated socket.
+            // For simplicity use IPv4 only and match on the udp source port.
+            let port_from = send_info.from.port();
+            let socket_from = if port_from == socket.local_addr().unwrap().port()
+            {
+                &mut socket
+            } else if port_from == mc_addr.port() {
+                mc_socket_opt.as_mut().unwrap()
+            } else if port_from == mc_addr_auth.port() {
+                mc_socket_auth_opt
+                    .as_mut()
+                    .expect("Multicast auth socket is None")
+            } else {
+                panic!("Unknown port: {}", port_from);
+            };
+
+            if let Err(e) = socket_from.send_to(&out[..write], send_info.to) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
                     // debug!("send() would block");
                     break;
