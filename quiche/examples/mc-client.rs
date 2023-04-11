@@ -81,11 +81,11 @@ fn main() {
 
     // Multicast data.
     let mut mc_socket_opt: Option<mio::net::UdpSocket> = None;
-    let mc_addr = "127.0.0.1:8889".parse().unwrap();
+    let mc_addr = "0.0.0.0:8889".parse().unwrap();
 
     // Multicast authentication.
     let mut mc_socket_auth_opt: Option<mio::net::UdpSocket> = None;
-    let mc_addr_auth = "127.0.0.1:8890".parse().unwrap();
+    let mc_addr_auth = "0.0.0.0:8890".parse().unwrap();
 
     // In a multicast communication where symmetric tags is used as authentication
     // mechanism, the client application is responsible of buffering
