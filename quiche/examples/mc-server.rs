@@ -77,7 +77,7 @@ struct Args {
 
     /// Sent video frames results (timestamps sent to QUIC).
     #[clap(
-        short = 's',
+        short = 'q',
         long,
         value_parser,
         default_value = "mc-server-result-quic.txt"
@@ -136,6 +136,11 @@ struct Args {
     /// necessary so that the client knows which address they should listen to.
     #[clap(short = 'u', long = "soft-mc")]
     soft_mc: bool,
+
+    /// Source address/port of the server.
+    #[clap(short = 's', long, default_value = "127.0.0.1:4433")]
+    addr: net::SocketAddr,
+
 }
 
 fn main() {
@@ -153,7 +158,7 @@ fn main() {
 
     // Create the UDP listening socket, and register it with the event loop.
     let mut socket =
-        mio::net::UdpSocket::bind("127.0.0.1:4433".parse().unwrap()).unwrap();
+        mio::net::UdpSocket::bind(args.addr).unwrap();
     poll.registry()
         .register(&mut socket, mio::Token(0), mio::Interest::READABLE)
         .unwrap();
