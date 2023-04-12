@@ -1273,7 +1273,7 @@ impl MulticastConnection for Connection {
             let multicast = self.multicast.as_ref()?;
             let timeout = multicast.mc_last_recv_time? +
                 time::Duration::from_millis(
-                    multicast.get_mc_announce_data_path()?.ttl_data,
+                    multicast.get_mc_announce_data_path()?.ttl_data * 3,
                 );
             if timeout <= now {
                 Some(time::Duration::ZERO)
@@ -4412,7 +4412,7 @@ mod tests {
         let now = time::Instant::now();
         let expired_timer = now +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.ttl_data * 3 + 100,
             ); // Margin
 
         let pipe = &mut mc_pipe.unicast_pipes[0].0;

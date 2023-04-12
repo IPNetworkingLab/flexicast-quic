@@ -33,7 +33,9 @@ use std::net;
 use std::net::ToSocketAddrs;
 
 use quiche::multicast::authentication::McAuthentication;
+use quiche::multicast::MulticastClientStatus;
 use quiche::multicast::MulticastError;
+use quiche::multicast::MulticastRole;
 use ring::rand::*;
 
 use clap::Parser;
@@ -190,8 +192,12 @@ fn main() {
 
     debug!("written {}", write);
 
-    loop {
-        poll.poll(&mut events, conn.timeout()).unwrap();
+    'main_loop: loop {
+        let now = std::time::Instant::now();
+        let timers = [conn.timeout(), conn.mc_timeout(now)];
+        let timeout = timers.iter().flatten().min().copied();
+        debug!("Timeout: {:?}", timeout);
+        poll.poll(&mut events, timeout).unwrap();
 
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
@@ -207,6 +213,19 @@ fn main() {
                     "Is connection closed after timeout: {}",
                     conn.is_closed()
                 );
+
+                let now = std::time::Instant::now();
+                if conn.on_mc_timeout(now) ==
+                    Err(quiche::Error::Multicast(
+                        multicast::MulticastError::McInvalidRole(
+                            MulticastRole::Client(
+                                MulticastClientStatus::Leaving(true),
+                            ),
+                        ),
+                    ))
+                {
+                    break 'main_loop;
+                }
                 break 'read;
             }
 

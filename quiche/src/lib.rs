@@ -3379,7 +3379,10 @@ impl Connection {
         // and need an authentication signature.
         let mut mc_used_auth_packet = McAuthType::None;
         if let Some(multicast) = self.multicast.as_ref() {
-            if matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerMulticast) {
+            if matches!(
+                multicast.get_mc_role(),
+                multicast::MulticastRole::ServerMulticast
+            ) {
                 if let Some(space_id) = multicast.get_mc_space_id() {
                     if space_id == send_pid {
                         mc_used_auth_packet =
@@ -3497,7 +3500,10 @@ impl Connection {
         let mut mc_used_auth_packet = McAuthType::None;
         let mut mc_path_type = None;
         if let Some(multicast) = self.multicast.as_mut() {
-            if matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerMulticast) {
+            if matches!(
+                multicast.get_mc_role(),
+                multicast::MulticastRole::ServerMulticast
+            ) {
                 if let Some(space_id) = multicast.get_mc_space_id() {
                     if space_id == send_pid {
                         mc_used_auth_packet =
