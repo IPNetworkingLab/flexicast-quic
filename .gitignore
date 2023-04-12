@@ -8,3 +8,5 @@
 **/*.trace
 **/*.pcap
 perf/venv
+**/*.png
+**/*.pdf
