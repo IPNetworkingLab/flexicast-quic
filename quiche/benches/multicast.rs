@@ -18,7 +18,7 @@ const BENCH_STEP_RECV: usize = 10;
 
 fn setup_mc(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastPipe {
     let mut pipe =
-        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false).unwrap();
+        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false).unwrap();
 
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
@@ -69,9 +69,8 @@ fn mc_channel_bench(c: &mut Criterion) {
     // {
     for &auth in &[McAuthType::SymSign] {
         for nb_recv in (1..2).chain(
-            (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1)
-                .step_by(BENCH_STEP_RECV))
-        {
+            (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV),
+        ) {
             group.bench_with_input(
                 BenchmarkId::from_parameter(McTuple::from((auth, nb_recv))),
                 &(auth, nb_recv),
@@ -119,8 +118,8 @@ fn uc_channel_bench(c: &mut Criterion) {
     let buf = vec![0; BENCH_STREAM_SIZE];
 
     let mut group = c.benchmark_group("unicast-1G");
-    for nb_recv in (1..2).chain(
-        (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV))
+    for nb_recv in (1..2)
+        .chain((BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV))
     {
         group.bench_with_input(
             BenchmarkId::from_parameter(nb_recv),
@@ -149,6 +148,6 @@ fn uc_channel_bench(c: &mut Criterion) {
     }
 }
 
-//criterion_group!(benches, mc_channel_bench, uc_channel_bench);
-criterion_group!(benches, mc_channel_bench);
+criterion_group!(benches, mc_channel_bench, uc_channel_bench);
+// criterion_group!(benches, mc_channel_bench);
 criterion_main!(benches);

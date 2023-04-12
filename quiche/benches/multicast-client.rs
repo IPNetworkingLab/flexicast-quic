@@ -38,7 +38,7 @@ fn setup_mc(
     Option<(VecDeque<Vec<u8>>, RecvInfo)>,
 ) {
     let mut pipe =
-        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false).unwrap();
+        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false).unwrap();
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
     // Generate the packets all at once.
@@ -54,10 +54,10 @@ fn setup_mc(
         if auth == McAuthType::SymSign {
             let mut buf = vec![0u8; 1500];
             let clients: Vec<_> = pipe
-            .unicast_pipes
-            .iter_mut()
-            .map(|(conn, ..)| &mut conn.server)
-            .collect();
+                .unicast_pipes
+                .iter_mut()
+                .map(|(conn, ..)| &mut conn.server)
+                .collect();
             pipe.mc_channel.channel.mc_sym_sign(&clients).unwrap();
             match pipe.mc_channel.mc_send_sym_auth(&mut buf) {
                 Ok(w) => packets_auth.push_back(buf[..w].to_vec()),
@@ -140,8 +140,8 @@ fn mc_client_bench(c: &mut Criterion) {
     let buf = vec![0; BENCH_STREAM_SIZE];
 
     let mut group = c.benchmark_group("multicast-client-1G");
-    // for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::SymSign] {
-        // for &auth in &[McAuthType::AsymSign, McAuthType::None] {
+    // for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::SymSign]
+    // { for &auth in &[McAuthType::AsymSign, McAuthType::None] {
     for &auth in &[McAuthType::SymSign] {
         for nb_recv in (1..2).chain(
             (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV),
@@ -202,7 +202,7 @@ fn uc_client_bench(c: &mut Criterion) {
     }
 }
 
-// criterion_group!(benches, mc_client_bench, uc_client_bench);
-criterion_group!(benches, mc_client_bench);
+criterion_group!(benches, mc_client_bench, uc_client_bench);
+// criterion_group!(benches, mc_client_bench);
 // criterion_group!(benches, uc_client_bench);
 criterion_main!(benches);
