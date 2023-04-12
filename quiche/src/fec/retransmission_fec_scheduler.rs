@@ -6,6 +6,7 @@ pub struct RetransmissionFecScheduler {
     client_losses: HashMap<Vec<u8>, RangeSet>,
     n_repair_to_send: u64,
     new_nack: bool,
+    max_n_repair_in_flight: u64,
 }
 
 impl RetransmissionFecScheduler {
@@ -15,6 +16,7 @@ impl RetransmissionFecScheduler {
             client_losses: HashMap::new(),
             n_repair_to_send: 0,
             new_nack: false,
+            max_n_repair_in_flight: 5,
         }
     }
 
@@ -43,7 +45,7 @@ impl RetransmissionFecScheduler {
             self.client_losses = HashMap::new();
         }
 
-        self.n_repair_in_flight < self.n_repair_to_send
+        self.n_repair_in_flight < self.n_repair_to_send && self.n_repair_in_flight < self.max_n_repair_in_flight
 
         // trace!("fec_scheduler dgrams_to_emit={} stream_to_emit={}
         // n_repair_in_flight={} max_repair_data={}",

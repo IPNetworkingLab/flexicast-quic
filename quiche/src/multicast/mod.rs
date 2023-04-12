@@ -4838,6 +4838,18 @@ mod tests {
             mc_pipe.mc_channel.mc_send_sym_auth(&mut buf[..]).unwrap();
         }
     }
+
+    #[test]
+    /// This test evaluates how a client behaves when it joins an ongoing
+    /// multicast channel using path probing to create the multicast paths. The
+    /// path creation and path listening is (at the time of writing this test)
+    /// decoupled, creating a [`crate::Error::MultipathViolation`]. The client
+    /// sends an MP_ACK (which serves as an MC_NACK) to get the data that has
+    /// not been received (at the time the client was not listening the channel)
+    /// and that is not expired yet. However, this MP_ACK is received by the
+    /// unicast server while the path is not fully established, creating a
+    /// [`Error::MultipathViolation`].
+    fn test_mc_client_send_mp_ack_with_probe() {}
 }
 
 pub mod authentication;

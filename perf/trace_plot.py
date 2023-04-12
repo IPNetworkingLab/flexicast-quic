@@ -56,17 +56,22 @@ def plot_distribution(all_files_labels, trace):
     
     ax.set_xlabel("Lateness [ms]")
     ax.set_ylabel("CDF")
-    ax.set_title("Lateness on loopback 1 client")
+    ax.set_title("Lateness 1 client (VMs INGI)")
     plt.legend()
     plt.savefig("cdf_lat.pdf")
 
 
 if __name__ == "__main__":
+    # all_files_labels = [
+    #     ("/home/louisna/multicast-quic/perf/client-asym.trace", "Asymetric MC"),
+    #     ("/home/louisna/multicast-quic/perf/client-sym.trace", "Symetric MC"),
+    #     ("/home/louisna/multicast-quic/perf/client-none.trace", "No auth MC"),
+    #     ("/home/louisna/multicast-quic/perf/client-uc.trace", "Unicast"),
+    # ]
     all_files_labels = [
-        ("/home/louisna/multicast-quic/perf/client-asym.trace", "Asymetric MC"),
-        ("/home/louisna/multicast-quic/perf/client-sym.trace", "Symetric MC"),
-        ("/home/louisna/multicast-quic/perf/client-none.trace", "No auth MC"),
-        ("/home/louisna/multicast-quic/perf/client-uc.trace", "Unicast"),
+        # ("/home/louisna/multicast-quic/quiche/client-4000.trace", "Timeout 4000 (200 samples)"),
+        ("/home/louisna/multicast-quic/quiche/client-4000-400.trace", "Timeout 4000 (400 samples)"),
+        ("/home/louisna/multicast-quic/quiche/client-4000-1000.trace", "Timeout 4000 (1000 samples)"),
     ]
     trace = "/home/louisna/multicast-quic/perf/tixeo_trace.repr"
     plot_distribution(all_files_labels, trace)

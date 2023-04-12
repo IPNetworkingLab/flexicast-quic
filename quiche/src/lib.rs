@@ -4719,46 +4719,6 @@ impl Connection {
         let can_send_fec = self.emit_fec &&
             (self.paths.get(send_pid)?.fec_only ||
                 self.paths.iter().all(|(_, p)| !p.fec_only));
-        // Create REPAIR frame.
-        if can_send_fec &&
-            pkt_type == packet::Type::Short &&
-            self.should_send_repair_symbol(send_pid)? &&
-            self.fec_encoder.can_send_repair_symbols()
-        {
-            if let Some(md) =
-                self.latest_metadata_of_symbol_with_fec_protected_frames
-            {
-                if left >=
-                    octets::varint_len(0x32) +
-                        self.fec_encoder.next_repair_symbol_size(md)?
-                {
-                    match self
-                        .fec_encoder
-                        .generate_and_serialize_repair_symbol_up_to(md)
-                    {
-                        Ok(rs) => {
-                            let frame =
-                                frame::Frame::Repair { repair_symbol: rs };
-                            if push_frame_to_pkt!(b, frames, frame, left) {
-                                in_flight = true;
-                                self.fec_scheduler
-                                    .as_mut()
-                                    .unwrap()
-                                    .sent_repair_symbol();
-                                ack_eliciting = true;
-                                self.repair_symbols_sent_count += 1;
-                            } else {
-                                return Err(BufferTooShort);
-                            }
-                        },
-                        Err(EncoderError::NoSymbolToGenerate) => (), /* because generate_up_to may not be able to generate even if can_generate returned true */
-                        Err(err) => {
-                            return Err(Error::from(err));
-                        },
-                    }
-                }
-            }
-        }
 
         if should_protect_packet {
             left = std::cmp::min(
@@ -4999,6 +4959,47 @@ impl Connection {
 
         // Alternate trying to send DATAGRAMs next time.
         self.emit_dgram = !dgram_emitted;
+
+        // Create REPAIR frame.
+        if can_send_fec &&
+            pkt_type == packet::Type::Short &&
+            self.should_send_repair_symbol(send_pid)? &&
+            self.fec_encoder.can_send_repair_symbols()
+        {
+            if let Some(md) =
+                self.latest_metadata_of_symbol_with_fec_protected_frames
+            {
+                if left >=
+                    octets::varint_len(0x32) +
+                        self.fec_encoder.next_repair_symbol_size(md)?
+                {
+                    match self
+                        .fec_encoder
+                        .generate_and_serialize_repair_symbol_up_to(md)
+                    {
+                        Ok(rs) => {
+                            let frame =
+                                frame::Frame::Repair { repair_symbol: rs };
+                            if push_frame_to_pkt!(b, frames, frame, left) {
+                                in_flight = true;
+                                self.fec_scheduler
+                                    .as_mut()
+                                    .unwrap()
+                                    .sent_repair_symbol();
+                                ack_eliciting = true;
+                                self.repair_symbols_sent_count += 1;
+                            } else {
+                                return Err(BufferTooShort);
+                            }
+                        },
+                        Err(EncoderError::NoSymbolToGenerate) => (), /* because generate_up_to may not be able to generate even if can_generate returned true */
+                        Err(err) => {
+                            return Err(Error::from(err));
+                        },
+                    }
+                }
+            }
+        }
 
         // If no other ack-eliciting frame is sent, include a PING frame
         // - if PTO probe needed; OR
@@ -8302,6 +8303,22 @@ impl Connection {
 
                 let handshake_status = self.handshake_status();
 
+                // If this is a multicast MC_NACK packet, the server may have no
+                // idea of the additional paths.
+                if let Some(multicast) = self.multicast.as_mut() {
+                    if matches!(
+                        multicast.get_mc_role(),
+                        multicast::MulticastRole::ServerUnicast(_)
+                    ) {
+                        if let Some(mc_space_id) = multicast.get_mc_space_id() {
+                            if mc_space_id as u64 == space_identifier {
+                                multicast.set_mc_nack_ranges(Some(&ranges))?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
                 // If an endpoint receives an ACK_MP frame with a packet number
                 // space ID which was never issued by endpoints (i.e., with a
                 // sequence number larger than the largest one advertised), it
@@ -8338,16 +8355,6 @@ impl Connection {
                             )?;
                         self.lost_count += lost_packets;
                         self.lost_bytes += lost_bytes as u64;
-                    } else if self.is_server {
-                        if let Some(multicast) = self.multicast.as_mut() {
-                            if let Some(mc_space_id) = multicast.get_mc_space_id()
-                            {
-                                if mc_space_id as u64 == space_identifier {
-                                    multicast
-                                        .set_mc_nack_ranges(Some(&ranges))?;
-                                }
-                            }
-                        }
                     }
                 }
 
