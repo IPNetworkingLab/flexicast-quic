@@ -41,6 +41,7 @@ use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
 use std::collections::HashMap;
+use quiche_apps::mc_app;
 use std::time;
 
 use clap::Parser;
@@ -61,6 +62,11 @@ struct Args {
     /// Activate multicast extension.
     #[clap(short = 'm', long)]
     multicast: bool,
+
+    /// Multicast application.
+    /// Choices are: tixeo, file.
+    #[clap(long = "app", default_value = "tixeo")]
+    use_case: mc_app::McApp,
 
     /// Video replay trace.
     #[clap(short = 't', long = "trace", value_parser)]
