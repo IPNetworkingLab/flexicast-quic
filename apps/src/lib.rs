@@ -31,4 +31,3 @@ pub mod args;
 pub mod client;
 pub mod common;
 pub mod sendto;
-pub mod multicast;
