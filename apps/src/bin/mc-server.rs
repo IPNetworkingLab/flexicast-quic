@@ -167,10 +167,10 @@ fn main() {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
     config
-        .load_cert_chain_from_pem_file("examples/cert.crt")
+        .load_cert_chain_from_pem_file("src/bin/cert.crt")
         .unwrap();
     config
-        .load_priv_key_from_pem_file("examples/cert.key")
+        .load_priv_key_from_pem_file("src/bin/cert.key")
         .unwrap();
 
     config
@@ -1058,10 +1058,10 @@ pub fn get_test_mc_config(
 ) -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
     config
-        .load_cert_chain_from_pem_file("examples/cert.crt")
+        .load_cert_chain_from_pem_file("src/bin/cert.crt")
         .unwrap();
     config
-        .load_priv_key_from_pem_file("examples/cert.key")
+        .load_priv_key_from_pem_file("src/bin/cert.key")
         .unwrap();
     config
         .set_application_protos(&[b"proto1", b"proto2"])

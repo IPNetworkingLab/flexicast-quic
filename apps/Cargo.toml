@@ -32,6 +32,7 @@ libc = "0.2"
 nix = "0"
 slab = "0.4"
 itertools = "0.10"
+clap = { version = "4.1", features = ["derive"] }
 
 [lib]
 crate-type = ["lib"]
