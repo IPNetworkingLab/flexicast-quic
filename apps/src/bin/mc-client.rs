@@ -28,7 +28,6 @@
 extern crate log;
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::net;
 use std::net::ToSocketAddrs;
 
@@ -36,6 +35,11 @@ use quiche::multicast::authentication::McAuthentication;
 use quiche::multicast::MulticastClientStatus;
 use quiche::multicast::MulticastError;
 use quiche::multicast::MulticastRole;
+use quiche_apps::mc_app;
+use quiche_apps::mc_app::file_transfer::FileClient;
+use quiche_apps::mc_app::tixeo::TixeoClient;
+use quiche_apps::mc_app::AppDataClient;
+use quiche_apps::mc_app::McApp;
 use ring::rand::*;
 
 use clap::Parser;
@@ -64,6 +68,10 @@ struct Args {
     /// Address of the server.
     #[clap()]
     address: String,
+
+    /// Application over (multicast) QUIC.
+    #[clap(long = "app", default_value = "tixeo")]
+    app: mc_app::McApp,
 }
 
 fn main() {
@@ -73,8 +81,12 @@ fn main() {
 
     let args = Args::parse();
 
-    // Video output.
-    let mut video_frame_recv = Vec::with_capacity(100);
+    // Application handler.
+    let mut app_handler = match args.app {
+        McApp::Tixeo =>
+            AppDataClient::Tixeo(TixeoClient::new(&args.output_latency)),
+        McApp::File => AppDataClient::File(FileClient::new()),
+    };
 
     let mc_client_params = multicast::MulticastClientTp {
         ipv4_channels_allowed: true,
@@ -626,27 +638,14 @@ fn main() {
                 total += read;
                 if fin {
                     debug!("Add a new stream in the list of received.");
-                    let now = std::time::SystemTime::now();
-                    video_frame_recv.push((s, now, total));
+                    app_handler.on_stream_complete(&buf[..total], s);
                 }
             }
         }
     }
 
-    // Record the timestamp results.
-    let mut file = std::fs::File::create(&args.output_latency).unwrap();
-    for (stream_id, time, nb_bytes) in &video_frame_recv {
-        writeln!(
-            file,
-            "{} {} {}",
-            (stream_id - 1) / 4,
-            time.duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_micros(),
-            nb_bytes
-        )
-        .unwrap();
-    }
+    // Record the application results.
+    app_handler.on_finish();
 }
 
 fn hex_dump(buf: &[u8]) -> String {
