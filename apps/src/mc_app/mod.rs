@@ -1,7 +1,10 @@
 use std::str::FromStr;
+use std::time;
 
 use self::file_transfer::FileClient;
+use self::file_transfer::FileServer;
 use self::tixeo::TixeoClient;
+use self::tixeo::TixeoServer;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppError {
@@ -53,6 +56,7 @@ pub enum AppDataClient {
 }
 
 impl AppDataClient {
+    #[inline]
     pub fn on_init(&mut self) {
         match self {
             AppDataClient::Tixeo(_) => (),
@@ -60,6 +64,7 @@ impl AppDataClient {
         }
     }
 
+    #[inline]
     pub fn on_stream_complete(&mut self, buf: &[u8], stream_id: u64) {
         match self {
             AppDataClient::Tixeo(t) => t.on_stream_complete(buf, stream_id),
@@ -67,10 +72,107 @@ impl AppDataClient {
         }
     }
 
+    #[inline]
     pub fn on_finish(&mut self) {
         match self {
             AppDataClient::Tixeo(t) => t.on_finish(),
             AppDataClient::File(_f) => (),
+        }
+    }
+}
+
+pub enum AppDataServer {
+    Tixeo(TixeoServer),
+
+    File(FileServer),
+}
+
+impl AppDataServer {
+    #[inline]
+    pub fn on_init(&mut self) {
+        match self {
+            Self::Tixeo(_) => (),
+            Self::File(_) => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn next_timeout(&self) -> Option<time::Duration> {
+        match self {
+            Self::Tixeo(t) => t.next_timeout(),
+            _ => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn app_has_started(&self) -> bool {
+        match self {
+            Self::Tixeo(t) => t.app_has_started(),
+            _ => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn app_has_finished(&self) -> bool {
+        match self {
+            Self::Tixeo(t) => t.app_has_finished(),
+            _ => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        match self {
+            Self::Tixeo(t) => t.is_active(),
+            _ => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn start_content_delivery(&mut self) {
+        match self {
+            Self::Tixeo(t) => t.start_content_delivery(),
+            _ => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn on_sent_to_quic(&mut self) {
+        match self {
+            Self::Tixeo(t) => t.on_sent_to_quic(),
+            _ => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn on_sent_to_wire(&mut self) {
+        match self {
+            Self::Tixeo(t) => t.on_sent_to_wire(),
+            _ => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn on_finish(&self) {
+        match self {
+            Self::Tixeo(t) => t.on_finish(),
+            _ => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn get_app_data(&self) -> (u64, Vec<u8>) {
+        match self {
+            Self::Tixeo(t) => t.get_app_data(),
+            _ => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn gen_nxt_app_data(&mut self) {
+        match self {
+            Self::Tixeo(t) => t.gen_nxt_app_data(),
+            _ => todo!(),
         }
     }
 }

@@ -7,3 +7,13 @@ impl FileClient {
         Self {}
     }
 }
+
+pub struct FileServer {
+
+}
+
+impl FileServer {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
