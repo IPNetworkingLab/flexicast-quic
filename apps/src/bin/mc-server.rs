@@ -701,11 +701,18 @@ fn main() {
         // packets to be sent.
         for client in clients.values_mut() {
             if app_handler.app_has_finished() && client.conn.is_established() {
-                let res = client.conn.close(true, 1, &[0, 1]);
-                debug!(
-                    "Closing the the connection for {} because no active video.. Res={:?}",
-                    client.conn.trace_id(), res,
-                );
+                let can_close = if let Some(mc_channel) = mc_channel_opt.as_ref() {
+                    mc_channel.channel.mc_no_stream_active()
+                } else {
+                    true
+                };
+                if can_close {
+                    let res = client.conn.close(true, 1, &[0, 1]);
+                    debug!(
+                        "Closing the the connection for {} because no active video.. Res={:?}",
+                        client.conn.trace_id(), res,
+                    );
+                }
             }
             loop {
                 let (write, send_info) = match client.conn.send(&mut out) {

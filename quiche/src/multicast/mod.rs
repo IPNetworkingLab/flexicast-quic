@@ -901,6 +901,16 @@ pub trait MulticastConnection {
     fn set_mc_space_id(
         &mut self, space_id: u64, path_type: McPathType,
     ) -> Result<()>;
+
+    /// Whether it is safe to close the multicast channel.
+    /// In this context, 'safe' means that all stream data reached its
+    /// expiration timer, i.e., that no data can be retransmitted on the
+    /// multicast channel.
+    ///
+    /// Attention: this function returns true whether no streams are expirable.
+    /// This means that the function can return true even before the multicast
+    /// content started.
+    fn mc_no_stream_active(&self) -> bool;
 }
 
 impl MulticastConnection for Connection {
@@ -1530,6 +1540,10 @@ impl MulticastConnection for Connection {
         } else {
             Err(Error::Multicast(MulticastError::McDisabled))
         }
+    }
+
+    fn mc_no_stream_active(&self) -> bool {
+        self.multicast.is_some() && self.streams.len() == 0
     }
 }
 

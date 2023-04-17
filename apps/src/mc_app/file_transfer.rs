@@ -5,7 +5,7 @@
 
 use std::io::Write;
 use std::time::SystemTime;
-use std::time::{self,};
+use std::time;
 
 pub struct FileClient {
     chunk_recv: Vec<(u64, SystemTime, Vec<u8>)>,

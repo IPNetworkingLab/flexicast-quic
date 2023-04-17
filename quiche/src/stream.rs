@@ -632,7 +632,6 @@ impl StreamMap {
     }
 
     /// Returns the number of active streams in the map.
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.streams.len()
     }
