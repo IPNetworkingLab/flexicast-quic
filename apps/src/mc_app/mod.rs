@@ -175,6 +175,14 @@ impl AppDataServer {
             _ => todo!(),
         }
     }
+
+    #[inline]
+    pub fn should_send_app_data(&self) -> bool {
+        match self {
+            Self::Tixeo(t) => t.should_send_app_data(),
+            _ => todo!(),
+        }
+    }
 }
 
 pub mod file_transfer;

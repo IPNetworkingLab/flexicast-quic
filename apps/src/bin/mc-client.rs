@@ -400,7 +400,7 @@ fn main() {
                 // processed.
                 let recv_tags = conn.mc_get_client_auth_tags().unwrap();
                 let pn_na_packets: Vec<_> =
-                    mc_na_packets.keys().map(|i| *i).collect();
+                    mc_na_packets.keys().copied().collect();
                 for pn in pn_na_packets {
                     if recv_tags.contains(&pn) {
                         // This packet can be authenticated and processed.

@@ -27,8 +27,6 @@
 #[macro_use]
 extern crate log;
 
-use std::io::BufRead;
-use std::io::Write;
 use std::net;
 
 use quiche::multicast;
@@ -40,9 +38,12 @@ use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
-use std::collections::HashMap;
 use quiche_apps::mc_app;
-use std::time;
+use quiche_apps::mc_app::file_transfer::FileServer;
+use quiche_apps::mc_app::tixeo::TixeoServer;
+use quiche_apps::mc_app::AppDataServer;
+use quiche_apps::mc_app::McApp;
+use std::collections::HashMap;
 
 use clap::Parser;
 use ring::rand::*;
@@ -66,7 +67,7 @@ struct Args {
     /// Multicast application.
     /// Choices are: tixeo, file.
     #[clap(long = "app", default_value = "tixeo")]
-    use_case: mc_app::McApp,
+    app: mc_app::McApp,
 
     /// Video replay trace.
     #[clap(short = 't', long = "trace", value_parser)]
@@ -146,7 +147,6 @@ struct Args {
     /// Source address/port of the server.
     #[clap(short = 's', long, default_value = "127.0.0.1:4433")]
     addr: net::SocketAddr,
-
 }
 
 fn main() {
@@ -156,6 +156,18 @@ fn main() {
 
     let args = Args::parse();
 
+    let mut app_handler = match args.app {
+        McApp::Tixeo => AppDataServer::Tixeo(TixeoServer::new(
+            args.trace_filename.as_deref(),
+            args.nb_frames,
+            args.delay_no_replay,
+            args.wait_first_client,
+            &args.result_quic_trace,
+            &args.result_wire_trace,
+        )),
+        McApp::File => AppDataServer::File(FileServer::new()),
+    };
+
     let authentication = args.authentication;
 
     // Setup the event loop.
@@ -163,8 +175,7 @@ fn main() {
     let mut events = mio::Events::with_capacity(1024);
 
     // Create the UDP listening socket, and register it with the event loop.
-    let mut socket =
-        mio::net::UdpSocket::bind(args.addr).unwrap();
+    let mut socket = mio::net::UdpSocket::bind(args.addr).unwrap();
     poll.registry()
         .register(&mut socket, mio::Token(0), mio::Interest::READABLE)
         .unwrap();
@@ -243,50 +254,18 @@ fn main() {
             .unwrap();
     }
 
-    // Get multicast content: video sending timestamp and frame sizes.
-    let video_content = replay_trace(
-        args.trace_filename.as_deref(),
-        args.nb_frames,
-        args.delay_no_replay,
-    )
-    .unwrap();
-    let mut video_content = video_content.iter();
-    let (mut starting_video, mut active_video) = if args.wait_first_client {
-        (None, false)
-    } else {
-        (Some(time::Instant::now()), true)
-    };
-    let mut sent_frames = 0;
-    let mut video_stream_id = 1;
-
-    // Timestamp when we send the frame to QUIC.
-    let mut video_frame_to_quic = Vec::with_capacity(video_content.len());
-
-    // Timestamp when we actually send the frame on the wire.
-    let mut video_frame_to_wire = Vec::with_capacity(video_content.len());
-
-    let (video_nxt_timestamp, mut video_nxt_nb_bytes) =
-        *video_content.next().unwrap();
-
-    let mut video_nxt_timestamp = Some(video_nxt_timestamp);
-
     loop {
         // Find the shorter timeout from all the active connections.
         //
         // TODO: use event loop that properly supports timers
         let mut timeout = clients.values().filter_map(|c| c.conn.timeout()).min();
 
-        if let Some(start) = starting_video {
-            let timeout_video =
-                get_next_timeout_video(start, video_nxt_timestamp);
-
-            timeout = [timeout, timeout_video].iter().flatten().min().copied();
-
-            debug!(
-                "Next timeout in {:?} (video is {:?})",
-                timeout, timeout_video
-            );
+        if let Some(app_timeout) = app_handler.next_timeout() {
+            timeout =
+                [timeout, Some(app_timeout)].iter().flatten().min().copied();
         }
+
+        trace!("Next timeout in {:?}", timeout);
         poll.poll(&mut events, timeout).unwrap();
 
         // Read incoming UDP packets from the socket and feed them to quiche,
@@ -461,7 +440,7 @@ fn main() {
                                 .get_multicast_attributes()
                                 .unwrap()
                                 .get_mc_space_id()
-                                .unwrap() as usize,
+                                .unwrap(),
                         )
                         .unwrap();
                     debug!("Sets MC_ANNOUNCE data for new client");
@@ -537,7 +516,7 @@ fn main() {
 
             // If it is the first client, start the multicast content
             // directly.
-            if starting_video.is_none() {
+            if !app_handler.app_has_started() {
                 // Is the client listening to the multicast content?
                 let uc_server_role = client
                     .conn
@@ -549,16 +528,12 @@ fn main() {
                         multicast::MulticastClientStatus::ListenMcPath,
                     ))
                 {
-                    starting_video = Some(time::Instant::now());
-                    active_video = true;
-                    info!("Start the video content delivery");
+                    app_handler.start_content_delivery();
                 }
 
                 // Is multicast disabled?
                 if !args.multicast && client.conn.is_established() {
-                    starting_video = Some(time::Instant::now());
-                    active_video = true;
-                    info!("Start the video content delivery for unicast");
+                    app_handler.start_content_delivery();
                 }
             }
         }
@@ -571,52 +546,30 @@ fn main() {
 
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
-        let video_frame_to_send = if active_video &&
-            now.duration_since(starting_video.unwrap()) >=
-                time::Duration::from_micros(video_nxt_timestamp.unwrap())
-        {
+        let app_data_to_send = if app_handler.should_send_app_data() {
             // Send the video frame in a dedicated stream.
-            let video_data = vec![0u8; video_nxt_nb_bytes];
+            let (stream_id, video_data) = app_handler.get_app_data();
 
             if let Some(mc_channel) = mc_channel_opt.as_mut() {
                 // Either once if multicast is enabled...
                 mc_channel
                     .channel
-                    .stream_send(video_stream_id, &video_data, true)
+                    .stream_send(stream_id, &video_data, true)
                     .unwrap();
             } else {
                 // ... or for every client otherwise.
                 clients.values_mut().for_each(|client| {
                     client
                         .conn
-                        .stream_send(video_stream_id, &video_data, true)
+                        .stream_send(stream_id, &video_data, true)
                         .unwrap();
                 });
             }
-            debug!(
-                "Sent video frame {} in stream {}",
-                sent_frames, video_stream_id
-            );
+            debug!("Sent application frame in stream {}", stream_id);
 
             // Get next video values.
-            let previous_nb_bytes = video_nxt_nb_bytes;
-            if sent_frames >= video_content.len() {
-                active_video = false;
-                info!("SET ACTIVE VIDEO TO FALSE");
-                video_nxt_timestamp = None;
-            } else {
-                sent_frames += 1;
-                let (tmp1, tmp2) = video_content.next().unwrap().to_owned();
-                video_nxt_timestamp = Some(tmp1);
-                video_nxt_nb_bytes = tmp2;
-                video_stream_id += 4;
-            }
-
-            video_frame_to_quic.push((
-                video_stream_id - 4,
-                time::Instant::now(),
-                previous_nb_bytes,
-            ));
+            app_handler.on_sent_to_quic();
+            app_handler.gen_nxt_app_data();
             true
         } else {
             false
@@ -643,14 +596,11 @@ fn main() {
                 // The SocketAddr is created using the client unicast address and
                 // the multicast destination port.
                 let err = if args.soft_mc {
-                    clients
-                        .values()
-                        .map(|client| {
-                            socket
-                                .send_to(&out[..write], client.soft_mc_addr)
-                                .map(|_| ())
-                        })
-                        .collect::<Result<_, _>>()
+                    clients.values().try_for_each(|client| {
+                        socket
+                            .send_to(&out[..write], client.soft_mc_addr)
+                            .map(|_| ())
+                    })
                 } else {
                     mc_socket
                         .send_to(&out[..write], mc_channel.mc_send_addr)
@@ -708,22 +658,16 @@ fn main() {
                     // the client unicast address and
                     // the multicast destination port.
                     let err = if args.soft_mc {
-                        clients
-                            .values()
-                            .map(|client| {
-                                socket
-                                    .send_to(&out[..write], client.soft_mc_addr_auth)
-                                    .map(|_| ())
-                            })
-                            .collect::<Result<_, _>>()
+                        clients.values().try_for_each(|client| {
+                            socket
+                                .send_to(&out[..write], client.soft_mc_addr_auth)
+                                .map(|_| ())
+                        })
                     } else {
-                        mc_socket
-                            .send_to(&out[..write], mc_auth_addr)
-                            .map(|_| ())
+                        mc_socket.send_to(&out[..write], mc_auth_addr).map(|_| ())
                     };
 
-                    if let Err(e) = err
-                    {
+                    if let Err(e) = err {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
                             debug!("send() auth would block");
                             break;
@@ -744,10 +688,7 @@ fn main() {
         // them on the UDP socket, until quiche reports that there are no more
         // packets to be sent.
         for client in clients.values_mut() {
-            if !active_video &&
-                starting_video.is_some() &&
-                client.conn.is_established()
-            {
+            if app_handler.app_has_finished() && client.conn.is_established() {
                 let res = client.conn.close(true, 1, &[0, 1]);
                 debug!(
                     "Closing the the connection for {} because no active video.. Res={:?}",
@@ -797,12 +738,8 @@ fn main() {
         // This could be improved. In case QUIC is unable to send the video frame
         // (e.g., due to congestion control), we will record an invalid (too
         // early) timestamp.
-        if video_frame_to_send {
-            video_frame_to_wire.push((
-                video_stream_id - 4,
-                time::Instant::now(),
-                video_nxt_nb_bytes,
-            ));
+        if app_data_to_send {
+            app_handler.on_sent_to_wire();
         }
 
         // Garbage collect closed connections.
@@ -824,35 +761,13 @@ fn main() {
         // more client. This may cause a problem if clients keep arriving
         // even after the video transmission is complete, but this is a proof of
         // concept... right?
-        if clients.is_empty() && !active_video && starting_video.is_some() {
+        if clients.is_empty() && app_handler.app_has_finished() {
             break;
         }
     }
 
     // Record the timestamp results.
-    let mut file = std::fs::File::create(&args.result_wire_trace).unwrap();
-    for (stream_id, time, nb_bytes) in &video_frame_to_wire {
-        writeln!(
-            file,
-            "{} {} {}",
-            (stream_id - 1) / 4,
-            time.duration_since(starting_video.unwrap()).as_micros(),
-            nb_bytes,
-        )
-        .unwrap();
-    }
-
-    let mut file = std::fs::File::create(&args.result_quic_trace).unwrap();
-    for (stream_id, time, nb_bytes) in &video_frame_to_quic {
-        writeln!(
-            file,
-            "{} {} {}",
-            (stream_id - 1) / 4,
-            time.duration_since(starting_video.unwrap()).as_micros(),
-            nb_bytes
-        )
-        .unwrap();
-    }
+    app_handler.on_finish();
 }
 
 /// Generate a stateless retry token.
@@ -909,34 +824,6 @@ fn validate_token<'a>(
     }
 
     Some(quiche::ConnectionId::from_ref(&token[addr.len()..]))
-}
-
-fn replay_trace(
-    filepath: Option<&str>, limit: Option<u64>, delay_no_replay: u64,
-) -> Result<Vec<(u64, usize)>, std::io::Error> {
-    if let Some(filepath) = filepath {
-        let file = std::fs::File::open(filepath)?;
-        let buf_reader = std::io::BufReader::new(file);
-
-        let v = buf_reader
-            .lines()
-            .map(|line| {
-                let line = line?;
-
-                let mut tab = line[1..].split(",");
-                let timestamp: u64 = tab.next().unwrap().parse().unwrap();
-                let nb_bytes: usize = tab.next().unwrap().parse().unwrap();
-
-                Ok((timestamp, nb_bytes))
-            })
-            .collect::<Result<Vec<(u64, usize)>, std::io::Error>>()?;
-
-        Ok(v[..limit.unwrap_or(v.len() as u64) as usize].into())
-    } else {
-        Ok((0..limit.unwrap_or(1000))
-            .map(|i| (delay_no_replay * i, 1000))
-            .collect())
-    }
 }
 
 fn get_multicast_channel(
@@ -1094,22 +981,4 @@ pub fn get_test_mc_config(
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     config.set_fec_symbol_size(1280 - 64); // MC-TODO: make dynamic with auth.
     config
-}
-
-fn get_next_timeout_video(
-    start_video: time::Instant, next_video: Option<u64>,
-) -> Option<time::Duration> {
-    let now = time::Instant::now();
-    match next_video {
-        // Some(v) => Some(time::Duration::from_micros(
-        //     v.saturating_sub((now.duration_since(start_video)).as_micros() as
-        // u64), )),
-        Some(v) => Some(
-            start_video
-                .checked_add(time::Duration::from_micros(v))
-                .unwrap()
-                .duration_since(now),
-        ),
-        None => None,
-    }
 }

@@ -1,19 +1,15 @@
-pub struct FileClient {
-    
-}
+pub struct FileClient {}
 
 impl FileClient {
     pub fn new() -> Self {
-        Self {}
+        todo!()
     }
 }
 
-pub struct FileServer {
-
-}
+pub struct FileServer {}
 
 impl FileServer {
     pub fn new() -> Self {
-        Self {}
+        todo!()
     }
 }

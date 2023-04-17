@@ -90,15 +90,12 @@ impl TixeoServer {
     pub fn next_timeout(&self) -> Option<time::Duration> {
         if let Some(start) = self.start_video {
             let now = time::Instant::now();
-            match self.nxt_timestamp {
-                Some(v) => Some(
-                    start
-                        .checked_add(time::Duration::from_micros(v))
-                        .unwrap()
-                        .duration_since(now),
-                ),
-                None => None,
-            }
+            self.nxt_timestamp.map(|v| {
+                start
+                    .checked_add(time::Duration::from_micros(v))
+                    .unwrap()
+                    .duration_since(now)
+            })
         } else {
             None
         }
@@ -115,13 +112,14 @@ impl TixeoServer {
     }
 
     pub fn gen_nxt_app_data(&mut self) {
+        self.sent_frames += 1;
+        debug!("next app data: {} {}", self.sent_frames, self.frames.len());
         if self.sent_frames >= self.frames.len() {
             trace!("Set active video to false");
             self.active_video = false;
             self.nxt_timestamp = None;
             self.nxt_nb_bytes = 0;
         } else {
-            self.sent_frames += 1;
             let (tmp1, tmp2) = self.frames[self.sent_frames];
             self.nxt_timestamp = Some(tmp1);
             self.nxt_nb_bytes = tmp2;
@@ -185,6 +183,14 @@ impl TixeoServer {
     pub fn is_active(&self) -> bool {
         self.active_video
     }
+
+    #[inline]
+    pub fn should_send_app_data(&self) -> bool {
+        let now = time::Instant::now();
+        self.is_active() &&
+            now.duration_since(self.start_video.unwrap()) >=
+                time::Duration::from_micros(self.nxt_timestamp.unwrap())
+    }
 }
 
 fn replay_trace(
@@ -199,7 +205,7 @@ fn replay_trace(
             .map(|line| {
                 let line = line?;
 
-                let mut tab = line[1..].split(",");
+                let mut tab = line[1..].split(',');
                 let timestamp: u64 = tab.next().unwrap().parse().unwrap();
                 let nb_bytes: usize = tab.next().unwrap().parse().unwrap();
 
