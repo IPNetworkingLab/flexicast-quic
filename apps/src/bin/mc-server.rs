@@ -27,8 +27,8 @@
 #[macro_use]
 extern crate log;
 
-use std::net;
 use std::io;
+use std::net;
 
 use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
@@ -44,6 +44,7 @@ use quiche_apps::mc_app::file_transfer::FileServer;
 use quiche_apps::mc_app::tixeo::TixeoServer;
 use quiche_apps::mc_app::AppDataServer;
 use quiche_apps::mc_app::McApp;
+use quiche_apps::sendto::*;
 use std::collections::HashMap;
 
 use clap::Parser;
@@ -155,6 +156,10 @@ struct Args {
     /// Only used for the multicast channel.
     #[clap(long = "pacing")]
     pacing: Option<u16>,
+
+    /// Disable GSO. Only used for multicast.
+    #[clap(long = "disable-gso-mc")]
+    disable_gso_mc: bool,
 }
 
 fn main() {
@@ -187,6 +192,7 @@ fn main() {
     };
 
     let authentication = args.authentication;
+    let mut enable_gso_mc = false;
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -272,6 +278,13 @@ fn main() {
             .unwrap();
 
         // Add pacing if enabled.
+        enable_gso_mc = if args.disable_gso_mc {
+            false
+        } else {
+            detect_gso(&mc_socket, MAX_DATAGRAM_SIZE)
+        };
+        trace!("GSO detected for mc: {}", enable_gso_mc);
+        
         if args.pacing.is_some() {
             set_txtime_sockopt(&mc_socket).unwrap();
         }
@@ -603,7 +616,7 @@ fn main() {
             (mc_socket_opt.as_mut(), mc_channel_opt.as_mut())
         {
             loop {
-                let write = match mc_channel.mc_send(&mut out) {
+                let (write, send_info) = match mc_channel.mc_send(&mut out) {
                     Ok(v) => v,
                     Err(quiche::Error::Done) => {
                         debug!("Multicast done writing");
@@ -625,9 +638,8 @@ fn main() {
                             .map(|_| ())
                     })
                 } else {
-                    mc_socket
-                        .send_to(&out[..write], mc_channel.mc_send_addr)
-                        .map(|_| ())
+                    // Use pacing socket.
+                    send_to(&mc_socket, &out[..write], &send_info, MAX_DATAGRAM_SIZE, args.pacing.is_some(), enable_gso_mc).map(|_| ())
                 };
 
                 if let Err(e) = err {
@@ -1020,7 +1032,7 @@ pub fn get_test_mc_config(
 /// packet transmission time in the sendmsg syscall.
 ///
 /// Note that this socket option is set only on linux platforms.
-///_
+/// _
 /// Copied from `src/quiche-server.rs`.
 #[cfg(target_os = "linux")]
 fn set_txtime_sockopt(sock: &mio::net::UdpSocket) -> io::Result<()> {

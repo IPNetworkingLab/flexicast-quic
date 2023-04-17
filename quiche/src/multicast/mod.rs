@@ -14,6 +14,7 @@ use crate::ranges;
 use crate::ranges::RangeSet;
 use crate::recovery::multicast::MulticastRecovery;
 use crate::CongestionControlAlgorithm;
+use crate::SendInfo;
 use networkcoding::source_symbol_metadata_from_u64;
 use ring::rand;
 use ring::rand::SecureRandom;
@@ -1894,10 +1895,12 @@ impl MulticastChannelSource {
     ///
     /// MC-TODO: only Ed25519 is used at the moment.
     /// The last bytes of the packet contain the signature.
-    pub fn mc_send(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.channel
-            .send_on_path(buf, Some(self.mc_path_peer), Some(self.mc_path_peer))
-            .map(|(written, _)| written)
+    pub fn mc_send(&mut self, buf: &mut [u8]) -> Result<(usize, SendInfo)> {
+        self.channel.send_on_path(
+            buf,
+            Some(self.mc_path_peer),
+            Some(self.mc_path_peer),
+        )
     }
 
     /// Equivalent of the [`MulticastChannelSource::mc_send`] method but for
@@ -2240,7 +2243,7 @@ pub mod testing {
             &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
             mc_buf: &mut [u8],
         ) -> Result<usize> {
-            let written = self.mc_channel.mc_send(&mut mc_buf[..])?;
+            let (written, _) = self.mc_channel.mc_send(&mut mc_buf[..])?;
 
             // This is not optimal but it works...
             let client_loss = if let Some(client_loss) = client_loss {
@@ -2928,7 +2931,7 @@ mod tests {
         mc_channel.channel.stream_send(1, &data, true).unwrap();
         let res = mc_channel.mc_send(&mut mc_buf[..]);
         assert!(res.is_ok());
-        let written = res.unwrap();
+        let (written, _) = res.unwrap();
 
         let recv_info = RecvInfo {
             from: server_addr,
@@ -3020,7 +3023,7 @@ mod tests {
 
         // The source multicast sends multiple packets. The second is lost to
         // trigger the nack.
-        let res = mc_channel.mc_send(&mut mc_buf[..]);
+        let res = mc_channel.mc_send(&mut mc_buf[..]).map(|(w, _)| w);
         assert_eq!(res, Ok(1350));
         let written = res.unwrap();
 
@@ -3028,11 +3031,11 @@ mod tests {
         assert_eq!(res, Ok(written - signature_len));
 
         // Second packet... lost
-        let res = mc_channel.mc_send(&mut mc_buf[..]);
+        let res = mc_channel.mc_send(&mut mc_buf[..]).map(|(w, _)| w);
         assert_eq!(res, Ok(1350));
 
         // Third packet... received.
-        let res = mc_channel.mc_send(&mut mc_buf[..]);
+        let res = mc_channel.mc_send(&mut mc_buf[..]).map(|(w, _)| w);
         assert_eq!(res, Ok(1350));
         let written = res.unwrap();
 
