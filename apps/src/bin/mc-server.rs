@@ -28,6 +28,7 @@
 extern crate log;
 
 use std::net;
+use std::io;
 
 use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
@@ -149,6 +150,11 @@ struct Args {
     /// Source address/port of the server.
     #[clap(short = 's', long, default_value = "127.0.0.1:4433")]
     addr: net::SocketAddr,
+
+    /// Set the pacing of the multicast channel in Mbps. Disabled by default.
+    /// Only used for the multicast channel.
+    #[clap(long = "pacing")]
+    pacing: Option<u16>,
 }
 
 fn main() {
@@ -259,11 +265,16 @@ fn main() {
 
     debug!("AFTER MULTICAST CHANNEL SETUP");
 
-    // Register multicast socket to the poll.
     if let Some(mc_socket) = mc_socket_opt.as_mut() {
+        // Register multicast socket to the poll.
         poll.registry()
             .register(mc_socket, mio::Token(1), mio::Interest::READABLE)
             .unwrap();
+
+        // Add pacing if enabled.
+        if args.pacing.is_some() {
+            set_txtime_sockopt(&mc_socket).unwrap();
+        }
     }
 
     loop {
@@ -701,7 +712,8 @@ fn main() {
         // packets to be sent.
         for client in clients.values_mut() {
             if app_handler.app_has_finished() && client.conn.is_established() {
-                let can_close = if let Some(mc_channel) = mc_channel_opt.as_ref() {
+                let can_close = if let Some(mc_channel) = mc_channel_opt.as_ref()
+                {
                     mc_channel.channel.mc_no_stream_active()
                 } else {
                     true
@@ -1000,4 +1012,39 @@ pub fn get_test_mc_config(
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     config.set_fec_symbol_size(1280 - 64); // MC-TODO: make dynamic with auth.
     config
+}
+
+/// Set SO_TXTIME socket option.
+///
+/// This socket option is set to send to kernel the outgoing UDP
+/// packet transmission time in the sendmsg syscall.
+///
+/// Note that this socket option is set only on linux platforms.
+///_
+/// Copied from `src/quiche-server.rs`.
+#[cfg(target_os = "linux")]
+fn set_txtime_sockopt(sock: &mio::net::UdpSocket) -> io::Result<()> {
+    use nix::sys::socket::setsockopt;
+    use nix::sys::socket::sockopt::TxTime;
+    use std::os::unix::io::AsRawFd;
+
+    let config = nix::libc::sock_txtime {
+        clockid: libc::CLOCK_MONOTONIC,
+        flags: 0,
+    };
+
+    setsockopt(sock.as_raw_fd(), TxTime, &config)?;
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_txtime_sockopt(_: &mio::net::UdpSocket) -> io::Result<()> {
+    use std::io::Error;
+    use std::io::ErrorKind;
+
+    Err(Error::new(
+        ErrorKind::Other,
+        "Not supported on this platform",
+    ))
 }
