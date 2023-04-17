@@ -69,9 +69,11 @@ struct Args {
     #[clap(long = "app", default_value = "tixeo")]
     app: mc_app::McApp,
 
-    /// Video replay trace.
-    #[clap(short = 't', long = "trace", value_parser)]
-    trace_filename: Option<String>,
+    /// File to transfer.
+    /// For Tixeo, this is the trace of the video.
+    /// For the file transfer, this is the file to send to the clients.
+    #[clap(short = 'f', long = "file", value_parser)]
+    filepath: Option<String>,
 
     /// Sent video frames results (timestamps sent on the wire).
     #[clap(
@@ -158,14 +160,24 @@ fn main() {
 
     let mut app_handler = match args.app {
         McApp::Tixeo => AppDataServer::Tixeo(TixeoServer::new(
-            args.trace_filename.as_deref(),
+            args.filepath.as_deref(),
             args.nb_frames,
             args.delay_no_replay,
             args.wait_first_client,
             &args.result_quic_trace,
             &args.result_wire_trace,
         )),
-        McApp::File => AppDataServer::File(FileServer::new()),
+        McApp::File => AppDataServer::File(
+            FileServer::new(
+                args.filepath.as_deref(),
+                args.nb_frames,
+                args.wait_first_client,
+                &args.result_quic_trace,
+                &args.result_wire_trace,
+                1100,
+            )
+            .unwrap(),
+        ),
     };
 
     let authentication = args.authentication;

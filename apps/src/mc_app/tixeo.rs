@@ -113,7 +113,6 @@ impl TixeoServer {
 
     pub fn gen_nxt_app_data(&mut self) {
         self.sent_frames += 1;
-        debug!("next app data: {} {}", self.sent_frames, self.frames.len());
         if self.sent_frames >= self.frames.len() {
             trace!("Set active video to false");
             self.active_video = false;

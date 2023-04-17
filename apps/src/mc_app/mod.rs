@@ -68,7 +68,7 @@ impl AppDataClient {
     pub fn on_stream_complete(&mut self, buf: &[u8], stream_id: u64) {
         match self {
             AppDataClient::Tixeo(t) => t.on_stream_complete(buf, stream_id),
-            AppDataClient::File(_f) => (),
+            AppDataClient::File(f) => f.on_stream_complete(buf, stream_id),
         }
     }
 
@@ -76,7 +76,7 @@ impl AppDataClient {
     pub fn on_finish(&mut self) {
         match self {
             AppDataClient::Tixeo(t) => t.on_finish(),
-            AppDataClient::File(_f) => (),
+            AppDataClient::File(f) => f.on_finish(),
         }
     }
 }
@@ -92,7 +92,7 @@ impl AppDataServer {
     pub fn on_init(&mut self) {
         match self {
             Self::Tixeo(_) => (),
-            Self::File(_) => todo!(),
+            Self::File(_) => (),
         }
     }
 
@@ -100,7 +100,7 @@ impl AppDataServer {
     pub fn next_timeout(&self) -> Option<time::Duration> {
         match self {
             Self::Tixeo(t) => t.next_timeout(),
-            _ => todo!(),
+            Self::File(f) => f.next_timeout(),
         }
     }
 
@@ -108,7 +108,7 @@ impl AppDataServer {
     pub fn app_has_started(&self) -> bool {
         match self {
             Self::Tixeo(t) => t.app_has_started(),
-            _ => todo!(),
+            Self::File(f) => f.app_has_started(),
         }
     }
 
@@ -116,7 +116,7 @@ impl AppDataServer {
     pub fn app_has_finished(&self) -> bool {
         match self {
             Self::Tixeo(t) => t.app_has_finished(),
-            _ => todo!(),
+            Self::File(f) => f.app_has_finished(),
         }
     }
 
@@ -124,7 +124,7 @@ impl AppDataServer {
     pub fn is_active(&self) -> bool {
         match self {
             Self::Tixeo(t) => t.is_active(),
-            _ => todo!(),
+            Self::File(f) => f.is_active(),
         }
     }
 
@@ -132,7 +132,7 @@ impl AppDataServer {
     pub fn start_content_delivery(&mut self) {
         match self {
             Self::Tixeo(t) => t.start_content_delivery(),
-            _ => todo!(),
+            Self::File(f) => f.start_content_delivery(),
         }
     }
 
@@ -140,7 +140,7 @@ impl AppDataServer {
     pub fn on_sent_to_quic(&mut self) {
         match self {
             Self::Tixeo(t) => t.on_sent_to_quic(),
-            _ => todo!(),
+            Self::File(f) => f.on_sent_to_quic(),
         }
     }
 
@@ -148,7 +148,7 @@ impl AppDataServer {
     pub fn on_sent_to_wire(&mut self) {
         match self {
             Self::Tixeo(t) => t.on_sent_to_wire(),
-            _ => todo!(),
+            Self::File(f) => f.on_sent_to_wire(),
         }
     }
 
@@ -156,7 +156,7 @@ impl AppDataServer {
     pub fn on_finish(&self) {
         match self {
             Self::Tixeo(t) => t.on_finish(),
-            _ => todo!(),
+            Self::File(f) => f.on_finish(),
         }
     }
 
@@ -164,7 +164,7 @@ impl AppDataServer {
     pub fn get_app_data(&self) -> (u64, Vec<u8>) {
         match self {
             Self::Tixeo(t) => t.get_app_data(),
-            _ => todo!(),
+            Self::File(f) => f.get_app_data(),
         }
     }
 
@@ -172,7 +172,7 @@ impl AppDataServer {
     pub fn gen_nxt_app_data(&mut self) {
         match self {
             Self::Tixeo(t) => t.gen_nxt_app_data(),
-            _ => todo!(),
+            Self::File(f) => f.gen_nxt_app_data(),
         }
     }
 
@@ -180,7 +180,7 @@ impl AppDataServer {
     pub fn should_send_app_data(&self) -> bool {
         match self {
             Self::Tixeo(t) => t.should_send_app_data(),
-            _ => todo!(),
+            Self::File(f) => f.should_send_app_data(),
         }
     }
 }

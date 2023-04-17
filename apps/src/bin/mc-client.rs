@@ -85,7 +85,7 @@ fn main() {
     let mut app_handler = match args.app {
         McApp::Tixeo =>
             AppDataClient::Tixeo(TixeoClient::new(&args.output_latency)),
-        McApp::File => AppDataClient::File(FileClient::new()),
+        McApp::File => AppDataClient::File(FileClient::new(&args.output_latency)),
     };
 
     let mc_client_params = multicast::MulticastClientTp {
