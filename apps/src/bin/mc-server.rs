@@ -613,17 +613,30 @@ fn main() {
             let app_data_to_send = if app_handler.should_send_app_data() {
                 // Send the video frame in a dedicated stream.
                 let (stream_id, video_data) = app_handler.get_app_data();
+                let mut can_go_to_next = true;
 
                 let to_send = if let Some(mc_channel) = mc_channel_opt.as_mut() {
                     // Either once if multicast is enabled...
-                    match mc_channel.channel.stream_send(
+                    let writen = match mc_channel.channel.stream_send(
                         stream_id,
                         &video_data,
                         true,
                     ) {
-                        Ok(_) => true,
-                        Err(quiche::Error::Done) => false,
+                        Ok(v) => Some(v),
+                        Err(quiche::Error::Done) => None,
                         Err(e) => panic!("Other error: {:?}", e),
+                    };
+                    debug!("WRITEN AUTANT: {:?}", writen);
+
+                    if writen != Some(video_data.len()) {
+                        can_go_to_next = false;
+                    }
+
+                    if let Some(v) = writen {
+                        app_handler.stream_writen(v);
+                        true
+                    } else {
+                        false
                     }
                 } else {
                     // ... or for every client otherwise.
@@ -644,7 +657,7 @@ fn main() {
                 );
 
                 // Get next video values.
-                if to_send {
+                if can_go_to_next {
                     app_handler.on_sent_to_quic();
                     app_handler.gen_nxt_app_data();
                 }

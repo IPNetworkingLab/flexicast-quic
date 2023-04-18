@@ -183,6 +183,14 @@ impl AppDataServer {
             Self::File(f) => f.should_send_app_data(),
         }
     }
+
+    #[inline]
+    pub fn stream_writen(&mut self, v: usize) {
+        match self {
+            Self::Tixeo(t) => t.stream_writen(v),
+            Self::File(f) => f.stream_writen(v),
+        }
+    }
 }
 
 pub mod file_transfer;
