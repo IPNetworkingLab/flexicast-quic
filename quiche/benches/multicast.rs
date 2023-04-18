@@ -18,7 +18,7 @@ const BENCH_STEP_RECV: usize = 10;
 
 fn setup_mc(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastPipe {
     let mut pipe =
-        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false).unwrap();
+        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None).unwrap();
 
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 

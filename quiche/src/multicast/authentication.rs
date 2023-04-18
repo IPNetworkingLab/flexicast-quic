@@ -401,12 +401,13 @@ mod tests {
             McAuthType::SymSign,
             false,
             false,
+            None,
         )
         .unwrap();
         assert_eq!(mc_pipe.source_send_single_stream(false, None, 0, 1), Ok(0));
 
         let mut buf = [0u8; 1500];
-        let written = mc_pipe.mc_channel.mc_send(&mut buf);
+        let written = mc_pipe.mc_channel.mc_send(&mut buf).map(|(w, _)| w);
         assert_eq!(written, Ok(339));
 
         // Get the packet number without impacting the original packet.
@@ -446,16 +447,21 @@ mod tests {
                 use_auth,
                 false,
                 probe_mc_path,
+                None,
             )
             .unwrap();
-    
+
             let mut mc_buf = [0u8; 1500];
-    
+
             // Multicast source sends a multicast stream.
-            assert_eq!(mc_pipe.source_send_single_stream(false, None, 0, 1), Ok(0));
-            let written = mc_pipe.source_send_single_from_buf(None, 0, &mut mc_buf);
+            assert_eq!(
+                mc_pipe.source_send_single_stream(false, None, 0, 1),
+                Ok(0)
+            );
+            let written =
+                mc_pipe.source_send_single_from_buf(None, 0, &mut mc_buf);
             assert_eq!(written, Ok(339));
-    
+
             // Multicast source generates the AEAD tags for the clients.
             let clients: Vec<_> = mc_pipe
                 .unicast_pipes
@@ -463,21 +469,23 @@ mod tests {
                 .map(|(conn, ..)| &mut conn.server)
                 .collect();
             assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
-    
+
             // Multicast source sends the authentication packet.
             assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(145));
-    
+
             // The clients verify the authentication of the multicast data packets
             // with the received tags.
             for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
-                // Get the packet number of the received (and unauthenticated) packet.
-                let pn = pipe.client.mc_get_pn(&mc_buf[..written.unwrap()]).unwrap();
-    
+                // Get the packet number of the received (and unauthenticated)
+                // packet.
+                let pn =
+                    pipe.client.mc_get_pn(&mc_buf[..written.unwrap()]).unwrap();
+
                 assert_eq!(
                     pipe.client.mc_verify_sym(&mc_buf[..written.unwrap()], pn),
                     Ok(())
                 );
-    
+
                 // No more authentication packet for the client.
                 let sign = if let McSymSign::Client(c) =
                     &pipe.client.multicast.as_ref().unwrap().mc_sym_signs
@@ -488,7 +496,7 @@ mod tests {
                 };
                 assert!(sign.is_empty());
             }
-    
+
             // Unicast connection stops the communication.
             for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
                 assert_eq!(pipe.server.close(false, 0x1234, b"done"), Ok(()));
@@ -496,10 +504,10 @@ mod tests {
                     pipe.server.close(false, 0x1234, b"done"),
                     Err(Error::Done)
                 );
-    
+
                 assert_eq!(pipe.advance(), Ok(()));
                 assert_eq!(pipe.advance(), Ok(()));
-    
+
                 assert!(pipe.client.is_closed() || pipe.client.is_draining());
                 assert!(pipe.server.is_closed() || pipe.server.is_draining());
             }

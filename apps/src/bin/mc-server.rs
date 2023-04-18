@@ -39,6 +39,7 @@ use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
+use quiche::SendInfo;
 use quiche_apps::mc_app;
 use quiche_apps::mc_app::file_transfer::FileServer;
 use quiche_apps::mc_app::tixeo::TixeoServer;
@@ -155,7 +156,7 @@ struct Args {
     /// Set the pacing of the multicast channel in Mbps. Disabled by default.
     /// Only used for the multicast channel.
     #[clap(long = "pacing")]
-    pacing: Option<u16>,
+    pacing: Option<u64>,
 
     /// Disable GSO. Only used for multicast.
     #[clap(long = "disable-gso-mc")]
@@ -269,6 +270,12 @@ fn main() {
         (None, None, None, None)
     };
 
+    if let (Some(mc_channel), Some(rate)) = (mc_channel_opt.as_mut(), args.pacing)
+    {
+        mc_channel.channel.mc_set_constant_pacing(rate).unwrap();
+        debug!("Set the multicast channel pacing to {}", rate);
+    }
+
     debug!("AFTER MULTICAST CHANNEL SETUP");
 
     if let Some(mc_socket) = mc_socket_opt.as_mut() {
@@ -281,12 +288,12 @@ fn main() {
         enable_gso_mc = if args.disable_gso_mc {
             false
         } else {
-            detect_gso(&mc_socket, MAX_DATAGRAM_SIZE)
+            detect_gso(mc_socket, MAX_DATAGRAM_SIZE)
         };
-        trace!("GSO detected for mc: {}", enable_gso_mc);
-        
+        debug!("GSO detected for mc: {}", enable_gso_mc);
+
         if args.pacing.is_some() {
-            set_txtime_sockopt(&mc_socket).unwrap();
+            set_txtime_sockopt(mc_socket).unwrap();
         }
     }
 
@@ -558,7 +565,6 @@ fn main() {
                     .conn
                     .get_multicast_attributes()
                     .map(|mc| mc.get_mc_role());
-                println!("Server unicast role: {:?}", uc_server_role);
                 if uc_server_role ==
                     Some(MulticastRole::ServerUnicast(
                         multicast::MulticastClientStatus::ListenMcPath,
@@ -631,15 +637,39 @@ fn main() {
                 // If soft-multicast is used, send individually to each client.
                 // The SocketAddr is created using the client unicast address and
                 // the multicast destination port.
+                let now = std::time::Instant::now();
+                debug!(
+                    "Should send packet with pacing in {:?}",
+                    send_info.at.checked_duration_since(now)
+                );
                 let err = if args.soft_mc {
                     clients.values().try_for_each(|client| {
-                        socket
-                            .send_to(&out[..write], client.soft_mc_addr)
-                            .map(|_| ())
+                        let send_info_uc = SendInfo {
+                            from: send_info.from,
+                            to: client.soft_mc_addr,
+                            at: send_info.at,
+                        };
+                        send_to(
+                            &socket,
+                            &out[..write],
+                            &send_info_uc,
+                            MAX_DATAGRAM_SIZE,
+                            args.pacing.is_some(),
+                            enable_gso_mc,
+                        )
+                        .map(|_| ())
                     })
                 } else {
                     // Use pacing socket.
-                    send_to(&mc_socket, &out[..write], &send_info, MAX_DATAGRAM_SIZE, args.pacing.is_some(), enable_gso_mc).map(|_| ())
+                    send_to(
+                        mc_socket,
+                        &out[..write],
+                        &send_info,
+                        MAX_DATAGRAM_SIZE,
+                        args.pacing.is_some(),
+                        enable_gso_mc,
+                    )
+                    .map(|_| ())
                 };
 
                 if let Err(e) = err {
@@ -930,6 +960,7 @@ fn get_multicast_channel(
         mc_keylog_file,
         authentication,
         mc_auth_info,
+        None,
     )
     .unwrap();
 
@@ -951,8 +982,6 @@ fn get_multicast_channel(
         ttl_data,
         is_processed: false,
     };
-
-    println!("MC KEY: {:?}", mc_announce_data.public_key.as_ref());
 
     mc_channel
         .channel

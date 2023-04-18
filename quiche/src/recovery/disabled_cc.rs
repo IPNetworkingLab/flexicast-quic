@@ -50,11 +50,17 @@ pub static DISABLED_CC: CongestionControlOps = CongestionControlOps {
 };
 
 pub fn on_init(r: &mut Recovery) {
-    r.congestion_window = std::usize::MAX - 1;
+    r.congestion_window = match r.mc_cwnd {
+        Some(v) => v,
+        None => std::usize::MAX - 1,
+    };
 }
 
 pub fn reset(r: &mut Recovery) {
-    r.congestion_window = std::usize::MAX - 1;
+    r.congestion_window = match r.mc_cwnd {
+        Some(v) => v,
+        None => std::usize::MAX - 1,
+    };
 }
 
 pub fn on_packet_sent(r: &mut Recovery, sent_bytes: usize, _now: Instant) {
@@ -87,7 +93,10 @@ fn on_packet_acked(
         // acknowledged bytes.
         r.bytes_acked_sl += packet.size;
 
-        r.congestion_window = std::usize::MAX - 1;
+        r.congestion_window = match r.mc_cwnd {
+            Some(v) => v,
+            None => std::usize::MAX - 1,
+        };
 
         if r.hystart.on_packet_acked(epoch, packet, r.latest_rtt, now) {
             // Exit to congestion avoidance if CSS ends.
@@ -99,7 +108,10 @@ fn on_packet_acked(
 
         if r.bytes_acked_ca >= r.congestion_window {
             r.bytes_acked_ca -= r.congestion_window;
-            r.congestion_window = std::usize::MAX - 1;
+            r.congestion_window = match r.mc_cwnd {
+                Some(v) => v,
+                None => std::usize::MAX - 1,
+            };
         }
     }
 }
@@ -108,11 +120,17 @@ fn congestion_event(
     r: &mut Recovery, _lost_bytes: usize, _time_sent: Instant,
     _epoch: packet::Epoch, _now: Instant,
 ) {
-    r.congestion_window = std::usize::MAX - 1;
+    r.congestion_window = match r.mc_cwnd {
+        Some(v) => v,
+        None => std::usize::MAX - 1,
+    };
 }
 
 pub fn collapse_cwnd(r: &mut Recovery) {
-    r.congestion_window = std::usize::MAX - 1;
+    r.congestion_window = match r.mc_cwnd {
+        Some(v) => v,
+        None => std::usize::MAX - 1,
+    };
 }
 
 fn checkpoint(_r: &mut Recovery) {}
@@ -122,7 +140,7 @@ fn rollback(_r: &mut Recovery) -> bool {
 }
 
 fn has_custom_pacing() -> bool {
-    false
+    true
 }
 
 fn debug_fmt(_r: &Recovery, _f: &mut std::fmt::Formatter) -> std::fmt::Result {

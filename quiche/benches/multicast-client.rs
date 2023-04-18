@@ -38,7 +38,7 @@ fn setup_mc(
     Option<(VecDeque<Vec<u8>>, RecvInfo)>,
 ) {
     let mut pipe =
-        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false).unwrap();
+        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None).unwrap();
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
     // Generate the packets all at once.
@@ -47,7 +47,7 @@ fn setup_mc(
     loop {
         let mut buf = vec![0u8; 1500]; // Or allocate on the stack?
         match pipe.mc_channel.mc_send(&mut buf) {
-            Ok(w) => packets.push_back(buf[..w].to_vec()),
+            Ok((w, _)) => packets.push_back(buf[..w].to_vec()),
             Err(quiche::Error::Done) => break,
             Err(e) => panic!("Setup mc errror: {}", e),
         }

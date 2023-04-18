@@ -191,6 +191,9 @@ pub struct Recovery {
 
     /// How many non-ack-eliciting packets have been sent.
     outstanding_non_ack_eliciting: usize,
+
+    /// Maximum congestion window size for the multicast channel.
+    mc_cwnd: Option<usize>,
 }
 
 pub struct RecoveryConfig {
@@ -321,6 +324,8 @@ impl Recovery {
             bbr_state,
 
             outstanding_non_ack_eliciting: 0,
+
+            mc_cwnd: None,
         }
     }
 

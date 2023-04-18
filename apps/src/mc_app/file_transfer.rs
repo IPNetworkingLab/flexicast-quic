@@ -42,7 +42,7 @@ impl FileClient {
         // Sort the streams according to the stream ID.
         self.chunk_recv.sort_by(|first, second| first.0.cmp(&second.0));
         for (_, _, bytes) in self.chunk_recv.iter() {
-            file.write(bytes).unwrap();
+            file.write_all(bytes).unwrap();
         }
     }
 }

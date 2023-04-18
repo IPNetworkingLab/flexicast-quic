@@ -912,6 +912,10 @@ pub trait MulticastConnection {
     /// This means that the function can return true even before the multicast
     /// content started.
     fn mc_no_stream_active(&self) -> bool;
+
+    /// Sets the multicast pacing. Only available for the multicast source if
+    /// the disabled_cc congestion control algorithm is used.
+    fn mc_set_constant_pacing(&mut self, rate: u64) -> Result<()>;
 }
 
 impl MulticastConnection for Connection {
@@ -1546,6 +1550,33 @@ impl MulticastConnection for Connection {
     fn mc_no_stream_active(&self) -> bool {
         self.multicast.is_some() && self.streams.len() == 0
     }
+
+    fn mc_set_constant_pacing(&mut self, rate: u64) -> Result<()> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            let now = time::Instant::now();
+            if multicast.mc_role != MulticastRole::ServerMulticast {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    multicast.mc_role,
+                )));
+            }
+            if let Some(space_id) = multicast.get_mc_space_id() {
+                let p = self.paths.get_mut(space_id)?;
+                p.recovery.set_pacing_rate(rate, now);
+            } else {
+                return Err(Error::Multicast(MulticastError::McPath));
+            }
+
+            if let Some(space_id) = multicast.get_mc_auth_space_id() {
+                let p = self.paths.get_mut(space_id)?;
+                p.recovery.set_pacing_rate(rate, now);
+                Ok(())
+            } else {
+                Err(Error::Multicast(MulticastError::McPath))
+            }
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
+    }
 }
 
 /// Extension of a RangeSet to support missing ranges.
@@ -1651,12 +1682,13 @@ pub struct MulticastChannelSource {
 }
 
 impl MulticastChannelSource {
+    #[allow(clippy::too_many_arguments)]
     /// Creates a new source multicast channel.
     pub fn new_with_tls(
         mc_path_info: McPathInfo, config_server: &mut Config,
         config_client: &mut Config, peer: SocketAddr, keylog_filename: &str,
         authentication: authentication::McAuthType,
-        auth_path_info: Option<McPathInfo>,
+        auth_path_info: Option<McPathInfo>, mc_cwnd: Option<usize>,
     ) -> Result<Self> {
         if !(config_client.cc_algorithm == CongestionControlAlgorithm::DISABLED &&
             config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED)
@@ -1697,8 +1729,6 @@ impl MulticastChannelSource {
             _ => None,
         };
 
-        println!("Signature eddsa: {}", signature_eddsa.is_some());
-
         conn_server.multicast = Some(MulticastAttributes {
             mc_private_key: signature_eddsa,
             mc_role: MulticastRole::ServerMulticast,
@@ -1733,7 +1763,12 @@ impl MulticastChannelSource {
             .paths
             .path_id_from_addrs(&(mc_path_info.peer, mc_path_info.local))
             .expect("no such path");
-        let mc_path_server = conn_client.paths.get_mut(pid_s2c_1)?;
+        let mc_path_server = conn_server.paths.get_mut(pid_s2c_1)?;
+
+        // Set the congestion window of the multicast source for the data path.
+        if let Some(cwnd) = mc_cwnd {
+            mc_path_server.recovery.set_mc_max_cwnd(cwnd);
+        }
         mc_path_server.recovery.reset();
 
         conn_server.multicast.as_mut().unwrap().mc_space_id = Some(pid_s2c_1);
@@ -1761,7 +1796,13 @@ impl MulticastChannelSource {
                 .paths
                 .path_id_from_addrs(&(auth.peer, auth.local))
                 .expect("no such path");
-            let mc_path_server = conn_client.paths.get_mut(pid_s2c_1)?;
+            let mc_path_server = conn_server.paths.get_mut(pid_s2c_1)?;
+
+            // Set the congestion window of the multicast source for the auth
+            // path.
+            if let Some(cwnd) = mc_cwnd {
+                mc_path_server.recovery.set_mc_max_cwnd(cwnd)
+            }
             mc_path_server.recovery.reset();
 
             conn_server.multicast.as_mut().unwrap().mc_auth_space_id =
@@ -2027,7 +2068,7 @@ pub mod testing {
         /// Generates a new multicast pipe with already defined configuration.
         pub fn new(
             nb_clients: usize, keylog_filename: &str, authentication: McAuthType,
-            use_fec: bool, probe_mc_path: bool,
+            use_fec: bool, probe_mc_path: bool, max_cwnd: Option<usize>,
         ) -> Result<MulticastPipe> {
             let mc_client_tp = MulticastClientTp::default();
             let mut server_config =
@@ -2061,6 +2102,7 @@ pub mod testing {
                 &mut client_config,
                 authentication,
                 keylog_filename,
+                max_cwnd,
             )
             .unwrap();
 
@@ -2467,6 +2509,7 @@ pub mod testing {
     pub fn get_test_mc_channel_source(
         config_server: &mut Config, config_client: &mut Config,
         authentication: McAuthType, keylog_filename: &str,
+        max_cwnd: Option<usize>,
     ) -> Result<MulticastChannelSource> {
         // Set the disabled congestion control for the multicast channel.
         config_client.set_cc_algorithm(CongestionControlAlgorithm::DISABLED);
@@ -2524,6 +2567,7 @@ pub mod testing {
             keylog_filename,
             authentication,
             auth_path_info,
+            max_cwnd,
         )
     }
 }
@@ -2838,6 +2882,7 @@ mod tests {
             &mut client_config,
             McAuthType::AsymSign,
             "/tmp/test_mc_channel_server_handshake.txt",
+            None,
         );
         assert!(mc_channel.is_ok());
     }
@@ -2860,6 +2905,7 @@ mod tests {
             &mut client_config,
             McAuthType::None,
             "/tmp/test_mc_channel_alone.txt",
+            None,
         )
         .unwrap();
 
@@ -2914,6 +2960,7 @@ mod tests {
             McAuthType::AsymSign,
             false,
             false,
+            None,
         );
         assert!(mc_pipe.is_ok());
         let mut mc_pipe = mc_pipe.unwrap();
@@ -2991,6 +3038,7 @@ mod tests {
             use_auth,
             false,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3066,6 +3114,7 @@ mod tests {
             use_auth,
             false,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3295,6 +3344,7 @@ mod tests {
             use_auth,
             false,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3427,6 +3477,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3561,6 +3612,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3715,6 +3767,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -3883,6 +3936,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4049,6 +4103,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4113,6 +4168,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4183,6 +4239,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4261,6 +4318,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
 
@@ -4311,6 +4369,7 @@ mod tests {
                 use_auth,
                 true,
                 false,
+                None,
             )
             .unwrap();
             let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4397,6 +4456,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
         let signature_len = if use_auth == McAuthType::AsymSign {
@@ -4500,6 +4560,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
 
@@ -4582,6 +4643,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
 
@@ -4620,6 +4682,7 @@ mod tests {
             use_auth,
             true,
             false,
+            None,
         )
         .unwrap();
 
@@ -4667,6 +4730,7 @@ mod tests {
             use_auth,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -4792,7 +4856,8 @@ mod tests {
     fn my_test_mc() {
         let auth = McAuthType::SymSign;
         let mut pipe =
-            MulticastPipe::new(2, "/tmp/bench", auth, false, false).unwrap();
+            MulticastPipe::new(2, "/tmp/bench", auth, false, false, None)
+                .unwrap();
 
         let stream = vec![0u8; 1_000_000];
         pipe.mc_channel
@@ -4832,6 +4897,7 @@ mod tests {
             use_auth,
             true,
             true,
+            None,
         )
         .unwrap();
 
@@ -4867,6 +4933,82 @@ mod tests {
     /// unicast server while the path is not fully established, creating a
     /// [`Error::MultipathViolation`].
     fn test_mc_client_send_mp_ack_with_probe() {}
+
+    #[test]
+    fn test_mc_with_cwnd() {
+        let use_auth = McAuthType::None;
+        let mut mc_pipe = MulticastPipe::new(
+            2,
+            "/tmp/test_mc_with_cwnd.txt",
+            use_auth,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        // Send without limitation.
+        for i in 0..100 {
+            let res = mc_pipe.source_send_single_stream(true, None, 0, 1 + i * 4);
+            assert!(res.is_ok());
+        }
+
+        let cwnd = 500;
+        let mut mc_pipe = MulticastPipe::new(
+            2,
+            "/tmp/test_mc_with_cwnd.txt",
+            use_auth,
+            true,
+            true,
+            Some(cwnd),
+        )
+        .unwrap();
+
+        // Send with limitation.
+        // First packet is ok.
+        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 1), Ok(348));
+
+        // Second stream is added but not fully sent.
+        let mut buf = [0u8; 1500];
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(5, &buf[..500], true),
+            Ok(500)
+        );
+        let res = mc_pipe.mc_channel.mc_send(&mut buf[..]).map(|(w, _)| w);
+        assert_eq!(res, Ok(152));
+
+        // We get a [`quiche::Error::Done`] when we ask to send another packet.
+        // But the stream is not complete.
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
+
+        // Indeed, the congestion window is full.
+        let path_id = mc_pipe
+            .mc_channel
+            .channel
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_space_id
+            .unwrap();
+        let path = mc_pipe.mc_channel.channel.paths.get(path_id).unwrap();
+        assert_eq!(path.recovery.cwnd_available(), 0);
+
+        // After the timeout, the streams are reset and we can send additional
+        // data.
+        let now = time::Instant::now();
+        let expired_timer = now +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            );
+
+        mc_pipe
+            .mc_channel
+            .channel
+            .on_mc_timeout(expired_timer)
+            .unwrap();
+        let path = mc_pipe.mc_channel.channel.paths.get(path_id).unwrap();
+        assert_eq!(path.recovery.cwnd_available(), 500);
+    }
 }
 
 pub mod authentication;
