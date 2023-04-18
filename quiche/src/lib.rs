@@ -3355,9 +3355,6 @@ impl Connection {
         // maximum UDP payload size limit.
         let mut left = cmp::min(out.len(), self.max_send_udp_payload_size());
 
-        // let is_mc_client = !self.is_server && self.multicast.is_some() &&
-        // self.multicast.as_ref().unwrap()
-
         let send_pid = match (from, to) {
             (Some(f), Some(t)) => self
                 .paths

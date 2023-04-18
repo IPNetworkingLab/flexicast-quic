@@ -1269,16 +1269,29 @@ impl MulticastConnection for Connection {
         let space_id = Some(self.multicast.as_ref()?.get_mc_space_id()?);
         let space_ids = [auth_id, space_id];
 
+        let ttl_data = self
+            .multicast
+            .as_ref()?
+            .get_mc_announce_data_path()?
+            .ttl_data;
+
         // MC-TODO: should use mc_role instead of server.
         if self.is_server {
             space_ids
                 .iter()
                 .flatten()
-                .map(|&sid| self.paths.get(sid).ok()?.recovery.mc_next_timeout())
+                .map(|&sid| {
+                    self.paths
+                        .get(sid)
+                        .ok()?
+                        .recovery
+                        .mc_next_timeout(time::Duration::from_millis(ttl_data))
+                })
                 .min()
                 .flatten()
                 .map(|timeout| {
                     if timeout <= now {
+                        println!("ICI 1");
                         time::Duration::ZERO
                     } else {
                         timeout.duration_since(now)
@@ -1287,10 +1300,9 @@ impl MulticastConnection for Connection {
         } else {
             let multicast = self.multicast.as_ref()?;
             let timeout = multicast.mc_last_recv_time? +
-                time::Duration::from_millis(
-                    multicast.get_mc_announce_data_path()?.ttl_data * 3,
-                );
+                time::Duration::from_millis(ttl_data * 3);
             if timeout <= now {
+                println!("ICI 2");
                 Some(time::Duration::ZERO)
             } else {
                 Some(timeout.duration_since(now))
@@ -1569,10 +1581,9 @@ impl MulticastConnection for Connection {
             if let Some(space_id) = multicast.get_mc_auth_space_id() {
                 let p = self.paths.get_mut(space_id)?;
                 p.recovery.set_pacing_rate(rate, now);
-                Ok(())
-            } else {
-                Err(Error::Multicast(MulticastError::McPath))
             }
+
+            Ok(())
         } else {
             Err(Error::Multicast(MulticastError::McDisabled))
         }
@@ -4298,7 +4309,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .mc_last_expired,
-            Some((None, None, None))
+            Some((Some(2), Some(1), Some(0)))
         );
 
         // The multicast source does not send any packet because no data

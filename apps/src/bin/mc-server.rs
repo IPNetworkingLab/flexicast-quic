@@ -121,7 +121,7 @@ struct Args {
     #[clap(short = 'd', long, value_parser, default_value = "1000")]
     delay_no_replay: u64,
 
-    /// Time-to-live of video frames.
+    /// Time-to-live of video frames [ms].
     #[clap(long, value_parser, default_value = "600")]
     ttl_data: u64,
 
@@ -252,6 +252,13 @@ fn main() {
     let local_addr = socket.local_addr().unwrap();
 
     // Multicast channel and sockets.
+    let mc_cwnd = if let Some(rate) = args.pacing {
+        let rate = rate as f64;
+        let ttl = args.ttl_data as f64 / 1000f64; // In seconds
+        Some((rate * ttl).round() as usize)
+    } else {
+        None
+    };
     let (
         mut mc_socket_opt,
         mut mc_channel_opt,
@@ -265,6 +272,7 @@ fn main() {
             args.ttl_data,
             &rng,
             args.soft_mc,
+            mc_cwnd,
         )
     } else {
         (None, None, None, None)
@@ -272,7 +280,8 @@ fn main() {
 
     if let (Some(mc_channel), Some(rate)) = (mc_channel_opt.as_mut(), args.pacing)
     {
-        mc_channel.channel.mc_set_constant_pacing(rate).unwrap();
+        let cwnd = rate * args.ttl_data;
+        mc_channel.channel.mc_set_constant_pacing(cwnd).unwrap();
         debug!("Set the multicast channel pacing to {}", rate);
     }
 
@@ -306,6 +315,17 @@ fn main() {
         if let Some(app_timeout) = app_handler.next_timeout() {
             timeout =
                 [timeout, Some(app_timeout)].iter().flatten().min().copied();
+        }
+
+        if let Some(mc_channel) = mc_channel_opt.as_mut() {
+            let now = std::time::Instant::now();
+            let mc_timeout = mc_channel.channel.mc_timeout(now);
+            println!("MC timeout is {:?}", mc_timeout);
+            timeout = [timeout, mc_timeout]
+                .iter()
+                .flatten()
+                .min()
+                .copied()
         }
 
         trace!("Next timeout in {:?}", timeout);
@@ -588,34 +608,56 @@ fn main() {
 
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
-        let app_data_to_send = if app_handler.should_send_app_data() {
-            // Send the video frame in a dedicated stream.
-            let (stream_id, video_data) = app_handler.get_app_data();
+        let mut at_least_data_to_send = false;
+        'app: loop {
+            let app_data_to_send = if app_handler.should_send_app_data() {
+                // Send the video frame in a dedicated stream.
+                let (stream_id, video_data) = app_handler.get_app_data();
 
-            if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                // Either once if multicast is enabled...
-                mc_channel
-                    .channel
-                    .stream_send(stream_id, &video_data, true)
-                    .unwrap();
+                let to_send = if let Some(mc_channel) = mc_channel_opt.as_mut() {
+                    // Either once if multicast is enabled...
+                    match mc_channel.channel.stream_send(
+                        stream_id,
+                        &video_data,
+                        true,
+                    ) {
+                        Ok(_) => true,
+                        Err(quiche::Error::Done) => false,
+                        Err(e) => panic!("Other error: {:?}", e),
+                    }
+                } else {
+                    // ... or for every client otherwise.
+                    match clients.values_mut().try_for_each(|client| {
+                        client
+                            .conn
+                            .stream_send(stream_id, &video_data, true)
+                            .map(|_| ())
+                    }) {
+                        Ok(_) => true,
+                        Err(quiche::Error::Done) => false,
+                        Err(e) => panic!("Other error: {:?}", e),
+                    }
+                };
+                debug!(
+                    "Sent application frame in stream {}. Must send: {}",
+                    stream_id, to_send
+                );
+
+                // Get next video values.
+                if to_send {
+                    app_handler.on_sent_to_quic();
+                    app_handler.gen_nxt_app_data();
+                }
+                to_send
             } else {
-                // ... or for every client otherwise.
-                clients.values_mut().for_each(|client| {
-                    client
-                        .conn
-                        .stream_send(stream_id, &video_data, true)
-                        .unwrap();
-                });
+                false
+            };
+            if app_data_to_send {
+                at_least_data_to_send = true;
+            } else {
+                break 'app;
             }
-            debug!("Sent application frame in stream {}", stream_id);
-
-            // Get next video values.
-            app_handler.on_sent_to_quic();
-            app_handler.gen_nxt_app_data();
-            true
-        } else {
-            false
-        };
+        }
 
         // Generate outgoing Multicast-QUIC packets for the multicast channel.
         if let (Some(mc_socket), Some(mc_channel)) =
@@ -811,7 +853,7 @@ fn main() {
         // This could be improved. In case QUIC is unable to send the video frame
         // (e.g., due to congestion control), we will record an invalid (too
         // early) timestamp.
-        if app_data_to_send {
+        if at_least_data_to_send {
             app_handler.on_sent_to_wire();
         }
 
@@ -901,7 +943,7 @@ fn validate_token<'a>(
 
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
-    ttl_data: u64, rng: &SystemRandom, soft_mc: bool,
+    ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -915,8 +957,9 @@ fn get_multicast_channel(
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
 
     let mc_client_tp = MulticastClientTp::default();
-    let mut server_config = get_test_mc_config(true, None, true);
-    let mut client_config = get_test_mc_config(false, Some(&mc_client_tp), true);
+    let mut server_config = get_test_mc_config(true, None, true, mc_cwnd);
+    let mut client_config =
+        get_test_mc_config(false, Some(&mc_client_tp), true, mc_cwnd);
 
     // Generate a random source connection ID for the connection.
     let mut channel_id = [0; 16];
@@ -960,7 +1003,7 @@ fn get_multicast_channel(
         mc_keylog_file,
         authentication,
         mc_auth_info,
-        None,
+        mc_cwnd,
     )
     .unwrap();
 
@@ -1020,6 +1063,7 @@ fn get_multicast_channel(
 
 pub fn get_test_mc_config(
     mc_server: bool, mc_client: Option<&MulticastClientTp>, use_fec: bool,
+    mc_cwnd: Option<usize>,
 ) -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
     config
@@ -1034,7 +1078,11 @@ pub fn get_test_mc_config(
     // config.set_max_idle_timeout(0);
     config.set_max_recv_udp_payload_size(1350);
     config.set_max_send_udp_payload_size(1350);
-    config.set_initial_max_data(10_000_000);
+    if let Some(cwnd) = mc_cwnd {
+        config.set_initial_max_data(cwnd as u64);
+    } else {
+        config.set_initial_max_data(10_000_000);
+    }
     config.set_initial_max_stream_data_bidi_local(1_000_000);
     config.set_initial_max_stream_data_bidi_remote(1_000_000);
     config.set_initial_max_stream_data_uni(1_000_000);

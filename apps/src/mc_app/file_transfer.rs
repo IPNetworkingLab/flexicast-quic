@@ -99,11 +99,12 @@ impl FileServer {
     }
 
     pub fn next_timeout(&self) -> Option<time::Duration> {
-        if self.is_active() {
-            Some(time::Duration::ZERO)
-        } else {
-            None
-        }
+        // if self.is_active() {
+        //     Some(time::Duration::ZERO)
+        // } else {
+        //     None
+        // }
+        None
     }
 
     pub fn start_content_delivery(&mut self) {

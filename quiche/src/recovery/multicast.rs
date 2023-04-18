@@ -20,7 +20,7 @@ pub trait MulticastRecovery {
     ) -> Result<(Option<u64>, Option<u64>, Option<u64>)>;
 
     /// Returns the next expiring event.
-    fn mc_next_timeout(&self) -> Option<Instant>;
+    fn mc_next_timeout(&self, ttl_data: std::time::Duration) -> Option<Instant>;
 
     /// Sets the multicast maximum congestion window size.
     fn set_mc_max_cwnd(&mut self, cwnd: usize);
@@ -95,13 +95,14 @@ impl MulticastRecovery for crate::recovery::Recovery {
         }
     }
 
-    fn mc_next_timeout(&self) -> Option<Instant> {
+    fn mc_next_timeout(&self, ttl_data: std::time::Duration) -> Option<Instant> {
         // MC-TODO: be sure that `front()` is correct and not `back`.
-        Some(self.sent[Epoch::Application].front()?.time_sent)
+        self.sent[Epoch::Application].front()?.time_sent.checked_add(ttl_data)
     }
 
     fn set_mc_max_cwnd(&mut self, cwnd: usize) {
         self.mc_cwnd = Some(cwnd);
+        self.reset();
     }
 }
 
