@@ -10,3 +10,5 @@
 perf/venv
 **/*.png
 **/*.pdf
+**/*.DS_Store
+**/*.vscode
