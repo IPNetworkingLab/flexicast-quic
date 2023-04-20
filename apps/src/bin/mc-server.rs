@@ -690,7 +690,7 @@ fn main() {
                 if let (Some(mc_socket), Some(mc_channel)) =
                     (mc_socket_opt.as_mut(), mc_channel_opt.as_mut())
                 {
-                    loop {
+                    'mc_send: loop {
                         let (write, mut send_info) =
                             match mc_channel.mc_send(&mut out) {
                                 Ok(v) => v,
@@ -765,6 +765,7 @@ fn main() {
                         // packets.
                         if now < send_info.at {
                             pacing_timeout = Some(send_info.at);
+                            break 'mc_send;
                         }
                     }
 
@@ -1021,8 +1022,10 @@ fn get_multicast_channel(
     Option<McAnnounceData>, // Data.
     Option<McAnnounceData>, // Authentication.
 ) {
-    let mc_addr = "224.3.0.225:8889".parse().unwrap();
-    let mc_addr_bytes = [224, 3, 0, 225];
+    // let mc_addr = "224.3.0.225:8889".parse().unwrap();
+    let mc_addr = "127.0.0.1:8889".parse().unwrap();
+    // let mc_addr_bytes = [224, 3, 0, 225];
+    let mc_addr_bytes = [127, 0, 0, 1];
     let mc_port = 8889;
     let source_addr = "127.0.0.1:4434".parse().unwrap();
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
@@ -1051,7 +1054,8 @@ fn get_multicast_channel(
         rng.fill(&mut channel_id_auth).unwrap();
         let channel_id = quiche::ConnectionId::from_ref(&channel_id_auth);
 
-        let dummy_ip = std::net::Ipv4Addr::new(224, 3, 0, 225);
+        // let dummy_ip = std::net::Ipv4Addr::new(224, 3, 0, 225);
+        let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
         let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
             dummy_ip,
             mc_port + 1,
