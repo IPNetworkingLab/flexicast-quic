@@ -97,7 +97,11 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
     fn mc_next_timeout(&self, ttl_data: std::time::Duration) -> Option<Instant> {
         // MC-TODO: be sure that `front()` is correct and not `back`.
-        self.sent[Epoch::Application].front()?.time_sent.checked_add(ttl_data)
+
+        let a = self.sent[Epoch::Application].back()?.time_sent;
+        let b = self.sent[Epoch::Application].front()?.time_sent;
+        debug!("This sent of last packet and first packet: {:?} vs {:?}", a, b);
+        a.checked_add(ttl_data)
     }
 
     fn set_mc_max_cwnd(&mut self, cwnd: usize) {

@@ -4180,7 +4180,7 @@ impl Connection {
             }
 
             // Create DATA_BLOCKED frame.
-            if let Some(limit) = self.blocked_limit {
+            if let (Some(limit), None) = (self.blocked_limit, self.multicast.as_ref()) {
                 let frame = frame::Frame::DataBlocked { limit };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
@@ -4311,6 +4311,7 @@ impl Connection {
                 let frame = frame::Frame::StreamDataBlocked { stream_id, limit };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
+                    debug!("Blocked here");
                     self.streams.mark_blocked(stream_id, false, 0);
 
                     ack_eliciting = true;
@@ -4841,6 +4842,7 @@ impl Connection {
                 !self.paths.get(send_pid)?.is_standby()) &&
             !sent_mc_auth
         {
+            debug!("Attempt to send a single stream frame");
             // first, do bandwidth probing if needed and possible
             if !self.streams.has_flushable() {
                 // bw probing is needed when 1) there is no flushable stream 2)
@@ -4918,6 +4920,7 @@ impl Connection {
                 // Write stream data into the packet buffer.
                 let (len, fin) =
                     stream.send.emit(&mut stream_payload.as_mut()[..max_len])?;
+                println!("Stream length and fin.: {} {}. Max len={}. Left={}", len, fin, max_len, left);
 
                 // Encode the frame's header.
                 //
@@ -5560,7 +5563,9 @@ impl Connection {
         // When the cap is zero, the method returns Ok(0) *only* when the passed
         // buffer is empty. We return Error::Done otherwise.
         let cap = self.tx_cap;
+        // println!("TX CAP: {}", cap);
         if cap == 0 && !(fin && buf.is_empty()) {
+            println!("ICI que j'ai done 2");
             return Err(Error::Done);
         }
 
@@ -5571,7 +5576,9 @@ impl Connection {
         };
 
         // Get existing stream or create a new one.
+        debug!("Before create stream");
         let stream = self.get_or_create_stream(stream_id, true)?;
+        debug!("After create stream");
 
         #[cfg(feature = "qlog")]
         let offset = stream.send.off_back();
@@ -5640,6 +5647,7 @@ impl Connection {
         });
 
         if sent == 0 && !buf.is_empty() {
+            println!("Ici que j'ai error done");
             return Err(Error::Done);
         }
 
@@ -8658,6 +8666,7 @@ impl Connection {
                 .try_into()
                 .unwrap_or(usize::MAX),
         );
+        println!("Update_tx_cap: cwin available={}, tx_cap={}", cwin_available, self.tx_cap);
     }
 
     fn delivery_rate_check_if_app_limited(&self, path_id: usize) -> bool {

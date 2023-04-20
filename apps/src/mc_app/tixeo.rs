@@ -45,7 +45,7 @@ pub struct TixeoServer {
 
     sent_frames: usize,
     cur_stream_id: u64,
-    stream_writen: usize,
+    stream_written: usize,
 
     nxt_timestamp: Option<u64>,
     nxt_nb_bytes: usize,
@@ -72,7 +72,7 @@ impl TixeoServer {
 
             sent_frames: 0,
             cur_stream_id: 1,
-            stream_writen: 0,
+            stream_written: 0,
 
             nxt_timestamp: Some(nxt_timestamp),
             nxt_nb_bytes,
@@ -194,8 +194,8 @@ impl TixeoServer {
     }
 
     #[inline]
-    pub fn stream_writen(&mut self, v: usize) {
-        self.stream_writen = v;
+    pub fn stream_written(&mut self, v: usize) {
+        self.stream_written = v;
     }
 }
 

@@ -605,6 +605,11 @@ fn main() {
                 break;
             }
 
+            println!(
+                "Should send packet with pacing. Value is {:?}. Variables are {} {}",
+                dst_info.unwrap().at, pacing, enable_gso,
+            );
+
             if let Err(e) = send_to(
                 &socket,
                 &out[..total_write],

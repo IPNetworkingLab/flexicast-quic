@@ -54,7 +54,7 @@ pub struct FileServer {
 
     sent_chunks: usize,
     stream_id: u64,
-    stream_writen: usize,
+    stream_written: usize,
 
     active: bool,
     start: Option<time::Instant>,
@@ -86,7 +86,7 @@ impl FileServer {
 
             sent_chunks: 0,
             stream_id: 1,
-            stream_writen: 0,
+            stream_written: 0,
 
             active: !wait,
             start: if wait {
@@ -116,8 +116,8 @@ impl FileServer {
     }
 
     pub fn get_app_data(&self) -> (u64, Vec<u8>) {
-        debug!("Must send data at offset {}", self.stream_writen);
-        (self.stream_id, self.chunks[self.sent_chunks][self.stream_writen..].to_vec())
+        debug!("Must send data at offset {}", self.stream_written);
+        (self.stream_id, self.chunks[self.sent_chunks][self.stream_written..].to_vec())
     }
 
     pub fn gen_nxt_app_data(&mut self) {
@@ -127,7 +127,7 @@ impl FileServer {
             self.active = false;
         } else {
             self.stream_id += 4;
-            self.stream_writen = 0;
+            self.stream_written = 0;
         }
     }
 
@@ -186,7 +186,14 @@ impl FileServer {
     }
 
     #[inline]
-    pub fn stream_writen(&mut self, v: usize) {
-        self.stream_writen = v;
+    pub fn stream_written(&mut self, v: usize) {
+        self.stream_written += v;
+    }
+
+    #[inline]
+    pub fn on_expiring(&mut self, exp_stream_id: u64) {
+        while self.stream_id <= exp_stream_id {
+            self.gen_nxt_app_data();
+        }
     }
 }

@@ -185,10 +185,18 @@ impl AppDataServer {
     }
 
     #[inline]
-    pub fn stream_writen(&mut self, v: usize) {
+    pub fn stream_written(&mut self, v: usize) {
         match self {
-            Self::Tixeo(t) => t.stream_writen(v),
-            Self::File(f) => f.stream_writen(v),
+            Self::Tixeo(t) => t.stream_written(v),
+            Self::File(f) => f.stream_written(v),
+        }
+    }
+
+    #[inline]
+    pub fn on_expiring(&mut self, exp_stream_id: u64) {
+        match self {
+            Self::Tixeo(_) => (),
+            Self::File(f) => f.on_expiring(exp_stream_id),
         }
     }
 }

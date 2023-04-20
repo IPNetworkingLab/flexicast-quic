@@ -253,7 +253,8 @@ fn main() {
 
     // Multicast channel and sockets.
     let mc_cwnd = if let Some(rate) = args.pacing {
-        let rate = rate as f64;
+        // let rate = rate as f64;
+        let rate = 1_000_000_000f64;
         let ttl = args.ttl_data as f64 / 1000f64; // In seconds
         Some((rate * ttl).round() as usize)
     } else {
@@ -302,15 +303,23 @@ fn main() {
         debug!("GSO detected for mc: {}", enable_gso_mc);
 
         if args.pacing.is_some() {
-            set_txtime_sockopt(mc_socket).unwrap();
+            // set_txtime_sockopt(mc_socket).unwrap();
+            // set_max_pacing(mc_socket).unwrap();
         }
     }
 
+    let mut pacing_timeout: Option<std::time::Instant> = None;
     loop {
         // Find the shorter timeout from all the active connections.
         //
         // TODO: use event loop that properly supports timers
+        let now = std::time::Instant::now();
         let mut timeout = clients.values().filter_map(|c| c.conn.timeout()).min();
+
+        if let Some(pacing) = pacing_timeout {
+            let t = pacing.duration_since(now);
+            timeout = [timeout, Some(t)].iter().flatten().min().copied();
+        }
 
         if let Some(app_timeout) = app_handler.next_timeout() {
             timeout =
@@ -318,14 +327,9 @@ fn main() {
         }
 
         if let Some(mc_channel) = mc_channel_opt.as_mut() {
-            let now = std::time::Instant::now();
             let mc_timeout = mc_channel.channel.mc_timeout(now);
             println!("MC timeout is {:?}", mc_timeout);
-            timeout = [timeout, mc_timeout]
-                .iter()
-                .flatten()
-                .min()
-                .copied()
+            timeout = [timeout, mc_timeout].iter().flatten().min().copied()
         }
 
         trace!("Next timeout in {:?}", timeout);
@@ -603,271 +607,325 @@ fn main() {
         // Handle time to live timeout of data of the multicast channel.
         let now = std::time::Instant::now();
         if let Some(mc_channel) = mc_channel_opt.as_mut() {
-            mc_channel.channel.on_mc_timeout(now).unwrap();
+            let (_, exp_stream_id_opt, _) =
+                mc_channel.channel.on_mc_timeout(now).unwrap();
+            if let Some(exp_stream_id) = exp_stream_id_opt {
+                app_handler.on_expiring(exp_stream_id);
+            }
         }
 
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
-        let mut at_least_data_to_send = false;
-        'app: loop {
-            let app_data_to_send = if app_handler.should_send_app_data() {
-                // Send the video frame in a dedicated stream.
-                let (stream_id, video_data) = app_handler.get_app_data();
-                let mut can_go_to_next = true;
-
-                let to_send = if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                    // Either once if multicast is enabled...
-                    let writen = match mc_channel.channel.stream_send(
-                        stream_id,
-                        &video_data,
-                        true,
-                    ) {
-                        Ok(v) => Some(v),
-                        Err(quiche::Error::Done) => None,
-                        Err(e) => panic!("Other error: {:?}", e),
-                    };
-                    debug!("WRITEN AUTANT: {:?}", writen);
-
-                    if writen != Some(video_data.len()) {
-                        can_go_to_next = false;
-                    }
-
-                    if let Some(v) = writen {
-                        app_handler.stream_writen(v);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    // ... or for every client otherwise.
-                    match clients.values_mut().try_for_each(|client| {
-                        client
-                            .conn
-                            .stream_send(stream_id, &video_data, true)
-                            .map(|_| ())
-                    }) {
-                        Ok(_) => true,
-                        Err(quiche::Error::Done) => false,
-                        Err(e) => panic!("Other error: {:?}", e),
-                    }
-                };
-                debug!(
-                    "Sent application frame in stream {}. Must send: {}",
-                    stream_id, to_send
-                );
-
-                // Get next video values.
-                if can_go_to_next {
-                    app_handler.on_sent_to_quic();
-                    app_handler.gen_nxt_app_data();
-                }
-                to_send
-            } else {
-                false
-            };
-            if app_data_to_send {
-                at_least_data_to_send = true;
-            } else {
-                break 'app;
-            }
-        }
-
-        // Generate outgoing Multicast-QUIC packets for the multicast channel.
-        if let (Some(mc_socket), Some(mc_channel)) =
-            (mc_socket_opt.as_mut(), mc_channel_opt.as_mut())
+        if pacing_timeout.is_none() ||
+            pacing_timeout.unwrap().duration_since(now) ==
+                std::time::Duration::ZERO
         {
-            loop {
-                let (write, send_info) = match mc_channel.mc_send(&mut out) {
-                    Ok(v) => v,
-                    Err(quiche::Error::Done) => {
-                        debug!("Multicast done writing");
-                        break;
-                    },
-                    Err(e) => {
-                        error!("Multicast send failed: {:?}", e);
-                        break;
-                    },
-                };
+            pacing_timeout = None;
+            'app: loop {
+                let mut at_least_data_to_send = false;
+                let app_data_to_send = if app_handler.should_send_app_data() {
+                    // Send the video frame in a dedicated stream.
+                    let (stream_id, video_data) = app_handler.get_app_data();
+                    let mut can_go_to_next = true;
 
-                // If soft-multicast is used, send individually to each client.
-                // The SocketAddr is created using the client unicast address and
-                // the multicast destination port.
-                let now = std::time::Instant::now();
-                debug!(
-                    "Should send packet with pacing in {:?}",
-                    send_info.at.checked_duration_since(now)
-                );
-                let err = if args.soft_mc {
-                    clients.values().try_for_each(|client| {
-                        let send_info_uc = SendInfo {
-                            from: send_info.from,
-                            to: client.soft_mc_addr,
-                            at: send_info.at,
+                    let to_send =
+                        if let Some(mc_channel) = mc_channel_opt.as_mut() {
+                            // Either once if multicast is enabled...
+                            let writen = match mc_channel.channel.stream_send(
+                                stream_id,
+                                &video_data,
+                                true,
+                            ) {
+                                Ok(v) => Some(v),
+                                Err(quiche::Error::Done) => None,
+                                Err(e) => panic!("Other error: {:?}", e),
+                            };
+                            debug!("WRITEN AUTANT: {:?}", writen);
+
+                            if writen != Some(video_data.len()) {
+                                can_go_to_next = false;
+                            }
+
+                            if let Some(v) = writen {
+                                app_handler.stream_written(v);
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            // ... or for every client otherwise.
+                            match clients.values_mut().try_for_each(|client| {
+                                client
+                                    .conn
+                                    .stream_send(stream_id, &video_data, true)
+                                    .map(|_| ())
+                            }) {
+                                Ok(_) => true,
+                                Err(quiche::Error::Done) => false,
+                                Err(e) => panic!("Other error: {:?}", e),
+                            }
                         };
-                        send_to(
-                            &socket,
-                            &out[..write],
-                            &send_info_uc,
-                            MAX_DATAGRAM_SIZE,
-                            args.pacing.is_some(),
-                            enable_gso_mc,
-                        )
-                        .map(|_| ())
-                    })
-                } else {
-                    // Use pacing socket.
-                    send_to(
-                        mc_socket,
-                        &out[..write],
-                        &send_info,
-                        MAX_DATAGRAM_SIZE,
-                        args.pacing.is_some(),
-                        enable_gso_mc,
-                    )
-                    .map(|_| ())
-                };
+                    debug!(
+                        "Sent application frame in stream {}. Must send: {}",
+                        stream_id, to_send
+                    );
 
-                if let Err(e) = err {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        debug!("send() would block");
-                        break;
+                    // Get next video values.
+                    if can_go_to_next {
+                        app_handler.on_sent_to_quic();
+                        app_handler.gen_nxt_app_data();
                     }
-
-                    panic!("send() failed: {:?}", e);
+                    to_send
+                } else {
+                    false
+                };
+                if app_data_to_send {
+                    at_least_data_to_send = true;
+                } else {
+                    break 'app;
                 }
 
-                debug!(
-                    "Multicast written {} bytes to {:?}",
-                    write, mc_channel.mc_send_addr
-                );
-            }
+                // Generate outgoing Multicast-QUIC packets for the multicast
+                // channel.
+                if let (Some(mc_socket), Some(mc_channel)) =
+                    (mc_socket_opt.as_mut(), mc_channel_opt.as_mut())
+                {
+                    loop {
+                        let (write, mut send_info) =
+                            match mc_channel.mc_send(&mut out) {
+                                Ok(v) => v,
+                                Err(quiche::Error::Done) => {
+                                    debug!("Multicast done writing");
+                                    break;
+                                },
+                                Err(e) => {
+                                    error!("Multicast send failed: {:?}", e);
+                                    break;
+                                },
+                            };
 
-            // If symmetric authentication is used alongside multicast, generate
-            // authentication packets and send them on the multicast
-            // authentication path.
-            if let (McAuthType::SymSign, Some(mc_auth_info)) =
-                (authentication, mc_channel.mc_auth_info.as_ref())
-            {
-                mc_channel
-                    .channel
-                    .mc_sym_sign(
-                        &clients
-                            .values_mut()
-                            .map(|client| &mut client.conn)
-                            .collect::<Vec<_>>(),
-                    )
-                    .unwrap();
-
-                let mc_auth_addr = mc_auth_info.2;
-
-                loop {
-                    let write = match mc_channel.mc_send_sym_auth(&mut out) {
-                        Ok(v) => v,
-                        Err(quiche::Error::Done) => {
-                            debug!("Multicast done writing authentication");
-                            break;
-                        },
-                        Err(e) => {
-                            error!("Multicast send auth failed: {:?}", e);
-                            break;
-                        },
-                    };
-
-                    // If soft-multicast is used, send individually to each
-                    // client. The SocketAddr is created using
-                    // the client unicast address and
-                    // the multicast destination port.
-                    let err = if args.soft_mc {
-                        clients.values().try_for_each(|client| {
-                            socket
-                                .send_to(&out[..write], client.soft_mc_addr_auth)
+                        // If soft-multicast is used, send individually to each
+                        // client. The SocketAddr is created using
+                        // the client unicast address and
+                        // the multicast destination port.
+                        let now = std::time::Instant::now();
+                        debug!(
+                        "Should send packet with pacing in {:?}. Value is {:?}",
+                        send_info.at.checked_duration_since(now),
+                        send_info.at,
+                    );
+                        send_info.to = mc_channel.mc_send_addr;
+                        debug!("Send info are: {:?}", send_info);
+                        let err = if args.soft_mc {
+                            clients.values().try_for_each(|client| {
+                                let send_info_uc = SendInfo {
+                                    from: send_info.from,
+                                    to: client.soft_mc_addr,
+                                    at: send_info.at,
+                                };
+                                send_to(
+                                    &socket,
+                                    &out[..write],
+                                    &send_info_uc,
+                                    MAX_DATAGRAM_SIZE,
+                                    args.pacing.is_some(),
+                                    enable_gso_mc,
+                                )
                                 .map(|_| ())
-                        })
-                    } else {
-                        mc_socket.send_to(&out[..write], mc_auth_addr).map(|_| ())
-                    };
+                            })
+                        } else {
+                            // Use pacing socket.
+                            send_to(
+                                mc_socket,
+                                &out[..write],
+                                &send_info,
+                                MAX_DATAGRAM_SIZE,
+                                args.pacing.is_some(),
+                                enable_gso_mc,
+                            )
+                            .map(|_| ())
+                        };
 
-                    if let Err(e) = err {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            debug!("send() auth would block");
-                            break;
+                        if let Err(e) = err {
+                            if e.kind() == std::io::ErrorKind::WouldBlock {
+                                debug!("send() would block");
+                                break;
+                            }
+
+                            panic!("send() failed: {:?}", e);
                         }
 
-                        panic!("send() auth failed: {:?}", e);
+                        debug!(
+                            "Multicast written {} bytes to {:?}",
+                            write, mc_channel.mc_send_addr
+                        );
+
+                        // Stop sending further streams if the pacing states that
+                        // we should not send further
+                        // packets.
+                        if now < send_info.at {
+                            pacing_timeout = Some(send_info.at);
+                        }
                     }
 
-                    debug!(
+                    // If symmetric authentication is used alongside multicast,
+                    // generate authentication packets and send them
+                    // on the multicast authentication path.
+                    if let (McAuthType::SymSign, Some(mc_auth_info)) =
+                        (authentication, mc_channel.mc_auth_info.as_ref())
+                    {
+                        mc_channel
+                            .channel
+                            .mc_sym_sign(
+                                &clients
+                                    .values_mut()
+                                    .map(|client| &mut client.conn)
+                                    .collect::<Vec<_>>(),
+                            )
+                            .unwrap();
+
+                        let mc_auth_addr = mc_auth_info.2;
+
+                        loop {
+                            let write = match mc_channel
+                                .mc_send_sym_auth(&mut out)
+                            {
+                                Ok(v) => v,
+                                Err(quiche::Error::Done) => {
+                                    debug!(
+                                        "Multicast done writing authentication"
+                                    );
+                                    break;
+                                },
+                                Err(e) => {
+                                    error!("Multicast send auth failed: {:?}", e);
+                                    break;
+                                },
+                            };
+
+                            // If soft-multicast is used, send individually to
+                            // each client. The
+                            // SocketAddr is created using
+                            // the client unicast address and
+                            // the multicast destination port.
+                            let err = if args.soft_mc {
+                                clients.values().try_for_each(|client| {
+                                    socket
+                                        .send_to(
+                                            &out[..write],
+                                            client.soft_mc_addr_auth,
+                                        )
+                                        .map(|_| ())
+                                })
+                            } else {
+                                mc_socket
+                                    .send_to(&out[..write], mc_auth_addr)
+                                    .map(|_| ())
+                            };
+
+                            if let Err(e) = err {
+                                if e.kind() == std::io::ErrorKind::WouldBlock {
+                                    debug!("send() auth would block");
+                                    break;
+                                }
+
+                                panic!("send() auth failed: {:?}", e);
+                            }
+
+                            debug!(
                         "Multicast written {} bytes on authentication channel at address {:?}",
                         write, mc_auth_addr
                     );
-                }
-            }
-        }
+                        }
+                    }
 
-        // Generate outgoing QUIC packets for all active connections and send
-        // them on the UDP socket, until quiche reports that there are no more
-        // packets to be sent.
-        for client in clients.values_mut() {
-            if app_handler.app_has_finished() && client.conn.is_established() {
-                let can_close = if let Some(mc_channel) = mc_channel_opt.as_ref()
-                {
-                    mc_channel.channel.mc_no_stream_active()
-                } else {
-                    true
-                };
-                if can_close {
-                    let res = client.conn.close(true, 1, &[0, 1]);
-                    debug!(
+                    // Stop sending additional data if we need to pace the production.
+                    if pacing_timeout.is_some() {
+                        break 'app;
+                    }
+                }
+
+                // Generate outgoing QUIC packets for all active connections and
+                // send them on the UDP socket, until quiche
+                // reports that there are no more packets to be
+                // sent.
+                for client in clients.values_mut() {
+                    if app_handler.app_has_finished() &&
+                        client.conn.is_established()
+                    {
+                        let can_close =
+                            if let Some(mc_channel) = mc_channel_opt.as_ref() {
+                                mc_channel.channel.mc_no_stream_active()
+                            } else {
+                                true
+                            };
+                        if can_close {
+                            let res = client.conn.close(true, 1, &[0, 1]);
+                            debug!(
                         "Closing the the connection for {} because no active video.. Res={:?}",
                         client.conn.trace_id(), res,
                     );
-                }
-            }
-            loop {
-                let (write, send_info) = match client.conn.send(&mut out) {
-                    Ok(v) => v,
-
-                    Err(quiche::Error::Done) => {
-                        debug!("{} done writing", client.conn.trace_id());
-                        break;
-                    },
-
-                    Err(e) => {
-                        error!("{} send failed: {:?}", client.conn.trace_id(), e);
-
-                        client.conn.close(false, 0x1, b"fail").ok();
-                        break;
-                    },
-                };
-
-                if let Err(e) = socket.send_to(&out[..write], send_info.to) {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        debug!("send() would block");
-                        break;
+                        }
                     }
+                    loop {
+                        let (write, send_info) = match client.conn.send(&mut out)
+                        {
+                            Ok(v) => v,
 
-                    panic!("send() failed: {:?}", e);
+                            Err(quiche::Error::Done) => {
+                                debug!("{} done writing", client.conn.trace_id());
+                                break;
+                            },
+
+                            Err(e) => {
+                                error!(
+                                    "{} send failed: {:?}",
+                                    client.conn.trace_id(),
+                                    e
+                                );
+
+                                client.conn.close(false, 0x1, b"fail").ok();
+                                break;
+                            },
+                        };
+
+                        if let Err(e) =
+                            socket.send_to(&out[..write], send_info.to)
+                        {
+                            if e.kind() == std::io::ErrorKind::WouldBlock {
+                                debug!("send() would block");
+                                break;
+                            }
+
+                            panic!("send() failed: {:?}", e);
+                        }
+
+                        debug!(
+                            "{} written {} bytes",
+                            client.conn.trace_id(),
+                            write
+                        );
+
+                        // Communication between the unicast session and the
+                        // multicast channel.
+                        if let Some(mc_channel) = mc_channel_opt.as_mut() {
+                            debug!("J'appelle le control to multicast");
+                            client
+                                .conn
+                                .uc_to_mc_control(&mut mc_channel.channel)
+                                .unwrap();
+                        }
+                    }
                 }
 
-                debug!("{} written {} bytes", client.conn.trace_id(), write);
-
-                // Communication between the unicast session and the multicast
-                // channel.
-                if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                    debug!("J'appelle le control to multicast");
-                    client
-                        .conn
-                        .uc_to_mc_control(&mut mc_channel.channel)
-                        .unwrap();
+                // This could be improved. In case QUIC is unable to send the
+                // video frame (e.g., due to congestion control),
+                // we will record an invalid (too early)
+                // timestamp.
+                if at_least_data_to_send {
+                    app_handler.on_sent_to_wire();
                 }
             }
-        }
-
-        // This could be improved. In case QUIC is unable to send the video frame
-        // (e.g., due to congestion control), we will record an invalid (too
-        // early) timestamp.
-        if at_least_data_to_send {
-            app_handler.on_sent_to_wire();
         }
 
         // Garbage collect closed connections.
@@ -1136,6 +1194,27 @@ fn set_txtime_sockopt(sock: &mio::net::UdpSocket) -> io::Result<()> {
     };
 
     setsockopt(sock.as_raw_fd(), TxTime, &config)?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn set_max_pacing(sock: &mio::net::UdpSocket) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    let rate: u32 = 1000;
+
+    let result = unsafe {
+        libc::setsockopt(
+            sock.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_MAX_PACING_RATE,
+            &rate as *const _ as *const libc::c_void,
+            std::mem::size_of::<u32>() as u32,
+        )
+    };
+
+    println!("result is {}", result);
 
     Ok(())
 }

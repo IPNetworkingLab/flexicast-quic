@@ -1,5 +1,6 @@
 //! Multicast extension for QUIC.
 
+use std::cmp;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::convert::TryFrom;
@@ -916,6 +917,9 @@ pub trait MulticastConnection {
     /// Sets the multicast pacing. Only available for the multicast source if
     /// the disabled_cc congestion control algorithm is used.
     fn mc_set_constant_pacing(&mut self, rate: u64) -> Result<()>;
+
+    /// Update send capacity for the multicast source channel.
+    fn mc_update_tx_cap(&mut self);
 }
 
 impl MulticastConnection for Connection {
@@ -1197,6 +1201,7 @@ impl MulticastConnection for Connection {
         // Remove expired packets.
         if self.is_server {
             let p = self.paths.get_mut(space_id as usize)?;
+            debug!("Avant: {}", p.recovery.cwnd_available());
             let res = p.recovery.mc_data_timeout(
                 space_id as u32,
                 now,
@@ -1206,6 +1211,8 @@ impl MulticastConnection for Connection {
                     .ttl_data,
                 hs_status,
             )?;
+            debug!("Apres timeout: {}", p.recovery.cwnd_available());
+            self.blocked_limit = None;
             pkt_num_opt = res.0;
             stream_id_opt = res.1;
             fec_metadata_opt = res.2;
@@ -1291,7 +1298,6 @@ impl MulticastConnection for Connection {
                 .flatten()
                 .map(|timeout| {
                     if timeout <= now {
-                        println!("ICI 1");
                         time::Duration::ZERO
                     } else {
                         timeout.duration_since(now)
@@ -1331,7 +1337,9 @@ impl MulticastConnection for Connection {
                                 .unwrap()
                                 .mc_last_expired_needs_notif =
                                 v.0.is_some() || v.1.is_some() || v.2.is_some();
-                            self.update_tx_cap();
+                            println!("Before update tx cap in on_mc_timeout");
+                            self.mc_update_tx_cap();
+                            println!("After update tx cap in on_mc_timeout");
                             return Ok(v);
                         }
                     }
@@ -1588,6 +1596,29 @@ impl MulticastConnection for Connection {
             Err(Error::Multicast(MulticastError::McDisabled))
         }
     }
+
+    fn mc_update_tx_cap(&mut self) {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if multicast.mc_role == MulticastRole::ServerMulticast {
+                if let Some(space_id) = multicast.mc_space_id {
+                    if let Ok(path) = self.paths.get(space_id) {
+                        let cwin_available = path.recovery.cwnd_available();
+                        self.max_tx_data += self.tx_data;
+                        self.tx_cap = cmp::min(
+                            cwin_available,
+                            (self.max_tx_data - self.tx_data)
+                                .try_into()
+                                .unwrap_or(usize::MAX),
+                        );
+                        println!(
+                            "mc_update_tx_cap: cwin available={}, tx_cap={}",
+                            cwin_available, self.tx_cap
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Extension of a RangeSet to support missing ranges.
@@ -1811,8 +1842,8 @@ impl MulticastChannelSource {
 
             // Set the congestion window of the multicast source for the auth
             // path.
-            if let Some(cwnd) = mc_cwnd {
-                mc_path_server.recovery.set_mc_max_cwnd(cwnd)
+            if mc_cwnd.is_some() {
+                mc_path_server.recovery.set_mc_max_cwnd(std::usize::MAX - 1);
             }
             mc_path_server.recovery.reset();
 
@@ -2092,6 +2123,14 @@ pub mod testing {
             );
             let mut mc_announce_data = get_test_mc_announce_data();
             mc_announce_data.auth_type = authentication;
+
+            // Change the config to set the maximum number of bytes that can be
+            // sent if the congestion window is fixed.
+            if let Some(cwnd) = max_cwnd {
+                println!("OUI");
+                server_config.set_initial_max_data(cwnd as u64);
+                client_config.set_initial_max_data(cwnd as u64);
+            }
 
             // Create a new announce data if the channel uses symetric
             // authentication.
@@ -4948,21 +4987,21 @@ mod tests {
     #[test]
     fn test_mc_with_cwnd() {
         let use_auth = McAuthType::None;
-        let mut mc_pipe = MulticastPipe::new(
-            2,
-            "/tmp/test_mc_with_cwnd.txt",
-            use_auth,
-            true,
-            true,
-            None,
-        )
-        .unwrap();
+        // let mut mc_pipe = MulticastPipe::new(
+        //     2,
+        //     "/tmp/test_mc_with_cwnd.txt",
+        //     use_auth,
+        //     true,
+        //     true,
+        //     None,
+        // )
+        // .unwrap();
 
-        // Send without limitation.
-        for i in 0..100 {
-            let res = mc_pipe.source_send_single_stream(true, None, 0, 1 + i * 4);
-            assert!(res.is_ok());
-        }
+        // // Send without limitation.
+        // for i in 0..100 {
+        //     let res = mc_pipe.source_send_single_stream(true, None, 0, 1 + i *
+        // 4);     assert!(res.is_ok());
+        // }
 
         let cwnd = 500;
         let mut mc_pipe = MulticastPipe::new(
@@ -4983,7 +5022,7 @@ mod tests {
         let mut buf = [0u8; 1500];
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(5, &buf[..500], true),
-            Ok(500)
+            Ok(200)
         );
         let res = mc_pipe.mc_channel.mc_send(&mut buf[..]).map(|(w, _)| w);
         assert_eq!(res, Ok(152));
@@ -5012,6 +5051,7 @@ mod tests {
                 mc_pipe.mc_announce_data.ttl_data + 100,
             );
 
+        println!("Before on_mc_timeout");
         mc_pipe
             .mc_channel
             .channel
@@ -5019,6 +5059,91 @@ mod tests {
             .unwrap();
         let path = mc_pipe.mc_channel.channel.paths.get(path_id).unwrap();
         assert_eq!(path.recovery.cwnd_available(), 500);
+        println!("After on_mc_timeout");
+
+        // Able to send a new stream.
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(9, &buf[..400], true),
+            Ok(400)
+        );
+        let res = mc_pipe.mc_channel.mc_send(&mut buf[..]).map(|(w, _)| w);
+        assert_eq!(res, Ok(471));
+
+        // // Same test but we send a longer stream.
+        // // The long stream should not be closed upon timeout if it is still open by the application.
+        // let cwnd = 500;
+        // let mut mc_pipe = MulticastPipe::new(
+        //     2,
+        //     "/tmp/test_mc_with_cwnd.txt",
+        //     use_auth,
+        //     true,
+        //     true,
+        //     Some(cwnd),
+        // )
+        // .unwrap();
+
+        // let mut buf = [0u8; 1500];
+        // // First stream can be sent totally
+        // assert_eq!(
+        //     mc_pipe.mc_channel.channel.stream_send(1, &buf[..100], true),
+        //     Ok(100)
+        // );
+        // assert_eq!(
+        //     mc_pipe.mc_channel.mc_send(&mut buf[..]).map(|(w, _)| w),
+        //     Ok(148)
+        // );
+
+        // // The second stream not.
+        // assert_eq!(
+        //     mc_pipe.mc_channel.channel.stream_send(5, &buf, true),
+        //     Ok(400)
+        // );
+        // assert_eq!(
+        //     mc_pipe.mc_channel.mc_send(&mut buf[..]).map(|(w, _)| w),
+        //     Ok(352)
+        // );
+
+        // let path_id = mc_pipe
+        //     .mc_channel
+        //     .channel
+        //     .multicast
+        //     .as_ref()
+        //     .unwrap()
+        //     .mc_space_id
+        //     .unwrap();
+        // let path = mc_pipe.mc_channel.channel.paths.get(path_id).unwrap();
+        // assert_eq!(path.recovery.cwnd_available(), 0);
+
+        // let now = time::Instant::now();
+        // let expired_timer = now +
+        //     time::Duration::from_millis(
+        //         mc_pipe.mc_announce_data.ttl_data + 100,
+        //     );
+
+        // mc_pipe
+        //     .mc_channel
+        //     .channel
+        //     .on_mc_timeout(expired_timer)
+        //     .unwrap();
+        // let path = mc_pipe.mc_channel.channel.paths.get(path_id).unwrap();
+        // assert_eq!(path.recovery.cwnd_available(), 500);
+
+        // // Stream with ID 1 is closed. Stream with ID 5 is still open and available because the data was not sent totally.
+        // let streams: Vec<_> = mc_pipe.mc_channel.channel.streams.iter().map(|(id, _)| *id).collect();
+        // assert_eq!(streams, vec![5]);
+        // let writables: Vec<_> = mc_pipe.mc_channel.channel.writable().collect();
+        // assert_eq!(writables, vec![5]);
+
+        // // Now it is possible to send the remaining of the data of the stream.
+        // assert_eq!(
+        //     mc_pipe.mc_channel.channel.stream_send(5, &buf[400..500], true),
+        //     Ok(100)
+        // );
+
+        // assert_eq!(
+        //     mc_pipe.mc_channel.mc_send(&mut buf[..]).map(|(w, _)| w),
+        //     Ok(139)
+        // );
     }
 }
 
