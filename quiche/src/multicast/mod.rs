@@ -1200,6 +1200,7 @@ impl MulticastConnection for Connection {
 
         // Remove expired packets.
         if self.is_server {
+            println!("PASSAGE MC_EXPIRE");
             let p = self.paths.get_mut(space_id as usize)?;
             debug!("Avant: {}", p.recovery.cwnd_available());
             let res = p.recovery.mc_data_timeout(
@@ -1232,6 +1233,7 @@ impl MulticastConnection for Connection {
                 .iter()
                 .map(|(stream_id, _)| *stream_id)
                 .collect();
+            println!("Voici mes streams: {:?}", iterable);
             for stream_id in iterable {
                 if stream_id <= exp_stream_id {
                     let stream_opt = self.streams.get_mut(stream_id);
@@ -1267,7 +1269,9 @@ impl MulticastConnection for Connection {
             }
         }
 
-        Ok((pkt_num_opt, stream_id_opt, fec_metadata_opt))
+        let a = Ok((pkt_num_opt, stream_id_opt, fec_metadata_opt));
+        println!("Le timeout done: {:?}", a);
+        a
     }
 
     fn mc_timeout(&self, now: time::Instant) -> Option<time::Duration> {
@@ -1284,7 +1288,16 @@ impl MulticastConnection for Connection {
 
         // MC-TODO: should use mc_role instead of server.
         if self.is_server {
-            space_ids
+            println!("Est-ce que j'ai un path qui existe: {:?}", space_ids
+            .iter()
+            .flatten()
+            .map(|&sid| {
+                self.paths
+                    .get(sid)
+                    .is_ok()
+            }).collect::<Vec<_>>());
+            println!("AVANT");
+            let a = space_ids
                 .iter()
                 .flatten()
                 .map(|&sid| {
@@ -1297,12 +1310,15 @@ impl MulticastConnection for Connection {
                 .min()
                 .flatten()
                 .map(|timeout| {
+                    println!("TEST J'AI UN TIMEOUT: {:?} vs {:?}", timeout, now);
                     if timeout <= now {
                         time::Duration::ZERO
                     } else {
                         timeout.duration_since(now)
                     }
-                })
+                });
+                println!("MADJOEJOFJ {:?}", a);
+                a
         } else {
             let multicast = self.multicast.as_ref()?;
             let timeout = multicast.mc_last_recv_time? +
@@ -1318,7 +1334,9 @@ impl MulticastConnection for Connection {
 
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData> {
         // Some data has expired.
+        println!("BEFORE MCTIMEOUT");
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
+            println!("AFTER MCTIMEOUT");
             if let Some(multicast) = self.multicast.as_ref() {
                 if self.is_server {
                     let mc_auth_space_id = multicast.mc_auth_space_id;
@@ -1568,6 +1586,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
+        debug!("Mais... {}", self.streams.len());
         self.multicast.is_some() && self.streams.len() == 0
     }
 

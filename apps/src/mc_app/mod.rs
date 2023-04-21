@@ -199,6 +199,14 @@ impl AppDataServer {
             Self::File(f) => f.on_expiring(exp_stream_id),
         }
     }
+
+    #[inline]
+    pub fn has_sent_some_data(&self) -> bool {
+        match self {
+            Self::Tixeo(t) => t.has_sent_some_data(),
+            Self::File(f) => f.has_sent_some_data(),
+        }
+    }
 }
 
 pub mod file_transfer;

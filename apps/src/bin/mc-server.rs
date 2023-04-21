@@ -187,6 +187,7 @@ fn main() {
                 &args.result_quic_trace,
                 &args.result_wire_trace,
                 1100,
+                500,
             )
             .unwrap(),
         ),
@@ -256,7 +257,7 @@ fn main() {
         // let rate = rate as f64;
         let rate = 1_000_000_000f64;
         let ttl = args.ttl_data as f64 / 1000f64; // In seconds
-        Some((rate * ttl).round() as usize)
+        Some((rate * ttl * 1.25).round() as usize)
     } else {
         None
     };
@@ -281,9 +282,10 @@ fn main() {
 
     if let (Some(mc_channel), Some(rate)) = (mc_channel_opt.as_mut(), args.pacing)
     {
-        let cwnd = rate * args.ttl_data;
+        // let cwnd = rate * args.ttl_data;
+        let cwnd = ((rate * args.ttl_data) as f64 / 1000f64).round() as u64;
         mc_channel.channel.mc_set_constant_pacing(cwnd).unwrap();
-        debug!("Set the multicast channel pacing to {}", rate);
+        debug!("Set the multicast channel pacing to {} and cwnd {}", rate, cwnd);
     }
 
     debug!("AFTER MULTICAST CHANNEL SETUP");
@@ -326,13 +328,19 @@ fn main() {
                 [timeout, Some(app_timeout)].iter().flatten().min().copied();
         }
 
-        if let Some(mc_channel) = mc_channel_opt.as_mut() {
-            let mc_timeout = mc_channel.channel.mc_timeout(now);
-            println!("MC timeout is {:?}", mc_timeout);
-            timeout = [timeout, mc_timeout].iter().flatten().min().copied()
+        if !app_handler.has_sent_some_data() && !args.wait_first_client {
+            let first_timeout = std::time::Duration::ZERO;
+            timeout = [timeout, Some(first_timeout)].iter().flatten().min().copied()
+        }
+        else {
+            if let Some(mc_channel) = mc_channel_opt.as_mut() {
+                let mc_timeout = mc_channel.channel.mc_timeout(now);
+                println!("MC timeout is {:?}", mc_timeout);
+                timeout = [timeout, mc_timeout].iter().flatten().min().copied()
+            }
         }
 
-        trace!("Next timeout in {:?}", timeout);
+        debug!("Next timeout in {:?}", timeout);
         poll.poll(&mut events, timeout).unwrap();
 
         // Read incoming UDP packets from the socket and feed them to quiche,
@@ -607,6 +615,7 @@ fn main() {
         // Handle time to live timeout of data of the multicast channel.
         let now = std::time::Instant::now();
         if let Some(mc_channel) = mc_channel_opt.as_mut() {
+            println!("AVANT D'APPELER ON MC TIMEOUT");
             let (_, exp_stream_id_opt, _) =
                 mc_channel.channel.on_mc_timeout(now).unwrap();
             if let Some(exp_stream_id) = exp_stream_id_opt {
@@ -626,7 +635,7 @@ fn main() {
                 let app_data_to_send = if app_handler.should_send_app_data() {
                     // Send the video frame in a dedicated stream.
                     let (stream_id, video_data) = app_handler.get_app_data();
-                    let mut can_go_to_next = true;
+                    let mut can_go_to_next = false;
 
                     let to_send =
                         if let Some(mc_channel) = mc_channel_opt.as_mut() {
@@ -642,8 +651,9 @@ fn main() {
                             };
                             debug!("WRITEN AUTANT: {:?}", writen);
 
-                            if writen != Some(video_data.len()) {
-                                can_go_to_next = false;
+                            if writen == Some(video_data.len()) {
+                                println!("Sets to true");
+                                can_go_to_next = true;
                             }
 
                             if let Some(v) = writen {
@@ -672,6 +682,7 @@ fn main() {
 
                     // Get next video values.
                     if can_go_to_next {
+                        println!("Enter here because true");
                         app_handler.on_sent_to_quic();
                         app_handler.gen_nxt_app_data();
                     }
@@ -681,8 +692,6 @@ fn main() {
                 };
                 if app_data_to_send {
                     at_least_data_to_send = true;
-                } else {
-                    break 'app;
                 }
 
                 // Generate outgoing Multicast-QUIC packets for the multicast
@@ -846,14 +855,18 @@ fn main() {
                     }
                 }
 
+                println!("Before outgoing unicast packets");
+
                 // Generate outgoing QUIC packets for all active connections and
                 // send them on the UDP socket, until quiche
                 // reports that there are no more packets to be
                 // sent.
                 for client in clients.values_mut() {
+                    println!("JE SUIS ICI 2: {}", app_handler.app_has_finished());
                     if app_handler.app_has_finished() &&
                         client.conn.is_established()
                     {
+                        println!("JE SUIS ICI");
                         let can_close =
                             if let Some(mc_channel) = mc_channel_opt.as_ref() {
                                 mc_channel.channel.mc_no_stream_active()
@@ -925,6 +938,11 @@ fn main() {
                 // timestamp.
                 if at_least_data_to_send {
                     app_handler.on_sent_to_wire();
+                }
+
+                // Stop the loop if no stream data has been sent at the end of the loop.
+                if !app_data_to_send {
+                    break 'app;
                 }
             }
         }
@@ -1022,10 +1040,10 @@ fn get_multicast_channel(
     Option<McAnnounceData>, // Data.
     Option<McAnnounceData>, // Authentication.
 ) {
-    // let mc_addr = "224.3.0.225:8889".parse().unwrap();
-    let mc_addr = "127.0.0.1:8889".parse().unwrap();
-    // let mc_addr_bytes = [224, 3, 0, 225];
-    let mc_addr_bytes = [127, 0, 0, 1];
+    let mc_addr = "224.3.0.225:8889".parse().unwrap();
+    // let mc_addr = "127.0.0.1:8889".parse().unwrap();
+    let mc_addr_bytes = [224, 3, 0, 225];
+    // let mc_addr_bytes = [127, 0, 0, 1];
     let mc_port = 8889;
     let source_addr = "127.0.0.1:4434".parse().unwrap();
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
@@ -1054,8 +1072,8 @@ fn get_multicast_channel(
         rng.fill(&mut channel_id_auth).unwrap();
         let channel_id = quiche::ConnectionId::from_ref(&channel_id_auth);
 
-        // let dummy_ip = std::net::Ipv4Addr::new(224, 3, 0, 225);
-        let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
+        let dummy_ip = std::net::Ipv4Addr::new(224, 3, 0, 225);
+        // let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
         let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
             dummy_ip,
             mc_port + 1,

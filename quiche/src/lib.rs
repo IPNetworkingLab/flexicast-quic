@@ -4523,6 +4523,7 @@ impl Connection {
 
             // Create MC_EXPIRE frame.
             if let Some(multicast) = self.multicast.as_mut() {
+                println!("Expired data: {:?}. {}", multicast.mc_last_expired, multicast.mc_last_expired_needs_notif);
                 if let (
                     true,
                     Some((exp_pn_opt, exp_sid_opt, exp_fec_metadata_opt)),
@@ -4556,6 +4557,7 @@ impl Connection {
                     // MC-TODO: expired FEC metadata
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
+                        println!("SEND MC_EXPIRE FRAME");
                         multicast.mc_last_expired_needs_notif = false;
 
                         ack_eliciting = true;
@@ -4751,6 +4753,50 @@ impl Connection {
             }
         }
         let source_symbol_offset = b.off();
+
+        // Create REPAIR frame.
+        println!("Can send fec={}, should send repair={:?}, can send repair={}", can_send_fec, self.should_send_repair_symbol(send_pid), self.fec_encoder.can_send_repair_symbols());
+        if can_send_fec &&
+            pkt_type == packet::Type::Short &&
+            self.should_send_repair_symbol(send_pid)? &&
+            self.fec_encoder.can_send_repair_symbols()
+        {
+            debug!("Maybe will send a repair frame");
+            if let Some(md) =
+                self.latest_metadata_of_symbol_with_fec_protected_frames
+            {
+                if left >=
+                    octets::varint_len(0x32) +
+                        self.fec_encoder.next_repair_symbol_size(md)?
+                {
+                    match self
+                        .fec_encoder
+                        .generate_and_serialize_repair_symbol_up_to(md)
+                    {
+                        Ok(rs) => {
+                            let frame =
+                                frame::Frame::Repair { repair_symbol: rs };
+                            if push_frame_to_pkt!(b, frames, frame, left) {
+                                println!("SEND A REPAIR FRAME");
+                                in_flight = true;
+                                self.fec_scheduler
+                                    .as_mut()
+                                    .unwrap()
+                                    .sent_repair_symbol();
+                                ack_eliciting = true;
+                                self.repair_symbols_sent_count += 1;
+                            } else {
+                                return Err(BufferTooShort);
+                            }
+                        },
+                        Err(EncoderError::NoSymbolToGenerate) => (), /* because generate_up_to may not be able to generate even if can_generate returned true */
+                        Err(err) => {
+                            return Err(Error::from(err));
+                        },
+                    }
+                }
+            }
+        }
 
         // Create DATAGRAM frame.
         if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) &&
@@ -4965,47 +5011,6 @@ impl Connection {
 
         // Alternate trying to send DATAGRAMs next time.
         self.emit_dgram = !dgram_emitted;
-
-        // Create REPAIR frame.
-        if can_send_fec &&
-            pkt_type == packet::Type::Short &&
-            self.should_send_repair_symbol(send_pid)? &&
-            self.fec_encoder.can_send_repair_symbols()
-        {
-            if let Some(md) =
-                self.latest_metadata_of_symbol_with_fec_protected_frames
-            {
-                if left >=
-                    octets::varint_len(0x32) +
-                        self.fec_encoder.next_repair_symbol_size(md)?
-                {
-                    match self
-                        .fec_encoder
-                        .generate_and_serialize_repair_symbol_up_to(md)
-                    {
-                        Ok(rs) => {
-                            let frame =
-                                frame::Frame::Repair { repair_symbol: rs };
-                            if push_frame_to_pkt!(b, frames, frame, left) {
-                                in_flight = true;
-                                self.fec_scheduler
-                                    .as_mut()
-                                    .unwrap()
-                                    .sent_repair_symbol();
-                                ack_eliciting = true;
-                                self.repair_symbols_sent_count += 1;
-                            } else {
-                                return Err(BufferTooShort);
-                            }
-                        },
-                        Err(EncoderError::NoSymbolToGenerate) => (), /* because generate_up_to may not be able to generate even if can_generate returned true */
-                        Err(err) => {
-                            return Err(Error::from(err));
-                        },
-                    }
-                }
-            }
-        }
 
         // If no other ack-eliciting frame is sent, include a PING frame
         // - if PTO probe needed; OR

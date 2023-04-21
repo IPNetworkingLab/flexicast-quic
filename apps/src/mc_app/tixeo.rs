@@ -110,6 +110,7 @@ impl TixeoServer {
     }
 
     pub fn get_app_data(&self) -> (u64, Vec<u8>) {
+        debug!("Send data on stream {}", self.cur_stream_id);
         (self.cur_stream_id, vec![0u8; self.nxt_nb_bytes])
     }
 
@@ -196,6 +197,11 @@ impl TixeoServer {
     #[inline]
     pub fn stream_written(&mut self, v: usize) {
         self.stream_written = v;
+    }
+
+    #[inline]
+    pub fn has_sent_some_data(&self) -> bool {
+        self.cur_stream_id > 1
     }
 }
 

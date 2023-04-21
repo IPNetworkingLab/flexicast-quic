@@ -623,6 +623,7 @@ fn main() {
         }
 
         // Process all readable streams.
+        debug!("All readable streams: {:?}", conn.readable().collect::<Vec<_>>());
         'read_stream: for s in conn.readable() {
             if !conn.stream_complete(s) {
                 continue 'read_stream;
