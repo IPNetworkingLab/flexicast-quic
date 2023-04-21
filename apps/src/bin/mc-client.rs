@@ -36,10 +36,6 @@ use quiche::multicast::MulticastClientStatus;
 use quiche::multicast::MulticastError;
 use quiche::multicast::MulticastRole;
 use quiche_apps::mc_app;
-use quiche_apps::mc_app::file_transfer::FileClient;
-use quiche_apps::mc_app::tixeo::TixeoClient;
-use quiche_apps::mc_app::AppDataClient;
-use quiche_apps::mc_app::McApp;
 use ring::rand::*;
 
 use clap::Parser;
@@ -82,11 +78,8 @@ fn main() {
     let args = Args::parse();
 
     // Application handler.
-    let mut app_handler = match args.app {
-        McApp::Tixeo =>
-            AppDataClient::Tixeo(TixeoClient::new(&args.output_latency)),
-        McApp::File => AppDataClient::File(FileClient::new(&args.output_latency)),
-    };
+    let mut app_handler =
+        mc_app::AppDataClient::new(args.app, &args.output_latency);
 
     let mc_client_params = multicast::MulticastClientTp {
         ipv4_channels_allowed: true,
@@ -623,7 +616,10 @@ fn main() {
         }
 
         // Process all readable streams.
-        debug!("All readable streams: {:?}", conn.readable().collect::<Vec<_>>());
+        debug!(
+            "All readable streams: {:?}",
+            conn.readable().collect::<Vec<_>>()
+        );
         'read_stream: for s in conn.readable() {
             if !conn.stream_complete(s) {
                 continue 'read_stream;

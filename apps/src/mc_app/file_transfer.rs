@@ -107,10 +107,14 @@ impl FileServer {
     }
 
     pub fn next_timeout(&self) -> Option<time::Duration> {
-        if self.start.is_some() {
+        if self.start.is_some() && self.is_active() {
             if let Some(last) = self.last_sent {
                 let now = time::Instant::now();
-                if last + self.sleep_delay >= now {
+                debug!(
+                    "Last sent is {:?}, sleep delay: {:?}, now: {:?}",
+                    last, self.sleep_delay, now
+                );
+                if last + self.sleep_delay <= now {
                     Some(time::Duration::ZERO)
                 } else {
                     Some(
@@ -142,6 +146,7 @@ impl FileServer {
     }
 
     pub fn gen_nxt_app_data(&mut self) {
+        debug!("Gen next app");
         self.last_sent = Some(time::Instant::now());
         self.sent_chunks += 1;
         if self.sent_chunks >= self.chunks.len() {
@@ -204,8 +209,13 @@ impl FileServer {
 
     #[inline]
     pub fn should_send_app_data(&self) -> bool {
-        println!("SHOULD SEND APP DATA: {}", self.active);
-        self.active
+        let now = time::Instant::now();
+        self.is_active() &&
+        if let Some(last) = self.last_sent {
+                now.duration_since(last) >= self.sleep_delay
+        } else {
+            true
+        }
     }
 
     #[inline]

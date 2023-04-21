@@ -57,6 +57,14 @@ pub enum AppDataClient {
 
 impl AppDataClient {
     #[inline]
+    pub fn new(app: McApp, output: &str) -> Self {
+        match app {
+            McApp::Tixeo => AppDataClient::Tixeo(TixeoClient::new(output)),
+            McApp::File => AppDataClient::File(FileClient::new(output)),
+        }
+    }
+
+    #[inline]
     pub fn on_init(&mut self) {
         match self {
             AppDataClient::Tixeo(_) => (),
@@ -88,6 +96,35 @@ pub enum AppDataServer {
 }
 
 impl AppDataServer {
+    #[inline]
+    pub fn new(
+        app: McApp, filename: Option<&str>, nb_frames: Option<u64>, delay: u64,
+        wait: bool, result_quic: &str, result_wire: &str, chunk_size: usize,
+    ) -> Self {
+        match app {
+            McApp::Tixeo => Self::Tixeo(TixeoServer::new(
+                filename,
+                nb_frames,
+                delay,
+                wait,
+                result_quic,
+                result_wire,
+            )),
+            McApp::File => Self::File(
+                FileServer::new(
+                    filename,
+                    nb_frames,
+                    wait,
+                    result_quic,
+                    result_wire,
+                    chunk_size,
+                    delay,
+                )
+                .unwrap(),
+            ),
+        }
+    }
+
     #[inline]
     pub fn on_init(&mut self) {
         match self {

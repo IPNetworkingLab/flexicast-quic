@@ -1200,9 +1200,7 @@ impl MulticastConnection for Connection {
 
         // Remove expired packets.
         if self.is_server {
-            println!("PASSAGE MC_EXPIRE");
             let p = self.paths.get_mut(space_id as usize)?;
-            debug!("Avant: {}", p.recovery.cwnd_available());
             let res = p.recovery.mc_data_timeout(
                 space_id as u32,
                 now,
@@ -1212,7 +1210,6 @@ impl MulticastConnection for Connection {
                     .ttl_data,
                 hs_status,
             )?;
-            debug!("Apres timeout: {}", p.recovery.cwnd_available());
             self.blocked_limit = None;
             pkt_num_opt = res.0;
             stream_id_opt = res.1;
@@ -1233,7 +1230,6 @@ impl MulticastConnection for Connection {
                 .iter()
                 .map(|(stream_id, _)| *stream_id)
                 .collect();
-            println!("Voici mes streams: {:?}", iterable);
             for stream_id in iterable {
                 if stream_id <= exp_stream_id {
                     let stream_opt = self.streams.get_mut(stream_id);
@@ -1270,7 +1266,6 @@ impl MulticastConnection for Connection {
         }
 
         let a = Ok((pkt_num_opt, stream_id_opt, fec_metadata_opt));
-        println!("Le timeout done: {:?}", a);
         a
     }
 
@@ -1288,15 +1283,6 @@ impl MulticastConnection for Connection {
 
         // MC-TODO: should use mc_role instead of server.
         if self.is_server {
-            println!("Est-ce que j'ai un path qui existe: {:?}", space_ids
-            .iter()
-            .flatten()
-            .map(|&sid| {
-                self.paths
-                    .get(sid)
-                    .is_ok()
-            }).collect::<Vec<_>>());
-            println!("AVANT");
             let a = space_ids
                 .iter()
                 .flatten()
@@ -1310,21 +1296,18 @@ impl MulticastConnection for Connection {
                 .min()
                 .flatten()
                 .map(|timeout| {
-                    println!("TEST J'AI UN TIMEOUT: {:?} vs {:?}", timeout, now);
                     if timeout <= now {
                         time::Duration::ZERO
                     } else {
                         timeout.duration_since(now)
                     }
                 });
-                println!("MADJOEJOFJ {:?}", a);
                 a
         } else {
             let multicast = self.multicast.as_ref()?;
             let timeout = multicast.mc_last_recv_time? +
                 time::Duration::from_millis(ttl_data * 3);
             if timeout <= now {
-                println!("ICI 2");
                 Some(time::Duration::ZERO)
             } else {
                 Some(timeout.duration_since(now))
@@ -1334,9 +1317,7 @@ impl MulticastConnection for Connection {
 
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData> {
         // Some data has expired.
-        println!("BEFORE MCTIMEOUT");
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
-            println!("AFTER MCTIMEOUT");
             if let Some(multicast) = self.multicast.as_ref() {
                 if self.is_server {
                     let mc_auth_space_id = multicast.mc_auth_space_id;
@@ -1355,9 +1336,7 @@ impl MulticastConnection for Connection {
                                 .unwrap()
                                 .mc_last_expired_needs_notif =
                                 v.0.is_some() || v.1.is_some() || v.2.is_some();
-                            println!("Before update tx cap in on_mc_timeout");
                             self.mc_update_tx_cap();
-                            println!("After update tx cap in on_mc_timeout");
                             return Ok(v);
                         }
                     }
@@ -1586,7 +1565,6 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
-        debug!("Mais... {}", self.streams.len());
         self.multicast.is_some() && self.streams.len() == 0
     }
 
@@ -1628,10 +1606,6 @@ impl MulticastConnection for Connection {
                             (self.max_tx_data - self.tx_data)
                                 .try_into()
                                 .unwrap_or(usize::MAX),
-                        );
-                        println!(
-                            "mc_update_tx_cap: cwin available={}, tx_cap={}",
-                            cwin_available, self.tx_cap
                         );
                     }
                 }
@@ -2146,7 +2120,6 @@ pub mod testing {
             // Change the config to set the maximum number of bytes that can be
             // sent if the congestion window is fixed.
             if let Some(cwnd) = max_cwnd {
-                println!("OUI");
                 server_config.set_initial_max_data(cwnd as u64);
                 client_config.set_initial_max_data(cwnd as u64);
             }
@@ -5070,7 +5043,6 @@ mod tests {
                 mc_pipe.mc_announce_data.ttl_data + 100,
             );
 
-        println!("Before on_mc_timeout");
         mc_pipe
             .mc_channel
             .channel
@@ -5078,7 +5050,6 @@ mod tests {
             .unwrap();
         let path = mc_pipe.mc_channel.channel.paths.get(path_id).unwrap();
         assert_eq!(path.recovery.cwnd_available(), 500);
-        println!("After on_mc_timeout");
 
         // Able to send a new stream.
         assert_eq!(
