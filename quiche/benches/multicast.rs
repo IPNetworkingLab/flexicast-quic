@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::authentication::McSymAuth;
 use quiche::multicast::testing::get_test_mc_config;
@@ -23,6 +24,15 @@ fn setup_mc(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastPipe {
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
     pipe
+}
+
+fn setup_mc_only_source(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastChannelSource {
+    let mut pipe =
+        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None).unwrap();
+
+    pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
+
+    pipe.mc_channel
 }
 
 fn setup_uc(buf: &[u8], nb_recv: usize) -> Vec<quiche::Connection> {
@@ -65,8 +75,41 @@ fn mc_channel_bench(c: &mut Criterion) {
     let buf = vec![0; BENCH_STREAM_SIZE];
 
     let mut group = c.benchmark_group("multicast-1G");
-    // for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::SymSign]
-    // {
+    for &auth in &[McAuthType::AsymSign, McAuthType::None]
+    {
+        for nb_recv in (1..2).chain(
+            (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV),
+        ) {
+            group.bench_with_input(
+                BenchmarkId::from_parameter(McTuple::from((auth, nb_recv))),
+                &(auth, nb_recv),
+                |b, &(auth, nb_recv)| {
+                    b.iter_batched(
+                        || setup_mc_only_source(&buf, nb_recv, auth),
+                        |mut mc_channel| {
+                            // Ask quiche to generate the outgoing packets with
+                            // authentication.
+                            let mut buffer = [0u8; 1500];
+                            loop {
+                                match mc_channel.mc_send(&mut buffer[..]) {
+                                    Ok(_) => (),
+                                    Err(quiche::Error::Done) => break,
+                                    Err(e) => panic!("Error: {}", e),
+                                }
+                            }
+                        },
+                        PerIteration,
+                    );
+                },
+            );
+        }
+    }
+}
+
+fn mc_channel_bench_sym(c: &mut Criterion) {
+    let buf = vec![0; BENCH_STREAM_SIZE];
+
+    let mut group = c.benchmark_group("multicast-1G");
     for &auth in &[McAuthType::SymSign] {
         for nb_recv in (1..2).chain(
             (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV),
@@ -113,6 +156,7 @@ fn mc_channel_bench(c: &mut Criterion) {
     }
 }
 
+
 fn uc_channel_bench(c: &mut Criterion) {
     // A benchmark consists in sending a fixed amount of bytes to the lib.
     let buf = vec![0; BENCH_STREAM_SIZE];
@@ -148,6 +192,6 @@ fn uc_channel_bench(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, mc_channel_bench, uc_channel_bench);
+criterion_group!(benches, mc_channel_bench, mc_channel_bench_sym, uc_channel_bench);
 // criterion_group!(benches, mc_channel_bench);
 criterion_main!(benches);
