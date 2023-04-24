@@ -257,6 +257,7 @@ fn main() {
             &rng,
             args.soft_mc,
             mc_cwnd,
+            args.addr,
         )
     } else {
         (None, None, None, None)
@@ -982,6 +983,7 @@ fn validate_token<'a>(
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
     ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
+    source_addr: net::SocketAddr,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -993,7 +995,6 @@ fn get_multicast_channel(
     let mc_addr_bytes = [224, 3, 0, 225];
     // let mc_addr_bytes = [127, 0, 0, 1];
     let mc_port = 8889;
-    let source_addr = "127.0.0.1:4434".parse().unwrap();
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
 
     let mc_client_tp = MulticastClientTp::default();
