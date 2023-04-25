@@ -29,6 +29,7 @@ extern crate log;
 
 use std::io;
 use std::net;
+use std::path::Path;
 
 use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
@@ -157,6 +158,10 @@ struct Args {
     /// Chunk size of packets if `file` application is used.
     #[clap(long = "chunk-size", value_parser, default_value = "1100")]
     chunk_size: usize,
+
+    /// Certificate path.
+    #[clap(long = "cert-path", value_parser, default_value = "./src/bin")]
+    cert_path: String,
 }
 
 fn main() {
@@ -193,10 +198,10 @@ fn main() {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
     config
-        .load_cert_chain_from_pem_file("src/bin/cert.crt")
+        .load_cert_chain_from_pem_file(Path::new(&args.cert_path).join("cert.crt").to_str().unwrap())
         .unwrap();
     config
-        .load_priv_key_from_pem_file("src/bin/cert.key")
+        .load_priv_key_from_pem_file(Path::new(&args.cert_path).join("cert.key").to_str().unwrap())
         .unwrap();
 
     config
@@ -995,6 +1000,7 @@ fn get_multicast_channel(
     let mc_addr_bytes = [224, 3, 0, 225];
     // let mc_addr_bytes = [127, 0, 0, 1];
     let mc_port = 8889;
+    let source_addr = "127.0.0.1:4434".parse().unwrap();
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
 
     let mc_client_tp = MulticastClientTp::default();
