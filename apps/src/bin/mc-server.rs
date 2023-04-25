@@ -197,6 +197,8 @@ fn main() {
     // Create the configuration for the QUIC connections.
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
+    println!("Debug: {}", Path::new(&args.cert_path).join("cert.crt").to_str().unwrap());
+
     config
         .load_cert_chain_from_pem_file(Path::new(&args.cert_path).join("cert.crt").to_str().unwrap())
         .unwrap();
@@ -263,6 +265,7 @@ fn main() {
             args.soft_mc,
             mc_cwnd,
             args.addr,
+            &args.cert_path
         )
     } else {
         (None, None, None, None)
@@ -988,7 +991,7 @@ fn validate_token<'a>(
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
     ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
-    source_addr: net::SocketAddr,
+    source_addr: net::SocketAddr, cert_path: &str
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -1004,9 +1007,9 @@ fn get_multicast_channel(
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
 
     let mc_client_tp = MulticastClientTp::default();
-    let mut server_config = get_test_mc_config(true, None, true, mc_cwnd);
+    let mut server_config = get_test_mc_config(true, None, true, mc_cwnd, cert_path);
     let mut client_config =
-        get_test_mc_config(false, Some(&mc_client_tp), true, mc_cwnd);
+        get_test_mc_config(false, Some(&mc_client_tp), true, mc_cwnd, cert_path);
 
     // Generate a random source connection ID for the connection.
     let mut channel_id = [0; 16];
@@ -1111,14 +1114,14 @@ fn get_multicast_channel(
 
 pub fn get_test_mc_config(
     mc_server: bool, mc_client: Option<&MulticastClientTp>, use_fec: bool,
-    mc_cwnd: Option<usize>,
+    mc_cwnd: Option<usize>, cert_path: &str
 ) -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
     config
-        .load_cert_chain_from_pem_file("src/bin/cert.crt")
+        .load_cert_chain_from_pem_file(Path::new(cert_path).join("cert.crt").to_str().unwrap())
         .unwrap();
     config
-        .load_priv_key_from_pem_file("src/bin/cert.key")
+        .load_priv_key_from_pem_file(Path::new(cert_path).join("cert.key").to_str().unwrap())
         .unwrap();
     config
         .set_application_protos(&[b"proto1", b"proto2"])
