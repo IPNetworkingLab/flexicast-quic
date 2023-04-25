@@ -613,6 +613,7 @@ fn main() {
 
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
+        let mut can_go_to_next = false;
         if pacing_timeout.is_none() ||
             pacing_timeout.unwrap().duration_since(now) ==
                 std::time::Duration::ZERO
@@ -620,7 +621,6 @@ fn main() {
             pacing_timeout = None;
             let app_data_to_send = if app_handler.should_send_app_data() {
                 let (stream_id, app_data) = app_handler.get_app_data();
-                let mut can_go_to_next = false;
 
                 let to_send = if let Some(mc_channel) = mc_channel_opt.as_mut() {
                     // Either once if multicast is enabled...
@@ -899,7 +899,7 @@ fn main() {
             // video frame (e.g., due to congestion control),
             // we will record an invalid (too early)
             // timestamp.
-            if app_data_to_send {
+            if app_data_to_send && can_go_to_next {
                 app_handler.on_sent_to_wire();
             }
         }
