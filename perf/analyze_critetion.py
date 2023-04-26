@@ -64,7 +64,7 @@ def cmp_mc_uc(root):
 
     ax.legend()
     ax.set_xlabel("Number of receivers")
-    ax.set_ylabel("Time to send 1GB [s]")
+    ax.set_ylabel("Time to send 10MB [s]")
 
     plt.savefig("bench-server.pdf")
 
