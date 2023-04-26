@@ -624,7 +624,7 @@ fn main() {
 
                 let to_send = if let Some(mc_channel) = mc_channel_opt.as_mut() {
                     // Either once if multicast is enabled...
-                    let writen = match mc_channel
+                    let written = match mc_channel
                         .channel
                         .stream_send(stream_id, &app_data, true)
                     {
@@ -632,13 +632,12 @@ fn main() {
                         Err(quiche::Error::Done) => None,
                         Err(e) => panic!("Other error: {:?}", e),
                     };
-                    debug!("WRITEN AUTANT: {:?}", writen);
 
-                    if writen == Some(app_data.len()) {
+                    if written == Some(app_data.len()) {
                         can_go_to_next = true;
                     }
 
-                    if let Some(v) = writen {
+                    if let Some(v) = written {
                         app_handler.stream_written(v);
                         true
                     } else {
@@ -646,7 +645,7 @@ fn main() {
                     }
                 } else {
                     // ... or for every client otherwise.
-                    match clients.values_mut().try_for_each(|client| {
+                    let ok_all_clients = match clients.values_mut().try_for_each(|client| {
                         client
                             .conn
                             .stream_send(stream_id, &app_data, true)
@@ -655,7 +654,14 @@ fn main() {
                         Ok(_) => true,
                         Err(quiche::Error::Done) => false,
                         Err(e) => panic!("Other error: {:?}", e),
+                    };
+
+                    if ok_all_clients {
+                        can_go_to_next = true;
+                        app_handler.stream_written(app_data.len());
                     }
+
+                    ok_all_clients
                 };
                 debug!(
                     "Sent application frame in stream {}. Must send: {}",
