@@ -3,8 +3,9 @@ import os
 import json
 import numpy as np
 
-COLORS = ["#e66101", "#fdb863", "#b2abd2", "#5e3c99"]
+COLORS = ["#1b9e77", "#d95f02", "#7570b3", "#e7298a"]
 MARKERS = ["^", "v", ">", "<"]
+LINESTYLES = ["-", "--", "-.", (0, (1, 1))]
 
 
 def parse_json(filename):
@@ -47,10 +48,10 @@ def cmp_mc_uc(root):
     uc = read_unicast(os.path.join(root, "unicast-1G"))
 
     data = [
-        (uc, "Unicast"),
         (mc_auth_asym, "Multicast asymetric"),
+        (mc_no_auth, "Multicast no authentication"),
         (mc_auth_sym, "Multicast symetric"),
-        (mc_no_auth, "Multicast no authentication")
+        (uc, "Unicast"),
     ]
 
     fig, ax = plt.subplots()
@@ -59,7 +60,7 @@ def cmp_mc_uc(root):
         v = [d[i][0] for i in k]
         std = [d[i][1] for i in k]
 
-        ax.errorbar(k, v, yerr=std, label=label, fmt=f"-{MARKERS[i]}", color=COLORS[i])
+        ax.errorbar(k, v, yerr=std, label=label, fmt=f"-{MARKERS[i]}", color=COLORS[i], linestyle=LINESTYLES[i])
 
     ax.legend()
     ax.set_xlabel("Number of receivers")
@@ -73,10 +74,10 @@ def cmp_mc_uc_client(root):
     uc = read_unicast(os.path.join(root, "unicast-client-1G"))
 
     data = [
-        (uc, "Unicast"),
         (mc_auth_asym, "Multicast asymetric"),
+        (mc_no_auth, "Multicast no authentication"),
         (mc_auth_sym, "Multicast symetric"),
-        (mc_no_auth, "Multicast no authentication")
+        (uc, "Unicast"),
     ]
 
     fig, ax = plt.subplots()
@@ -85,7 +86,7 @@ def cmp_mc_uc_client(root):
         v = [d[i][0] for i in k]
         std = [d[i][1] for i in k]
 
-        ax.errorbar(k, v, yerr=std, label=label, fmt=f"-{MARKERS[i]}", color=COLORS[i])
+        ax.errorbar(k, v, yerr=std, label=label, fmt=f"-{MARKERS[i]}", color=COLORS[i], linestyle=LINESTYLES[i])
 
     ax.legend()
     ax.set_xlabel("Number of receivers")

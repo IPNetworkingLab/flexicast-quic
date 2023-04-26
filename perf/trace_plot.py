@@ -1,8 +1,45 @@
 import math
 import matplotlib.pyplot as plt
 import numpy as np
+import argparse
+import os
 
 COLORS = ["#1b9e77", "#d95f02", "#7570b3", "#e7298a"]
+MARKERS = ["^", "v", ">", "<"]
+LINESTYLES = ["-", "--", "-.", (0, (1, 1))]
+
+
+def get_files_labels(directory):
+    res = list()
+    ttl = None
+    nb_frames = None
+    for file in os.listdir(directory):
+        if not "tixeo" in file:
+            continue
+        path = os.path.join(directory, file)
+
+        tab = file.split("-")
+        if tab[1] == "mc":
+            label = f"MC {tab[2]}"
+        else:
+            label = "UC"
+
+        if nb_frames == None:
+            nb_frames = int(tab[3])
+        elif nb_frames != int(tab[3]):
+            print("ERROR: found different NB FRAMES values", nb_frames, tab[3])
+
+        if ttl == None:
+            ttl = int(tab[4])
+        elif ttl != int(tab[4]):
+            print("ERROR: found different TTL values", ttl, tab[4])
+        
+        res.append((path, label))
+    
+    # Sort by name.
+    res = sorted(res, key=lambda n: n[1])
+
+    return res, ttl, nb_frames
 
 
 def read_data_brut(filename):
@@ -74,7 +111,7 @@ def compute_cdf(values, nb_bins: int = 200, add_zero: bool = False):
     return bin_edges[1:], cdf
 
 
-def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", ylim=None):
+def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", ylim=None, xlim=None):
     res = dict()
     for (file, label) in all_files_labels:
         r, _ = read_and_rm_delay(trace, file)
@@ -84,18 +121,20 @@ def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", 
     fig, ax = plt.subplots()
 
     for i, (label, (bins, cdf)) in enumerate(res.items()):
-        ax.plot(bins, cdf, label=label, color=COLORS[i])
+        ax.plot(bins, cdf, label=label, color=COLORS[i], linestyle=LINESTYLES[i])
     
     ax.set_xlabel("Lateness [ms]")
     ax.set_ylabel("CDF")
     ax.set_title(title)
     if ylim is not None:
         ax.set_ylim(ylim)
+    if xlim is not None:
+        ax.set_xlim(xlim)
     plt.legend()
     plt.savefig(save_as)
 
 
-def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf", ylim=None, cmp_uc=None):
+def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf", ylim=None, cmp_uc=None, ylabel=""):
     res = dict()
     for (file, label) in all_files_labels:
         r = read_data_brut(file)
@@ -118,20 +157,23 @@ def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf",
         
     fig, ax = plt.subplots()
 
+    scaling = 1 if cmp_uc is None else 1000
     for i, (label, (values)) in enumerate(res.items()):
         stream_ids = sorted(values.keys())
-        timestamps = [values[i] for i in stream_ids]
+        timestamps = [values[i] * scaling for i in stream_ids]
         lost_frames = list()
         for stream_id in range(stream_ids[0], stream_ids[-1] + 1):
             if stream_id not in stream_ids:
                 lost_frames.append(stream_id)
 
         for lost_frame in lost_frames:
-            ax.axvline(lost_frame, linewidth=0.3, color=COLORS[i])
-        ax.scatter(stream_ids, timestamps, s=0.2, label=label, color=COLORS[i])
+            if not "UC" in label:
+                ax.axvline(lost_frame, linewidth=0.3, color=COLORS[i], linestyle=LINESTYLES[i])
+            print(f"Label {label} lost frame {lost_frame}")
+        ax.scatter(stream_ids, timestamps, s=0.2, label=label, color=COLORS[i], marker=MARKERS[i])
     
     ax.set_xlabel("Frame ID")
-    ax.set_ylabel("Time received since start [s]")
+    ax.set_ylabel(ylabel)
     ax.set_title(title)
     if ylim is not None:
         ax.set_ylim(ylim)
@@ -143,19 +185,16 @@ def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf",
 
 
 if __name__ == "__main__":
-    # all_files_labels = [
-    #     ("/home/louisna/multicast-quic/perf/client-asym.trace", "Asymetric MC"),
-    #     ("/home/louisna/multicast-quic/perf/client-sym.trace", "Symetric MC"),
-    #     ("/home/louisna/multicast-quic/perf/client-none.trace", "No auth MC"),
-    #     ("/home/louisna/multicast-quic/perf/client-uc.trace", "Unicast"),
-    # ]
-    all_files_labels = [
-        ("/home/louisna/multicast-quic/perf/cloudlab-mc-none.trace", "Mc None"),
-        ("/home/louisna/multicast-quic/perf/cloudlab-mc-asym.trace", "Mc Asym"),
-        ("/home/louisna/multicast-quic/perf/cloudlab-mc-sym.trace", "Mc Sym"),
-        ("/home/louisna/multicast-quic/perf/cloudlab-uc.trace", "Unicast"),
-    ]
-    trace = "/home/louisna/multicast-quic/perf/tixeo_trace.repr"
-    plot_distribution(all_files_labels, trace, title="VMs INGI 1000 frames (timeout=4s)", save_as="cdf_lat_4s.pdf", ylim=((0.9, 1.001)))
-    plot_stream_recv_time(all_files_labels, title="Recv timestamp", save_as="recv_stream.png")
-    plot_stream_recv_time(all_files_labels, title="Recv timestamp compared to unicast", save_as="recv_stream-uc.png", cmp_uc="Unicast")
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("directory", help="Directory containing the files to parse", type=str)
+    parser.add_argument("--trace", help="Path to the tixeo trace", type=str, default="/home/louisna/multicast-quic/perf/tixeo_trace.repr")
+    parser.add_argument("--xlim", type=float, help="Maximum xlim for the plot distribution", default=None)
+    parser.add_argument("--ylim", type=float, help="Maximum ylim for the plot distribution", default=None)
+    args = parser.parse_args()
+
+    all_files_labels, ttl, nb_frames = get_files_labels(args.directory)
+
+    plot_distribution(all_files_labels, args.trace, title=f"Cloudlab server <-> INGI ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}.pdf", ylim=(0, args.ylim), xlim=(0, args.xlim))
+    plot_stream_recv_time(all_files_labels, title="Recv timestamp", save_as=f"recv_stream_{nb_frames}_{ttl}.png", ylabel="Time received since start [s]")
+    plot_stream_recv_time(all_files_labels, title="Recv timestamp compared to unicast", save_as=f"recv_stream-uc_{nb_frames}_{ttl}.png", cmp_uc="UC", ylabel="Lateness of reception with respect to UC [ms]")
