@@ -1270,10 +1270,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_timeout(&self, now: time::Instant) -> Option<time::Duration> {
-        // May be None if we do not use symetric authentication.
-        let auth_id = self.multicast.as_ref()?.mc_auth_space_id;
-        let space_id = Some(self.multicast.as_ref()?.get_mc_space_id()?);
-        let space_ids = [auth_id, space_id];
+        // MC-TODO: maybe the timeout should be using timers of all paths?
 
         let ttl_data = self
             .multicast
@@ -1282,41 +1279,23 @@ impl MulticastConnection for Connection {
             .ttl_data;
 
         // MC-TODO: should use mc_role instead of server.
-        if self.is_server {
-            let a = space_ids
-                .iter()
-                .flatten()
-                .map(|&sid| {
-                    self.paths
-                        .get(sid)
-                        .ok()?
-                        .recovery
-                        .mc_next_timeout(time::Duration::from_millis(ttl_data))
-                })
-                .min()
-                .flatten()
-                .map(|timeout| {
-                    if timeout <= now {
-                        time::Duration::ZERO
-                    } else {
-                        timeout.duration_since(now)
-                    }
-                });
-                a
+        let multicast = self.multicast.as_ref()?;
+        let timeout = if self.is_server {
+            multicast.mc_last_recv_time? + time::Duration::from_millis(ttl_data)
         } else {
-            let multicast = self.multicast.as_ref()?;
-            let timeout = multicast.mc_last_recv_time? +
-                time::Duration::from_millis(ttl_data * 3);
-            if timeout <= now {
-                Some(time::Duration::ZERO)
-            } else {
-                Some(timeout.duration_since(now))
-            }
+            multicast.mc_last_recv_time? +
+                time::Duration::from_millis(ttl_data * 3)
+        };
+        if timeout <= now {
+            Some(time::Duration::ZERO)
+        } else {
+            Some(timeout.duration_since(now))
         }
     }
 
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData> {
         // Some data has expired.
+        println!("MC timeout: {:?}", self.mc_timeout(now));
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
             if let Some(multicast) = self.multicast.as_ref() {
                 if self.is_server {
@@ -1337,6 +1316,10 @@ impl MulticastConnection for Connection {
                                 .mc_last_expired_needs_notif =
                                 v.0.is_some() || v.1.is_some() || v.2.is_some();
                             self.mc_update_tx_cap();
+
+                            // Update last time a timeout event occured.
+                            self.multicast.as_mut().unwrap().mc_last_recv_time = Some(now);
+
                             return Ok(v);
                         }
                     }
@@ -1772,6 +1755,7 @@ impl MulticastChannelSource {
             )),
             mc_auth_type: authentication,
             mc_pn_need_sym_sign: Some(VecDeque::new()),
+            mc_last_recv_time: Some(time::Instant::now()),
             ..Default::default()
         });
 
@@ -3263,8 +3247,7 @@ mod tests {
 
         // The expiration timeout is exceeded. Closes the stream and removes the
         // packets from the sending queue.
-        let now = time::Instant::now();
-        let mut expired_timer = now +
+        let mut expired_timer = expired_timer +
             time::Duration::from_millis(
                 mc_pipe.mc_announce_data.ttl_data + 100,
             ); // Margin
@@ -5060,8 +5043,8 @@ mod tests {
         assert_eq!(res, Ok(471));
 
         // // Same test but we send a longer stream.
-        // // The long stream should not be closed upon timeout if it is still open by the application.
-        // let cwnd = 500;
+        // // The long stream should not be closed upon timeout if it is still
+        // open by the application. let cwnd = 500;
         // let mut mc_pipe = MulticastPipe::new(
         //     2,
         //     "/tmp/test_mc_with_cwnd.txt",
@@ -5118,14 +5101,16 @@ mod tests {
         // let path = mc_pipe.mc_channel.channel.paths.get(path_id).unwrap();
         // assert_eq!(path.recovery.cwnd_available(), 500);
 
-        // // Stream with ID 1 is closed. Stream with ID 5 is still open and available because the data was not sent totally.
-        // let streams: Vec<_> = mc_pipe.mc_channel.channel.streams.iter().map(|(id, _)| *id).collect();
-        // assert_eq!(streams, vec![5]);
-        // let writables: Vec<_> = mc_pipe.mc_channel.channel.writable().collect();
+        // // Stream with ID 1 is closed. Stream with ID 5 is still open and
+        // available because the data was not sent totally. let streams:
+        // Vec<_> = mc_pipe.mc_channel.channel.streams.iter().map(|(id, _)|
+        // *id).collect(); assert_eq!(streams, vec![5]);
+        // let writables: Vec<_> =
+        // mc_pipe.mc_channel.channel.writable().collect();
         // assert_eq!(writables, vec![5]);
 
-        // // Now it is possible to send the remaining of the data of the stream.
-        // assert_eq!(
+        // // Now it is possible to send the remaining of the data of the
+        // stream. assert_eq!(
         //     mc_pipe.mc_channel.channel.stream_send(5, &buf[400..500], true),
         //     Ok(100)
         // );
