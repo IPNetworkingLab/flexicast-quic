@@ -876,13 +876,19 @@ pub trait MulticastConnection {
     /// False if multicast is disabled or if the path is not a multicast path.
     fn is_mc_path(&self, space_id: usize) -> bool;
 
+    /// Adds the new connection IDs for the multicast client.
+    /// Previously, this was done in the [`MulticastConnection::create_mc_path`]
+    /// function but not this is separated because the two frames were sent on
+    /// the same path
+    fn add_mc_cid(&mut self, cid: &ConnectionId) -> Result<()>;
+
     /// Creates a multicast path on the client.
     /// This is done manually by the client without contacting the unicast
     /// server to avoid sharing a same path for the multicast and unicast
     /// source.
     fn create_mc_path(
-        &mut self, cid: &ConnectionId, client_addr: SocketAddr,
-        server_addr: SocketAddr, to_uc_server: bool,
+        &mut self, client_addr: SocketAddr, server_addr: SocketAddr,
+        to_uc_server: bool,
     ) -> Result<u64>;
 
     /// The unicast server connection sends control messages to the multicast
@@ -1295,7 +1301,6 @@ impl MulticastConnection for Connection {
 
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData> {
         // Some data has expired.
-        println!("MC timeout: {:?}", self.mc_timeout(now));
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
             if let Some(multicast) = self.multicast.as_ref() {
                 if self.is_server {
@@ -1318,7 +1323,8 @@ impl MulticastConnection for Connection {
                             self.mc_update_tx_cap();
 
                             // Update last time a timeout event occured.
-                            self.multicast.as_mut().unwrap().mc_last_recv_time = Some(now);
+                            self.multicast.as_mut().unwrap().mc_last_recv_time =
+                                Some(now);
 
                             return Ok(v);
                         }
@@ -1352,12 +1358,12 @@ impl MulticastConnection for Connection {
         false
     }
 
-    fn create_mc_path(
-        &mut self, cid: &ConnectionId, client_addr: SocketAddr,
-        server_addr: SocketAddr, to_uc_server: bool,
-    ) -> Result<u64> {
+    fn add_mc_cid(&mut self, cid: &ConnectionId) -> Result<()> {
         if let Some(multicast) = self.multicast.as_ref() {
-            if !matches!(multicast.mc_role, MulticastRole::Client(_)) {
+            if !matches!(
+                multicast.mc_role,
+                MulticastRole::Client(_) | MulticastRole::ServerUnicast(_)
+            ) {
                 return Err(Error::Multicast(MulticastError::McInvalidRole(
                     multicast.mc_role,
                 )));
@@ -1371,15 +1377,25 @@ impl MulticastConnection for Connection {
             .fill(&mut reset_token)
             .unwrap();
         let reset_token = u128::from_be_bytes(reset_token);
-        let seq_num = self.new_source_cid(cid, reset_token, true)?;
-        // let seq_num = self.ids.next_advertise_new_scid_seq().unwrap();
-        // self.ids.mark_advertise_new_scid_seq(seq_num, true);
+        self.new_source_cid(cid, reset_token, true)?;
 
-        // Add the destination Connection ID.
-        let conn_id = cid.as_ref().to_owned();
-        self.ids.new_dcid(conn_id.into(), seq_num, reset_token, 0)?;
+        Ok(())
+    }
+
+    fn create_mc_path(
+        &mut self, client_addr: SocketAddr, server_addr: SocketAddr,
+        to_uc_server: bool,
+    ) -> Result<u64> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if !matches!(multicast.mc_role, MulticastRole::Client(_)) {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    multicast.mc_role,
+                )));
+            }
+        }
 
         let pid = if to_uc_server {
+            info!("Client creates multicast path?");
             self.probe_path(client_addr, server_addr)
         } else {
             // Create a new path on the client.
@@ -2089,6 +2105,25 @@ pub mod testing {
             nb_clients: usize, keylog_filename: &str, authentication: McAuthType,
             use_fec: bool, probe_mc_path: bool, max_cwnd: Option<usize>,
         ) -> Result<MulticastPipe> {
+            let mc_announce_data = get_test_mc_announce_data();
+            Self::new_from_mc_announce_data(
+                nb_clients,
+                keylog_filename,
+                authentication,
+                use_fec,
+                probe_mc_path,
+                max_cwnd,
+                mc_announce_data,
+            )
+        }
+
+        /// Generates a new multicast pipe with already defined configuration
+        /// and Mc announce data.
+        pub fn new_from_mc_announce_data(
+            nb_clients: usize, keylog_filename: &str, authentication: McAuthType,
+            use_fec: bool, probe_mc_path: bool, max_cwnd: Option<usize>,
+            mut mc_announce_data: McAnnounceData,
+        ) -> Result<MulticastPipe> {
             let mc_client_tp = MulticastClientTp::default();
             let mut server_config =
                 get_test_mc_config(true, None, use_fec, authentication);
@@ -2098,7 +2133,6 @@ pub mod testing {
                 use_fec,
                 authentication,
             );
-            let mut mc_announce_data = get_test_mc_announce_data();
             mc_announce_data.auth_type = authentication;
 
             // Change the config to set the maximum number of bytes that can be
@@ -2176,6 +2210,9 @@ pub mod testing {
                 mc_announce_data.public_key = Some(public_key.to_vec());
             }
 
+            println!("After the multicast channel is set up");
+            let random = ring::rand::SystemRandom::new();
+
             let pipes: Vec<_> = (0..nb_clients)
                 .flat_map(|_| {
                     let mut config = get_test_mc_config(
@@ -2198,6 +2235,37 @@ pub mod testing {
                     let multicast = pipe.server.multicast.as_mut().unwrap();
                     multicast.mc_channel_key =
                         Some(mc_channel.master_secret.clone());
+
+                    // The server adds the connection IDs of the multicast
+                    // channel.
+                    println!(
+                        "Server announces cid: {:?}",
+                        mc_announce_data.channel_id
+                    );
+                    let mut scid = [0; 16];
+                    random.fill(&mut scid[..]).unwrap();
+
+                    let scid = ConnectionId::from_ref(&scid);
+                    let mut reset_token = [0; 16];
+                    random.fill(&mut reset_token).unwrap();
+                    let reset_token = u128::from_be_bytes(reset_token);
+                    pipe.server
+                        .new_source_cid(&scid, reset_token, true)
+                        .unwrap();
+
+                    if let Some(mc_auth_data) = mc_data_auth.as_ref() {
+                        let mut scid = [0; 16];
+                        random.fill(&mut scid[..]).unwrap();
+
+                        let scid = ConnectionId::from_ref(&scid);
+                        let mut reset_token = [0; 16];
+                        random.fill(&mut reset_token).unwrap();
+                        let reset_token = u128::from_be_bytes(reset_token);
+                        pipe.server
+                            .new_source_cid(&scid, reset_token, true)
+                            .unwrap();
+                    }
+
                     assert!(pipe.advance().is_ok());
 
                     // Client joins the multicast channel.
@@ -2212,27 +2280,16 @@ pub mod testing {
                     // The server gives the master key.
                     pipe.advance().unwrap();
 
-                    let client_mc_announce = pipe
-                        .client
-                        .multicast
-                        .as_ref()
-                        .unwrap()
-                        .get_mc_announce_data_path()
-                        .unwrap();
-                    let cid =
-                        ConnectionId::from_ref(&client_mc_announce.channel_id)
-                            .into_owned();
+                    let scid =
+                        ConnectionId::from_ref(&mc_announce_data.channel_id);
+                    pipe.client.add_mc_cid(&scid).unwrap();
+                    assert_eq!(pipe.advance(), Ok(()));
 
                     let server_addr = testing::Pipe::server_addr();
                     let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
 
                     pipe.client
-                        .create_mc_path(
-                            &cid,
-                            client_addr_2,
-                            server_addr,
-                            probe_mc_path,
-                        )
+                        .create_mc_path(client_addr_2, server_addr, probe_mc_path)
                         .unwrap();
 
                     let pid_c2s_1 = pipe
@@ -2249,21 +2306,26 @@ pub mod testing {
 
                     assert_eq!(pipe.advance(), Ok(()));
 
-                    if let Some(mc_data) = pipe
+                    if pipe
                         .client
                         .multicast
                         .as_ref()
                         .unwrap()
                         .get_mc_announce_data(1)
+                        .is_some()
                     {
-                        let cid = ConnectionId::from_ref(&mc_data.channel_id)
-                            .into_owned();
+                        let scid = crate::ConnectionId::from_ref(
+                            &mc_data_auth.as_ref().unwrap().channel_id,
+                        );
+
+                        pipe.client.add_mc_cid(&scid).unwrap();
+                        assert_eq!(pipe.advance(), Ok(()));
+
                         let server_addr = testing::Pipe::server_addr();
                         let client_addr_2 = CLIENT_AUTH_ADDR.parse().unwrap();
 
                         pipe.client
                             .create_mc_path(
-                                &cid,
                                 client_addr_2,
                                 server_addr,
                                 probe_mc_path,
@@ -5119,6 +5181,36 @@ mod tests {
         //     mc_pipe.mc_channel.mc_send(&mut buf[..]).map(|(w, _)| w),
         //     Ok(139)
         // );
+    }
+
+    #[test]
+    /// The server should see the new connection IDs and path challenges of the
+    /// client.
+    fn test_cid_and_path_explicit() {
+        let mut mc_announce_data = get_test_mc_announce_data();
+        mc_announce_data.is_ipv6 = true; // Explicit notification.
+
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_cid_and_path_explicit.txt",
+            McAuthType::SymSign,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        // The server received the new connection ID from the client.
+        assert_eq!(
+            mc_pipe.unicast_pipes[0].0.client.ids.active_source_cids(),
+            3
+        );
+        assert!(mc_pipe.unicast_pipes[0].0.server.ids.get_dcid(0).is_ok());
+        assert!(mc_pipe.unicast_pipes[0].0.server.ids.get_dcid(1).is_ok());
+        assert!(mc_pipe.unicast_pipes[0].0.server.ids.get_dcid(2).is_ok());
+        // MC-TODO: should ensure that this is equivalent to the client sCID.
+
+        assert_eq!(mc_pipe.unicast_pipes[0].0.server.paths.len(), 3);
     }
 }
 

@@ -4092,6 +4092,7 @@ impl Connection {
 
             // Create PATH_CHALLENGE frame if needed.
             if self.paths.get(send_pid)?.validation_requested() {
+                info!("Creates path challenge frame");
                 // TODO: ensure that data is unique over paths.
                 let data = rand::rand_u64().to_be_bytes();
 
@@ -4123,8 +4124,10 @@ impl Connection {
             // Create NEW_CONNECTION_ID frames as needed.
             while let Some(seq_num) = self.ids.next_advertise_new_scid_seq() {
                 let frame = self.ids.get_new_connection_id_frame_for(seq_num)?;
+                println!("Send a new connection ID frame: {:?} this is on path: {}", frame, send_pid);
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
+                    println!("The connection ID frame is pushed");
                     self.ids.mark_advertise_new_scid_seq(seq_num, false);
 
                     ack_eliciting = true;
@@ -5028,6 +5031,11 @@ impl Connection {
             path.recovery.loss_probes[epoch] =
                 path.recovery.loss_probes[epoch].saturating_sub(1);
         }
+
+        // for frame in frames.iter() {
+        //     println!("Frame: {:?}", frame);
+        // }
+        // println!("\n\n\n");
 
         if frames.is_empty() {
             // When we reach this point we are not able to write more, so set
@@ -7968,6 +7976,7 @@ impl Connection {
                 conn_id,
                 reset_token,
             } => {
+                println!("Receive a new connection ID from client={}: {}", self.is_server, seq_num);
                 if self.ids.zero_length_dcid() {
                     return Err(Error::InvalidState);
                 }
@@ -8289,6 +8298,7 @@ impl Connection {
                 ..
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
+                    error!("Do not use path pkt num space: {}", epoch);
                     return Err(Error::MultiPathViolation);
                 }
                 let ack_delay = ack_delay
@@ -8328,6 +8338,7 @@ impl Connection {
                 // MUST treat this as a connection error of type
                 // MP_PROTOCOL_VIOLATION and close the connection.
                 if space_identifier > self.ids.largest_dcid_seq() {
+                    error!("Too large space identifier");
                     return Err(Error::MultiPathViolation);
                 }
 
@@ -8374,6 +8385,7 @@ impl Connection {
                 reason,
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
+                    error!("Path abandon");
                     return Err(Error::MultiPathViolation);
                 }
                 let abandon_pid = self.ids.path_id_from_wire(
@@ -8395,6 +8407,7 @@ impl Connection {
                 status,
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
+                    error!("Path status: {} {:?} {} {}. Epoch={:?}", identifier_type, path_identifier, seq_num, status, epoch);
                     return Err(Error::MultiPathViolation);
                 }
                 let pid = self.ids.path_id_from_wire(
@@ -8416,7 +8429,7 @@ impl Connection {
                 ttl_data,
                 public_key,
             } => {
-                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, path_type, auth_type, is_ipv6, source_ip, group_ip, udp_port);
+                println!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, path_type, auth_type, is_ipv6, source_ip, group_ip, udp_port);
                 if self.is_server {
                     error!("The server should not receive an MC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
