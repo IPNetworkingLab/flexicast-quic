@@ -85,6 +85,10 @@ fn main() {
         ipv4_channels_allowed: true,
         ipv6_channels_allowed: true,
     };
+    let mut added_mc_cid = false;
+    let mut probe_mc_path = false;
+    let mut added_mc_auth_cid = false;
+    let mut probe_mc_auth_path = false;
 
     // Multicast data.
     let mut mc_socket_opt: Option<mio::net::UdpSocket> = None;
@@ -166,7 +170,8 @@ fn main() {
 
     // Generate a random source connection ID for the connection.
     let mut scid = [0; 16];
-    SystemRandom::new().fill(&mut scid[..]).unwrap();
+    let random = SystemRandom::new();
+    random.fill(&mut scid[..]).unwrap();
 
     let scid = quiche::ConnectionId::from_ref(&scid);
 
@@ -437,72 +442,86 @@ fn main() {
         if conn.get_multicast_attributes().is_some() {
             // Join the multicast channel and create the listening socket if not
             // already done.
-            if conn.mc_join_channel().is_ok() {
+            if conn.get_multicast_attributes().unwrap().get_mc_role() ==
+                MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+            {
+                // Did not join the multicast channel before.
                 let multicast = conn.get_multicast_attributes().unwrap();
                 let mc_announce_data =
                     multicast.get_mc_announce_data_path().unwrap().to_owned();
-                // Did not join the multicast channel before.
-                let mc_cid = ConnectionId::from_ref(&mc_announce_data.channel_id)
-                    .into_owned();
-                // MC-TODO: do we have to put another address here?
-                info!(
-                    "Create second path. Client addr={:?}. Server addr={:?}",
-                    mc_addr, peer_addr
-                );
-                let mc_space_id = conn
-                    .create_mc_path(
-                        &mc_cid,
-                        mc_addr,
-                        peer_addr,
-                        mc_announce_data.is_ipv6,
-                    )
-                    .unwrap();
-                conn.set_mc_space_id(mc_space_id, McPathType::Data).unwrap();
 
-                // If soft-multicast is used by the source, the client will
-                // receive multicast QUIC packets with its unicast
-                // address as destination of the IP packet. Bind the socket to the
-                // local address with the multicast destination port.
-                let mc_group_sockaddr: net::SocketAddr = if mc_announce_data
-                    .is_ipv6
-                {
-                    let ip = socket.local_addr().unwrap().ip();
-                    net::SocketAddr::new(ip, mc_announce_data.udp_port)
-                } else {
-                    let group_ip =
-                        net::Ipv4Addr::from(mc_announce_data.group_ip.to_owned());
-                    net::SocketAddr::V4(net::SocketAddrV4::new(
-                        group_ip,
-                        mc_announce_data.udp_port,
-                    ))
-                };
-                let local_ip = net::Ipv4Addr::new(127, 0, 0, 1);
-                // MC-TODO: join the multicast group.
-                let mut mc_socket =
-                    mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
-                debug!(
-                    "Multicast client binds on address: {:?}",
-                    mc_group_sockaddr
-                );
-                if !mc_announce_data.is_ipv6 {
-                    mc_socket
-                        .join_multicast_v4(
-                            &net::Ipv4Addr::from(
-                                mc_announce_data.group_ip.to_owned(),
-                            ),
-                            &local_ip,
-                        )
-                        .unwrap();
+                // Add the new connection ID for the announce data.
+                if !added_mc_cid {
+                    let scid =
+                        ConnectionId::from_ref(&mc_announce_data.channel_id);
+                    conn.add_mc_cid(&scid).unwrap();
+                    added_mc_cid = true;
                 }
 
-                poll.registry()
-                    .register(
-                        &mut mc_socket,
-                        mio::Token(1),
-                        mio::Interest::READABLE,
-                    )
-                    .unwrap();
-                mc_socket_opt = Some(mc_socket);
+                // Create a second path
+                // MC-TODO: do we have to put another address here?
+                if !probe_mc_path {
+                    info!(
+                        "Create second path. Client addr={:?}. Server addr={:?}",
+                        mc_addr, peer_addr
+                    );
+                    let mc_space_id = conn
+                        .create_mc_path(
+                            mc_addr,
+                            peer_addr,
+                            mc_announce_data.is_ipv6,
+                        );
+                    if let Ok(mc_space_id) = mc_space_id {
+                        conn.set_mc_space_id(mc_space_id, McPathType::Data).unwrap();
+    
+                        // If soft-multicast is used by the source, the client will
+                        // receive multicast QUIC packets with its unicast
+                        // address as destination of the IP packet. Bind the socket to
+                        // the local address with the multicast
+                        // destination port.
+                        let mc_group_sockaddr: net::SocketAddr =
+                            if mc_announce_data.is_ipv6 {
+                                let ip = socket.local_addr().unwrap().ip();
+                                net::SocketAddr::new(ip, mc_announce_data.udp_port)
+                            } else {
+                                let group_ip = net::Ipv4Addr::from(
+                                    mc_announce_data.group_ip.to_owned(),
+                                );
+                                net::SocketAddr::V4(net::SocketAddrV4::new(
+                                    group_ip,
+                                    mc_announce_data.udp_port,
+                                ))
+                            };
+                        let local_ip = net::Ipv4Addr::new(127, 0, 0, 1);
+                        // MC-TODO: join the multicast group.
+                        let mut mc_socket =
+                            mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
+                        debug!(
+                            "Multicast client binds on address: {:?}",
+                            mc_group_sockaddr
+                        );
+                        if !mc_announce_data.is_ipv6 {
+                            mc_socket
+                                .join_multicast_v4(
+                                    &net::Ipv4Addr::from(
+                                        mc_announce_data.group_ip.to_owned(),
+                                    ),
+                                    &local_ip,
+                                )
+                                .unwrap();
+                        }
+    
+                        poll.registry()
+                            .register(
+                                &mut mc_socket,
+                                mio::Token(1),
+                                mio::Interest::READABLE,
+                            )
+                            .unwrap();
+                        mc_socket_opt = Some(mc_socket);
+                        probe_mc_path = true;
+                    }
+                }
             }
 
             // Authentication path data not yet installed.
@@ -513,55 +532,62 @@ fn main() {
                     .get_mc_announce_data(1),
             ) {
                 let mc_announce_auth = mc_announce_auth.to_owned();
-                let auth_cid =
-                    ConnectionId::from_ref(&mc_announce_auth.channel_id);
                 debug!("Create third path for authentication. Client addr={:?}. Server addr={:?}", mc_addr_auth, peer_addr);
-                let mc_space_id = conn
-                    .create_mc_path(
-                        &auth_cid,
-                        mc_addr_auth,
-                        peer_addr,
-                        mc_announce_auth.is_ipv6,
-                    )
-                    .unwrap();
-                conn.set_mc_space_id(mc_space_id, McPathType::Authentication)
-                    .unwrap();
-                let mc_group_sockaddr = if mc_announce_auth.is_ipv6 {
-                    let ip = socket.local_addr().unwrap().ip();
-                    net::SocketAddr::new(ip, mc_announce_auth.udp_port)
-                } else {
-                    let group_ip =
-                        net::Ipv4Addr::from(mc_announce_auth.group_ip.to_owned());
-                    net::SocketAddr::V4(net::SocketAddrV4::new(
-                        group_ip,
-                        mc_announce_auth.udp_port,
-                    ))
-                };
-                let local_ip = net::Ipv4Addr::new(127, 0, 0, 1);
-                let mut mc_socket_auth =
-                    mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
-                debug!(
-                    "Multicast client binds on address for authentication: {:?}",
-                    mc_group_sockaddr
-                );
-                if !mc_announce_auth.is_ipv6 {
-                    mc_socket_auth
-                        .join_multicast_v4(
-                            &net::Ipv4Addr::from(
-                                mc_announce_auth.group_ip.to_owned(),
-                            ),
-                            &local_ip,
-                        )
-                        .unwrap();
+                if !added_mc_auth_cid {
+                    let scid = ConnectionId::from_ref(&mc_announce_auth.channel_id);
+                    conn.add_mc_cid(&scid).unwrap();
+                    added_mc_auth_cid = true;
                 }
-                poll.registry()
-                    .register(
-                        &mut mc_socket_auth,
-                        mio::Token(2),
-                        mio::Interest::READABLE,
-                    )
-                    .unwrap();
-                mc_socket_auth_opt = Some(mc_socket_auth);
+
+                if !probe_mc_auth_path {
+                    let mc_space_id = conn
+                        .create_mc_path(
+                            mc_addr_auth,
+                            peer_addr,
+                            mc_announce_auth.is_ipv6,
+                        );
+                    if let Ok(mc_space_id) = mc_space_id {
+                        conn.set_mc_space_id(mc_space_id, McPathType::Authentication)
+                            .unwrap();
+                        let mc_group_sockaddr = if mc_announce_auth.is_ipv6 {
+                            let ip = socket.local_addr().unwrap().ip();
+                            net::SocketAddr::new(ip, mc_announce_auth.udp_port)
+                        } else {
+                            let group_ip =
+                                net::Ipv4Addr::from(mc_announce_auth.group_ip.to_owned());
+                            net::SocketAddr::V4(net::SocketAddrV4::new(
+                                group_ip,
+                                mc_announce_auth.udp_port,
+                            ))
+                        };
+                        let local_ip = net::Ipv4Addr::new(127, 0, 0, 1);
+                        let mut mc_socket_auth =
+                            mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
+                        debug!(
+                            "Multicast client binds on address for authentication: {:?}",
+                            mc_group_sockaddr
+                        );
+                        if !mc_announce_auth.is_ipv6 {
+                            mc_socket_auth
+                                .join_multicast_v4(
+                                    &net::Ipv4Addr::from(
+                                        mc_announce_auth.group_ip.to_owned(),
+                                    ),
+                                    &local_ip,
+                                )
+                                .unwrap();
+                        }
+                        poll.registry()
+                            .register(
+                                &mut mc_socket_auth,
+                                mio::Token(2),
+                                mio::Interest::READABLE,
+                            )
+                            .unwrap();
+                        mc_socket_auth_opt = Some(mc_socket_auth);
+                        probe_mc_auth_path = true;
+                    }
+                }
             }
         }
 

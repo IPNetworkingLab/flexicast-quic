@@ -41,6 +41,8 @@ use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
 use quiche::SendInfo;
+use quiche_apps::common::ClientIdMap;
+use quiche_apps::common::generate_cid_and_reset_token;
 use quiche_apps::mc_app;
 use quiche_apps::sendto::*;
 use std::collections::HashMap;
@@ -54,9 +56,10 @@ struct Client {
     conn: quiche::Connection,
     soft_mc_addr: net::SocketAddr,
     soft_mc_addr_auth: net::SocketAddr,
+    client_id: u64,
 }
 
-type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
+type ClientMap = HashMap<u64, Client>;
 
 #[derive(Parser)]
 struct Args {
@@ -239,6 +242,8 @@ fn main() {
         ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
     let mut clients = ClientMap::new();
+    let mut clients_ids = ClientIdMap::new();
+    let mut next_client_id = 0;
 
     let local_addr = socket.local_addr().unwrap();
 
@@ -383,8 +388,8 @@ fn main() {
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
-            let client = if !clients.contains_key(&hdr.dcid) &&
-                !clients.contains_key(&conn_id)
+            let client = if !clients_ids.contains_key(&hdr.dcid) &&
+                !clients_ids.contains_key(&conn_id)
             {
                 if hdr.ty != quiche::Type::Initial {
                     error!("Packet is not Initial");
@@ -477,15 +482,19 @@ fn main() {
                 )
                 .unwrap();
 
+                let client_id = next_client_id;
                 let client = Client {
                     conn,
                     soft_mc_addr: net::SocketAddr::new(from.ip(), 8889),
                     soft_mc_addr_auth: net::SocketAddr::new(from.ip(), 8890),
+                    client_id,
                 };
 
-                clients.insert(scid.clone(), client);
+                next_client_id += 1;
+                clients.insert(client_id, client);
+                clients_ids.insert(scid.clone(), client_id);
 
-                let client = clients.get_mut(&scid).unwrap();
+                let client = clients.get_mut(&client_id).unwrap();
 
                 // Add the multicast channel announcement for the new client.
                 if let (Some(mc_announce_data), Some(mc_channel)) =
@@ -525,11 +534,13 @@ fn main() {
 
                 client
             } else {
-                match clients.get_mut(&hdr.dcid) {
+                let cid = match clients_ids.get(&hdr.dcid) {
                     Some(v) => v,
 
-                    None => clients.get_mut(&conn_id).unwrap(),
-                }
+                    None => clients_ids.get(&conn_id).unwrap(),
+                };
+
+                clients.get_mut(cid).unwrap()
             };
 
             let recv_info = quiche::RecvInfo {
@@ -598,6 +609,22 @@ fn main() {
                 if !args.multicast && client.conn.is_established() {
                     app_handler.start_content_delivery();
                 }
+            }
+
+            handle_path_events(client);
+
+            // Provides as many CIDs as possible.
+            while client.conn.source_cids_left() > 0 {
+                let (scid, reset_token) = generate_cid_and_reset_token(&rng);
+                if client
+                    .conn
+                    .new_source_cid(&scid, reset_token, false)
+                    .is_err()
+                {
+                    break;
+                }
+
+                clients_ids.insert(scid, client.client_id);
             }
         }
 
@@ -997,7 +1024,7 @@ fn validate_token<'a>(
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
     ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
-    source_addr: net::SocketAddr, cert_path: &str
+    _source_addr: net::SocketAddr, cert_path: &str
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -1179,4 +1206,92 @@ fn _set_max_pacing(sock: &mio::net::UdpSocket) -> io::Result<()> {
     debug!("result is {}", result);
 
     Ok(())
+}
+
+fn handle_path_events(client: &mut Client) {
+    println!("CALL HANDLE PATH EVENTS");
+    while let Some(qe) = client.conn.path_event_next() {
+        println!("POSSIBLE NEW PATH EVENT");
+        match qe {
+            quiche::PathEvent::New(local_addr, peer_addr) => {
+                info!(
+                    "{} Seen new path ({}, {})",
+                    client.conn.trace_id(),
+                    local_addr,
+                    peer_addr
+                );
+
+                // Directly probe the new path.
+                client
+                    .conn
+                    .probe_path(local_addr, peer_addr)
+                    .map_err(|e| error!("cannot probe: {}", e))
+                    .ok();
+            },
+
+            quiche::PathEvent::Validated(local_addr, peer_addr) => {
+                info!(
+                    "{} Path ({}, {}) is now validated",
+                    client.conn.trace_id(),
+                    local_addr,
+                    peer_addr
+                );
+                if client.conn.is_multipath_enabled() {
+                    client
+                        .conn
+                        .set_active(local_addr, peer_addr, true)
+                        .map_err(|e| error!("cannot set path active: {}", e))
+                        .ok();
+                }
+            },
+
+            quiche::PathEvent::FailedValidation(local_addr, peer_addr) => {
+                info!(
+                    "{} Path ({}, {}) failed validation",
+                    client.conn.trace_id(),
+                    local_addr,
+                    peer_addr
+                );
+            },
+
+            quiche::PathEvent::Closed(local_addr, peer_addr, err, reason) => {
+                info!(
+                    "{} Path ({}, {}) is now closed and unusable; err = {} reason = {:?}",
+                    client.conn.trace_id(),
+                    local_addr,
+                    peer_addr,
+                    err,
+                    reason,
+                );
+            },
+
+            quiche::PathEvent::ReusedSourceConnectionId(cid_seq, old, new) => {
+                info!(
+                    "{} Peer reused cid seq {} (initially {:?}) on {:?}",
+                    client.conn.trace_id(),
+                    cid_seq,
+                    old,
+                    new
+                );
+            },
+
+            quiche::PathEvent::PeerMigrated(local_addr, peer_addr) => {
+                info!(
+                    "{} Connection migrated to ({}, {})",
+                    client.conn.trace_id(),
+                    local_addr,
+                    peer_addr
+                );
+            },
+
+            quiche::PathEvent::PeerPathStatus(addr, path_status) => {
+                info!("Peer asks status {:?} for {:?}", path_status, addr,);
+                client
+                    .conn
+                    .set_path_status(addr.0, addr.1, path_status, false)
+                    .map_err(|e| error!("cannot follow status request: {}", e))
+                    .ok();
+            },
+        }
+    }
 }
