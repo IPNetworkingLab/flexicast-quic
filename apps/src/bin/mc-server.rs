@@ -41,7 +41,6 @@ use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
 use quiche::SendInfo;
-use quiche_apps::common::generate_cid_and_reset_token;
 use quiche_apps::common::ClientIdMap;
 use quiche_apps::mc_app;
 use quiche_apps::sendto::*;
@@ -134,7 +133,7 @@ struct Args {
     /// If multicast is enabled, waits for a first multicast client to connect.
     /// If multicast is disabled, waits for a first unicast client to connect.
     #[clap(short, long = "wait-client")]
-    wait_first_client: bool,
+    wait_first_client: Option<u32>,
 
     /// Soft-multicast option.
     /// If set alongside the `--multicast` flag, uses multicast QUIC with
@@ -179,13 +178,14 @@ fn main() {
         args.filepath.as_deref(),
         args.nb_frames,
         args.delay_no_replay,
-        args.wait_first_client,
+        args.wait_first_client.is_some(),
         &args.result_quic_trace,
         &args.result_wire_trace,
         args.chunk_size,
     );
 
     let authentication = args.authentication;
+    let mut nb_active_mc_receivers = 0;
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -336,7 +336,7 @@ fn main() {
                 [timeout, Some(app_timeout)].iter().flatten().min().copied();
         }
 
-        if !app_handler.has_sent_some_data() && !args.wait_first_client {
+        if !app_handler.has_sent_some_data() && args.wait_first_client.is_none() {
             let first_timeout = std::time::Duration::ZERO;
             timeout = [timeout, Some(first_timeout)]
                 .iter()
@@ -623,10 +623,15 @@ fn main() {
                         multicast::MulticastClientStatus::ListenMcPath,
                     ))
                 {
-                    info!("START CONTENT DELIVERY");
-                    app_handler.start_content_delivery();
+                    debug!("New client!");
+                    nb_active_mc_receivers += 1;
                 }
 
+                // Enough clients to start the content delivery.
+                if Some(nb_active_mc_receivers) == args.wait_first_client {
+                    app_handler.start_content_delivery();
+                }
+                
                 // Is multicast disabled?
                 if !args.multicast && client.conn.is_established() {
                     app_handler.start_content_delivery();
