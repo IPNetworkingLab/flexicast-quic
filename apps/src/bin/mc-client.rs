@@ -466,6 +466,7 @@ fn main() {
 
         // Process multicast events.
         if conn.get_multicast_attributes().is_some() {
+            let mut probe_already = false;
             // Join the multicast channel and create the listening socket if not
             // already done.
             if conn.get_multicast_attributes().unwrap().get_mc_role() ==
@@ -553,6 +554,7 @@ fn main() {
                         mc_socket_opt = Some(mc_socket);
                         probe_mc_path = true;
                         conn.mc_join_channel().unwrap();
+                        probe_already = true;
                     }
                 }
                 added_mc_cid = true;
@@ -572,7 +574,7 @@ fn main() {
                     conn.add_mc_cid(&scid).unwrap();
                 }
 
-                if !probe_mc_auth_path && added_mc_auth_cid {
+                if !probe_mc_auth_path && added_mc_auth_cid && !probe_already {
                     debug!("Create third path for authentication. Client addr={:?}. Server addr={:?}", mc_addr_auth, peer_addr);
                     let mc_space_id = conn.create_mc_path(
                         mc_addr_auth,
