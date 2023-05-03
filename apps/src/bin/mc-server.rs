@@ -200,7 +200,7 @@ fn main() {
     // Create the configuration for the QUIC connections.
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
-    println!(
+    debug!(
         "Debug: {}",
         Path::new(&args.cert_path)
             .join("cert.crt")
@@ -1245,9 +1245,7 @@ fn _set_max_pacing(sock: &mio::net::UdpSocket) -> io::Result<()> {
 }
 
 fn handle_path_events(client: &mut Client) {
-    println!("CALL HANDLE PATH EVENTS");
     while let Some(qe) = client.conn.path_event_next() {
-        println!("POSSIBLE NEW PATH EVENT");
         match qe {
             quiche::PathEvent::New(local_addr, peer_addr) => {
                 info!(
