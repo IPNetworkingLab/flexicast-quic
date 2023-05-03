@@ -2613,15 +2613,17 @@ impl Connection {
             if let Some(multicast) = self.multicast.as_ref() {
                 // The client might not be able to process the packets because
                 // they left.
-                if !matches!(
-                    multicast.get_mc_role(),
+                match multicast.get_mc_role() {
                     multicast::MulticastRole::Client(
-                        multicast::MulticastClientStatus::ListenMcPath
-                    )
-                ) {
-                    return Err(Error::Done);
+                        multicast::MulticastClientStatus::ListenMcPath,
+                    ) => multicast.get_mc_crypto_open(),
+                    multicast::MulticastRole::Client(_) =>
+                        self.pkt_num_spaces.crypto(epoch).crypto_open.as_ref(),
+                    e =>
+                        return Err(Error::Multicast(
+                            multicast::MulticastError::McInvalidRole(e),
+                        )),
                 }
-                multicast.get_mc_crypto_open()
             } else {
                 return Err(Error::Multicast(
                     multicast::MulticastError::McDisabled,
@@ -4124,10 +4126,8 @@ impl Connection {
             // Create NEW_CONNECTION_ID frames as needed.
             while let Some(seq_num) = self.ids.next_advertise_new_scid_seq() {
                 let frame = self.ids.get_new_connection_id_frame_for(seq_num)?;
-                println!("Send a new connection ID frame: {:?} this is on path: {}", frame, send_pid);
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    println!("The connection ID frame is pushed");
                     self.ids.mark_advertise_new_scid_seq(seq_num, false);
 
                     ack_eliciting = true;
@@ -5031,11 +5031,6 @@ impl Connection {
             path.recovery.loss_probes[epoch] =
                 path.recovery.loss_probes[epoch].saturating_sub(1);
         }
-
-        // for frame in frames.iter() {
-        //     println!("Frame: {:?}", frame);
-        // }
-        // println!("\n\n\n");
 
         if frames.is_empty() {
             // When we reach this point we are not able to write more, so set
@@ -7976,7 +7971,6 @@ impl Connection {
                 conn_id,
                 reset_token,
             } => {
-                println!("Receive a new connection ID from client={}: {}", self.is_server, seq_num);
                 if self.ids.zero_length_dcid() {
                     return Err(Error::InvalidState);
                 }
@@ -8407,7 +8401,6 @@ impl Connection {
                 status,
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
-                    error!("Path status: {} {:?} {} {}. Epoch={:?}", identifier_type, path_identifier, seq_num, status, epoch);
                     return Err(Error::MultiPathViolation);
                 }
                 let pid = self.ids.path_id_from_wire(
@@ -8429,7 +8422,7 @@ impl Connection {
                 ttl_data,
                 public_key,
             } => {
-                println!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, path_type, auth_type, is_ipv6, source_ip, group_ip, udp_port);
+                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, path_type, auth_type, is_ipv6, source_ip, group_ip, udp_port);
                 if self.is_server {
                     error!("The server should not receive an MC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);

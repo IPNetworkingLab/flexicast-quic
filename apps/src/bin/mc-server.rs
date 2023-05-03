@@ -41,8 +41,8 @@ use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
 use quiche::SendInfo;
-use quiche_apps::common::ClientIdMap;
 use quiche_apps::common::generate_cid_and_reset_token;
+use quiche_apps::common::ClientIdMap;
 use quiche_apps::mc_app;
 use quiche_apps::sendto::*;
 use std::collections::HashMap;
@@ -200,13 +200,29 @@ fn main() {
     // Create the configuration for the QUIC connections.
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
-    println!("Debug: {}", Path::new(&args.cert_path).join("cert.crt").to_str().unwrap());
+    println!(
+        "Debug: {}",
+        Path::new(&args.cert_path)
+            .join("cert.crt")
+            .to_str()
+            .unwrap()
+    );
 
     config
-        .load_cert_chain_from_pem_file(Path::new(&args.cert_path).join("cert.crt").to_str().unwrap())
+        .load_cert_chain_from_pem_file(
+            Path::new(&args.cert_path)
+                .join("cert.crt")
+                .to_str()
+                .unwrap(),
+        )
         .unwrap();
     config
-        .load_priv_key_from_pem_file(Path::new(&args.cert_path).join("cert.key").to_str().unwrap())
+        .load_priv_key_from_pem_file(
+            Path::new(&args.cert_path)
+                .join("cert.key")
+                .to_str()
+                .unwrap(),
+        )
         .unwrap();
 
     config
@@ -270,7 +286,7 @@ fn main() {
             args.soft_mc,
             mc_cwnd,
             args.addr,
-            &args.cert_path
+            &args.cert_path,
         )
     } else {
         (None, None, None, None)
@@ -384,14 +400,18 @@ fn main() {
 
             let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
             let conn_id = &conn_id.as_ref()[..16];
-            let conn_id = conn_id.to_vec().into();
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
             let client = if !clients_ids.contains_key(&hdr.dcid) &&
-                !clients_ids.contains_key(&conn_id)
+                !clients_ids.contains_key(&hdr.dcid)
             {
                 if hdr.ty != quiche::Type::Initial {
+                    info!(
+                        "The received cid: {:?} ou {:?}",
+                        hdr.dcid.as_ref(),
+                        conn_id.as_ref()
+                    );
                     error!("Packet is not Initial");
                     continue 'read;
                 }
@@ -537,7 +557,7 @@ fn main() {
                 let cid = match clients_ids.get(&hdr.dcid) {
                     Some(v) => v,
 
-                    None => clients_ids.get(&conn_id).unwrap(),
+                    None => clients_ids.get(&hdr.dcid).unwrap(),
                 };
 
                 clients.get_mut(cid).unwrap()
@@ -597,11 +617,13 @@ fn main() {
                     .conn
                     .get_multicast_attributes()
                     .map(|mc| mc.get_mc_role());
+                info!("APP HAS NOT STARTED: {:?}", uc_server_role);
                 if uc_server_role ==
                     Some(MulticastRole::ServerUnicast(
                         multicast::MulticastClientStatus::ListenMcPath,
                     ))
                 {
+                    info!("START CONTENT DELIVERY");
                     app_handler.start_content_delivery();
                 }
 
@@ -615,7 +637,15 @@ fn main() {
 
             // Provides as many CIDs as possible.
             while client.conn.source_cids_left() > 0 {
-                let (scid, reset_token) = generate_cid_and_reset_token(&rng);
+                let (scid, reset_token) = {
+                    let mut scid = [0; 16];
+                    rng.fill(&mut scid).unwrap();
+                    let scid = scid.to_vec().into();
+                    let mut reset_token = [0; 16];
+                    rng.fill(&mut reset_token).unwrap();
+                    let reset_token = u128::from_be_bytes(reset_token);
+                    (scid, reset_token)
+                };
                 if client
                     .conn
                     .new_source_cid(&scid, reset_token, false)
@@ -623,7 +653,7 @@ fn main() {
                 {
                     break;
                 }
-
+                info!("add a new source cid: {:?}", scid.as_ref());
                 clients_ids.insert(scid, client.client_id);
             }
         }
@@ -672,16 +702,17 @@ fn main() {
                     }
                 } else {
                     // ... or for every client otherwise.
-                    let ok_all_clients = match clients.values_mut().try_for_each(|client| {
-                        client
-                            .conn
-                            .stream_send(stream_id, &app_data, true)
-                            .map(|_| ())
-                    }) {
-                        Ok(_) => true,
-                        Err(quiche::Error::Done) => false,
-                        Err(e) => panic!("Other error: {:?}", e),
-                    };
+                    let ok_all_clients =
+                        match clients.values_mut().try_for_each(|client| {
+                            client
+                                .conn
+                                .stream_send(stream_id, &app_data, true)
+                                .map(|_| ())
+                        }) {
+                            Ok(_) => true,
+                            Err(quiche::Error::Done) => false,
+                            Err(e) => panic!("Other error: {:?}", e),
+                        };
 
                     if ok_all_clients {
                         can_go_to_next = true;
@@ -1024,7 +1055,7 @@ fn validate_token<'a>(
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
     ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
-    _source_addr: net::SocketAddr, cert_path: &str
+    _source_addr: net::SocketAddr, cert_path: &str,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -1040,7 +1071,8 @@ fn get_multicast_channel(
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
 
     let mc_client_tp = MulticastClientTp::default();
-    let mut server_config = get_test_mc_config(true, None, true, mc_cwnd, cert_path);
+    let mut server_config =
+        get_test_mc_config(true, None, true, mc_cwnd, cert_path);
     let mut client_config =
         get_test_mc_config(false, Some(&mc_client_tp), true, mc_cwnd, cert_path);
 
@@ -1147,14 +1179,18 @@ fn get_multicast_channel(
 
 pub fn get_test_mc_config(
     mc_server: bool, mc_client: Option<&MulticastClientTp>, use_fec: bool,
-    mc_cwnd: Option<usize>, cert_path: &str
+    mc_cwnd: Option<usize>, cert_path: &str,
 ) -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
     config
-        .load_cert_chain_from_pem_file(Path::new(cert_path).join("cert.crt").to_str().unwrap())
+        .load_cert_chain_from_pem_file(
+            Path::new(cert_path).join("cert.crt").to_str().unwrap(),
+        )
         .unwrap();
     config
-        .load_priv_key_from_pem_file(Path::new(cert_path).join("cert.key").to_str().unwrap())
+        .load_priv_key_from_pem_file(
+            Path::new(cert_path).join("cert.key").to_str().unwrap(),
+        )
         .unwrap();
     config
         .set_application_protos(&[b"proto1", b"proto2"])
