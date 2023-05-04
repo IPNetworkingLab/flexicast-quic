@@ -68,6 +68,10 @@ struct Args {
     /// Application over (multicast) QUIC.
     #[clap(long = "app", default_value = "tixeo")]
     app: mc_app::McApp,
+
+    /// Unicast source port.
+    #[clap(short = 'p', long = "port", default_value = "9999")]
+    source_port: u16,
 }
 
 fn main() {
@@ -118,8 +122,8 @@ fn main() {
     // server address. This is needed on macOS and BSD variants that don't
     // support binding to IN6ADDR_ANY for both v4 and v6.
     let bind_addr = match peer_addr {
-        std::net::SocketAddr::V4(_) => "0.0.0.0:9999",
-        std::net::SocketAddr::V6(_) => "[::]:9999",
+        std::net::SocketAddr::V4(_) => format!("0.0.0.0:{}", args.source_port),
+        std::net::SocketAddr::V6(_) => format!("[::]:{}", args.source_port),
     };
 
     // Create the UDP socket backing the QUIC connection, and register it with
