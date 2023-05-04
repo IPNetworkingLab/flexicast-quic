@@ -716,7 +716,7 @@ fn main() {
                         }) {
                             Ok(_) => true,
                             Err(quiche::Error::Done) => false,
-                            Err(e) => panic!("Other error: {:?}", e),
+                            Err(_) => true,
                         };
 
                     if ok_all_clients {
