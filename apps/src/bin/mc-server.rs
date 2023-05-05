@@ -277,6 +277,8 @@ fn main() {
         mc_announce_data_opt,
         mc_announce_auth_opt,
     ) = if args.multicast {
+        let mut source_addr = args.addr;
+        source_addr.set_port(4434);
         debug!("Create multicast channel");
         get_multicast_channel(
             &args.mc_keylog_file,
@@ -285,7 +287,7 @@ fn main() {
             &rng,
             args.soft_mc,
             mc_cwnd,
-            args.addr,
+            source_addr,
             &args.cert_path,
         )
     } else {
@@ -1060,7 +1062,7 @@ fn validate_token<'a>(
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
     ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
-    _source_addr: net::SocketAddr, cert_path: &str,
+    source_addr: net::SocketAddr, cert_path: &str,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -1072,8 +1074,9 @@ fn get_multicast_channel(
     let mc_addr_bytes = [224, 3, 0, 225];
     // let mc_addr_bytes = [127, 0, 0, 1];
     let mc_port = 8889;
-    let source_addr = "127.0.0.1:4434".parse().unwrap();
+    // let source_addr = "127.0.0.1:4434".parse().unwrap();
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
+    socket.set_multicast_ttl_v4(10).unwrap();
 
     let mc_client_tp = MulticastClientTp::default();
     let mut server_config =
