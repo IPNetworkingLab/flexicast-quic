@@ -29,6 +29,7 @@ extern crate log;
 
 use std::collections::HashMap;
 use std::net;
+use std::net::Ipv4Addr;
 use std::net::ToSocketAddrs;
 
 use quiche::multicast::authentication::McAuthentication;
@@ -72,6 +73,10 @@ struct Args {
     /// Unicast source port.
     #[clap(short = 'p', long = "port", default_value = "9999")]
     source_port: u16,
+
+    /// Multicast local IP.
+    #[clap(short = 'l', long = "local", default_value = "127.0.0.1", value_parser)]
+    local_ip: Ipv4Addr,
 }
 
 fn main() {
@@ -529,11 +534,10 @@ fn main() {
                                     mc_announce_data.udp_port,
                                 ))
                             };
-                        let local_ip = net::Ipv4Addr::new(127, 0, 0, 1);
                         // MC-TODO: join the multicast group.
                         let mut mc_socket =
                             mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
-                        debug!(
+                            debug!(
                             "Multicast client binds on address: {:?}",
                             mc_group_sockaddr
                         );
@@ -543,7 +547,7 @@ fn main() {
                                     &net::Ipv4Addr::from(
                                         mc_announce_data.group_ip.to_owned(),
                                     ),
-                                    &local_ip,
+                                    &args.local_ip,
                                 )
                                 .unwrap();
                         }
@@ -603,7 +607,6 @@ fn main() {
                                 mc_announce_auth.udp_port,
                             ))
                         };
-                        let local_ip = net::Ipv4Addr::new(127, 0, 0, 1);
                         let mut mc_socket_auth =
                             mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
                         debug!(
@@ -616,7 +619,7 @@ fn main() {
                                     &net::Ipv4Addr::from(
                                         mc_announce_auth.group_ip.to_owned(),
                                     ),
-                                    &local_ip,
+                                    &args.local_ip,
                                 )
                                 .unwrap();
                         }
