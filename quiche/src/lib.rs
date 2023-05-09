@@ -3035,6 +3035,25 @@ impl Connection {
                         }
                     },
 
+                    frame::Frame::McAnnounce {
+                        channel_id,
+                        ..
+                    } =>
+                        if let Some(multicast) = self.multicast.as_mut() {
+                            if let Some(mc_announce_data) = multicast
+                                .get_mut_mc_announce_data_by_cid(&channel_id)
+                            {
+                                if mc_announce_data.path_type ==
+                                    multicast::McPathType::Data
+                                {
+                                    multicast.update_client_state(
+                                        multicast::MulticastClientAction::Notify,
+                                        None,
+                                    )?;
+                                }
+                            }
+                        },
+
                     frame::Frame::McState {
                         channel_id: _,
                         action,
@@ -3690,9 +3709,7 @@ impl Connection {
                                 }
                             },
 
-                            frame::Frame::McState {
-                                ..
-                            } => {
+                            frame::Frame::McState { .. } => {
                                 if let Some(multicast) = self.multicast.as_mut() {
                                     multicast.set_mc_state_in_flight(false);
                                 }
@@ -4439,10 +4456,6 @@ impl Connection {
             // send. We allow for multiple MC_ANNOUNCE frames in the
             // same QUIC packet. MC-TODO: should we update the finite
             // state machine to know when all data has been sent?
-            debug!(
-                "should send MC_ANNOUNCE frame: {:?}",
-                self.mc_should_send_mc_announce()
-            );
             while let Some(mc_data_idx) = self.mc_should_send_mc_announce() {
                 debug!("Will send MC_ANNOUNCE frame");
                 let multicast = self.multicast.as_mut().ok_or(
@@ -4473,13 +4486,6 @@ impl Connection {
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     trace!("Sent a MC_ANNOUNCE frame");
                     mc_announce_data.set_mc_announce_processed(true);
-
-                    if mc_announce_data.path_type == multicast::McPathType::Data {
-                        multicast.update_client_state(
-                            multicast::MulticastClientAction::Notify,
-                            None,
-                        )?;
-                    }
 
                     ack_eliciting = true;
                     in_flight = true;
