@@ -263,6 +263,8 @@ fn main() {
                 },
             };
 
+            debug!("Recv from socket unicast");
+
             debug!("got {} bytes", len);
 
             let recv_info = quiche::RecvInfo {
@@ -305,6 +307,8 @@ fn main() {
                     },
                 };
 
+                debug!("Recv from socket multicast");
+
                 // If symmetric authentication is used, buffer the packets as long
                 // as the corresponding authentication packet is not received.
                 let recv_info = quiche::RecvInfo {
@@ -313,7 +317,7 @@ fn main() {
                     from_mc: Some(McPathType::Data),
                 };
                 if conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                    MulticastRole::Client(MulticastClientStatus::ListenMcPath)
+                    MulticastRole::Client(MulticastClientStatus::ListenMcPath(true))
                 {
                     let can_read_pkt = if conn
                         .get_multicast_attributes()
@@ -370,7 +374,6 @@ fn main() {
                     } // Else: it is buffered until we receive the
                       // authentication tag.
                 } else {
-                    info!("Path probe received?");
                     let _read = match conn.recv(&mut buf[..len], recv_info) {
                         Ok(v) => v,
                         Err(e) => {
@@ -399,6 +402,7 @@ fn main() {
                         panic!("recv() mc auth failed: {:?}", e);
                     },
                 };
+                debug!("Recv from socket multicast auth");
 
                 let recv_info = quiche::RecvInfo {
                     to: mc_addr_auth,
@@ -407,7 +411,7 @@ fn main() {
                 };
 
                 if conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                    MulticastRole::Client(MulticastClientStatus::ListenMcPath)
+                    MulticastRole::Client(MulticastClientStatus::ListenMcPath(true))
                 {
                     let _read = match conn.mc_recv(&mut buf[..len], recv_info) {
                         Ok(v) => v,

@@ -86,8 +86,6 @@ fn send_to_gso_pacing(
         time_spec.tv_sec as u64 * nanos_per_sec + time_spec.tv_nsec as u64;
 
     let cmsg_txtime = ControlMessage::TxTime(&send_time);
-    let now = std::time::SystemTime::now();
-    println!("Send at {:?}", send_time);
     match sendmsg(
         sockfd,
         &iov,

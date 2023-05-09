@@ -345,11 +345,9 @@ fn main() {
                 .flatten()
                 .min()
                 .copied()
-        } else {
-            if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                let mc_timeout = mc_channel.channel.mc_timeout(now);
-                timeout = [timeout, mc_timeout].iter().flatten().min().copied()
-            }
+        } else if let Some(mc_channel) = mc_channel_opt.as_mut() {
+            let mc_timeout = mc_channel.channel.mc_timeout(now);
+            timeout = [timeout, mc_timeout].iter().flatten().min().copied()
         }
 
         debug!("Next timeout in {:?}", timeout);
@@ -412,7 +410,7 @@ fn main() {
                     info!(
                         "The received cid: {:?} ou {:?}",
                         hdr.dcid.as_ref(),
-                        conn_id.as_ref()
+                        conn_id
                     );
                     error!("Packet is not Initial");
                     continue 'read;
@@ -439,7 +437,7 @@ fn main() {
                 }
 
                 let mut scid = [0; 16];
-                scid.copy_from_slice(&conn_id);
+                scid.copy_from_slice(conn_id);
 
                 let scid = quiche::ConnectionId::from_ref(&scid);
 
@@ -622,7 +620,7 @@ fn main() {
                 info!("APP HAS NOT STARTED: {:?}", uc_server_role);
                 if uc_server_role ==
                     Some(MulticastRole::ServerUnicast(
-                        multicast::MulticastClientStatus::ListenMcPath,
+                        multicast::MulticastClientStatus::ListenMcPath(true),
                     ))
                 {
                     debug!("New client!");
@@ -633,7 +631,7 @@ fn main() {
                 if Some(nb_active_mc_receivers) == args.wait_first_client {
                     app_handler.start_content_delivery();
                 }
-                
+
                 // Is multicast disabled?
                 if !args.multicast && client.conn.is_established() {
                     app_handler.start_content_delivery();
@@ -1059,6 +1057,7 @@ fn validate_token<'a>(
     Some(quiche::ConnectionId::from_ref(&token[addr.len()..]))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
     ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,

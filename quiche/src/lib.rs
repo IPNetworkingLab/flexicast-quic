@@ -2372,6 +2372,7 @@ impl Connection {
 
         let mut hdr = Header::from_bytes(&mut b, self.source_id().len())
             .map_err(|e| {
+                debug!("Here because from bytes");
                 drop_pkt_on_err(
                     e,
                     self.recv_count,
@@ -2562,6 +2563,7 @@ impl Connection {
             b.cap()
         } else {
             b.get_varint().map_err(|e| {
+                debug!("Here because get varint");
                 drop_pkt_on_err(
                     e.into(),
                     self.recv_count,
@@ -2574,6 +2576,7 @@ impl Connection {
         // Make sure the buffer is same or larger than an explicit
         // payload length.
         if payload_len > b.cap() {
+            debug!("Here because too long");
             return Err(drop_pkt_on_err(
                 Error::InvalidPacket,
                 self.recv_count,
@@ -2615,7 +2618,7 @@ impl Connection {
                 // they left.
                 match multicast.get_mc_role() {
                     multicast::MulticastRole::Client(
-                        multicast::MulticastClientStatus::ListenMcPath,
+                        multicast::MulticastClientStatus::ListenMcPath(true),
                     ) => multicast.get_mc_crypto_open(),
                     multicast::MulticastRole::Client(_) =>
                         self.pkt_num_spaces.crypto(epoch).crypto_open.as_ref(),
@@ -2662,6 +2665,8 @@ impl Connection {
                     &self.trace_id,
                 );
 
+                debug!("Here because no crypto context");
+
                 return Err(e);
             },
         };
@@ -2669,6 +2674,7 @@ impl Connection {
         let aead_tag_len = aead.alg().tag_len();
 
         packet::decrypt_hdr(&mut b, &mut hdr, aead).map_err(|e| {
+            debug!("Here because drop packet decrypt");
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
 
@@ -2723,6 +2729,7 @@ impl Connection {
             aead,
         )
         .map_err(|e| {
+            debug!("Here because drop packet decrypt packet");
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
 
@@ -3034,8 +3041,9 @@ impl Connection {
                         action_data,
                     } =>
                         if let Some(multicast) = self.multicast.as_mut() {
-                            if matches!(
-                                multicast.get_mc_role(),
+                            debug!("Receive ack for McState: {:?}, {:?} and current role is {:?}", multicast::MulticastClientAction::try_from(action), action_data, multicast.get_mc_role());
+                            multicast.set_mc_state_in_flight(false);
+                            match multicast.get_mc_role() {
                                 multicast::MulticastRole::Client(
                                     multicast::MulticastClientStatus::Leaving(
                                         true
@@ -3044,16 +3052,21 @@ impl Connection {
                                     multicast::MulticastClientStatus::Leaving(
                                         true
                                     )
-                                )
-                            ) && multicast::MulticastClientAction::try_from(
-                                action,
-                            )? == multicast::MulticastClientAction::Leave
-                            {
-                                multicast.update_client_state(
+                                ) if multicast::MulticastClientAction::try_from(
+                                    action,
+                                )? == multicast::MulticastClientAction::Leave => multicast.update_client_state(
                                     action.try_into()?,
                                     Some(action_data),
-                                )?;
-                            }
+                                )?,
+                                multicast::MulticastRole::Client(multicast::MulticastClientStatus::ListenMcPath(false)) if multicast::MulticastClientAction::try_from(action)? == multicast::MulticastClientAction::McPath => multicast.update_client_state(
+                                    action.try_into()?,
+                                    Some(action_data),
+                                )?,
+                                _ => multicast.update_client_state(
+                                    action.try_into()?,
+                                    Some(action_data),
+                                )?,
+                            };
                         } else {
                             return Err(Error::Multicast(
                                 multicast::MulticastError::McDisabled,
@@ -3652,9 +3665,36 @@ impl Connection {
                                     })
                                     .ok();
                             },
+
                             frame::Frame::Repair { .. } => {
                                 if let Some(scheduler) = &mut self.fec_scheduler {
                                     scheduler.lost_repair_symbol();
+                                }
+                            },
+
+                            frame::Frame::McAnnounce { channel_id, .. } =>
+                                if let Some(multicast) = self.multicast.as_mut() {
+                                    if let Some(mc_announce_data) = multicast
+                                        .get_mut_mc_announce_data_by_cid(
+                                            &channel_id,
+                                        )
+                                    {
+                                        mc_announce_data
+                                            .set_mc_announce_processed(false);
+                                    }
+                                },
+
+                            frame::Frame::McKey { .. } => {
+                                if let Some(multicast) = self.multicast.as_mut() {
+                                    multicast.set_mc_key_read(false);
+                                }
+                            },
+
+                            frame::Frame::McState {
+                                ..
+                            } => {
+                                if let Some(multicast) = self.multicast.as_mut() {
+                                    multicast.set_mc_state_in_flight(false);
                                 }
                             },
 
@@ -4183,7 +4223,9 @@ impl Connection {
             }
 
             // Create DATA_BLOCKED frame.
-            if let (Some(limit), None) = (self.blocked_limit, self.multicast.as_ref()) {
+            if let (Some(limit), None) =
+                (self.blocked_limit, self.multicast.as_ref())
+            {
                 let frame = frame::Frame::DataBlocked { limit };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
@@ -4397,7 +4439,12 @@ impl Connection {
             // send. We allow for multiple MC_ANNOUNCE frames in the
             // same QUIC packet. MC-TODO: should we update the finite
             // state machine to know when all data has been sent?
+            debug!(
+                "should send MC_ANNOUNCE frame: {:?}",
+                self.mc_should_send_mc_announce()
+            );
             while let Some(mc_data_idx) = self.mc_should_send_mc_announce() {
+                debug!("Will send MC_ANNOUNCE frame");
                 let multicast = self.multicast.as_mut().ok_or(
                     Error::Multicast(multicast::MulticastError::McDisabled),
                 )?;
@@ -4424,6 +4471,7 @@ impl Connection {
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
+                    trace!("Sent a MC_ANNOUNCE frame");
                     mc_announce_data.set_mc_announce_processed(true);
 
                     if mc_announce_data.path_type == multicast::McPathType::Data {
@@ -4477,10 +4525,7 @@ impl Connection {
                     };
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
-                        multicast.update_client_state(
-                            action,
-                            action_data.map(|v| v as u64),
-                        )?;
+                        multicast.set_mc_state_in_flight(true);
 
                         ack_eliciting = true;
                         in_flight = true;
@@ -4515,7 +4560,7 @@ impl Connection {
                             multicast::MulticastClientAction::DecryptionKey,
                             None,
                         )?;
-                        multicast.read_mc_key();
+                        multicast.set_mc_key_read(true);
 
                         ack_eliciting = true;
                         in_flight = true;
@@ -6376,6 +6421,7 @@ impl Connection {
     ///
     /// [`on_timeout()`]: struct.Connection.html#method.on_timeout
     pub fn timeout_instant(&self) -> Option<time::Instant> {
+        debug!("Timeout. Is closed: {}, is draining: {}, path timer: {:?}, idle timer: {:?}", self.is_closed(), self.is_draining(), self.paths.iter().filter_map(|(_, p)| p.path_timer()).collect::<Vec<_>>(), self.idle_timer);
         if self.is_closed() {
             return None;
         }
@@ -8453,13 +8499,13 @@ impl Connection {
                 action,
                 action_data,
             } => {
-                debug!(
-                    "Received an MC_STATE frame! channel ID: {:?}, action: {:?}, action_data: {}",
-                    channel_id, multicast::MulticastClientAction::try_from(action)?, action_data,
-                );
                 // The client can also receive an MC_STATE.
                 // It can be used to request for a channel leave.
                 if let Some(multicast) = self.multicast.as_mut() {
+                    debug!(
+                        "Received an MC_STATE frame! channel ID: {:?}, action: {:?}, action_data: {} and current mc_role: {:?}",
+                        channel_id, multicast::MulticastClientAction::try_from(action)?, action_data, multicast.get_mc_role(),
+                    );
                     multicast.update_client_state(
                         action.try_into()?,
                         Some(action_data),
@@ -9049,7 +9095,11 @@ fn drop_pkt_on_err(
         return e;
     }
 
-    trace!("{} dropped invalid packet", trace_id);
+    trace!(
+        "{} dropped invalid packet with current error: {:?}",
+        trace_id,
+        e
+    );
 
     // Ignore other invalid packets that haven't been authenticated to prevent
     // man-in-the-middle and man-on-the-side attacks.

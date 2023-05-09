@@ -97,6 +97,7 @@ pub enum AppDataServer {
 
 impl AppDataServer {
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         app: McApp, filename: Option<&str>, nb_frames: Option<u64>, delay: u64,
         wait: bool, result_quic: &str, result_wire: &str, chunk_size: usize,
