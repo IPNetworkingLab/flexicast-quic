@@ -3,6 +3,7 @@ from mininet.net import Mininet
 from mininet.util import dumpNodeConnections
 from mininet.cli import CLI
 from mininet.node import OVSController
+from mininet.link import TCLink
 
 import argparse
 import os
@@ -44,6 +45,8 @@ class MyAutoTopo(Topo):
             all_nodes[node_id] = node
 
         all_links = set()
+        bw = kwargs["args"].bw
+        loss = kwargs["args"].u_loss
         with open(kwargs["links"]) as fd:
             txt = fd.read().split("\n")
         for link_info in txt:
@@ -52,7 +55,7 @@ class MyAutoTopo(Topo):
             id1, id2, _, _, _ = link_info.split(" ")
             if (id1, id2) in all_links or (id2, id1) in all_links:
                 continue
-            self.addLink(all_nodes[id1], all_nodes[id2])
+            self.addLink(all_nodes[id1], all_nodes[id2], cls=TCLink, bw=bw, loss=loss)
             all_links.add((id1, id2))
 
 
@@ -65,6 +68,7 @@ def simpleRun(args):
         "links": args.links,
         "paths": args.paths,
         "multicast-paths": args.multicast,
+        "args": args,
     }
     topo = MyAutoTopo(**args_dict)
     net = Mininet(topo=topo, controller=OVSController)
@@ -201,7 +205,7 @@ def simpleRun(args):
                 
                 for auth in auths:
                     # Output filename of the experiment.
-                    output_file_without_dir = f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}.txt"
+                    output_file_without_dir = f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.u_loss}.txt"
                     output_file = os.path.join(args.out, output_file_without_dir)
 
                     # Start the quiche server on CloudLab.
@@ -249,6 +253,8 @@ if __name__ == "__main__":
     parser.add_argument("--ttl", help="Data expiration for multicast (in ms). Default: 1000", default="1000", type=int)
     parser.add_argument("--release", help="Compile and execute the code in release mode", action="store_true")
     parser.add_argument("--nb-run", help="Number of repetitions of each experiment", type=int, default=1)
+    parser.add_argument("--bw", help="Set the same bandwidth value on each link (Mbps)", type=float, default=100)
+    parser.add_argument("--u-loss", help="Uniform loss on each link (%)", type=int, default=0)
 
     args = parser.parse_args() 
     simpleRun(args)
