@@ -6,17 +6,17 @@ pub struct RetransmissionFecScheduler {
     client_losses: HashMap<Vec<u8>, RangeSet>,
     n_repair_to_send: u64,
     new_nack: bool,
-    max_n_repair_in_flight: u64,
+    max_n_repair_in_flight: Option<u32>,
 }
 
 impl RetransmissionFecScheduler {
-    pub fn new() -> RetransmissionFecScheduler {
+    pub fn new(max_rs: Option<u32>) -> RetransmissionFecScheduler {
         RetransmissionFecScheduler {
             n_repair_in_flight: 0,
             client_losses: HashMap::new(),
             n_repair_to_send: 0,
             new_nack: false,
-            max_n_repair_in_flight: 5,
+            max_n_repair_in_flight: max_rs,
         }
     }
 
@@ -45,7 +45,11 @@ impl RetransmissionFecScheduler {
             self.client_losses = HashMap::new();
         }
 
-        self.n_repair_in_flight < self.n_repair_to_send && self.n_repair_in_flight < self.max_n_repair_in_flight
+        self.n_repair_in_flight < self.n_repair_to_send && if let Some(max_rs) = self.max_n_repair_in_flight {
+            self.n_repair_in_flight < max_rs as u64
+        } else {
+            true
+        }
 
         // trace!("fec_scheduler dgrams_to_emit={} stream_to_emit={}
         // n_repair_in_flight={} max_repair_data={}",
@@ -80,7 +84,7 @@ mod tests {
 
     #[test]
     fn test_send_repair_using_nack() {
-        let mut scheduler = RetransmissionFecScheduler::new();
+        let mut scheduler = RetransmissionFecScheduler::new(None);
         let cid = vec![1, 2, 3];
 
         let mut nack = RangeSet::default();
@@ -101,7 +105,7 @@ mod tests {
     #[test]
     /// Test with multiple clients. The number of repair symbols to generate is the maximum among all clients.
     fn test_send_repair_using_nack_two_clients() {
-        let mut scheduler = RetransmissionFecScheduler::new();
+        let mut scheduler = RetransmissionFecScheduler::new(None);
         let cid_1 = vec![1, 2, 3];
         let cid_2 = vec![4, 5, 6, 7, 8];
 

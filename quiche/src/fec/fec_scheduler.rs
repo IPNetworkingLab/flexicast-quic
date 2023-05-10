@@ -60,14 +60,14 @@ pub(crate) enum FECScheduler {
     RetransmissionFec(RetransmissionFecScheduler),
 }
 
-pub(crate) fn new_fec_scheduler(alg: FECSchedulerAlgorithm) -> FECScheduler {
+pub(crate) fn new_fec_scheduler(alg: FECSchedulerAlgorithm, max_rs: Option<u32>) -> FECScheduler {
     match alg {
         FECSchedulerAlgorithm::NoRedundancy => FECScheduler::NoRedundancy,
         FECSchedulerAlgorithm::BackgroundOnly => new_background_scheduler(),
         FECSchedulerAlgorithm::BurstsOnly => new_bursts_only_scheduler(),
         FECSchedulerAlgorithm::BurstsOnlyOnFECOnlyPath =>
             new_bursts_only_on_fec_only_path_scheduler(),
-        FECSchedulerAlgorithm::RetransmissionFec => new_retransmission_fec(),
+        FECSchedulerAlgorithm::RetransmissionFec => new_retransmission_fec(max_rs),
     }
 }
 
@@ -83,8 +83,8 @@ fn new_bursts_only_on_fec_only_path_scheduler() -> FECScheduler {
     BurstyOnFECOnly(BurstsFECSchedulerWithFECOnly::new())
 }
 
-fn new_retransmission_fec() -> FECScheduler {
-    RetransmissionFec(RetransmissionFecScheduler::new())
+fn new_retransmission_fec(max_rs: Option<u32>) -> FECScheduler {
+    RetransmissionFec(RetransmissionFecScheduler::new(max_rs))
 }
 
 impl FECScheduler {

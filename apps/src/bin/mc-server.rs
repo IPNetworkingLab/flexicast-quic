@@ -164,6 +164,10 @@ struct Args {
     /// Certificate path.
     #[clap(long = "cert-path", value_parser, default_value = "./src/bin")]
     cert_path: String,
+
+    /// Maximum number of FEC repair symbols that can be sent in a single TTL expiration window.
+    #[clap(long = "max-fec-rs", value_parser, default_value = "5")]
+    max_fec_rs: u32,
 }
 
 fn main() {
@@ -289,6 +293,7 @@ fn main() {
             mc_cwnd,
             source_addr,
             &args.cert_path,
+            Some(args.max_fec_rs),
         )
     } else {
         (None, None, None, None)
@@ -1061,7 +1066,7 @@ fn validate_token<'a>(
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
     ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
-    source_addr: net::SocketAddr, cert_path: &str,
+    source_addr: net::SocketAddr, cert_path: &str, max_fec_rs: Option<u32>,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -1079,9 +1084,9 @@ fn get_multicast_channel(
 
     let mc_client_tp = MulticastClientTp::default();
     let mut server_config =
-        get_test_mc_config(true, None, true, mc_cwnd, cert_path);
+        get_test_mc_config(true, None, true, mc_cwnd, cert_path, max_fec_rs);
     let mut client_config =
-        get_test_mc_config(false, Some(&mc_client_tp), true, mc_cwnd, cert_path);
+        get_test_mc_config(false, Some(&mc_client_tp), true, mc_cwnd, cert_path, None);
 
     // Generate a random source connection ID for the connection.
     let mut channel_id = [0; 16];
@@ -1186,7 +1191,7 @@ fn get_multicast_channel(
 
 pub fn get_test_mc_config(
     mc_server: bool, mc_client: Option<&MulticastClientTp>, use_fec: bool,
-    mc_cwnd: Option<usize>, cert_path: &str,
+    mc_cwnd: Option<usize>, cert_path: &str, max_fec_rs: Option<u32>,
 ) -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
     config
@@ -1222,6 +1227,7 @@ pub fn get_test_mc_config(
     config.set_enable_client_multicast(mc_client);
     config.send_fec(use_fec);
     config.receive_fec(use_fec);
+    config.set_mc_max_nb_repair_symbols(max_fec_rs);
     config.set_fec_scheduler_algorithm(
         quiche::FECSchedulerAlgorithm::RetransmissionFec,
     );

@@ -743,6 +743,7 @@ pub struct Config {
     receive_fec: bool,
     fec_window_size: usize,
     fec_symbol_size: usize,
+    mc_fec_max_rs: Option<u32>,
 
     real_time: bool,
 }
@@ -811,6 +812,7 @@ impl Config {
             receive_fec: false,
             fec_window_size: DEFAULT_FEC_WINDOW_SIZE,
             fec_symbol_size: 1280,
+            mc_fec_max_rs: None,
 
             real_time: false,
         })
@@ -1229,6 +1231,12 @@ impl Config {
     /// The default value is `false`.
     pub fn set_enable_server_multicast(&mut self, v: bool) {
         self.local_transport_params.multicast_server_params = v;
+    }
+
+    /// Sets the maximum number of FEC repair symbols that can be sent. Only
+    /// used for the Retransmission FEC scheduler.
+    pub fn set_mc_max_nb_repair_symbols(&mut self, v: Option<u32>) {
+        self.mc_fec_max_rs = v;
     }
 
     /// Sets the `multicast_client_params` transport parameter.
@@ -1943,6 +1951,7 @@ impl Connection {
             )),
             fec_scheduler: Some(fec::fec_scheduler::new_fec_scheduler(
                 config.fec_scheduler_algorithm,
+                config.mc_fec_max_rs,
             )),
             latest_metadata_of_symbol_with_fec_protected_frames: None,
 
@@ -3035,10 +3044,7 @@ impl Connection {
                         }
                     },
 
-                    frame::Frame::McAnnounce {
-                        channel_id,
-                        ..
-                    } =>
+                    frame::Frame::McAnnounce { channel_id, .. } =>
                         if let Some(multicast) = self.multicast.as_mut() {
                             if let Some(mc_announce_data) = multicast
                                 .get_mut_mc_announce_data_by_cid(&channel_id)
