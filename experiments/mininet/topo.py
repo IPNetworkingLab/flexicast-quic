@@ -10,6 +10,7 @@ import os
 import shutil
 import time
 import shlex
+import sys
 
 
 PCAP_DIR = "pcaps"
@@ -59,7 +60,7 @@ class MyAutoTopo(Topo):
             all_links.add((id1, id2))
 
 
-def simpleRun(args):
+def simpleRun(args, core_range):
     ipv4 = args.ipv4
     print("USE IPV4", ipv4)
 
@@ -179,6 +180,12 @@ def simpleRun(args):
     net["0"].cmd(cmd)
 
     if True:
+        # Share the available cores to the nodes. Give an entire core to the server, and share the remaining cores among the clients.
+        # First core for the server.
+        server_core = core_range[0]
+        client_cores = core_range[1:]
+
+
         # Communication method.
         methods = list()
         if args.method == "both":
@@ -205,11 +212,11 @@ def simpleRun(args):
                 
                 for auth in auths:
                     # Output filename of the experiment.
-                    output_file_without_dir = f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.u_loss}.txt"
-                    output_file = os.path.join(args.out, output_file_without_dir)
+                    output_file_without_dir = lambda idx: f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.u_loss}-{args.nb_rs}-{idx}.txt"
+                    output_file = lambda idx: os.path.join(args.out, output_file_without_dir(idx))
 
                     # Start the quiche server on CloudLab.
-                    cmd = f"RUST_LOG=debug {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} -f {args.file} -s {links[('0', '1')]}:4433 --app {args.app} --cert-path {CERT_PATH} {'-w ' + str(nb_nodes - 1) if args.wait else ''} -n {args.nb_frames} -r {output_file_without_dir} -k my-server.txt > log-server.log 2>&1"
+                    cmd = f"RUST_LOG=debug taskset -c {server_core} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} -f {args.file} -s {links[('0', '1')]}:4433 --app {args.app} --cert-path {CERT_PATH} {'-w ' + str(nb_nodes - 1) if args.wait else ''} -n {args.nb_frames} -r {output_file('server-0')} -k my-server.txt --max-fec-rs {args.nb_rs} > log-server.log 2>&1"
                     print("Command to start the server on CloudLab:", cmd)
                     my_cmd(net, "0", cmd, wait=False)
 
@@ -219,13 +226,13 @@ def simpleRun(args):
 
                     # Start the clients on cloudlab.
                     for client in range(1, nb_nodes - 1):  # Not the source
-                        cmd = f"RUST_LOG=debug {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > log-{client}.log 2>&1"
+                        cmd = f"RUST_LOG=debug taskset -c {client_cores[client % len(client_cores)]} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > log-{client}.log 2>&1"
                         print("Client command:", client, cmd)
                         my_cmd(net, str(client), cmd, wait=False)  # Act as a daemon
 
                     # Start the client locally and wait for completion.
                     client = nb_nodes - 1
-                    cmd = f"RUST_LOG=trace {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > log-{client}.log 2>&1"
+                    cmd = f"RUST_LOG=trace taskset -c {client_cores[client % len(client_cores)]} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > log-{client}.log 2>&1"
                     print("Client command:", client, cmd)
                     my_cmd(net, str(client), cmd, wait=True)
     else:
@@ -255,7 +262,21 @@ if __name__ == "__main__":
     parser.add_argument("--nb-run", help="Number of repetitions of each experiment", type=int, default=1)
     parser.add_argument("--bw", help="Set the same bandwidth value on each link (Mbps)", type=float, default=100)
     parser.add_argument("--u-loss", help="Uniform loss on each link (%)", type=int, default=0)
+    parser.add_argument("--cores", help="Cores available for the experiment, following Python range synthax (e.g., '1,10')", type=str, default="1,2")
+    parser.add_argument("--nb-rs", help="Number of FEC repair symbols to send", type=int, default=5)
 
     args = parser.parse_args() 
-    simpleRun(args)
+
+    tab = args.cores.split(",")
+    if len(tab) != 2:
+        print("This is not a valid range", args.core)
+        sys.exit()
+    
+    range_a = int(tab[0])
+    range_b = int(tab[1])
+    if range_a + 1 >= range_b:
+        print(f"The range is not valid: {range_a} -> {range_b}")
+        sys.exit()
+
+    simpleRun(args, list(range(range_a, range_b)))
 
