@@ -240,6 +240,7 @@ impl McAuthentication for Connection {
                     if recv_tag == tag {
                         Ok(())
                     } else {
+                        error!("Invalid sign sign for packet {}: {:?} vs {:?}. My client id {:?}", pn, recv_tag, tag, self.multicast.as_ref().unwrap().mc_client_id);
                         Err(Error::Multicast(MulticastError::McInvalidSign))
                     }
                 } else {
@@ -366,12 +367,13 @@ impl McSymAuth for Connection {
             {
                 let mut signatures = Vec::with_capacity(map.cid_to_id.len());
 
-                for (i, conn) in clients.iter().enumerate() {
+                for conn in clients.iter() {
+                    let mc_client_id =
+                        map.get_client_id(conn.source_id().as_ref()).ok_or(
+                            Error::Multicast(MulticastError::McInvalidClientId),
+                        )?;
                     let sign = conn.mc_sign_sym_slice(data, pn)?;
-                    signatures.push(McSymSignature {
-                        mc_client_id: i as u64,
-                        sign,
-                    })
+                    signatures.push(McSymSignature { mc_client_id, sign })
                 }
 
                 Ok(signatures)

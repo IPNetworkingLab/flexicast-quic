@@ -166,6 +166,7 @@ fn main() {
     config.set_initial_max_streams_uni(1_000_000);
     config.set_active_connection_id_limit(5);
     config.verify_peer(false);
+    // config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
 
     if args.multicast {
         config.set_multipath(true);
@@ -435,7 +436,7 @@ fn main() {
                             match conn.mc_verify_sym(&pkt_na, pn) {
                                     Ok(()) => (),
                                     Err(quiche::Error::Multicast(MulticastError::McInvalidSign)) => error!("Packet {} has invalid authentication!", pn),
-                                    Err(e) => error!("Unknown error when authenticating a previously received packet with symmetric tags: {:?}", e)
+                                    Err(e) => panic!("Unknown error when authenticating a previously received packet with symmetric tags: {:?}", e)
                                 }
                             debug!("Can read packet 2 with pn={}", pn);
                             let recv_info = quiche::RecvInfo {
@@ -699,6 +700,7 @@ fn main() {
         );
         'read_stream: for s in conn.readable() {
             if !conn.stream_complete(s) {
+                debug!("Stream {} is not complete", s);
                 continue 'read_stream;
             }
 
@@ -711,7 +713,7 @@ fn main() {
             while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
                 total += read;
                 if fin {
-                    debug!("Add a new stream in the list of received.");
+                    debug!("Add a new stream in the list of received: {}.", s);
                     app_handler.on_stream_complete(&buf[..total], s);
                 }
             }

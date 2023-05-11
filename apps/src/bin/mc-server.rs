@@ -56,6 +56,7 @@ struct Client {
     soft_mc_addr: net::SocketAddr,
     soft_mc_addr_auth: net::SocketAddr,
     client_id: u64,
+    active_client: bool,
 }
 
 type ClientMap = HashMap<u64, Client>;
@@ -251,6 +252,7 @@ fn main() {
     config.set_disable_active_migration(true);
     config.set_active_connection_id_limit(5);
     config.enable_early_data();
+    // config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     if args.multicast {
         config.set_multipath(true);
         config.set_enable_server_multicast(true);
@@ -513,6 +515,7 @@ fn main() {
                     soft_mc_addr: net::SocketAddr::new(from.ip(), 8889),
                     soft_mc_addr_auth: net::SocketAddr::new(from.ip(), 8890),
                     client_id,
+                    active_client: false,
                 };
 
                 next_client_id += 1;
@@ -626,10 +629,11 @@ fn main() {
                 if uc_server_role ==
                     Some(MulticastRole::ServerUnicast(
                         multicast::MulticastClientStatus::ListenMcPath(true),
-                    ))
+                    )) || !args.multicast && client.conn.is_established() && !client.active_client
                 {
-                    debug!("New client!");
+                    info!("New client!");
                     nb_active_mc_receivers += 1;
+                    client.active_client = true;
                 }
 
                 // Enough clients to start the content delivery.
@@ -638,7 +642,7 @@ fn main() {
                 }
 
                 // Is multicast disabled?
-                if !args.multicast && client.conn.is_established() {
+                if !args.multicast && client.conn.is_established() && Some(nb_active_mc_receivers) == args.wait_first_client {
                     app_handler.start_content_delivery();
                 }
             }
@@ -769,14 +773,7 @@ fn main() {
                     // client. The SocketAddr is created using
                     // the client unicast address and
                     // the multicast destination port.
-                    let now = std::time::Instant::now();
-                    debug!(
-                        "Should send packet with pacing in {:?}. Value is {:?}",
-                        send_info.at.checked_duration_since(now),
-                        send_info.at,
-                    );
                     send_info.to = mc_channel.mc_send_addr;
-                    debug!("Send info are: {:?}", send_info);
                     let err = if args.soft_mc {
                         clients.values().try_for_each(|client| {
                             let send_info_uc = SendInfo {
