@@ -670,16 +670,12 @@ impl MulticastAttributes {
         }
 
         if let Some(ranges) = ranges_opt {
-            if let Some(current_ranges) = self.mc_nack_ranges.as_mut() {
-                for range in ranges.iter() {
-                    current_ranges.insert(range);
-                }
-            } else {
-                self.mc_nack_ranges = Some(ranges.clone());
-            }
+            self.mc_nack_ranges = Some(ranges.clone());
         } else {
             self.mc_nack_ranges = None;
         }
+
+        info!("After setting it, it is: {:?}", self.mc_nack_ranges);
 
         Ok(())
     }
@@ -1296,6 +1292,7 @@ impl MulticastConnection for Connection {
 
         // Reset FEC state to remove old source symbols.
         if let Some(exp_fec_metadata) = fec_metadata_opt {
+            info!("Remove FEC up to: {}", exp_fec_metadata);
             if self.is_server {
                 // Reset FEC encoder state.
                 self.fec_encoder
@@ -5281,6 +5278,42 @@ mod tests {
         // MC-TODO: should ensure that this is equivalent to the client sCID.
 
         assert_eq!(mc_pipe.unicast_pipes[0].0.server.paths.len(), 1);
+    }
+
+    #[test]
+    /// Symmetric authentication adds a new multicast path.
+    fn test_mc_symmetric_auth_path() {
+        let use_auth = McAuthType::SymSign;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_symmetric_auth_path.txt",
+            use_auth,
+            true,
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 1), Ok(348));
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, None, 0, 5),
+            Ok(348)
+        );
+        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 9), Ok(348));
+
+        // The client received all streams.
+        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
+        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 5, 9]);
+
+        // The client received all streams. They must not send packets to the source.
+        let mut out = [0u8; 2048];
+        assert_eq!(uc_pipe.client.stream_send(2, &out[..100], true), Ok(100));
+        assert_eq!(uc_pipe.client.send(&mut out).map(|(w, _)| w), Ok(148));
+        // The client does not send ACK_MP frames for the authentication path.
+
+
     }
 }
 

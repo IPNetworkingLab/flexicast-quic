@@ -56,11 +56,11 @@ class MyAutoTopo(Topo):
             id1, id2, _, _, _ = link_info.split(" ")
             if (id1, id2) in all_links or (id2, id1) in all_links:
                 continue
-            self.addLink(all_nodes[id1], all_nodes[id2], cls=TCLink, bw=bw, loss=loss)
+            self.addLink(all_nodes[id1], all_nodes[id2], cls=TCLink, bw=bw, loss=loss, delay="3ms")
             all_links.add((id1, id2))
 
 
-def simpleRun(args, core_range):
+def build_topo(args):
     ipv4 = args.ipv4
     print("USE IPV4", ipv4)
 
@@ -103,6 +103,8 @@ def simpleRun(args, core_range):
             cmd = "sysctl net.ipv6.conf.lo.forwarding=1"
             net[id1].cmd(cmd)
             cmd = "sysctl net.ipv6.conf.lo.mc_forwarding=1"
+            net[id1].cmd(cmd)
+            cmd = "sysctl -w net.ipv4.udp_rmem_min=4096000 net.core.rmem_max=26214400 net.core.rmem_default=26214400 net.core.netdev_max_backlog=2000"
             net[id1].cmd(cmd)
             nb_nodes += 1
     
@@ -179,12 +181,20 @@ def simpleRun(args, core_range):
     cmd = "ip route add default dev 0-eth0"
     net["0"].cmd(cmd)
 
+    return net, nb_nodes, links, links_per_itf
+
+def simpleRun(args, core_range):
+
     if True:
         # Share the available cores to the nodes. Give an entire core to the server, and share the remaining cores among the clients.
         # First core for the server.
         server_core = core_range[0]
         client_cores = core_range[1:]
 
+        # Compile the server code.
+        cmd = f"{CARGO_PATH} build --bins --manifest-path {MANIFEST_PATH} {'--release' if args.release else ''}"
+        print(cmd)
+        os.system(cmd)
 
         # Communication method.
         methods = list()
@@ -196,7 +206,7 @@ def simpleRun(args, core_range):
         # Create dir if not exists.
         os.makedirs(args.out, exist_ok=True)
 
-        net["0"].popen("tcpdump -w testu.pcap")
+        log_trace = "RUST_LOG=trace" if args.log else ""
 
         for i_run in range(args.nb_run):
             for method in methods:
@@ -211,13 +221,20 @@ def simpleRun(args, core_range):
                     auths = [args.auth]
                 
                 for auth in auths:
+                    # Create the mininet topology from scratch.
+                    net, nb_nodes, links, links_per_itf = build_topo(args)
+
                     # Output filename of the experiment.
                     output_file_without_dir = lambda idx: f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.u_loss}-{args.nb_rs}-{idx}.txt"
                     output_file = lambda idx: os.path.join(args.out, output_file_without_dir(idx))
 
                     # Start the quiche server on CloudLab.
-                    cmd = f"RUST_LOG=debug taskset -c {server_core} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} -f {args.file} -s {links[('0', '1')]}:4433 --app {args.app} --cert-path {CERT_PATH} {'-w ' + str(nb_nodes - 1) if args.wait else ''} -n {args.nb_frames} -r {output_file('server-0')} -k my-server.txt --max-fec-rs {args.nb_rs} > log-server.log 2>&1"
+                    cmd = f"{log_trace} taskset -c {server_core} {CARGO_PATH} flamegraph --manifest-path {MANIFEST_PATH} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} -f {args.file} -s {links[('0', '1')]}:4433 --app {args.app} --cert-path {CERT_PATH} {'-w ' + str(nb_nodes - 1) if args.wait else ''} -n {args.nb_frames} -r {output_file('server-0')} -k my-server.txt --max-fec-rs {args.nb_rs} > {'log-server.log 2>&1' if args.log else '/dev/null'}"
                     print("Command to start the server on CloudLab:", cmd)
+                    my_cmd(net, "0", cmd, wait=False)
+
+                    cmd = f"tcpdump -w test-server.pcap"
+                    print(cmd)
                     my_cmd(net, "0", cmd, wait=False)
 
                     print("Wait for the server to setup...", end=" ", flush=True)
@@ -226,18 +243,23 @@ def simpleRun(args, core_range):
 
                     # Start the clients on cloudlab.
                     for client in range(1, nb_nodes - 1):  # Not the source
-                        cmd = f"RUST_LOG=debug taskset -c {client_cores[client % len(client_cores)]} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > log-{client}.log 2>&1"
+                        cmd = f"{log_trace} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > {f'log-{client}.log 2>&1' if args.log else '/dev/null'}"
                         print("Client command:", client, cmd)
                         my_cmd(net, str(client), cmd, wait=False)  # Act as a daemon
 
                     # Start the client locally and wait for completion.
+                    # Last client always performs source authentication.
                     client = nb_nodes - 1
-                    cmd = f"RUST_LOG=trace taskset -c {client_cores[client % len(client_cores)]} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > log-{client}.log 2>&1"
+                    cmd = f"{log_trace} taskset -c {client_cores[client % len(client_cores)]} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > {f'log-{client}.log 2>&1' if args.log else '/dev/null'}"
                     print("Client command:", client, cmd)
                     my_cmd(net, str(client), cmd, wait=True)
+
+                    # Clean the topology.
+                    net.stop()
     else:
+        net, nb_nodes, links, links_per_itf = build_topo(args)
         CLI(net)
-    net.stop()
+        net.stop()
 
 
 if __name__ == "__main__":
@@ -249,6 +271,7 @@ if __name__ == "__main__":
     parser.add_argument("-t", "--traces", action="store_true", help="Activate tracing with tcpdump")
     parser.add_argument("--ipv4", action="store_true", help="Indicates that the scripts use IPv4 instead of IPv6")
     parser.add_argument("-m", "--multicast", help="Add multicast routes in the given path", default=None)
+    parser.add_argument("--log", help="Enable logging on nodes", action="store_true")
     
     parser.add_argument("--app", choices=["tixeo", "file"], default="tixeo", help="Application of the test", type=str)
     parser.add_argument("--nb-frames", type=int, help="Number of frames of the test. Default: all", default=None)

@@ -172,7 +172,9 @@ struct Args {
 }
 
 fn main() {
-    env_logger::init();
+    env_logger::builder()
+        .default_format_timestamp_nanos(true)
+        .init();
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -414,11 +416,6 @@ fn main() {
                 !clients_ids.contains_key(&hdr.dcid)
             {
                 if hdr.ty != quiche::Type::Initial {
-                    info!(
-                        "The received cid: {:?} ou {:?}",
-                        hdr.dcid.as_ref(),
-                        conn_id
-                    );
                     error!("Packet is not Initial");
                     continue 'read;
                 }
@@ -498,8 +495,6 @@ fn main() {
                 // instead of changing it again.
                 let scid = hdr.dcid.clone();
 
-                debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
-
                 let conn = quiche::accept(
                     &scid,
                     odcid.as_ref(),
@@ -521,6 +516,8 @@ fn main() {
                 next_client_id += 1;
                 clients.insert(client_id, client);
                 clients_ids.insert(scid.clone(), client_id);
+
+                debug!("New connection: dcid={:?} scid={:?}. Client id: {}", hdr.dcid, scid, client_id);
 
                 let client = clients.get_mut(&client_id).unwrap();
 
@@ -587,7 +584,7 @@ fn main() {
                 },
             };
 
-            debug!("{} processed {} bytes", client.conn.trace_id(), read);
+            debug!("{} ({}) processed {} bytes", client.conn.trace_id(), client.client_id, read);
 
             if client.conn.is_in_early_data() || client.conn.is_established() {
                 // Process all readable streams.
@@ -1222,9 +1219,9 @@ pub fn get_test_mc_config(
     config.set_multipath(true);
     config.set_enable_server_multicast(mc_server);
     config.set_enable_client_multicast(mc_client);
-    config.send_fec(use_fec);
-    config.receive_fec(use_fec);
-    config.set_mc_max_nb_repair_symbols(max_fec_rs);
+    config.send_fec(true);
+    config.receive_fec(true);
+    config.set_mc_max_nb_repair_symbols(Some(5));
     config.set_fec_scheduler_algorithm(
         quiche::FECSchedulerAlgorithm::RetransmissionFec,
     );

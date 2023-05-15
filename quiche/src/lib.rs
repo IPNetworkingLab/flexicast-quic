@@ -3914,7 +3914,7 @@ impl Connection {
                             };
 
                             if push_frame_to_pkt!(b, frames, frame, left) {
-                                ack_eliciting = false;
+                                ack_eliciting = true;
                                 in_flight = true;
                                 sent_mc_auth = true;
                             }
@@ -3991,6 +3991,8 @@ impl Connection {
                         2_u64.pow(
                             self.local_transport_params.ack_delay_exponent as u32,
                         );
+                    
+                    info!("Send an MC_NACK with ranges: {:?}", nack_range);
 
                     let frame = frame::Frame::ACKMP {
                         space_identifier: mc_space_id as u64,
@@ -4016,6 +4018,7 @@ impl Connection {
             !sent_mc_nack &&
             self.paths.get(send_pid)?.active()
         {
+            debug!("Enter the first: {} {} {}", multiple_application_data_pkt_num_spaces, !is_closing, !sent_mc_nack);
             // We first check if we should bundle the ACK_MP belonging to our
             // path. We only bundle additional ACK_MP from other paths if we
             // need to send one. This avoids sending ACK_MP frames endlessly.
@@ -4024,9 +4027,11 @@ impl Connection {
                 self.paths.get(send_pid)?.active_scid_seq
             {
                 let pns = self.pkt_num_spaces.get_mut(epoch, active_scid_seq)?;
+                debug!("Maybe enter the second: {} {} {}", pns.recv_pkt_need_ack.len(), pns.ack_elicited, ack_elicit_required);
                 if pns.recv_pkt_need_ack.len() > 0 &&
                     (pns.ack_elicited || ack_elicit_required)
                 {
+                    debug!("Will send an MP_ACK because {} {} {} {} {} {}", multiple_application_data_pkt_num_spaces, !is_closing, !sent_mc_nack, pns.recv_pkt_need_ack.len(), pns.ack_elicited, ack_elicit_required);
                     let ack_delay = pns.largest_rx_pkt_time.elapsed();
 
                     let ack_delay = ack_delay.as_micros() as u64 /
@@ -4058,12 +4063,6 @@ impl Connection {
                             continue;
                         }
 
-                        // // Don't ever send ack for data received on a multicast
-                        // // path.
-                        // if self.is_mc_path(space_id as usize) {
-                        //     continue;
-                        // }
-
                         // Multicast: client does not send ACKMP frames for frames
                         // received on the multicast path.
                         // MC-TODO: need to test this condition.
@@ -4073,6 +4072,11 @@ impl Connection {
                                     multicast.get_mc_space_id()
                                 {
                                     if space_id == mc_space_id as u64 {
+                                        continue;
+                                    }
+                                }
+                                if let Some(mc_auth_space_id) = multicast.get_mc_auth_space_id() {
+                                    if space_id == mc_auth_space_id as u64 {
                                         continue;
                                     }
                                 }
@@ -4824,11 +4828,16 @@ impl Connection {
                     octets::varint_len(0x32) +
                         self.fec_encoder.next_repair_symbol_size(md)?
                 {
+                    info!("Before generating a repair symbol with {} source", self.fec_encoder.n_protected_symbols());
+                    let before = std::time::Instant::now();
                     match self
                         .fec_encoder
                         .generate_and_serialize_repair_symbol_up_to(md)
                     {
                         Ok(rs) => {
+                            let after = std::time::Instant::now();
+                            println!("Time consumed for FEC: {:?}. FEC symbole size IS {:?}", after.duration_since(before), self.fec_encoder.symbol_size());
+                            info!("Generate repair symbol tht protects: {}", self.fec_encoder.n_protected_symbols());
                             let frame =
                                 frame::Frame::Repair { repair_symbol: rs };
                             if push_frame_to_pkt!(b, frames, frame, left) {
@@ -6433,7 +6442,6 @@ impl Connection {
     ///
     /// [`on_timeout()`]: struct.Connection.html#method.on_timeout
     pub fn timeout_instant(&self) -> Option<time::Instant> {
-        debug!("Timeout. Is closed: {}, is draining: {}, path timer: {:?}, idle timer: {:?}", self.is_closed(), self.is_draining(), self.paths.iter().filter_map(|(_, p)| p.path_timer()).collect::<Vec<_>>(), self.idle_timer);
         if self.is_closed() {
             return None;
         }

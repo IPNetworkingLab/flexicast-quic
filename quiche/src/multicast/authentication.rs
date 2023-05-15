@@ -371,13 +371,21 @@ impl McSymAuth for Connection {
                     let mc_client_id =
                         map.get_client_id(conn.source_id().as_ref()).ok_or(
                             Error::Multicast(MulticastError::McInvalidClientId),
-                        )?;
+                        );
+                    let mc_client_id = match mc_client_id {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!("Error for source id: {:?} VS map: {:?}", conn.source_id(), map);
+                            continue;
+                        }
+                    };
                     let sign = conn.mc_sign_sym_slice(data, pn)?;
                     signatures.push(McSymSignature { mc_client_id, sign })
                 }
 
                 Ok(signatures)
             } else {
+                error!("No map");
                 Err(Error::Multicast(MulticastError::McInvalidClientId))
             }
         } else {

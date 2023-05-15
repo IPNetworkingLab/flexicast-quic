@@ -171,7 +171,7 @@ fn main() {
     if args.multicast {
         config.set_multipath(true);
         config.set_enable_client_multicast(Some(&mc_client_params));
-        config.receive_fec(true);
+        // config.receive_fec(true);
         config.set_fec_scheduler_algorithm(
             quiche::FECSchedulerAlgorithm::RetransmissionFec,
         );
