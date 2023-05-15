@@ -375,9 +375,13 @@ impl McSymAuth for Connection {
                     let mc_client_id = match mc_client_id {
                         Ok(v) => v,
                         Err(e) => {
-                            error!("Error for source id: {:?} VS map: {:?}", conn.source_id(), map);
+                            error!(
+                                "Error for source id: {:?} VS map: {:?}",
+                                conn.source_id(),
+                                map
+                            );
                             continue;
-                        }
+                        },
                     };
                     let sign = conn.mc_sign_sym_slice(data, pn)?;
                     signatures.push(McSymSignature { mc_client_id, sign })
@@ -522,5 +526,73 @@ mod tests {
                 assert!(pipe.server.is_closed() || pipe.server.is_draining());
             }
         }
+    }
+
+    #[test]
+    /// The multicast source sends a long stream consisting of several packets.
+    /// The server generates MC_AUTH frames for all the STREAM frames.
+    /// This tests is added to correct an existing bug where the source does not
+    /// send all the MC_AUTH frames that they should.
+    fn test_mc_sym_lot_of_data() {
+        let use_auth = McAuthType::SymSign;
+        let mut mc_pipe = MulticastPipe::new(
+            10,
+            "/tmp/test_mc_sym_lot_of_data.txt",
+            use_auth,
+            true,
+            false,
+            None,
+        )
+        .unwrap();
+
+        let mut buf = vec![0u8; 10_000];
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(1, &buf, true),
+            Ok(buf.len())
+        );
+
+        let mut all_pns = Vec::with_capacity(1000);
+
+        loop {
+            if let Ok((w, _)) = mc_pipe.mc_channel.mc_send(&mut buf[..]) {
+                let pn = mc_pipe.unicast_pipes[0].0.client.mc_get_pn(&buf[..w]);
+                assert!(pn.is_ok());
+                all_pns.push(pn.unwrap());
+    
+                for (pipe, client_addr, server_addr) in mc_pipe.unicast_pipes.iter_mut() {
+                    let recv_info = RecvInfo {
+                        from: *server_addr,
+                        to: *client_addr,
+                        from_mc: Some(McPathType::Data),
+                    };
+                    pipe.client.mc_recv(&mut buf[..w], recv_info).unwrap();
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Multicast source generates the AEAD tags for the clients.
+        let clients: Vec<_> = mc_pipe
+        .unicast_pipes
+        .iter_mut()
+        .map(|(conn, ..)| &mut conn.server)
+        .collect();
+        assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
+        while let Ok(_) = mc_pipe.mc_source_sends_auth_packets(None) {}
+
+        for (pipe, _, _) in mc_pipe.unicast_pipes.iter_mut() {
+            let client = &mut pipe.client;
+
+            let tags = client.mc_get_client_auth_tags();
+            assert!(tags.is_ok());
+            let tags = tags.unwrap();
+            println!("Tags: {:?}", tags);
+            for pn in all_pns.iter() {
+                assert!(tags.contains(&pn));
+            }
+        }
+
+        
     }
 }

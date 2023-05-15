@@ -3758,6 +3758,7 @@ impl Connection {
 
         let pn = pkt_num_space.next_pkt_num;
         let pn_len = packet::pkt_num_len(pn)?;
+        println!("For space id {} pn={}", space_id, pn);
 
         // The AEAD overhead at the current encryption level.
         let crypto_overhead = self
@@ -3906,10 +3907,10 @@ impl Connection {
                         sym_signs,
                     ) = &mut multicast.mc_sym_signs
                     {
-                        while let Some((pn, next_sign)) = sym_signs.pop_front() {
+                        while let Some((pn, next_sign)) = sym_signs.front() {
                             let frame = frame::Frame::McAuth {
                                 channel_id: channel_id.clone(),
-                                pn,
+                                pn: *pn,
                                 signatures: next_sign.to_vec(),
                             };
 
@@ -3917,6 +3918,11 @@ impl Connection {
                                 ack_eliciting = true;
                                 in_flight = true;
                                 sent_mc_auth = true;
+
+                                // Pop element.
+                                _ = sym_signs.pop_front();
+                            } else {
+                                break;
                             }
                         }
                     } else {
@@ -4828,7 +4834,7 @@ impl Connection {
                     octets::varint_len(0x32) +
                         self.fec_encoder.next_repair_symbol_size(md)?
                 {
-                    info!("Before generating a repair symbol with {} source", self.fec_encoder.n_protected_symbols());
+                    //info!("Before generating a repair symbol with {} source", self.fec_encoder.n_protected_symbols());
                     let before = std::time::Instant::now();
                     match self
                         .fec_encoder
@@ -4837,7 +4843,7 @@ impl Connection {
                         Ok(rs) => {
                             let after = std::time::Instant::now();
                             println!("Time consumed for FEC: {:?}. FEC symbole size IS {:?}", after.duration_since(before), self.fec_encoder.symbol_size());
-                            info!("Generate repair symbol tht protects: {}", self.fec_encoder.n_protected_symbols());
+                            //info!("Generate repair symbol tht protects: {}", self.fec_encoder.n_protected_symbols());
                             let frame =
                                 frame::Frame::Repair { repair_symbol: rs };
                             if push_frame_to_pkt!(b, frames, frame, left) {
