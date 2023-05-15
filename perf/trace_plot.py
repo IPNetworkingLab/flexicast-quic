@@ -9,8 +9,8 @@ MARKERS = ["^", "v", ">", "<"]
 LINESTYLES = ["-", "--", "-.", (0, (1, 1))]
 
 
-def get_files_labels(directory):
-    res = list()
+def get_files_labels(directory, server_only):
+    res = dict()
     ttl = None
     nb_frames = None
     for file in os.listdir(directory):
@@ -19,6 +19,8 @@ def get_files_labels(directory):
         path = os.path.join(directory, file)
 
         tab = file.split("-")
+        if tab[-2] == "server" and server_only == "clients" or tab[-2] != "server" and server_only == "server": 
+            continue
         if tab[1] == "mc":
             label = f"MC {tab[2]}"
         else:
@@ -34,8 +36,13 @@ def get_files_labels(directory):
         elif ttl != int(tab[4]):
             print("ERROR: found different TTL values", ttl, tab[4])
         
-        res.append((path, label))
+        if not label in res.keys():
+            res[label] = [path]
+        else:
+            res[label].append(path)
     
+    res = [(v, l) for (l, v) in res.items()]
+
     # Sort by name.
     res = sorted(res, key=lambda n: n[1])
 
@@ -61,6 +68,8 @@ def read_and_rm_delay(trace_file, res_file):
     with open(res_file) as fd:
         data_res = fd.read().strip().split("\n")
     
+    if len(data_res) == 1: return {}, list()
+    
     # Map timestamp to stream id.
     sid_time_res = dict()
     max_recv_stream_id = -1
@@ -79,7 +88,6 @@ def read_and_rm_delay(trace_file, res_file):
     lost_frames = list()
     for i in range(len(sid_time_trace.keys())):
         if not i in sid_time_res.keys():
-            print("LOST FRAME", i)
             lost_frames.append(i)
             continue
 
@@ -90,8 +98,9 @@ def read_and_rm_delay(trace_file, res_file):
             print(f"Different number of bytes for stream {i}: {bytes_res} vs {bytes_trace}")
 
         min_dist = min(min_dist, time_res - time_trace)
-
-    print("This is min dist", min_dist)
+    
+    print("LOST FRAMES: ", lost_frames)
+    print("Min distance:", min_dist)
 
     # Remove the "delay" from all collected samples in the result file.
     # Also remove the trace timestamp to get the lateness.
@@ -113,10 +122,17 @@ def compute_cdf(values, nb_bins: int = 200, add_zero: bool = False):
 
 def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", ylim=None, xlim=None):
     res = dict()
-    for (file, label) in all_files_labels:
-        r, _ = read_and_rm_delay(trace, file)
-        print(r.values())
-        res[label] = compute_cdf(list(r.values()), add_zero=True)
+    for (files, label) in all_files_labels:
+        tmp = list()
+        for file in files:
+            r, _ = read_and_rm_delay(trace, file)
+            frames_too_long = [i for i in r if r[i] > 50]
+            print("Frames too long:", frames_too_long)
+            tmp += list(r.values())
+
+        # tmp = [i for i in tmp if i < 300]
+        print(f"Nb points for {label}: {len(tmp)}")
+        res[label] = compute_cdf(tmp, add_zero=True, nb_bins=7000)
 
     fig, ax = plt.subplots()
 
@@ -131,13 +147,13 @@ def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", 
     if xlim is not None:
         ax.set_xlim(xlim)
     plt.legend()
-    plt.savefig(save_as)
+    plt.savefig(save_as, dpi=500)
 
 
-def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf", ylim=None, cmp_uc=None, ylabel=""):
+def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf", ylim=None, xlim=None, cmp_uc=None, ylabel=""):
     res = dict()
     for (file, label) in all_files_labels:
-        r = read_data_brut(file)
+        r = read_data_brut(file[0])
         res[label] = r
     
     if cmp_uc is not None:
@@ -169,7 +185,6 @@ def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf",
         for lost_frame in lost_frames:
             if not "UC" in label:
                 ax.axvline(lost_frame, linewidth=0.3, color=COLORS[i], linestyle=LINESTYLES[i])
-            print(f"Label {label} lost frame {lost_frame}")
         ax.scatter(stream_ids, timestamps, s=0.2, label=label, color=COLORS[i], marker=MARKERS[i])
     
     ax.set_xlabel("Frame ID")
@@ -177,6 +192,8 @@ def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf",
     ax.set_title(title)
     if ylim is not None:
         ax.set_ylim(ylim)
+    if xlim is not None:
+        ax.set_xlim(xlim)
     
     louis = plt.legend()
     for i in range(len(res)):
@@ -189,12 +206,16 @@ if __name__ == "__main__":
 
     parser.add_argument("directory", help="Directory containing the files to parse", type=str)
     parser.add_argument("--trace", help="Path to the tixeo trace", type=str, default="/home/louisna/multicast-quic/perf/tixeo_trace.repr")
-    parser.add_argument("--xlim", type=float, help="Maximum xlim for the plot distribution", default=None)
-    parser.add_argument("--ylim", type=float, help="Maximum ylim for the plot distribution", default=None)
+    parser.add_argument("--xlim", type=float, help="Maximum xlim for the plot distribution", default=100)
+    parser.add_argument("--ylim", type=float, help="Maximum ylim for the plot distribution", default=0.0)
+    parser.add_argument("--filter", help="Server or client lateness", default="clients", choices=["clients", "server"])
     args = parser.parse_args()
 
-    all_files_labels, ttl, nb_frames = get_files_labels(args.directory)
+    all_files_labels, ttl, nb_frames = get_files_labels(args.directory, args.filter)
 
-    plot_distribution(all_files_labels, args.trace, title=f"Cloudlab server <-> INGI ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}.pdf", ylim=(0, args.ylim), xlim=(0, args.xlim))
-    plot_stream_recv_time(all_files_labels, title="Recv timestamp", save_as=f"recv_stream_{nb_frames}_{ttl}.png", ylabel="Time received since start [s]")
+    # plot_distribution(all_files_labels, args.trace, title=f"Cloudlab server <-> INGI ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}.pdf", ylim=(args.ylim, 1), xlim=(0, args.xlim))
+    # plot_stream_recv_time(all_files_labels, title="Recv timestamp", save_as=f"recv_stream_{nb_frames}_{ttl}.png", ylabel="Time received since start [s]", ylim=(0, 0.100))
     plot_stream_recv_time(all_files_labels, title="Recv timestamp compared to unicast", save_as=f"recv_stream-uc_{nb_frames}_{ttl}.png", cmp_uc="UC", ylabel="Lateness of reception with respect to UC [ms]")
+
+    # Mininet
+    plot_distribution(all_files_labels, args.trace, title=f"Mininet ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}_{args.filter}.png", ylim=(args.ylim, 1), xlim=(0, args.xlim))
