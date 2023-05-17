@@ -11,6 +11,7 @@ import shutil
 import time
 import shlex
 import sys
+import subprocess
 
 
 PCAP_DIR = "pcaps"
@@ -206,7 +207,7 @@ def simpleRun(args, core_range):
         # Create dir if not exists.
         os.makedirs(args.out, exist_ok=True)
 
-        log_trace = "RUST_LOG=trace" if args.log else ""
+        log_trace = "RUST_LOG=error" if args.log else ""
 
         for i_run in range(args.nb_run):
             for method in methods:
@@ -229,7 +230,7 @@ def simpleRun(args, core_range):
                     output_file = lambda idx: os.path.join(args.out, output_file_without_dir(idx))
 
                     # Start the quiche server on CloudLab.
-                    cmd = f"{log_trace} taskset -c {server_core} {CARGO_PATH} flamegraph --manifest-path {MANIFEST_PATH} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} -f {args.file} -s {links[('0', '1')]}:4433 --app {args.app} --cert-path {CERT_PATH} {'-w ' + str(nb_nodes - 1) if args.wait else ''} -n {args.nb_frames} -r {output_file('server-0')} -k my-server.txt --max-fec-rs {args.nb_rs} > {'log-server.log 2>&1' if args.log else '/dev/null'}"
+                    cmd = f"{log_trace} taskset -c {server_core} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} -f {args.file} -s {links[('0', '1')]}:4433 --app {args.app} --cert-path {CERT_PATH} {'-w ' + str(nb_nodes - 1) if args.wait else ''} -n {args.nb_frames} -r {output_file('server-0')} -k my-server.txt --max-fec-rs {args.nb_rs} > {'log-server.log 2>&1' if args.log else '/dev/null'}"
                     print("Command to start the server on CloudLab:", cmd)
                     my_cmd(net, "0", cmd, wait=False)
 
@@ -255,6 +256,15 @@ def simpleRun(args, core_range):
                     my_cmd(net, str(client), cmd, wait=True)
 
                     # Clean the topology.
+                    cmd = "pgrep mc-server"
+                    while True:
+                        try: 
+                            _ = len(subprocess.check_output(cmd, shell=True)) == 0
+
+                        except Exception:
+                            break
+                        print("OK")
+                        time.sleep(1)
                     net.stop()
     else:
         net, nb_nodes, links, links_per_itf = build_topo(args)

@@ -94,8 +94,8 @@ def read_and_rm_delay(trace_file, res_file):
         (time_res, bytes_res) = sid_time_res[i]
         (time_trace, bytes_trace) = sid_time_trace[i]
 
-        if bytes_res != bytes_trace:
-            print(f"Different number of bytes for stream {i}: {bytes_res} vs {bytes_trace}")
+        # if bytes_res != bytes_trace:
+        #     print(f"Different number of bytes for stream {i}: {bytes_res} vs {bytes_trace}")
 
         min_dist = min(min_dist, time_res - time_trace)
     
@@ -105,7 +105,7 @@ def read_and_rm_delay(trace_file, res_file):
     # Remove the "delay" from all collected samples in the result file.
     # Also remove the trace timestamp to get the lateness.
     return {
-        i: (sid_time_res[i][0] - min_dist - sid_time_trace[i][0]) / 1000 for i in sid_time_res.keys()
+        i: (sid_time_res[i][0] - min_dist - sid_time_trace[i][0]) / 1000 for i in sid_time_res.keys() if sid_time_res[i][1] > 1
     }, lost_frames
 
 
@@ -127,7 +127,7 @@ def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", 
         for file in files:
             r, _ = read_and_rm_delay(trace, file)
             frames_too_long = [i for i in r if r[i] > 50]
-            print("Frames too long:", frames_too_long)
+            # print("Frames too long:", frames_too_long)
             tmp += list(r.values())
 
         # tmp = [i for i in tmp if i < 300]
@@ -197,7 +197,7 @@ def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf",
     
     louis = plt.legend()
     for i in range(len(res)):
-        louis.legendHandles[i]._sizes = [30]
+        louis.legend_handles[i]._sizes = [30]
     plt.savefig(save_as, dpi=500)
 
 
@@ -212,6 +212,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     all_files_labels, ttl, nb_frames = get_files_labels(args.directory, args.filter)
+
+    # all_files_labels = [(i, j) for (i, j) in all_files_labels if (j == "MC none" or j == "UC")]
 
     # plot_distribution(all_files_labels, args.trace, title=f"Cloudlab server <-> INGI ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}.pdf", ylim=(args.ylim, 1), xlim=(0, args.xlim))
     # plot_stream_recv_time(all_files_labels, title="Recv timestamp", save_as=f"recv_stream_{nb_frames}_{ttl}.png", ylabel="Time received since start [s]", ylim=(0, 0.100))

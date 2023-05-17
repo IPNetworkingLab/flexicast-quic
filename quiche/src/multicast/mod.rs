@@ -1304,7 +1304,7 @@ impl MulticastConnection for Connection {
                 self.fec_decoder
                     .remove_up_to(source_symbol_metadata_from_u64(
                         exp_fec_metadata,
-                    ));
+                    ), None);
             }
         }
 

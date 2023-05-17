@@ -159,7 +159,7 @@ impl TixeoServer {
         }
 
         let mut file = std::fs::File::create(&self.to_wire_filename).unwrap();
-        for (stream_id, time, nb_bytes) in self.time_sent_to_quic.iter() {
+        for (stream_id, time, nb_bytes) in self.time_sent_to_wire.iter() {
             writeln!(
                 file,
                 "{} {} {}",

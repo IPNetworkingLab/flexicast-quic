@@ -682,6 +682,7 @@ fn main() {
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
         let mut can_go_to_next = false;
+        let before = std::time::Instant::now();
         if pacing_timeout.is_none() ||
             pacing_timeout.unwrap().duration_since(now) ==
                 std::time::Duration::ZERO
@@ -722,7 +723,7 @@ fn main() {
                         }) {
                             Ok(_) => true,
                             Err(quiche::Error::Done) => false,
-                            Err(_) => true,
+                            Err(e) => {error!("Error when sending on client {:?}", e); true},
                         };
 
                     if ok_all_clients {
@@ -924,7 +925,6 @@ fn main() {
                         Ok(v) => v,
 
                         Err(quiche::Error::Done) => {
-                            debug!("{} done writing", client.conn.trace_id());
                             break;
                         },
 
@@ -954,7 +954,6 @@ fn main() {
                     // Communication between the unicast session and the
                     // multicast channel.
                     if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                        debug!("J'appelle le control to multicast");
                         client
                             .conn
                             .uc_to_mc_control(&mut mc_channel.channel)
@@ -968,13 +967,14 @@ fn main() {
             // we will record an invalid (too early)
             // timestamp.
             if app_data_to_send && can_go_to_next {
+                let after = std::time::Instant::now();
+                info!("On sent to wire: {:?}", after.duration_since(before));
                 app_handler.on_sent_to_wire();
             }
         }
 
         // Garbage collect closed connections.
         clients.retain(|_, ref mut c| {
-            debug!("Collecting garbage");
 
             if c.conn.is_closed() {
                 info!(
