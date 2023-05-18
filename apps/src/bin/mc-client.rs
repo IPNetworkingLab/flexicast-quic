@@ -156,7 +156,7 @@ fn main() {
         .unwrap();
 
     if !args.multicast {
-        config.set_max_idle_timeout(5000);
+        config.set_max_idle_timeout(10_000);
     }
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);

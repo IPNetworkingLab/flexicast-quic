@@ -342,7 +342,7 @@ fn main() {
         }
 
         if let Some(app_timeout) = app_handler.next_timeout() {
-            debug!("Application timeout: {:?}", app_timeout);
+            info!("Application timeout: {:?}", app_timeout);
             timeout =
                 [timeout, Some(app_timeout)].iter().flatten().min().copied();
         }
@@ -733,9 +733,9 @@ fn main() {
 
                     ok_all_clients
                 };
-                debug!(
-                    "Sent application frame in stream {}. Must send: {}",
-                    stream_id, to_send
+                info!(
+                    "Sent application frame in stream {}. Must send: {}. Can go next: {}",
+                    stream_id, to_send, can_go_to_next
                 );
 
                 // Get next video values.
@@ -914,7 +914,7 @@ fn main() {
                         };
                     if can_close {
                         let res = client.conn.close(true, 1, &[0, 1]);
-                        debug!(
+                        info!(
                         "Closing the the connection for {} because no active video.. Res={:?}",
                         client.conn.trace_id(), res,
                     );

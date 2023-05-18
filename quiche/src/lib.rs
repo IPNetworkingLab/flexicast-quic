@@ -3758,7 +3758,6 @@ impl Connection {
 
         let pn = pkt_num_space.next_pkt_num;
         let pn_len = packet::pkt_num_len(pn)?;
-        println!("For space id {} pn={}", space_id, pn);
 
         // The AEAD overhead at the current encryption level.
         let crypto_overhead = self

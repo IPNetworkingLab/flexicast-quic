@@ -207,7 +207,7 @@ def simpleRun(args, core_range):
         # Create dir if not exists.
         os.makedirs(args.out, exist_ok=True)
 
-        log_trace = "RUST_LOG=error" if args.log else ""
+        log_trace = "RUST_LOG=info" if args.log else ""
 
         for i_run in range(args.nb_run):
             for method in methods:
@@ -244,7 +244,8 @@ def simpleRun(args, core_range):
 
                     # Start the clients on cloudlab.
                     for client in range(1, nb_nodes - 1):  # Not the source
-                        cmd = f"{log_trace} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > {f'log-{client}.log 2>&1' if args.log else '/dev/null'}"
+                        lll = "RUST_LOG=trace" if client == 25 else log_trace
+                        cmd = f"{lll} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > {f'log-{client}.log 2>&1' if args.log else '/dev/null'}"
                         print("Client command:", client, cmd)
                         my_cmd(net, str(client), cmd, wait=False)  # Act as a daemon
 
@@ -294,7 +295,7 @@ if __name__ == "__main__":
     parser.add_argument("--release", help="Compile and execute the code in release mode", action="store_true")
     parser.add_argument("--nb-run", help="Number of repetitions of each experiment", type=int, default=1)
     parser.add_argument("--bw", help="Set the same bandwidth value on each link (Mbps)", type=float, default=100)
-    parser.add_argument("--u-loss", help="Uniform loss on each link (%)", type=int, default=0)
+    parser.add_argument("--u-loss", help="Uniform loss on each link (%)", type=float, default=0)
     parser.add_argument("--cores", help="Cores available for the experiment, following Python range synthax (e.g., '1,10')", type=str, default="1,2")
     parser.add_argument("--nb-rs", help="Number of FEC repair symbols to send", type=int, default=5)
 
