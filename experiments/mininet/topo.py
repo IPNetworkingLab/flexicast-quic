@@ -22,14 +22,16 @@ CARGO_PATH = "/home/louisna/.cargo/bin/cargo"
 CERT_PATH = os.path.join(APP_PATH, "src", "bin/")
 
 
-def my_cmd(net, node, cmd, wait=False):
+def my_cmd(net, node, cmd, wait=False, log=True):
     if wait:
         full_cmd = f'{cmd}'
-        print("Full command", full_cmd)
+        if log:
+            print("Full command on", node, full_cmd)
         net[node].cmd(cmd)
     else:
         full_cmd = f'{cmd} &'
-        print("Full command", shlex.split(cmd))
+        if log:
+            print("Full command node", node, shlex.split(cmd))
         net[node].popen(cmd, shell=True)
 
 
@@ -228,8 +230,13 @@ def simpleRun(args, core_range):
                     # Capture packets.
                     if args.tcpdump:
                         os.makedirs(os.path.join(args.out, "pcaps"), exist_ok=True)
-                        dump_tmp = lambda i, j: os.path.join(args.out, "pcaps", f"{i}-{j}.pcap")
-                        return
+                        dump_tmp = lambda i, j: os.path.join(args.out, "pcaps", f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.u_loss}-{args.nb_rs}-{i}-{j}.pcap")
+                        for node_id in range(nb_nodes):
+                            itfs = net[str(node_id)].intfList()
+                            for itf in itfs:
+                                cmd = f"tcpdump -i {str(itf)} -w {dump_tmp(node_id, itf)}"
+                                my_cmd(net, str(node_id), cmd, wait=False) 
+                            # [str(i) for i in  net["3"].intfList()]
 
 
                     # Output filename of the experiment.
@@ -273,9 +280,14 @@ def simpleRun(args, core_range):
                             break
                         print("OK")
                         time.sleep(1)
+                    
+                    for node_id in range(nb_nodes):
+                        cmd = "pkill tcpdump"
+                        my_cmd(net, str(node_id), cmd, wait=True, log=False)
                     net.stop()
     else:
         net, nb_nodes, links, links_per_itf = build_topo(args)
+        print([str(i) for i in  net["3"].intfList()])
         CLI(net)
         net.stop()
 
