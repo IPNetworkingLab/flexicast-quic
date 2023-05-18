@@ -225,6 +225,13 @@ def simpleRun(args, core_range):
                     # Create the mininet topology from scratch.
                     net, nb_nodes, links, links_per_itf = build_topo(args)
 
+                    # Capture packets.
+                    if args.tcpdump:
+                        os.makedirs(os.path.join(args.out, "pcaps"), exist_ok=True)
+                        dump_tmp = lambda i, j: os.path.join(args.out, "pcaps", f"{i}-{j}.pcap")
+                        return
+
+
                     # Output filename of the experiment.
                     output_file_without_dir = lambda idx: f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.u_loss}-{args.nb_rs}-{idx}.txt"
                     output_file = lambda idx: os.path.join(args.out, output_file_without_dir(idx))
@@ -298,6 +305,7 @@ if __name__ == "__main__":
     parser.add_argument("--u-loss", help="Uniform loss on each link (%)", type=float, default=0)
     parser.add_argument("--cores", help="Cores available for the experiment, following Python range synthax (e.g., '1,10')", type=str, default="1,2")
     parser.add_argument("--nb-rs", help="Number of FEC repair symbols to send", type=int, default=5)
+    parser.add_argument("--tcpdump", help="Capture the traces of all interfaces of all nodes", action="store_true")
 
     args = parser.parse_args() 
 

@@ -27,9 +27,11 @@
 #[macro_use]
 extern crate log;
 
+use std::collections::VecDeque;
 use std::io;
 use std::net;
 use std::path::Path;
+use std::rc::Rc;
 
 use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
@@ -57,6 +59,7 @@ struct Client {
     soft_mc_addr_auth: net::SocketAddr,
     client_id: u64,
     active_client: bool,
+    stream_buf: VecDeque<(u64, usize, Rc<Vec<u8>>)>,
 }
 
 type ClientMap = HashMap<u64, Client>;
@@ -511,6 +514,7 @@ fn main() {
                     soft_mc_addr_auth: net::SocketAddr::new(from.ip(), 8890),
                     client_id,
                     active_client: false,
+                    stream_buf: VecDeque::new(),
                 };
 
                 next_client_id += 1;
@@ -714,24 +718,37 @@ fn main() {
                     }
                 } else {
                     // ... or for every client otherwise.
-                    let ok_all_clients =
-                        match clients.values_mut().try_for_each(|client| {
-                            client
-                                .conn
-                                .stream_send(stream_id, &app_data, true)
-                                .map(|_| ())
-                        }) {
-                            Ok(_) => true,
-                            Err(quiche::Error::Done) => false,
-                            Err(e) => {error!("Error when sending on client {:?}", e); true},
-                        };
+                    // Buffer the data to allow clients to go on different paces.
+                    let data = Rc::new(app_data);
+                    clients.values_mut().for_each(|client| client.stream_buf.push_back((stream_id, 0, data.clone())));
 
-                    if ok_all_clients {
-                        can_go_to_next = true;
-                        app_handler.stream_written(app_data.len());
-                    }
+                    // For each client, try to send as much stream data as possible.
+                    clients.values_mut().for_each(|client| {
+                        loop {
+                            if client.stream_buf.is_empty() {
+                                break;
+                            }
 
-                    ok_all_clients
+                            let (s_id, off, data) = client.stream_buf.pop_front().unwrap();
+                            let w = match client.conn.stream_send(s_id, &data.as_ref()[off..], true) {
+                                Ok(v) => v,
+                                Err(quiche::Error::Done) => {
+                                    info!("Break on client {} stream {} because done", client.client_id, s_id);
+                                    break;
+                                },
+                                Err(e) => panic!("Error stream send unicast: {}", e),
+                            };
+                            if off + w < data.len() {
+                                client.stream_buf.push_front((s_id, off + w, data));
+                                info!("Break on client {} stream {}", client.client_id, s_id);
+                                break; // Full, no utility to continue.
+                            }
+                        }
+                    });
+                    
+                    can_go_to_next = true;
+                    app_handler.stream_written(data.as_ref().len());
+                    true
                 };
                 info!(
                     "Sent application frame in stream {}. Must send: {}. Can go next: {}",
@@ -910,7 +927,7 @@ fn main() {
                         if let Some(mc_channel) = mc_channel_opt.as_ref() {
                             mc_channel.channel.mc_no_stream_active()
                         } else {
-                            true
+                            client.stream_buf.is_empty()
                         };
                     if can_close {
                         let res = client.conn.close(true, 1, &[0, 1]);
