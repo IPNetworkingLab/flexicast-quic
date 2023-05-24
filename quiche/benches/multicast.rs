@@ -13,9 +13,9 @@ use criterion::BatchSize::PerIteration;
 use criterion::BenchmarkId;
 use criterion::Criterion;
 
-const BENCH_STREAM_SIZE: usize = 10_000_000;
+const BENCH_STREAM_SIZE: usize = 100_000_000;
 const BENCH_NB_RECV_MAX: usize = 40;
-const BENCH_STEP_RECV: usize = 10;
+const BENCH_STEP_RECV: usize = 5;
 
 fn setup_mc(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastPipe {
     let mut pipe =

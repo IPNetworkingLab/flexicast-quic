@@ -29,12 +29,8 @@ impl RetransmissionFecScheduler {
                 .map(|rs| rs.flatten().count())
                 .max()
                 .unwrap_or(0) as u64;
-            // MC-TODO: We should take into account past values.
-            // For the moment I do that because I do not have any feedback on the
-            // sent repair symbols. It will be changed when we will
-            // have multiple clients.
-            self.n_repair_in_flight = 0;
             self.new_nack = false;
+            info!("Number of repair to send: {} because: {:?}", self.n_repair_to_send, self.client_losses);
         }
 
         if !self.client_losses.is_empty() &&
@@ -45,11 +41,12 @@ impl RetransmissionFecScheduler {
             self.client_losses = HashMap::new();
         }
 
-        self.n_repair_in_flight < self.n_repair_to_send && if let Some(max_rs) = self.max_n_repair_in_flight {
+        self.n_repair_in_flight < self.n_repair_to_send && (if let Some(max_rs) = self.max_n_repair_in_flight {
+            info!("Sent repair in flight: {} and max: {:?}", self.n_repair_in_flight, self.max_n_repair_in_flight);
             self.n_repair_in_flight < max_rs as u64
         } else {
             true
-        }
+        })
 
         // trace!("fec_scheduler dgrams_to_emit={} stream_to_emit={}
         // n_repair_in_flight={} max_repair_data={}",
@@ -75,6 +72,13 @@ impl RetransmissionFecScheduler {
     pub fn lost_source_symbol(&mut self, ranges: RangeSet, client_cid: &[u8]) {
         self.client_losses.insert(client_cid.into(), ranges);
         self.new_nack = true;
+    }
+
+    pub fn reset_fec_state(&mut self) {
+        info!("Reset FEC state");
+        self.n_repair_in_flight = 0;
+        self.n_repair_to_send = 0;
+        self.client_losses = HashMap::new();
     }
 }
 

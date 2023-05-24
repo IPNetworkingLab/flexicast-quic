@@ -149,4 +149,10 @@ impl FECScheduler {
             scheduler.lost_source_symbol(ranges.to_owned(), client_cid);
         }
     }
+
+    pub fn reset_fec_state(&mut self) {
+        if let RetransmissionFec(scheduler) = self {
+            scheduler.reset_fec_state();
+        }
+    }
 }

@@ -169,7 +169,8 @@ struct Args {
     #[clap(long = "cert-path", value_parser, default_value = "./src/bin")]
     cert_path: String,
 
-    /// Maximum number of FEC repair symbols that can be sent in a single TTL expiration window.
+    /// Maximum number of FEC repair symbols that can be sent in a single TTL
+    /// expiration window.
     #[clap(long = "max-fec-rs", value_parser, default_value = "5")]
     max_fec_rs: u32,
 }
@@ -345,7 +346,7 @@ fn main() {
         }
 
         if let Some(app_timeout) = app_handler.next_timeout() {
-            info!("Application timeout: {:?}", app_timeout);
+            debug!("Application timeout: {:?}", app_timeout);
             timeout =
                 [timeout, Some(app_timeout)].iter().flatten().min().copied();
         }
@@ -521,7 +522,10 @@ fn main() {
                 clients.insert(client_id, client);
                 clients_ids.insert(scid.clone(), client_id);
 
-                debug!("New connection: dcid={:?} scid={:?}. Client id: {}", hdr.dcid, scid, client_id);
+                debug!(
+                    "New connection: dcid={:?} scid={:?}. Client id: {}",
+                    hdr.dcid, scid, client_id
+                );
 
                 let client = clients.get_mut(&client_id).unwrap();
 
@@ -566,7 +570,7 @@ fn main() {
                 let cid = match clients_ids.get(&hdr.dcid) {
                     Some(v) => v,
 
-                    None => clients_ids.get(&hdr.dcid).unwrap(),
+                    None => clients_ids.get(&hdr.scid).unwrap(),
                 };
 
                 clients.get_mut(cid).unwrap()
@@ -588,7 +592,12 @@ fn main() {
                 },
             };
 
-            debug!("{} ({}) processed {} bytes", client.conn.trace_id(), client.client_id, read);
+            debug!(
+                "{} ({}) processed {} bytes",
+                client.conn.trace_id(),
+                client.client_id,
+                read
+            );
 
             if client.conn.is_in_early_data() || client.conn.is_established() {
                 // Process all readable streams.
@@ -630,7 +639,10 @@ fn main() {
                 if uc_server_role ==
                     Some(MulticastRole::ServerUnicast(
                         multicast::MulticastClientStatus::ListenMcPath(true),
-                    )) || !args.multicast && client.conn.is_established() && !client.active_client
+                    )) ||
+                    !args.multicast &&
+                        client.conn.is_established() &&
+                        !client.active_client
                 {
                     info!("New client!");
                     nb_active_mc_receivers += 1;
@@ -643,7 +655,10 @@ fn main() {
                 }
 
                 // Is multicast disabled?
-                if !args.multicast && client.conn.is_established() && Some(nb_active_mc_receivers) == args.wait_first_client {
+                if !args.multicast &&
+                    client.conn.is_established() &&
+                    Some(nb_active_mc_receivers) == args.wait_first_client
+                {
                     app_handler.start_content_delivery();
                 }
             }
@@ -720,9 +735,12 @@ fn main() {
                     // ... or for every client otherwise.
                     // Buffer the data to allow clients to go on different paces.
                     let data = Rc::new(app_data);
-                    clients.values_mut().for_each(|client| client.stream_buf.push_back((stream_id, 0, data.clone())));
+                    clients.values_mut().for_each(|client| {
+                        client.stream_buf.push_back((stream_id, 0, data.clone()))
+                    });
 
-                    // For each client, try to send as much stream data as possible.
+                    // For each client, try to send as much stream data as
+                    // possible.
                     clients.values_mut().for_each(|client| {
                         loop {
                             if client.stream_buf.is_empty() {
@@ -745,7 +763,7 @@ fn main() {
                             }
                         }
                     });
-                    
+
                     can_go_to_next = true;
                     app_handler.stream_written(data.as_ref().len());
                     true
@@ -992,7 +1010,6 @@ fn main() {
 
         // Garbage collect closed connections.
         clients.retain(|_, ref mut c| {
-
             if c.conn.is_closed() {
                 info!(
                     "{} connection collected {:?}",
@@ -1003,6 +1020,8 @@ fn main() {
 
             !c.conn.is_closed()
         });
+
+        clients_ids.retain(|_, id| clients.contains_key(id));
 
         // Exist the I/O loop when the transmission is finished and there are no
         // more client. This may cause a problem if clients keep arriving
@@ -1096,8 +1115,14 @@ fn get_multicast_channel(
     let mc_client_tp = MulticastClientTp::default();
     let mut server_config =
         get_test_mc_config(true, None, true, mc_cwnd, cert_path, max_fec_rs);
-    let mut client_config =
-        get_test_mc_config(false, Some(&mc_client_tp), true, mc_cwnd, cert_path, None);
+    let mut client_config = get_test_mc_config(
+        false,
+        Some(&mc_client_tp),
+        true,
+        mc_cwnd,
+        cert_path,
+        None,
+    );
 
     // Generate a random source connection ID for the connection.
     let mut channel_id = [0; 16];
@@ -1236,9 +1261,9 @@ pub fn get_test_mc_config(
     config.set_multipath(true);
     config.set_enable_server_multicast(mc_server);
     config.set_enable_client_multicast(mc_client);
-    config.send_fec(true);
-    config.receive_fec(true);
-    config.set_mc_max_nb_repair_symbols(Some(5));
+    config.send_fec(use_fec);
+    config.receive_fec(use_fec);
+    config.set_mc_max_nb_repair_symbols(max_fec_rs);
     config.set_fec_scheduler_algorithm(
         quiche::FECSchedulerAlgorithm::RetransmissionFec,
     );

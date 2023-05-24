@@ -417,6 +417,10 @@ impl MulticastAttributes {
                 MulticastClientAction::Join,
             ) if is_server => MulticastClientStatus::JoinedNoKey,
             (
+                MulticastClientStatus::Unaware,
+                MulticastClientAction::Join,
+            ) if is_server && self.get_mc_announce_data_path().unwrap().is_processed => MulticastClientStatus::JoinedNoKey,
+            (
                 MulticastClientStatus::WaitingToJoin,
                 MulticastClientAction::Join,
             ) => MulticastClientStatus::JoinedNoKey,
@@ -424,6 +428,14 @@ impl MulticastAttributes {
                 MulticastClientStatus::JoinedNoKey,
                 MulticastClientAction::DecryptionKey,
             ) => MulticastClientStatus::JoinedAndKey,
+            (
+                MulticastClientStatus::WaitingToJoin,
+                MulticastClientAction::DecryptionKey,
+            ) if is_server && self.mc_key_up_to_date => MulticastClientStatus::JoinedAndKey,
+            (
+                MulticastClientStatus::WaitingToJoin,
+                MulticastClientAction::DecryptionKey,
+            ) if !is_server => MulticastClientStatus::JoinedAndKey,
             (
                 MulticastClientStatus::ListenMcPath(_),
                 MulticastClientAction::Leave,
@@ -444,11 +456,13 @@ impl MulticastAttributes {
                             MulticastClientStatus::Left
                         }
                     } else {
+                        debug!("Invalid action 1");
                         return Err(Error::Multicast(
                             MulticastError::McInvalidAction,
                         ));
                     }
                 } else {
+                    debug!("Invalid action 2");
                     return Err(Error::Multicast(
                         MulticastError::McInvalidAction,
                     ));
@@ -462,7 +476,7 @@ impl MulticastAttributes {
                 MulticastClientAction::Leave,
             ) => MulticastClientStatus::Left,
             (
-                MulticastClientStatus::JoinedAndKey,
+                MulticastClientStatus::JoinedAndKey | MulticastClientStatus::JoinedNoKey,
                 MulticastClientAction::McPath,
             ) if action_data.is_some() && is_server => {
                 self.mc_space_id = Some(action_data.unwrap() as usize);
@@ -477,7 +491,12 @@ impl MulticastAttributes {
             },
             (MulticastClientStatus::Left, MulticastClientAction::Leave) =>
                 MulticastClientStatus::Left,
-            _ => return Err(Error::Multicast(MulticastError::McInvalidAction)),
+            (MulticastClientStatus::ListenMcPath(_), _) => current_status,
+            (MulticastClientStatus::JoinedAndKey, MulticastClientAction::Join) => current_status,
+            _ => {
+                debug!("Invalid action 3: current={:?} and action is {:?}", current_status, action);
+                current_status
+            },
         };
 
         self.mc_role = match self.mc_role {
@@ -523,11 +542,13 @@ impl MulticastAttributes {
         if self.mc_channel_key.is_none() {
             return false;
         }
+        if self.mc_key_up_to_date {
+            return false;
+        }
         if let MulticastRole::ServerUnicast(status) = self.mc_role {
             match status {
                 MulticastClientStatus::JoinedAndKey |
-                MulticastClientStatus::ListenMcPath(_)
-                    if !self.mc_key_up_to_date =>
+                MulticastClientStatus::ListenMcPath(_) =>
                     true,
                 MulticastClientStatus::JoinedNoKey
                     if self.mc_client_id.is_some() =>
@@ -561,18 +582,13 @@ impl MulticastAttributes {
     /// Sets the channel decryption key secret.
     pub fn set_decryption_key_secret(&mut self, key: Vec<u8>) -> Result<()> {
         match self.mc_role {
-            MulticastRole::Client(MulticastClientStatus::JoinedNoKey) => {
+            MulticastRole::Client(MulticastClientStatus::JoinedNoKey) | MulticastRole::Client(MulticastClientStatus::WaitingToJoin) => {
                 let aead_open = Open::from_secret(Algorithm::AES128_GCM, &key)?;
                 self.mc_crypto_open = Some(aead_open);
                 let aead_seal = Seal::from_secret(Algorithm::AES128_GCM, &key)?;
                 self.mc_crypto_seal = Some(aead_seal);
 
                 self.mc_channel_key = Some(key);
-
-                self.update_client_state(
-                    MulticastClientAction::DecryptionKey,
-                    None,
-                )?;
                 Ok(())
             },
             _ => Err(Error::Multicast(MulticastError::McInvalidRole(
@@ -674,8 +690,6 @@ impl MulticastAttributes {
         } else {
             self.mc_nack_ranges = None;
         }
-
-        info!("After setting it, it is: {:?}", self.mc_nack_ranges);
 
         Ok(())
     }
@@ -1340,7 +1354,26 @@ impl MulticastConnection for Connection {
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
             if let Some(multicast) = self.multicast.as_ref() {
                 if self.is_server {
+                    info!("Call on_mc_timeout on server");
                     let mc_auth_space_id = multicast.mc_auth_space_id;
+
+                    // Expire packets from the authentication path.
+                    if let Some(auth_id) = mc_auth_space_id {
+                        // We expire packets but do not record them.
+                        self.mc_expire(
+                            Epoch::Application,
+                            auth_id as u64,
+                            None,
+                            now,
+                        )?;
+                    }
+
+                    // Reset the number of FEC repair packets in flight.
+                    if let Some(fec_scheduler) = self.fec_scheduler.as_mut() {
+                        fec_scheduler.reset_fec_state();
+                    }
+
+                    let multicast = self.multicast.as_ref().unwrap();
                     if let Some(space_id) = multicast.get_mc_space_id() {
                         let res = self.mc_expire(
                             Epoch::Application,
@@ -1364,17 +1397,6 @@ impl MulticastConnection for Connection {
 
                             return Ok(v);
                         }
-                    }
-
-                    // Expire packets from the authentication path.
-                    if let Some(auth_id) = mc_auth_space_id {
-                        // We expire packets but do not record them.
-                        self.mc_expire(
-                            Epoch::Application,
-                            auth_id as u64,
-                            None,
-                            now,
-                        )?;
                     }
                 } else {
                     self.mc_leave_channel()?;
@@ -1520,7 +1542,7 @@ impl MulticastConnection for Connection {
             if matches!(
                 multicast.mc_role,
                 MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey)
-            ) {
+            ) && multicast.mc_client_id.is_none() {
                 let client_id = if let Some(McClientId::MulticastServer(map)) =
                     mc_channel.multicast.as_mut().unwrap().mc_client_id.as_mut()
                 {
@@ -2246,7 +2268,6 @@ pub mod testing {
                 mc_announce_data.public_key = Some(public_key.to_vec());
             }
 
-            println!("After the multicast channel is set up");
             let random = ring::rand::SystemRandom::new();
 
             let pipes: Vec<_> = (0..nb_clients)
@@ -2274,10 +2295,6 @@ pub mod testing {
 
                     // The server adds the connection IDs of the multicast
                     // channel.
-                    println!(
-                        "Server announces cid: {:?}",
-                        mc_announce_data.channel_id
-                    );
                     let mut scid = [0; 16];
                     random.fill(&mut scid[..]).unwrap();
 
@@ -2589,7 +2606,7 @@ pub mod testing {
         config.set_max_idle_timeout(5000);
         config.set_max_recv_udp_payload_size(1350);
         config.set_max_send_udp_payload_size(1350);
-        config.set_initial_max_data(10_000_000);
+        config.set_initial_max_data(5_000_000_000);
         config.set_initial_max_stream_data_bidi_local(1_000_000_000);
         config.set_initial_max_stream_data_bidi_remote(1_000_000_000);
         config.set_initial_max_stream_data_uni(1_000_000_000);
@@ -2871,18 +2888,18 @@ mod tests {
 
         assert_eq!(
             multicast.update_client_state(MulticastClientAction::Join, None),
-            Err(Error::Multicast(MulticastError::McInvalidAction))
+            Ok(MulticastClientStatus::Unaware),
         );
 
         assert_eq!(
             multicast.update_client_state(MulticastClientAction::Leave, None),
-            Err(Error::Multicast(MulticastError::McInvalidAction))
+            Ok(MulticastClientStatus::Unaware),
         );
 
         assert_eq!(
             multicast
                 .update_client_state(MulticastClientAction::DecryptionKey, None),
-            Err(Error::Multicast(MulticastError::McInvalidAction))
+                Ok(MulticastClientStatus::Unaware),
         );
 
         // This is a good move.
@@ -5314,6 +5331,12 @@ mod tests {
         // The client does not send ACK_MP frames for the authentication path.
 
 
+    }
+
+    #[test]
+    /// Tests the multicast handshake in case of packet losses.
+    fn test_mc_handshake_with_losses() {
+        // MC-TODO!
     }
 }
 

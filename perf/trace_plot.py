@@ -3,6 +3,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import argparse
 import os
+import subprocess
+import tqdm
+from utils import latexify
 
 COLORS = ["#1b9e77", "#d95f02", "#7570b3", "#e7298a"]
 MARKERS = ["^", "v", ">", "<"]
@@ -99,8 +102,8 @@ def read_and_rm_delay(trace_file, res_file):
 
         min_dist = min(min_dist, time_res - time_trace)
     
-    print("LOST FRAMES: ", lost_frames)
-    print("Min distance:", min_dist)
+    #print("LOST FRAMES: ", lost_frames)
+    #print("Min distance:", min_dist)
 
     # Remove the "delay" from all collected samples in the result file.
     # Also remove the trace timestamp to get the lateness.
@@ -124,14 +127,21 @@ def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", 
     res = dict()
     for (files, label) in all_files_labels:
         tmp = list()
+        total_loss = 0
         for file in files:
-            r, _ = read_and_rm_delay(trace, file)
+            r, lost_frames = read_and_rm_delay(trace, file)
             frames_too_long = [i for i in r if r[i] > 50]
             # print("Frames too long:", frames_too_long)
             tmp += list(r.values())
-
-        # tmp = [i for i in tmp if i < 300]
+            if xlim is not None:
+                tmp += [xlim[1] + 10] * len(lost_frames)
+            total_loss += len(lost_frames)
+        if xlim is not None:
+            too_long = [i for i in tmp if i > xlim[1]]
+            print("Too long:", label, len(too_long))
+            tmp = [i if i <= xlim[1] else xlim[1] + 10 for i in tmp]
         print(f"Nb points for {label}: {len(tmp)}")
+        print(f"Nb lost frames for {label}: {total_loss}")
         res[label] = compute_cdf(tmp, add_zero=True, nb_bins=7000)
 
     fig, ax = plt.subplots()
@@ -147,7 +157,8 @@ def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", 
     if xlim is not None:
         ax.set_xlim(xlim)
     plt.legend()
-    plt.savefig(save_as, dpi=500)
+    plt.savefig("test.pdf")
+    # plt.savefig(save_as, dpi=500)
 
 
 def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf", ylim=None, xlim=None, cmp_uc=None, ylabel=""):
@@ -201,23 +212,85 @@ def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf",
     plt.savefig(save_as, dpi=500)
 
 
+def read_tshark_out(s):
+    s = s.decode("utf-8")
+    return int(s.split("\n")[-3].split("|")[2])
+
+
+def plot_pcap(all_files_labels, trace, title="", save_as="bytes.pdf"):
+    res = dict()
+
+    # for (files, label) in all_files_labels:
+    #     total_uc = 0
+    #     total_mc_data = 0
+    #     total_mc_auth = 0
+    #     for file in tqdm.tqdm(files):
+    #         # Call tshark to get the expected results.
+    #         cmd = lambda i: f'tshark -r {file} -qz io,stat,0,"SUM(frame.len)frame.len && {i}"'
+            
+    #         out = subprocess.check_output(cmd("udp.port == 4433"), shell=True)
+    #         total_uc += read_tshark_out(out)
+
+    #         out = subprocess.check_output(cmd("udp.dstport == 8889"), shell=True)
+    #         total_mc_data += read_tshark_out(out)
+
+    #         out = subprocess.check_output(cmd("udp.dstport == 8890"), shell=True)
+    #         total_mc_auth += read_tshark_out(out)
+    #     res[label] = (total_uc, total_mc_data, total_mc_auth)
+
+    res = {'MC asymmetric': (19882098, 1785258200, 0), 'MC none': (19856060, 1679857800, 0), 'MC symmetric': (19884532, 1678992632, 1631735100), 'UC': (7447411584, 0, 0)}
+    # print(res)
+    keys = sorted(list(res.keys()))
+
+    fig, ax = plt.subplots()
+    bottom = np.zeros(len(keys))
+    width = 0.5
+
+    species = keys
+
+    for idx, t in enumerate(["UC session", "MC data channel", "MC auth channel"]):
+        tmp = [res[k][idx] for k in keys]
+        p = ax.bar(species, tmp, width, label=t, bottom=bottom, color=COLORS[idx])
+        bottom += tmp
+    
+    ax.set_xlabel("Communication type")
+    ax.set_ylabel("Number of bytes")
+    ax.set_title(title)
+    ax.grid(axis="y")
+    ax.set_axisbelow(True)
+    plt.legend()
+    plt.savefig(save_as, dpi=500)
+    
+    print(res)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("directory", help="Directory containing the files to parse", type=str)
     parser.add_argument("--trace", help="Path to the tixeo trace", type=str, default="/home/louisna/multicast-quic/perf/tixeo_trace.repr")
-    parser.add_argument("--xlim", type=float, help="Maximum xlim for the plot distribution", default=100)
+    parser.add_argument("--xlim", type=float, help="Maximum xlim for the plot distribution", default=None)
     parser.add_argument("--ylim", type=float, help="Maximum ylim for the plot distribution", default=0.0)
     parser.add_argument("--filter", help="Server or client lateness", default="clients", choices=["clients", "server"])
+    parser.add_argument("--pcap", help="Plot using the PCAPs", action="store_true")
+    parser.add_argument("--latex", help="Latex rendering", action="store_true")
     args = parser.parse_args()
 
-    all_files_labels, ttl, nb_frames = get_files_labels(args.directory, args.filter)
+    if args.latex:
+        latexify()
 
-    # all_files_labels = [(i, j) for (i, j) in all_files_labels if (j == "MC none" or j == "UC")]
+    # Pcaps.
+    if args.pcap:
+        all_files_labels, ttl, nb_frames = get_files_labels(os.path.join(args.directory, "pcaps"), False)
+        plot_pcap(all_files_labels, args.trace, title=f"Mininet ({nb_frames} frames, ttl={ttl})", save_as=f"bytes_{nb_frames}_{ttl}_{args.filter}.png")
+    else:
+        all_files_labels, ttl, nb_frames = get_files_labels(args.directory, args.filter)
 
-    # plot_distribution(all_files_labels, args.trace, title=f"Cloudlab server <-> INGI ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}.pdf", ylim=(args.ylim, 1), xlim=(0, args.xlim))
-    # plot_stream_recv_time(all_files_labels, title="Recv timestamp", save_as=f"recv_stream_{nb_frames}_{ttl}.png", ylabel="Time received since start [s]", ylim=(0, 0.100))
-    plot_stream_recv_time(all_files_labels, title="Recv timestamp compared to unicast", save_as=f"recv_stream-uc_{nb_frames}_{ttl}.png", cmp_uc="UC", ylabel="Lateness of reception with respect to UC [ms]")
+        # all_files_labels = [(i, j) for (i, j) in all_files_labels if (j == "MC none" or j == "UC")]
 
-    # Mininet
-    plot_distribution(all_files_labels, args.trace, title=f"Mininet ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}_{args.filter}.png", ylim=(args.ylim, 1), xlim=(0, args.xlim))
+        # plot_distribution(all_files_labels, args.trace, title=f"Cloudlab server <-> INGI ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}.pdf", ylim=(args.ylim, 1), xlim=(0, args.xlim))
+        # plot_stream_recv_time(all_files_labels, title="Recv timestamp", save_as=f"recv_stream_{nb_frames}_{ttl}.png", ylabel="Time received since start [s]")
+        # plot_stream_recv_time(all_files_labels, title="Recv timestamp compared to unicast", save_as=f"recv_stream-uc_{nb_frames}_{ttl}.png", cmp_uc="UC", ylabel="Lateness of reception with respect to UC [ms]")
+
+        # Mininet.
+        xlim = (0, args.xlim) if args.xlim is not None else None
+        plot_distribution(all_files_labels, args.trace, title=f"Mininet ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}_{args.filter}.png", ylim=(args.ylim, 1), xlim=xlim)

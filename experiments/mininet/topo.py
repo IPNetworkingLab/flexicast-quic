@@ -234,7 +234,7 @@ def simpleRun(args, core_range):
                         for node_id in range(nb_nodes):
                             itfs = net[str(node_id)].intfList()
                             for itf in itfs:
-                                cmd = f"tcpdump -i {str(itf)} -w {dump_tmp(node_id, itf)}"
+                                cmd = f"tcpdump -i {str(itf)} -w {dump_tmp(node_id, itf)} -s150 port 4433 or port 8889 or port 8890"
                                 my_cmd(net, str(node_id), cmd, wait=False) 
                             # [str(i) for i in  net["3"].intfList()]
 
@@ -246,10 +246,6 @@ def simpleRun(args, core_range):
                     # Start the quiche server on CloudLab.
                     cmd = f"{log_trace} taskset -c {server_core} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} -f {args.file} -s {links[('0', '1')]}:4433 --app {args.app} --cert-path {CERT_PATH} {'-w ' + str(nb_nodes - 1) if args.wait else ''} -n {args.nb_frames} -r {output_file('server-0')} -k my-server.txt --max-fec-rs {args.nb_rs} > {'log-server.log 2>&1' if args.log else '/dev/null'}"
                     print("Command to start the server on CloudLab:", cmd)
-                    my_cmd(net, "0", cmd, wait=False)
-
-                    cmd = f"tcpdump -w test-server.pcap"
-                    print(cmd)
                     my_cmd(net, "0", cmd, wait=False)
 
                     print("Wait for the server to setup...", end=" ", flush=True)
