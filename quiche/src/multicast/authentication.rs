@@ -18,7 +18,7 @@ use std::str::FromStr;
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 /// Authentication type used for the multicast channel.
 pub enum McAuthType {
-    /// Use asymetric signature at the end of each Multicast QUIC packet.
+    /// Use asymmetric signature at the end of each Multicast QUIC packet.
     AsymSign,
 
     /// Create a new Multicast QUIC packet on the authentication path containing
@@ -27,12 +27,14 @@ pub enum McAuthType {
     SymSign,
 
     /// Dynamically changes the signature process.
-    /// Currently only supports symetric -> asymetric.
+    /// Currently only supports symetric -> asymmetric.
     /// The inner value is the threshold number of receivers.
     Dynamic(u32),
 
     /// No authentication used.
     None,
+
+    // Add an MC_ASYM frame at the end of the QUIC packet. This frame contains the asymmetric signature of either a whole stream or other control frames. The frame is added in an MCQUIC packet if there is a STREAM frame which is now complete (i.e., the STREAM frame is the last frame that will be send for this stream, excluding possible retransmission). Add the
 }
 
 impl TryFrom<u64> for McAuthType {
@@ -91,7 +93,7 @@ pub struct McSymSignature {
 }
 
 /// Multicast authentication.
-/// Exposes asymetric and symetric signatures.
+/// Exposes asymmetric and symetric signatures.
 pub trait McAuthentication {
     /// Generates a signature on the given QUIC packet.
     /// The caller is responsible to give a mutable slice

@@ -33,6 +33,7 @@ use std::net::Ipv4Addr;
 use std::net::ToSocketAddrs;
 
 use quiche::multicast::authentication::McAuthentication;
+use quiche::multicast::McConfig;
 use quiche::multicast::MulticastClientStatus;
 use quiche::multicast::MulticastError;
 use quiche::multicast::MulticastRole;

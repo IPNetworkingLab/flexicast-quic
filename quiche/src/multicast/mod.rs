@@ -190,6 +190,42 @@ impl TryInto<u64> for MulticastClientAction {
     }
 }
 
+/// Multicast extensions for a connection configuration.
+pub trait McConfig {
+    /// Sets the `multicast_server_params` transport parameter.
+    ///
+    /// The default value is `false`.
+    fn set_enable_server_multicast(&mut self, v: bool);
+
+    /// Sets the maximum number of FEC repair symbols that can be sent. Only
+    /// used for the Retransmission FEC scheduler.
+    fn set_mc_max_nb_repair_symbols(&mut self, v: Option<u32>);
+
+    /// Sets the `multicast_client_params` transport parameter.
+    /// Clones the transport parameter values given as argument.
+    ///
+    /// The default value is `None`.
+    fn set_enable_client_multicast(
+        &mut self, v: Option<&MulticastClientTp>,
+    );
+}
+
+impl McConfig for crate::Config {
+    fn set_enable_server_multicast(&mut self, v: bool) {
+        self.local_transport_params.multicast_server_params = v;
+    }
+
+    fn set_mc_max_nb_repair_symbols(&mut self, v: Option<u32>) {
+        self.mc_fec_max_rs = v;
+    }
+
+    fn set_enable_client_multicast(
+        &mut self, v: Option<&MulticastClientTp>,
+    ) {
+        self.local_transport_params.multicast_client_params = v.cloned();
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
 /// Multicast path type.
 pub enum McPathType {

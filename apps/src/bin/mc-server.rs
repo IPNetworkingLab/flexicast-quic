@@ -37,6 +37,7 @@ use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::authentication::McSymAuth;
 use quiche::multicast::McAnnounceData;
+use quiche::multicast::McConfig;
 use quiche::multicast::McPathType;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastClientTp;

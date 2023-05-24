@@ -1226,29 +1226,6 @@ impl Config {
         self.disable_dcid_reuse = v;
     }
 
-    /// Sets the `multicast_server_params` transport parameter.
-    ///
-    /// The default value is `false`.
-    pub fn set_enable_server_multicast(&mut self, v: bool) {
-        self.local_transport_params.multicast_server_params = v;
-    }
-
-    /// Sets the maximum number of FEC repair symbols that can be sent. Only
-    /// used for the Retransmission FEC scheduler.
-    pub fn set_mc_max_nb_repair_symbols(&mut self, v: Option<u32>) {
-        self.mc_fec_max_rs = v;
-    }
-
-    /// Sets the `multicast_client_params` transport parameter.
-    /// Clones the transport parameter values given as argument.
-    ///
-    /// The default value is `None`.
-    pub fn set_enable_client_multicast(
-        &mut self, v: Option<&multicast::MulticastClientTp>,
-    ) {
-        self.local_transport_params.multicast_client_params = v.cloned();
-    }
-
     /// EXPERIMENTAL: Sets the cwnd gain for the ProbeRTT phase of BBR when BBR
     /// is used instead of capping the cwnd to 4 packets
     pub fn set_bbr_probe_rtt_cwnd_gain(&mut self, v: f64) {
