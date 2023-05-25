@@ -1122,7 +1122,7 @@ impl RecvBuf {
             if off != entry.off {
                 return false; // Not contiguous.
             }
-            off += entry.len();
+            off += entry.len() as u64;
         }
 
         Some(off) == self.fin_off
@@ -1698,7 +1698,7 @@ impl PartialEq for RangeBuf {
 
 pub trait McStream {
     /// Hash the stream data using [`ring::digest::SHA256`].
-    /// The input buffer must be at least 33 bytes long (not tested).
+    /// The input buffer must be at least 32 bytes long.
     /// The stream must be closed and contain all data. This method should not
     /// be called if the stream is not finished and/or incomplete.
     /// In that case, it returns an [`crate::Error::Done`].
@@ -1707,34 +1707,36 @@ pub trait McStream {
 
 impl McStream for SendBuf {
     fn hash_stream(&self, buf: &mut [u8]) -> Result<()> {
-        if buf.len() < 33 {
+        if buf.len() < 32 {
             return Err(Error::BufferTooShort);
         }
         if !self.is_fin() {
             return Err(Error::Done);
         }
+        let mut stream_data = Vec::with_capacity(self.fin_off.unwrap() as usize);
         for range_buf in self.data.iter() {
-            buf[32..32 + range_buf.len()].copy_from_slice(range_buf);
-            let digest = ring::digest::digest(&ring::digest::SHA256, buf);
-            buf[..32].copy_from_slice(digest.as_ref());
+            stream_data.extend_from_slice(range_buf);
         }
+        let digest = ring::digest::digest(&ring::digest::SHA256, &stream_data);
+        buf[..32].copy_from_slice(digest.as_ref());
         Ok(())
     }
 }
 
 impl McStream for RecvBuf {
     fn hash_stream(&self, buf: &mut [u8]) -> Result<()> {
-        if buf.len() < 33 {
+        if buf.len() < 32 {
             return Err(Error::BufferTooShort);
         }
         if !self.is_fully_readable() {
             return Err(Error::Done);
         }
+        let mut stream_data = Vec::with_capacity(self.fin_off.unwrap() as usize);
         for (_, range_buf) in self.data.iter() {
-            buf[32..32 + range_buf.len()].copy_from_slice(range_buf);
-            let digest = ring::digest::digest(&ring::digest::SHA256, buf);
-            buf[..32].copy_from_slice(digest.as_ref());
+            stream_data.extend_from_slice(range_buf);
         }
+        let digest = ring::digest::digest(&ring::digest::SHA256, &stream_data);
+        buf[..32].copy_from_slice(digest.as_ref());
         Ok(())
     }
 }
@@ -3516,14 +3518,51 @@ mod tests {
         assert!(stream.recv.is_fully_readable());
     }
 
-    /// Check the `McStream` trait for both `SendBuf` and `RecvBuf`.
+    /// Check the `McStream::hash_stream` method for both `SendBuf` and
+    /// `RecvBuf`.
     #[test]
-    fn test_mc_stream() {
-        let mut buf = [0u8; 100];
-        let mut send_hash = [0u8; 34];
-        let mut recv_hash = [0u8; 34];
+    fn test_mc_stream_hash_stream() {
+        let mut send_hash = [0u8; 32];
+        let mut recv_hash = [0u8; 32];
 
         let mut send = SendBuf::new(std::u64::MAX);
         let mut recv = RecvBuf::new(std::u64::MAX, std::u64::MAX);
+
+        let first = RangeBuf::from(b"hello", 0, false);
+        assert_eq!(send.write(&first.data, false), Ok(5));
+        assert_eq!(recv.write(first), Ok(()));
+        assert_eq!(send.hash_stream(&mut send_hash), Err(Error::Done));
+        assert_eq!(recv.hash_stream(&mut recv_hash), Err(Error::Done));
+
+        let second = RangeBuf::from(b"world", 5, false);
+        assert_eq!(send.write(&second.data, false), Ok(5));
+        assert_eq!(send.hash_stream(&mut send_hash), Err(Error::Done));
+
+        let third = RangeBuf::from(b"again", 10, true);
+        assert_eq!(send.write(&third.data, true), Ok(5));
+        assert_eq!(recv.write(third), Ok(()));
+        assert_eq!(recv.hash_stream(&mut recv_hash), Err(Error::Done));
+
+        assert_eq!(recv.write(second), Ok(()));
+        assert_eq!(
+            send.hash_stream(&mut send_hash[..4]),
+            Err(Error::BufferTooShort)
+        );
+        assert_eq!(
+            send.hash_stream(&mut send_hash[..31]),
+            Err(Error::BufferTooShort)
+        );
+        assert_eq!(
+            recv.hash_stream(&mut recv_hash[..4]),
+            Err(Error::BufferTooShort)
+        );
+        assert_eq!(
+            recv.hash_stream(&mut recv_hash[..31]),
+            Err(Error::BufferTooShort)
+        );
+
+        assert_eq!(send.hash_stream(&mut send_hash), Ok(()));
+        assert_eq!(recv.hash_stream(&mut recv_hash), Ok(()));
+        assert_eq!(send_hash[..32], recv_hash[..32]);
     }
 }
