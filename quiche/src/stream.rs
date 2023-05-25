@@ -1539,7 +1539,7 @@ impl SendBuf {
 
     /// Returns the number of bytes that still need to be sent to complete the stream. `None` if the final size is not known.
     pub fn total_remaining(&self) -> Option<u64> {
-        self.fin_off.map(|off| off - self.off)
+        self.fin_off.map(|off| off - self.off_front())
     }
 }
 
@@ -3407,5 +3407,59 @@ mod tests {
         send.retransmit(3, 5);
         assert_eq!(send.len, 6);
         assert_eq!(send.off_front(), 3);
+    }
+
+    /// Check SendBuf::total_remaining.
+    #[test]
+    fn send_buf_total_remaining() {
+        let mut buf = [0; 100];
+
+        let mut send = SendBuf::new(std::u64::MAX);
+        assert_eq!(send.len, 0);
+        assert_eq!(send.off_front(), 0);
+
+        let first = b"something";
+
+        assert!(send.write(first, false).is_ok());
+        assert_eq!(send.off_front(), 0);
+        assert_eq!(send.len, 9);
+
+        let (written, fin) = send.emit(&mut buf[..4]).unwrap();
+        assert_eq!(written, 4);
+        assert_eq!(fin, false);
+        assert_eq!(&buf[..written], b"some");
+        assert_eq!(send.len, 5);
+        assert_eq!(send.off_front(), 4);
+        assert_eq!(send.total_remaining(), None);
+
+        let (written, fin) = send.emit(&mut buf[..]).unwrap();
+        assert_eq!(written, 5);
+        assert_eq!(fin, false);
+        assert_eq!(&buf[..written], b"thing");
+        assert_eq!(send.len, 0);
+        assert_eq!(send.off_front(), 9);
+        assert_eq!(send.total_remaining(), None);
+
+        let second = b"beautiful";
+
+        assert!(send.write(second, true).is_ok());
+        assert_eq!(send.off_front(), 9);
+        assert_eq!(send.len, 9);
+
+        let (written, fin) = send.emit(&mut buf[..4]).unwrap();
+        assert_eq!(written, 4);
+        assert_eq!(fin, false);
+        assert_eq!(&buf[..written], b"beau");
+        assert_eq!(send.len, 5);
+        assert_eq!(send.off_front(), 13);
+        assert_eq!(send.total_remaining(), Some(5));
+
+        let (written, fin) = send.emit(&mut buf[..]).unwrap();
+        assert_eq!(written, 5);
+        assert_eq!(fin, true);
+        assert_eq!(&buf[..written], b"tiful");
+        assert_eq!(send.len, 0);
+        assert_eq!(send.off_front(), 18);
+        assert_eq!(send.total_remaining(), Some(0));
     }
 }
