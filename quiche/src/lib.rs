@@ -347,6 +347,9 @@
 extern crate log;
 
 use multicast::MC_ASYM_CODE;
+use ring::digest::digest;
+use ring::digest::SHA256;
+
 use networkcoding::DecoderError;
 use networkcoding::EncoderError;
 use networkcoding::SourceSymbolMetadata;
@@ -3431,8 +3434,7 @@ impl Connection {
                 // not use this empty space. A better option would be to check
                 // after frames are added and dynamically adapt the remaining
                 // space if needed but this requires more implementation.
-                McAuthType::StreamAsym =>
-                    64 + 1 + octets::varint_len(MC_ASYM_CODE),
+                McAuthType::StreamAsym => 0,
                 _ => 0,
             };
 
@@ -3739,6 +3741,16 @@ impl Connection {
         // Limit output packet size by congestion window size.
         left =
             cmp::min(left, self.paths.get(send_pid)?.recovery.cwnd_available());
+
+        // StreamAsym: asymmetric signature + frame overhead.
+        // MC-TODO: we constantly remove space to ensure that the frame
+        // fits if needed. This is not optimal as we (most of the time) do
+        // not use this empty space. A better option would be to check
+        // after frames are added and dynamically adapt the remaining
+        // space if needed but this requires more implementation.
+        if mc_used_auth_packet == McAuthType::StreamAsym {
+            left -= 64 + 1 + octets::varint_len(MC_ASYM_CODE);
+        }
 
         let space_reduction_due_to_cwnd = b.cap() - left;
 
@@ -5119,6 +5131,57 @@ impl Connection {
         //   stream has `fin=true` in this packet. This may contain several
         //   streams in case several STREAM frames with `fin=true` are present in
         //   the same packet.
+        if mc_used_auth_packet == McAuthType::StreamAsym {
+            let mut mc_hash = [0u8; 32 + 64];
+            let mut at_least_one_auth_frame = false;
+
+            // Iter over all frames and hash them.
+            // Could be improved by hasing directly when we put it to wire.
+            for frame in frames.iter() {
+                let mut mc_tmp = [0u8; 1500];
+                let mut mc_b = octets::OctetsMut::with_slice(&mut mc_tmp);
+                mc_b.put_bytes(&mc_hash[..32])?;
+                match frame {
+                    frame::Frame::StreamHeader {
+                        stream_id,
+                        offset: _,
+                        length: _,
+                        fin,
+                    } => {
+                        // Copy and slice all the stream data if the stream is
+                        // finished.
+                        if *fin {
+                            let stream = self.streams.get(*stream_id);
+                            if let Some(stream) = stream {
+                                stream.send.hash_stream(&mut mc_tmp);
+                                at_least_one_auth_frame = true;
+                            }
+                        }
+                    },
+                    _ => {
+                        let written = frame.to_bytes(&mut mc_b)?;
+                        let d = digest(&SHA256, &mc_b.as_ref()[..written]);
+                        mc_hash[..32].copy_from_slice(d.as_ref());
+                        at_least_one_auth_frame = true;
+                    },
+                }
+            }
+
+            if at_least_one_auth_frame {
+                // Add back the room for the MC_ASYM frame.
+                left += 64 + 1 + octets::varint_len(MC_ASYM_CODE);
+                self.mc_sign_asym(&mut mc_hash, 32)?;
+
+                let frame = frame::Frame::McAsym {
+                    signature: mc_hash[32..].to_vec(),
+                };
+                if push_frame_to_pkt!(b, frames, frame, left) {
+                    in_flight = true;
+                } else {
+                    error!("could not send the MC_ASYM frame!");
+                }
+            }
+        }
 
         // If no other ack-eliciting frame is sent, include a PING frame
         // - if PTO probe needed; OR
@@ -8346,15 +8409,8 @@ impl Connection {
                 }
             },
 
-            frame::Frame::McAsym {
-                stream_auth,
-                stream_id,
-                signature,
-            } => {
-                warn!(
-                    "Receive an MC_ASYM frame: {} {} {:?}",
-                    stream_auth, stream_id, signature
-                );
+            frame::Frame::McAsym { signature } => {
+                warn!("Receive an MC_ASYM frame: {:?}", signature);
                 todo!("Not implemented");
             },
 
@@ -17630,6 +17686,7 @@ pub use crate::path::SocketAddrIter;
 pub use crate::fec::fec_scheduler::FECSchedulerAlgorithm;
 pub use crate::recovery::CongestionControlAlgorithm;
 
+use crate::stream::McSendBuf;
 pub use crate::stream::StreamIter;
 use crate::Error::BufferTooShort;
 use crate::Error::SourceSymbolCreationError;

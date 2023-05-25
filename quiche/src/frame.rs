@@ -549,9 +549,7 @@ impl Frame {
             MC_ASYM_CODE => {
                 let signature = b.get_bytes_with_u8_length()?.to_vec();
 
-                Frame::McAsym {
-                    signature,
-                }
+                Frame::McAsym { signature }
             },
 
             0x32 => {
@@ -971,13 +969,8 @@ impl Frame {
                 }
             },
 
-            Frame::McAsym {
-                signature,
-            } => {
-                debug!(
-                    "going to encode the MC_ASYM frame: {:?}",
-                    signature
-                );
+            Frame::McAsym { signature } => {
+                debug!("going to encode the MC_ASYM frame: {:?}", signature);
                 b.put_varint(MC_ASYM_CODE)?;
                 b.put_u8(signature.len() as u8)?;
                 b.put_bytes(signature)?;
@@ -1366,10 +1359,9 @@ impl Frame {
                 signatures_size
             },
 
-            Frame::McAsym {
-                signature,
-            } => {
+            Frame::McAsym { signature } => {
                 let frame_type_size = octets::varint_len(MC_ASYM_CODE);
+                frame_type_size +
                 1 + // signature len
                 signature.len()
             },
@@ -2007,14 +1999,8 @@ impl std::fmt::Debug for Frame {
                 )?;
             },
 
-            Frame::McAsym {
-                signature,
-            } => {
-                write!(
-                    f,
-                    "MC_ASYM signature={:?}",
-                    signature
-                )?;
+            Frame::McAsym { signature } => {
+                write!(f, "MC_ASYM signature={:?}", signature)?;
             },
 
             Frame::Repair { repair_symbol } => {
@@ -3941,7 +3927,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 9);
+        assert_eq!(wire_len, 8);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

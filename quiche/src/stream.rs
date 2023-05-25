@@ -1667,6 +1667,21 @@ impl PartialEq for RangeBuf {
     }
 }
 
+pub trait McSendBuf {
+    /// Hash the stream data using [`ring::digest::SHA256`].
+    fn hash_stream(&self, buf: &mut [u8]);
+}
+
+impl McSendBuf for SendBuf {
+    fn hash_stream(&self, buf: &mut [u8]) {
+        for range_buf in self.data.iter() {
+            buf[32..32 + range_buf.len()].copy_from_slice(range_buf);
+            let digest = ring::digest::digest(&ring::digest::SHA256, buf);
+            buf[..32].copy_from_slice(digest.as_ref());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
