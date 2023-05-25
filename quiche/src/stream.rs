@@ -1110,6 +1110,23 @@ impl RecvBuf {
     pub fn has_fin(&self) -> bool {
         self.fin_off.is_some()
     }
+
+    /// Returns true if the stream can be read until its end.
+    pub fn is_fully_readable(&self) -> bool {
+        if self.fin_off.is_none() {
+            return false;
+        }
+
+        let mut off = self.off;
+        for (_, entry) in self.data.iter() {
+            if off != entry.off {
+                return false; // Not contiguous.
+            }
+            off += entry.len();
+        }
+
+        Some(off) == self.fin_off
+    }
 }
 
 /// Send-side stream buffer.
@@ -1537,7 +1554,8 @@ impl SendBuf {
         Ok((self.max_data - self.off) as usize)
     }
 
-    /// Returns the number of bytes that still need to be sent to complete the stream. `None` if the final size is not known.
+    /// Returns the number of bytes that still need to be sent to complete the
+    /// stream. `None` if the final size is not known.
     pub fn total_remaining(&self) -> Option<u64> {
         self.fin_off.map(|off| off - self.off_front())
     }
@@ -1680,27 +1698,44 @@ impl PartialEq for RangeBuf {
 
 pub trait McStream {
     /// Hash the stream data using [`ring::digest::SHA256`].
-    fn hash_stream(&self, buf: &mut [u8]);
+    /// The input buffer must be at least 33 bytes long (not tested).
+    /// The stream must be closed and contain all data. This method should not
+    /// be called if the stream is not finished and/or incomplete.
+    /// In that case, it returns an [`crate::Error::Done`].
+    fn hash_stream(&self, buf: &mut [u8]) -> Result<()>;
 }
 
 impl McStream for SendBuf {
-    fn hash_stream(&self, buf: &mut [u8]) {
+    fn hash_stream(&self, buf: &mut [u8]) -> Result<()> {
+        if buf.len() < 33 {
+            return Err(Error::BufferTooShort);
+        }
+        if !self.is_fin() {
+            return Err(Error::Done);
+        }
         for range_buf in self.data.iter() {
             buf[32..32 + range_buf.len()].copy_from_slice(range_buf);
             let digest = ring::digest::digest(&ring::digest::SHA256, buf);
             buf[..32].copy_from_slice(digest.as_ref());
         }
+        Ok(())
     }
 }
 
 impl McStream for RecvBuf {
-    fn hash_stream(&self, buf: &mut [u8]) {
-        // MC-TODO: ensure that this is contiguous :(.
+    fn hash_stream(&self, buf: &mut [u8]) -> Result<()> {
+        if buf.len() < 33 {
+            return Err(Error::BufferTooShort);
+        }
+        if !self.is_fully_readable() {
+            return Err(Error::Done);
+        }
         for (_, range_buf) in self.data.iter() {
             buf[32..32 + range_buf.len()].copy_from_slice(range_buf);
             let digest = ring::digest::digest(&ring::digest::SHA256, buf);
             buf[..32].copy_from_slice(digest.as_ref());
         }
+        Ok(())
     }
 }
 
@@ -3461,5 +3496,34 @@ mod tests {
         assert_eq!(send.len, 0);
         assert_eq!(send.off_front(), 18);
         assert_eq!(send.total_remaining(), Some(0));
+    }
+
+    /// Check the `RecvBuf::is_fully_readable` method.
+    #[test]
+    fn test_recv_buf_is_fully_readable() {
+        let mut stream = Stream::new(20, 0, true, true, DEFAULT_STREAM_WINDOW);
+
+        let first = RangeBuf::from(b"hello", 0, false);
+        assert_eq!(stream.recv.write(first), Ok(()));
+        assert!(!stream.recv.is_fully_readable());
+
+        let third = RangeBuf::from(b"again", 10, true);
+        assert_eq!(stream.recv.write(third), Ok(()));
+        assert!(!stream.recv.is_fully_readable());
+
+        let second = RangeBuf::from(b"world", 5, false);
+        assert_eq!(stream.recv.write(second), Ok(()));
+        assert!(stream.recv.is_fully_readable());
+    }
+
+    /// Check the `McStream` trait for both `SendBuf` and `RecvBuf`.
+    #[test]
+    fn test_mc_stream() {
+        let mut buf = [0u8; 100];
+        let mut send_hash = [0u8; 34];
+        let mut recv_hash = [0u8; 34];
+
+        let mut send = SendBuf::new(std::u64::MAX);
+        let mut recv = RecvBuf::new(std::u64::MAX, std::u64::MAX);
     }
 }
