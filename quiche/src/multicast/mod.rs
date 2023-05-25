@@ -207,9 +207,7 @@ pub trait McConfig {
     /// Clones the transport parameter values given as argument.
     ///
     /// The default value is `None`.
-    fn set_enable_client_multicast(
-        &mut self, v: Option<&MulticastClientTp>,
-    );
+    fn set_enable_client_multicast(&mut self, v: Option<&MulticastClientTp>);
 }
 
 impl McConfig for crate::Config {
@@ -221,9 +219,7 @@ impl McConfig for crate::Config {
         self.mc_fec_max_rs = v;
     }
 
-    fn set_enable_client_multicast(
-        &mut self, v: Option<&MulticastClientTp>,
-    ) {
+    fn set_enable_client_multicast(&mut self, v: Option<&MulticastClientTp>) {
         self.local_transport_params.multicast_client_params = v.cloned();
     }
 }
@@ -458,10 +454,10 @@ impl MulticastAttributes {
                 MulticastClientStatus::AwareUnjoined,
                 MulticastClientAction::Join,
             ) if is_server => MulticastClientStatus::JoinedNoKey,
-            (
-                MulticastClientStatus::Unaware,
-                MulticastClientAction::Join,
-            ) if is_server && self.get_mc_announce_data_path().unwrap().is_processed => MulticastClientStatus::JoinedNoKey,
+            (MulticastClientStatus::Unaware, MulticastClientAction::Join)
+                if is_server &&
+                    self.get_mc_announce_data_path().unwrap().is_processed =>
+                MulticastClientStatus::JoinedNoKey,
             (
                 MulticastClientStatus::WaitingToJoin,
                 MulticastClientAction::Join,
@@ -473,7 +469,8 @@ impl MulticastAttributes {
             (
                 MulticastClientStatus::WaitingToJoin,
                 MulticastClientAction::DecryptionKey,
-            ) if is_server && self.mc_key_up_to_date => MulticastClientStatus::JoinedAndKey,
+            ) if is_server && self.mc_key_up_to_date =>
+                MulticastClientStatus::JoinedAndKey,
             (
                 MulticastClientStatus::WaitingToJoin,
                 MulticastClientAction::DecryptionKey,
@@ -518,7 +515,8 @@ impl MulticastAttributes {
                 MulticastClientAction::Leave,
             ) => MulticastClientStatus::Left,
             (
-                MulticastClientStatus::JoinedAndKey | MulticastClientStatus::JoinedNoKey,
+                MulticastClientStatus::JoinedAndKey |
+                MulticastClientStatus::JoinedNoKey,
                 MulticastClientAction::McPath,
             ) if action_data.is_some() && is_server => {
                 self.mc_space_id = Some(action_data.unwrap() as usize);
@@ -534,9 +532,15 @@ impl MulticastAttributes {
             (MulticastClientStatus::Left, MulticastClientAction::Leave) =>
                 MulticastClientStatus::Left,
             (MulticastClientStatus::ListenMcPath(_), _) => current_status,
-            (MulticastClientStatus::JoinedAndKey, MulticastClientAction::Join) => current_status,
+            (
+                MulticastClientStatus::JoinedAndKey,
+                MulticastClientAction::Join,
+            ) => current_status,
             _ => {
-                debug!("Invalid action 3: current={:?} and action is {:?}", current_status, action);
+                debug!(
+                    "Invalid action 3: current={:?} and action is {:?}",
+                    current_status, action
+                );
                 current_status
             },
         };
@@ -590,8 +594,7 @@ impl MulticastAttributes {
         if let MulticastRole::ServerUnicast(status) = self.mc_role {
             match status {
                 MulticastClientStatus::JoinedAndKey |
-                MulticastClientStatus::ListenMcPath(_) =>
-                    true,
+                MulticastClientStatus::ListenMcPath(_) => true,
                 MulticastClientStatus::JoinedNoKey
                     if self.mc_client_id.is_some() =>
                     true,
@@ -624,7 +627,8 @@ impl MulticastAttributes {
     /// Sets the channel decryption key secret.
     pub fn set_decryption_key_secret(&mut self, key: Vec<u8>) -> Result<()> {
         match self.mc_role {
-            MulticastRole::Client(MulticastClientStatus::JoinedNoKey) | MulticastRole::Client(MulticastClientStatus::WaitingToJoin) => {
+            MulticastRole::Client(MulticastClientStatus::JoinedNoKey) |
+            MulticastRole::Client(MulticastClientStatus::WaitingToJoin) => {
                 let aead_open = Open::from_secret(Algorithm::AES128_GCM, &key)?;
                 self.mc_crypto_open = Some(aead_open);
                 let aead_seal = Seal::from_secret(Algorithm::AES128_GCM, &key)?;
@@ -666,15 +670,15 @@ impl MulticastAttributes {
     /// if there is no private key. Returns [`McAuthType::None`] otherwise.
     pub fn get_mc_authentication_method(&self) -> McAuthType {
         match self.mc_auth_type {
-            McAuthType::AsymSign
+            McAuthType::AsymSign | McAuthType::StreamAsym
                 if self.mc_role == MulticastRole::ServerMulticast &&
                     self.mc_private_key.is_some() =>
-                McAuthType::AsymSign,
+                self.mc_auth_type,
             McAuthType::AsymSign => {
                 if matches!(self.mc_role, MulticastRole::Client(_)) &&
                     self.mc_public_key.is_some()
                 {
-                    McAuthType::AsymSign
+                    self.mc_auth_type
                 } else {
                     McAuthType::None
                 }
@@ -1034,6 +1038,21 @@ pub trait MulticastConnection {
 
     /// Update send capacity for the multicast source channel.
     fn mc_update_tx_cap(&mut self);
+
+    /// Multicast version of [`crate::Connection::stream_recv`].
+    ///
+    /// * If the multicast authentication method is
+    ///   [`authentication::McAuthType::StreamAsym`]: This version verifies the
+    ///   asymmetric signature sent alongside the stream. Returns a
+    ///   [MulticastError::McInvalidSign] if the signature is invalid. Returns a
+    ///   [`MulticastError::Done`] if the stream is not fully readable in the
+    ///   sense of [`crate::stream::Stream::RecvBuf::is_fully_readable`] (which
+    ///   should be verified beforehand).
+    /// * The behaviour of this function is strictly equivalent to the unicast
+    ///   version otherwise.
+    fn mc_stream_recv(
+        &mut self, stream_id: u64, out: &mut [u8],
+    ) -> Result<(usize, bool)>;
 }
 
 impl MulticastConnection for Connection {
@@ -1165,7 +1184,10 @@ impl MulticastConnection for Connection {
             // Only allow for asymetric authentication if we have a key in the
             // MC_ANNOUNCE.
             if matches!(multicast.mc_role, MulticastRole::Client(_)) &&
-                mc_announce_data.auth_type == McAuthType::AsymSign &&
+                matches!(
+                    mc_announce_data.auth_type,
+                    McAuthType::AsymSign | McAuthType::StreamAsym
+                ) &&
                 multicast.mc_public_key.is_none()
             {
                 return Err(Error::Multicast(MulticastError::McInvalidAuth));
@@ -1373,10 +1395,10 @@ impl MulticastConnection for Connection {
                     ));
             } else {
                 // Reset FEC decoder state.
-                self.fec_decoder
-                    .remove_up_to(source_symbol_metadata_from_u64(
-                        exp_fec_metadata,
-                    ), None);
+                self.fec_decoder.remove_up_to(
+                    source_symbol_metadata_from_u64(exp_fec_metadata),
+                    None,
+                );
             }
         }
 
@@ -1600,7 +1622,8 @@ impl MulticastConnection for Connection {
             if matches!(
                 multicast.mc_role,
                 MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey)
-            ) && multicast.mc_client_id.is_none() {
+            ) && multicast.mc_client_id.is_none()
+            {
                 let client_id = if let Some(McClientId::MulticastServer(map)) =
                     mc_channel.multicast.as_mut().unwrap().mc_client_id.as_mut()
                 {
@@ -1726,6 +1749,46 @@ impl MulticastConnection for Connection {
                 }
             }
         }
+    }
+
+    fn mc_stream_recv(
+        &mut self, stream_id: u64, out: &mut [u8],
+    ) -> Result<(usize, bool)> {
+        let multicast = self
+            .multicast
+            .as_ref()
+            .ok_or(Error::Multicast(MulticastError::McDisabled))?;
+
+        if multicast.mc_auth_type == McAuthType::StreamAsym {
+            if !matches!(multicast.mc_role, MulticastRole::Client(_)) {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    multicast.mc_role,
+                )));
+            }
+
+            let stream = self
+                .streams
+                .get_mut(stream_id)
+                .ok_or(Error::InvalidStreamState(stream_id))?;
+            if !stream.mc_asym_verified {
+                if !stream.recv.is_fully_readable() {
+                    return Err(Error::Done);
+                }
+
+                // MC-TODO: 32 should not be hardcoded.
+                let authentication = stream
+                    .recv
+                    .authentication
+                    .as_ref()
+                    .ok_or(Error::Multicast(MulticastError::McInvalidAuth))?;
+                let mut buf = vec![0u8; 32 + authentication.len()];
+                stream.recv.hash_stream(&mut buf[..32])?;
+                buf[32..].copy_from_slice(authentication);
+                self.mc_verify_asym(&buf)?;
+            }
+        }
+
+        self.stream_recv(stream_id, out)
     }
 }
 
@@ -1874,7 +1937,7 @@ impl MulticastChannelSource {
             MulticastChannelSource::get_exporter_secret(keylog_filename)?;
 
         let signature_eddsa = match authentication {
-            McAuthType::AsymSign =>
+            McAuthType::AsymSign | McAuthType::StreamAsym =>
                 Some(MulticastChannelSource::compute_asymetric_signature_keys()?),
             _ => None,
         };
@@ -2957,7 +3020,7 @@ mod tests {
         assert_eq!(
             multicast
                 .update_client_state(MulticastClientAction::DecryptionKey, None),
-                Ok(MulticastClientStatus::Unaware),
+            Ok(MulticastClientStatus::Unaware),
         );
 
         // This is a good move.
@@ -5370,10 +5433,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 1), Ok(348));
-        assert_eq!(
-            mc_pipe.source_send_single_stream(true, None, 0, 5),
-            Ok(348)
-        );
+        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 5), Ok(348));
         assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 9), Ok(348));
 
         // The client received all streams.
@@ -5382,19 +5442,25 @@ mod tests {
         readables.sort();
         assert_eq!(readables, vec![1, 5, 9]);
 
-        // The client received all streams. They must not send packets to the source.
+        // The client received all streams. They must not send packets to the
+        // source.
         let mut out = [0u8; 2048];
         assert_eq!(uc_pipe.client.stream_send(2, &out[..100], true), Ok(100));
         assert_eq!(uc_pipe.client.send(&mut out).map(|(w, _)| w), Ok(148));
         // The client does not send ACK_MP frames for the authentication path.
-
-
     }
 
     #[test]
     /// Tests the multicast handshake in case of packet losses.
     fn test_mc_handshake_with_losses() {
         // MC-TODO!
+    }
+
+    #[test]
+    /// Tests the [`authentication::McAuthType::StreamAsym`] authentication
+    /// method.
+    fn test_mc_stream_asym() {
+        // MC-TODO.
     }
 }
 
@@ -5403,3 +5469,4 @@ use authentication::McAuthType;
 
 use self::authentication::McAuthentication;
 use self::authentication::McSymSign;
+use crate::stream::McStream;

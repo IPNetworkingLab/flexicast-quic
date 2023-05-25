@@ -661,6 +661,12 @@ pub struct Stream {
 
     /// Whether the stream can be flushed incrementally. Default is `true`.
     pub incremental: bool,
+
+    /// Whether the authentication of the stream has already been verified. This
+    /// variable has meaning only if the stream is received in a multicast path
+    /// authenticated with
+    /// [`crate::multicast::authentication::McAuthType::StreamAsym`].
+    pub mc_asym_verified: bool,
 }
 
 impl Stream {
@@ -677,6 +683,7 @@ impl Stream {
             data: None,
             urgency: DEFAULT_URGENCY,
             incremental: true,
+            mc_asym_verified: false,
         }
     }
 
