@@ -5120,9 +5120,10 @@ impl Connection {
                     has_data = true;
                 }
 
-                // Write the MC_ASYM frame authenticating this stream.
+                // Write the MC_ASYM frame authenticating this stream if it is
+                // complete.
                 let mut mc_tmp = [0u8; 1500];
-                if mc_used_auth_packet == McAuthType::StreamAsym {
+                if mc_used_auth_packet == McAuthType::StreamAsym && fin {
                     stream.send.hash_stream(&mut mc_tmp)?;
                     // If the stream is no longer flushable, remove it from the
                     // queue

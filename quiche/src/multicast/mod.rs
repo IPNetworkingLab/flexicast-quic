@@ -1785,6 +1785,11 @@ impl MulticastConnection for Connection {
                 stream.recv.hash_stream(&mut buf[..32])?;
                 buf[32..].copy_from_slice(authentication);
                 self.mc_verify_asym(&buf)?;
+                let stream = self
+                    .streams
+                    .get_mut(stream_id)
+                    .ok_or(Error::InvalidStreamState(stream_id))?;
+                stream.mc_asym_verified = true;
             }
         }
 
@@ -2569,11 +2574,9 @@ pub mod testing {
                     from_mc: Some(McPathType::Data),
                 };
 
-                let res = pipe
-                    .client
-                    .mc_recv(&mut recv_buf[..written], recv_info)
-                    .unwrap();
-                assert_eq!(res, written - signature_len);
+                let res =
+                    pipe.client.mc_recv(&mut recv_buf[..written], recv_info);
+                assert_eq!(res, Ok(written - signature_len));
             }
 
             Ok(written)
@@ -5460,7 +5463,98 @@ mod tests {
     /// Tests the [`authentication::McAuthType::StreamAsym`] authentication
     /// method.
     fn test_mc_stream_asym() {
-        // MC-TODO.
+        let use_auth = McAuthType::StreamAsym;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_stream_asym.txt",
+            use_auth,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        // Source has the correct authentication type and has a private key.
+        let mc = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
+        assert_eq!(mc.mc_auth_type, McAuthType::StreamAsym);
+        assert!(mc.mc_private_key.is_some());
+
+        // Client has the correct authentication type and has a public key.
+        let mc = mc_pipe.unicast_pipes[0]
+            .0
+            .client
+            .multicast
+            .as_ref()
+            .unwrap();
+        assert_eq!(mc.mc_auth_type, McAuthType::StreamAsym);
+        assert!(mc.mc_public_key.is_some());
+
+        // Source sends a single long stream (fiting in a single frame).
+        let mut buf = [43u8; 5000];
+        mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(1, &buf, true)
+            .unwrap();
+
+        // First packet is not sufficient to carry all the stream.
+        mc_pipe
+            .source_send_single_from_buf(None, 0, &mut buf[..1500])
+            .unwrap();
+
+        // The client received the beginning of the stream, but cannot
+        // authenticate it.
+        let client = &mc_pipe.unicast_pipes[0].0.client;
+        let readables: Vec<_> = client.readable().collect();
+        assert_eq!(readables, vec![1]);
+        let stream = client.streams.get(1).unwrap();
+        assert_eq!(stream.recv.authentication, None);
+        assert!(!stream.recv.is_fully_readable());
+        assert!(!stream.mc_asym_verified);
+
+        // Now we sent the remaining of the stream.
+        loop {
+            match mc_pipe.source_send_single(None, 0) {
+                Ok(_) => (),
+                Err(Error::Done) => break,
+                Err(e) => panic!("Error: {}", e),
+            }
+        }
+
+        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        assert_eq!(readables, vec![1]);
+        let stream = client.streams.get(1).unwrap();
+
+        // Stream is complete for authentication.
+        assert!(stream.recv.authentication.is_some());
+        assert!(stream.recv.is_fully_readable());
+        assert!(!stream.mc_asym_verified);
+
+        // Verifying the stream.
+        assert_eq!(client.mc_stream_recv(1, &mut buf), Ok((5000, true)));
+        let stream = client.streams.get(1).unwrap();
+        assert!(stream.mc_asym_verified);
+
+        // Source sends another stream. We will change the authentication tag
+        // received by the client.
+        mc_pipe.source_send_single_stream(true, None, 0, 5).unwrap();
+        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        let readables: Vec<_> = client.readable().collect();
+        assert_eq!(readables, vec![5]);
+        let stream = client.streams.get_mut(5).unwrap();
+        assert!(stream.recv.authentication.is_some());
+        assert!(stream.recv.is_fully_readable());
+        assert!(!stream.mc_asym_verified);
+
+        stream
+            .recv
+            .authentication
+            .as_mut()
+            .map(|auth| auth[3] = auth[3].wrapping_add(10));
+        assert_eq!(
+            client.mc_stream_recv(5, &mut buf),
+            Err(Error::Multicast(MulticastError::McInvalidSign))
+        );
     }
 }
 

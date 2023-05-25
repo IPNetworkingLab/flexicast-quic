@@ -1722,7 +1722,7 @@ impl McStream for SendBuf {
         }
         let mut stream_data = Vec::with_capacity(self.fin_off.unwrap() as usize);
         for range_buf in self.data.iter() {
-            stream_data.extend_from_slice(range_buf);
+            stream_data.extend_from_slice(&range_buf.data);
         }
         let digest = ring::digest::digest(&ring::digest::SHA256, &stream_data);
         buf[..32].copy_from_slice(digest.as_ref());

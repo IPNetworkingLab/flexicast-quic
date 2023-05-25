@@ -51,6 +51,7 @@ impl TryFrom<u64> for McAuthType {
             1 => Ok(Self::SymSign),
             2 => Ok(Self::Dynamic(20)),
             3 => Ok(Self::None),
+            4 => Ok(Self::StreamAsym),
             _ => Err(Error::Multicast(MulticastError::McInvalidAuth)),
         }
     }
@@ -80,6 +81,7 @@ impl FromStr for McAuthType {
             "asymmetric" => Ok(McAuthType::AsymSign),
             "symmetric" => Ok(McAuthType::SymSign),
             "none" => Ok(McAuthType::None),
+            "stream" => Ok(McAuthType::StreamAsym),
             _ => Err(Error::Multicast(MulticastError::McInvalidAuth)),
         }
     }
@@ -597,7 +599,6 @@ mod tests {
             let tags = client.mc_get_client_auth_tags();
             assert!(tags.is_ok());
             let tags = tags.unwrap();
-            println!("Tags: {:?}", tags);
             for pn in all_pns.iter() {
                 assert!(tags.contains(&pn));
             }
