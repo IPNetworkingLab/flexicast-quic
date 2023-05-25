@@ -362,6 +362,10 @@ pub struct MulticastAttributes {
 
     /// MC_STATE frame in flight.
     mc_state_in_flight: bool,
+
+    /// Ordered list of streams received that need authentication.
+    /// Only used for [`McAuthType::StreamAsym`] method.
+    mc_recv_stream: VecDeque<u64>,
 }
 
 impl MulticastAttributes {
@@ -788,6 +792,21 @@ impl MulticastAttributes {
 
         Err(Error::Multicast(MulticastError::McPath))
     }
+
+    /// Add a new stream ID that has known size.
+    pub fn push_new_mc_stream_fin(&mut self, stream_id: u64) {
+        self.mc_recv_stream.push_back(stream_id);
+    }
+
+    /// Pop a stream ID that has been received.
+    pub fn pop_new_mc_stream_fin(&mut self) -> Option<u64> {
+        self.mc_recv_stream.pop_front()
+    }
+
+    /// Reset the received streams.
+    pub fn reset_recv_mc_stream(&mut self) {
+        self.mc_recv_stream = VecDeque::new();
+    }
 }
 
 impl Default for MulticastAttributes {
@@ -813,6 +832,7 @@ impl Default for MulticastAttributes {
             mc_pn_need_sym_sign: None,
             mc_sym_signs: McSymSign::Client(HashMap::new()),
             mc_state_in_flight: false,
+            mc_recv_stream: VecDeque::new(),
         }
     }
 }

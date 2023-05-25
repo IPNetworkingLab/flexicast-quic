@@ -799,6 +799,12 @@ pub struct RecvBuf {
 
     /// Whether incoming data is validated but not buffered.
     drain: bool,
+
+    /// Whether the received stream buffer is authenticated.
+    /// This variable has a meaning only if multicast is enabled and
+    /// [`crate::multicast::authentication::McAuthType::StreamAsym`] method is
+    /// used, while the stream is not authenticated yet by the signature.
+    pub authentication: Option<Vec<u8>>,
 }
 
 impl RecvBuf {
@@ -1530,6 +1536,11 @@ impl SendBuf {
 
         Ok((self.max_data - self.off) as usize)
     }
+
+    /// Returns the number of bytes that still need to be sent to complete the stream. `None` if the final size is not known.
+    pub fn total_remaining(&self) -> Option<u64> {
+        self.fin_off.map(|off| off - self.off)
+    }
 }
 
 /// Buffer holding data at a specific offset.
@@ -1667,14 +1678,25 @@ impl PartialEq for RangeBuf {
     }
 }
 
-pub trait McSendBuf {
+pub trait McStream {
     /// Hash the stream data using [`ring::digest::SHA256`].
     fn hash_stream(&self, buf: &mut [u8]);
 }
 
-impl McSendBuf for SendBuf {
+impl McStream for SendBuf {
     fn hash_stream(&self, buf: &mut [u8]) {
         for range_buf in self.data.iter() {
+            buf[32..32 + range_buf.len()].copy_from_slice(range_buf);
+            let digest = ring::digest::digest(&ring::digest::SHA256, buf);
+            buf[..32].copy_from_slice(digest.as_ref());
+        }
+    }
+}
+
+impl McStream for RecvBuf {
+    fn hash_stream(&self, buf: &mut [u8]) {
+        // MC-TODO: ensure that this is contiguous :(.
+        for (_, range_buf) in self.data.iter() {
             buf[32..32 + range_buf.len()].copy_from_slice(range_buf);
             let digest = ring::digest::digest(&ring::digest::SHA256, buf);
             buf[..32].copy_from_slice(digest.as_ref());
