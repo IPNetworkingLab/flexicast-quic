@@ -253,8 +253,6 @@ pub enum Frame {
     },
 
     McAsym {
-        stream_auth: bool,
-        stream_id: u64,
         signature: Vec<u8>,
     },
 
@@ -549,13 +547,9 @@ impl Frame {
             },
 
             MC_ASYM_CODE => {
-                let stream_auth = b.get_u8()?;
-                let stream_id = b.get_varint()?;
                 let signature = b.get_bytes_with_u8_length()?.to_vec();
 
                 Frame::McAsym {
-                    stream_auth: if stream_auth == 0 { false } else { true },
-                    stream_id,
                     signature,
                 }
             },
@@ -978,17 +972,13 @@ impl Frame {
             },
 
             Frame::McAsym {
-                stream_auth,
-                stream_id,
                 signature,
             } => {
                 debug!(
-                    "going to encode the MC_ASYM frame: {} {} {:?}",
-                    stream_auth, stream_id, signature
+                    "going to encode the MC_ASYM frame: {:?}",
+                    signature
                 );
                 b.put_varint(MC_ASYM_CODE)?;
-                b.put_u8(*stream_auth as u8)?;
-                b.put_varint(*stream_id)?;
                 b.put_u8(signature.len() as u8)?;
                 b.put_bytes(signature)?;
             },
@@ -1377,15 +1367,9 @@ impl Frame {
             },
 
             Frame::McAsym {
-                stream_auth: _,
-                stream_id,
                 signature,
             } => {
                 let frame_type_size = octets::varint_len(MC_ASYM_CODE);
-                let stream_id_len = octets::varint_len(*stream_id);
-                frame_type_size +
-                1 + // stream_auth len
-                stream_id_len +
                 1 + // signature len
                 signature.len()
             },
@@ -2024,14 +2008,12 @@ impl std::fmt::Debug for Frame {
             },
 
             Frame::McAsym {
-                stream_auth,
-                stream_id,
                 signature,
             } => {
                 write!(
                     f,
-                    "MC_ASYM stream auth={} stream id={} signature={:?}",
-                    stream_auth, stream_id, signature
+                    "MC_ASYM signature={:?}",
+                    signature
                 )?;
             },
 
@@ -3951,8 +3933,6 @@ mod tests {
         let mut d = [41; 400];
 
         let frame = Frame::McAsym {
-            stream_auth: true,
-            stream_id: 0xff44,
             signature: vec![54, 244, 12, 65, 34],
         };
 
@@ -3961,7 +3941,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 13);
+        assert_eq!(wire_len, 9);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

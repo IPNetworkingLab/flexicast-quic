@@ -346,6 +346,7 @@
 #[macro_use]
 extern crate log;
 
+use multicast::MC_ASYM_CODE;
 use networkcoding::DecoderError;
 use networkcoding::EncoderError;
 use networkcoding::SourceSymbolMetadata;
@@ -3421,10 +3422,19 @@ impl Connection {
         // Generate coalesced packets.
         while left > 0 {
             // Save room for the signature of multicast packets.
-            if mc_used_auth_packet == McAuthType::AsymSign {
-                let signature_len = 64;
-                left -= signature_len;
-            }
+            left -= match mc_used_auth_packet {
+                // AsymSign: constant 64 bytes at the end of the packet.
+                McAuthType::AsymSign => 64,
+                // StreamAsym: asymmetric signature + frame overhead.
+                // MC-TODO: we constantly remove space to ensure that the frame
+                // fits if needed. This is not optimal as we (most of the time) do
+                // not use this empty space. A better option would be to check
+                // after frames are added and dynamically adapt the remaining
+                // space if needed but this requires more implementation.
+                McAuthType::StreamAsym =>
+                    64 + 1 + octets::varint_len(MC_ASYM_CODE),
+                _ => 0,
+            };
 
             let (ty, written) = match self.send_single(
                 &mut out[done..done + left],
@@ -3526,7 +3536,6 @@ impl Connection {
         let mut mc_used_auth_packet = McAuthType::None;
         let mut mc_path_type = None;
         // Whether an MC_ASYM frame must be sent in this packet.
-        let mut mc_send_asym = false;
         if let Some(multicast) = self.multicast.as_mut() {
             if matches!(
                 multicast.get_mc_role(),
@@ -5048,23 +5057,6 @@ impl Connection {
                     },
                 };
 
-                // If this is the multicast data path using
-                // [`multicast::McAuthType::StreamAsym`], we must ensure that
-                // putting the remaining of the stream (and closing it) leaves
-                // enough room for the MC_ASYM frame containing the signature.
-                let max_len = if mc_used_auth_packet ==
-                    multicast::authentication::McAuthType::StreamAsym
-                {
-                    // MC-TODO: compute if the stream will be closed. If it
-                    // closed, check whether we have enough room to add the
-                    // MC_ASYM frame. If not, we will need to split into another
-                    // packet to ensure that the MC_ASYM is in the same packet as
-                    // the last STREAM frame.
-                    max_len
-                } else {
-                    max_len
-                };
-
                 let (mut stream_hdr, mut stream_payload) =
                     b.split_at(hdr_off + hdr_len)?;
 
@@ -5115,6 +5107,18 @@ impl Connection {
 
         // Alternate trying to send DATAGRAMs next time.
         self.emit_dgram = !dgram_emitted;
+
+        // Add a multicast MC_ASYM frame if this is a multicast data path using
+        // the [`MCAuthType::StreamAsym`] authentication method and if either
+        // 1) A STREAM frame with `fin=true` is in the packet,
+        // 2) A control frame is in the packet.
+        // The asymmetric signature is computed by hashing, in the order of
+        // appearence in the packet:
+        // - Each control frame present in this packet,
+        // - The whole stream data of streams where the STREAM frame for this
+        //   stream has `fin=true` in this packet. This may contain several
+        //   streams in case several STREAM frames with `fin=true` are present in
+        //   the same packet.
 
         // If no other ack-eliciting frame is sent, include a PING frame
         // - if PTO probe needed; OR
