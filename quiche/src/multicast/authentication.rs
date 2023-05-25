@@ -34,7 +34,12 @@ pub enum McAuthType {
     /// No authentication used.
     None,
 
-    // Add an MC_ASYM frame at the end of the QUIC packet. This frame contains the asymmetric signature of either a whole stream or other control frames. The frame is added in an MCQUIC packet if there is a STREAM frame which is now complete (i.e., the STREAM frame is the last frame that will be send for this stream, excluding possible retransmission). Add the
+    /// Add an MC_ASYM frame at the end of the QUIC packet. This frame contains
+    /// the asymmetric signature of either a whole stream or other control
+    /// frames. The frame is added in an MCQUIC packet if there is a STREAM
+    /// frame which is now complete (i.e., the STREAM frame is the last frame
+    /// that will be send for this stream, excluding possible retransmission).
+    StreamAsym,
 }
 
 impl TryFrom<u64> for McAuthType {
@@ -58,6 +63,7 @@ impl From<McAuthType> for u64 {
             McAuthType::SymSign => 1,
             McAuthType::Dynamic(_) => 2,
             McAuthType::None => 3,
+            McAuthType::StreamAsym => 4,
         }
     }
 }
@@ -348,7 +354,7 @@ impl McSymAuth for Connection {
                 }
 
                 // Reset the state because of ownership we took.
-                let mut multicast = self.multicast.as_mut().unwrap();
+                let multicast = self.multicast.as_mut().unwrap();
                 multicast.mc_sym_signs =
                     McSymSign::McSource(VecDeque::from(signatures_pn));
                 multicast.mc_pn_need_sym_sign = Some(VecDeque::new());
@@ -376,7 +382,7 @@ impl McSymAuth for Connection {
                         );
                     let mc_client_id = match mc_client_id {
                         Ok(v) => v,
-                        Err(e) => {
+                        Err(_) => {
                             error!(
                                 "Error for source id: {:?} VS map: {:?}",
                                 conn.source_id(),
@@ -560,8 +566,10 @@ mod tests {
                 let pn = mc_pipe.unicast_pipes[0].0.client.mc_get_pn(&buf[..w]);
                 assert!(pn.is_ok());
                 all_pns.push(pn.unwrap());
-    
-                for (pipe, client_addr, server_addr) in mc_pipe.unicast_pipes.iter_mut() {
+
+                for (pipe, client_addr, server_addr) in
+                    mc_pipe.unicast_pipes.iter_mut()
+                {
                     let recv_info = RecvInfo {
                         from: *server_addr,
                         to: *client_addr,
@@ -576,14 +584,14 @@ mod tests {
 
         // Multicast source generates the AEAD tags for the clients.
         let clients: Vec<_> = mc_pipe
-        .unicast_pipes
-        .iter_mut()
-        .map(|(conn, ..)| &mut conn.server)
-        .collect();
+            .unicast_pipes
+            .iter_mut()
+            .map(|(conn, ..)| &mut conn.server)
+            .collect();
         assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
         while let Ok(_) = mc_pipe.mc_source_sends_auth_packets(None) {}
 
-        for (pipe, _, _) in mc_pipe.unicast_pipes.iter_mut() {
+        for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
             let client = &mut pipe.client;
 
             let tags = client.mc_get_client_auth_tags();
@@ -594,7 +602,5 @@ mod tests {
                 assert!(tags.contains(&pn));
             }
         }
-
-        
     }
 }

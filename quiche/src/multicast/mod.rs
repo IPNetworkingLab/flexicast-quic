@@ -97,6 +97,8 @@ pub const MC_KEY_CODE: u64 = 0xf5;
 pub const MC_EXPIRE_CODE: u64 = 0xf6;
 /// MC_AUTH frame type.
 pub const MC_AUTH_CODE: u64 = 0xf7;
+/// MC_ASYM frame type.
+pub const MC_ASYM_CODE: u64 = 0xf8;
 
 /// The leaving action is requested by the client.
 pub const LEAVE_FROM_CLIENT: u64 = 0x0;

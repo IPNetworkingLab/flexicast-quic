@@ -3075,8 +3075,8 @@ impl Connection {
                             //     multicast::MulticastError::McDisabled,
                             // ));
                         },
-                    
-                    frame::Frame::McKey { channel_id, key, first_pn, client_id } => {
+
+                    frame::Frame::McKey { .. } => {
                         if let Some(multicast) = self.multicast.as_mut() {
                             multicast.set_mc_key_read(true);
 
@@ -3525,6 +3525,8 @@ impl Connection {
         // Multicast.
         let mut mc_used_auth_packet = McAuthType::None;
         let mut mc_path_type = None;
+        // Whether an MC_ASYM frame must be sent in this packet.
+        let mut mc_send_asym = false;
         if let Some(multicast) = self.multicast.as_mut() {
             if matches!(
                 multicast.get_mc_role(),
@@ -3975,8 +3977,12 @@ impl Connection {
                         .as_mut()
                         .unwrap()
                         .set_mc_nack_ranges(Some(&nack_range))?;
-                    
-                    info!("After setting it on client for {:?}, it is: {:?}", self.multicast.as_ref().unwrap().get_self_client_id(), nack_range);
+
+                    info!(
+                        "After setting it on client for {:?}, it is: {:?}",
+                        self.multicast.as_ref().unwrap().get_self_client_id(),
+                        nack_range
+                    );
 
                     // We have some nack range to send! Create the MC_NACK frame.
                     // Maybe this is not optimal, but we will reuse ACKMP frames
@@ -4557,7 +4563,12 @@ impl Connection {
                     };
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
-                        debug!("Send MC_STATE with {:?} {:?} while {:?}", action, action_data, multicast.get_mc_role());
+                        debug!(
+                            "Send MC_STATE with {:?} {:?} while {:?}",
+                            action,
+                            action_data,
+                            multicast.get_mc_role()
+                        );
                         multicast.set_mc_state_in_flight(true);
 
                         ack_eliciting = true;
@@ -5035,6 +5046,23 @@ impl Connection {
                         self.streams.remove_flushable();
                         continue;
                     },
+                };
+
+                // If this is the multicast data path using
+                // [`multicast::McAuthType::StreamAsym`], we must ensure that
+                // putting the remaining of the stream (and closing it) leaves
+                // enough room for the MC_ASYM frame containing the signature.
+                let max_len = if mc_used_auth_packet ==
+                    multicast::authentication::McAuthType::StreamAsym
+                {
+                    // MC-TODO: compute if the stream will be closed. If it
+                    // closed, check whether we have enough room to add the
+                    // MC_ASYM frame. If not, we will need to split into another
+                    // packet to ensure that the MC_ASYM is in the same packet as
+                    // the last STREAM frame.
+                    max_len
+                } else {
+                    max_len
                 };
 
                 let (mut stream_hdr, mut stream_payload) =
@@ -8314,6 +8342,18 @@ impl Connection {
                 }
             },
 
+            frame::Frame::McAsym {
+                stream_auth,
+                stream_id,
+                signature,
+            } => {
+                warn!(
+                    "Receive an MC_ASYM frame: {} {} {:?}",
+                    stream_auth, stream_id, signature
+                );
+                todo!("Not implemented");
+            },
+
             frame::Frame::SourceSymbol { source_symbol } =>
                 if self.receive_fec {
                     let id =
@@ -8327,7 +8367,10 @@ impl Connection {
                         );
                     }
 
-                    match self.fec_decoder.receive_source_symbol(source_symbol, now) {
+                    match self
+                        .fec_decoder
+                        .receive_source_symbol(source_symbol, now)
+                    {
                         Err(DecoderError::UnusedSourceSymbol) => {
                             info!(
                                 "received a source symbol unused by the decoder"
@@ -8556,7 +8599,7 @@ impl Connection {
             },
 
             frame::Frame::McKey {
-                channel_id,
+                channel_id: _,
                 key,
                 first_pn,
                 client_id,

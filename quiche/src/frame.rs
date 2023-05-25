@@ -36,6 +36,7 @@ use crate::Result;
 
 use crate::multicast::authentication::McSymSignature;
 use crate::multicast::MC_ANNOUNCE_CODE;
+use crate::multicast::MC_ASYM_CODE;
 use crate::multicast::MC_AUTH_CODE;
 use crate::multicast::MC_EXPIRE_CODE;
 use crate::multicast::MC_KEY_CODE;
@@ -249,6 +250,12 @@ pub enum Frame {
         channel_id: Vec<u8>,
         pn: u64,
         signatures: Vec<McSymSignature>,
+    },
+
+    McAsym {
+        stream_auth: bool,
+        stream_id: u64,
+        signature: Vec<u8>,
     },
 
     Repair {
@@ -538,6 +545,18 @@ impl Frame {
                     channel_id,
                     pn,
                     signatures,
+                }
+            },
+
+            MC_ASYM_CODE => {
+                let stream_auth = b.get_u8()?;
+                let stream_id = b.get_varint()?;
+                let signature = b.get_bytes_with_u8_length()?.to_vec();
+
+                Frame::McAsym {
+                    stream_auth: if stream_auth == 0 { false } else { true },
+                    stream_id,
+                    signature,
                 }
             },
 
@@ -958,6 +977,22 @@ impl Frame {
                 }
             },
 
+            Frame::McAsym {
+                stream_auth,
+                stream_id,
+                signature,
+            } => {
+                debug!(
+                    "going to encode the MC_ASYM frame: {} {} {:?}",
+                    stream_auth, stream_id, signature
+                );
+                b.put_varint(MC_ASYM_CODE)?;
+                b.put_u8(*stream_auth as u8)?;
+                b.put_varint(*stream_id)?;
+                b.put_u8(signature.len() as u8)?;
+                b.put_bytes(signature)?;
+            },
+
             Frame::Repair { repair_symbol } => {
                 b.put_varint(0x32)?;
                 b.put_bytes(repair_symbol.get())?;
@@ -1341,6 +1376,20 @@ impl Frame {
                 signatures_size
             },
 
+            Frame::McAsym {
+                stream_auth: _,
+                stream_id,
+                signature,
+            } => {
+                let frame_type_size = octets::varint_len(MC_ASYM_CODE);
+                let stream_id_len = octets::varint_len(*stream_id);
+                frame_type_size +
+                1 + // stream_auth len
+                stream_id_len +
+                1 + // signature len
+                signature.len()
+            },
+
             Frame::Repair { repair_symbol } => {
                 1 + // frame_type
                 repair_symbol.wire_len()
@@ -1678,6 +1727,12 @@ impl Frame {
                 raw: Some("104".to_string()),
             },
 
+            Frame::McAsym { .. } => QuicFrame::Unknown {
+                raw_frame_type: MC_ASYM_CODE,
+                raw_length: Some(15),
+                raw: Some("105".to_string()),
+            },
+
             Frame::Repair { repair_symbol } => QuicFrame::Unknown {
                 raw_frame_type: 0x32,
                 raw_length: Some(repair_symbol.wire_len() as u32),
@@ -1965,6 +2020,18 @@ impl std::fmt::Debug for Frame {
                     f,
                     "MC_AUTH channel ID={:?} pn={:?} signatures={:?}",
                     channel_id, pn, signatures
+                )?;
+            },
+
+            Frame::McAsym {
+                stream_auth,
+                stream_id,
+                signature,
+            } => {
+                write!(
+                    f,
+                    "MC_ASYM stream auth={} stream id={} signature={:?}",
+                    stream_auth, stream_id, signature
                 )?;
             },
 
@@ -3851,6 +3918,50 @@ mod tests {
         };
 
         assert_eq!(wire_len, 26);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
+                .is_err()
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
+                .is_ok()
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            &get_decoder()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mc_asym() {
+        let mut d = [41; 400];
+
+        let frame = Frame::McAsym {
+            stream_auth: true,
+            stream_id: 0xff44,
+            signature: vec![54, 244, 12, 65, 34],
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 13);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
