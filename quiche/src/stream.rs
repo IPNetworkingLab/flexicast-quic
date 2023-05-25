@@ -3529,17 +3529,19 @@ mod tests {
         let mut recv = RecvBuf::new(std::u64::MAX, std::u64::MAX);
 
         let first = RangeBuf::from(b"hello", 0, false);
-        assert_eq!(send.write(&first.data, false), Ok(5));
+        assert_eq!(send.write(b"h", false), Ok(1));
+        assert_eq!(send.write(b"el", false), Ok(2));
+        assert_eq!(send.write(b"lo", false), Ok(2));
         assert_eq!(recv.write(first), Ok(()));
         assert_eq!(send.hash_stream(&mut send_hash), Err(Error::Done));
         assert_eq!(recv.hash_stream(&mut recv_hash), Err(Error::Done));
 
         let second = RangeBuf::from(b"world", 5, false);
-        assert_eq!(send.write(&second.data, false), Ok(5));
+        assert_eq!(send.write(b"worlda", false), Ok(6));
         assert_eq!(send.hash_stream(&mut send_hash), Err(Error::Done));
 
         let third = RangeBuf::from(b"again", 10, true);
-        assert_eq!(send.write(&third.data, true), Ok(5));
+        assert_eq!(send.write(b"gain", true), Ok(4));
         assert_eq!(recv.write(third), Ok(()));
         assert_eq!(recv.hash_stream(&mut recv_hash), Err(Error::Done));
 
