@@ -1782,9 +1782,10 @@ impl MulticastConnection for Connection {
                     .as_ref()
                     .ok_or(Error::Multicast(MulticastError::McInvalidAuth))?;
                 let mut buf = vec![0u8; 32 + authentication.len()];
-                stream.recv.hash_stream(&mut buf[..32])?;
+                let mut data = stream.recv.hash_stream(&mut buf[..32])?;
                 buf[32..].copy_from_slice(authentication);
-                self.mc_verify_asym(&buf)?;
+                data.extend_from_slice(authentication);
+                self.mc_verify_asym(&data)?;
                 let stream = self
                     .streams
                     .get_mut(stream_id)
@@ -2734,8 +2735,8 @@ pub mod testing {
         config.set_initial_max_stream_data_bidi_local(1_000_000_000);
         config.set_initial_max_stream_data_bidi_remote(1_000_000_000);
         config.set_initial_max_stream_data_uni(1_000_000_000);
-        config.set_initial_max_streams_bidi(100);
-        config.set_initial_max_streams_uni(100);
+        config.set_initial_max_streams_bidi(1_000_000_000);
+        config.set_initial_max_streams_uni(1_000_000_000);
         config.set_active_connection_id_limit(5);
         config.verify_peer(false);
         config.set_multipath(true);
@@ -5555,6 +5556,36 @@ mod tests {
             client.mc_stream_recv(5, &mut buf),
             Err(Error::Multicast(MulticastError::McInvalidSign))
         );
+    }
+
+    #[test]
+    /// Tests that the source correctly splits the stream if there is not enough
+    /// space for the end of the stream and the MC_ASYM frame for
+    /// [`authentication::McAuthType::StreamAsym`].
+    fn test_mc_stream_asym_split_stream() {
+        let use_auth = McAuthType::StreamAsym;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_stream_asym_split_stream.txt",
+            use_auth,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        let mut buf = [44u8; 1500];
+        let channel = &mut mc_pipe.mc_channel.channel;
+        channel.stream_send(1, &buf[..1300], true).unwrap();
+
+        // Cannot fit the entire stream in the first packet because the MC_ASYM would not fit.
+        mc_pipe.mc_channel.mc_send(&mut buf).unwrap();
+        let channel = &mut mc_pipe.mc_channel.channel;
+        assert_eq!(channel.streams.get(1).unwrap().send.total_remaining(), Some(34));
+
+        mc_pipe.mc_channel.mc_send(&mut buf).unwrap();
+        let channel = &mut mc_pipe.mc_channel.channel;
+        assert_eq!(channel.streams.get(1).unwrap().send.total_remaining(), None);
     }
 }
 
