@@ -1922,7 +1922,7 @@ impl Connection {
 
             fec_encoder: networkcoding::Encoder::VLC(VLCEncoder::new(
                 config.fec_symbol_size,
-                5000,
+                config.fec_window_size,
             )),
             fec_decoder: networkcoding::Decoder::VLC(VLCDecoder::new(
                 config.fec_symbol_size,

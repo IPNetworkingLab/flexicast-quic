@@ -2256,6 +2256,7 @@ pub enum McClientId {
 /// QUIC.
 pub mod testing {
     use std::collections::HashSet;
+    use std::ops::Range;
 
     use ring::rand::SecureRandom;
 
@@ -2744,6 +2745,8 @@ pub mod testing {
         config.set_enable_client_multicast(mc_client);
         config.send_fec(use_fec);
         config.receive_fec(use_fec);
+        config.set_fec_window_size(500_000);
+        config.set_mc_max_nb_repair_symbols(Some(std::u32::MAX));
         config.set_fec_scheduler_algorithm(
             crate::fec::fec_scheduler::FECSchedulerAlgorithm::RetransmissionFec,
         );
@@ -2835,6 +2838,49 @@ pub mod testing {
             auth_path_info,
             max_cwnd,
         )
+    }
+
+    impl MulticastChannelSource {
+        /// Only used for tests and benchmarks.
+        /// Sets the source nack range directly in the FEC scheduler.
+        pub fn set_source_nack_range(&mut self, rangeset: &OpenRangeSet) -> Result<()> {
+            let conn_id_ref = self.channel.ids.get_dcid(0)?; // MC-TODO: replace hard-coded value.
+                if let Some(fec_scheduler) = self.channel.fec_scheduler.as_mut() {
+                    fec_scheduler.lost_source_symbol(
+                        &rangeset.ranges,
+                        conn_id_ref.cid.as_ref(),
+                    );
+                }
+
+                Ok(())
+        }
+
+        /// Only used for tests and benchmarks.
+        /// Remove all source symbols in the FEC window.
+        pub fn remove_source_symbols(&mut self) {
+            let md = std::u64::MAX.to_be_bytes();
+            self.channel.fec_encoder.remove_up_to(md);
+            println!("FEC window size: {}", self.channel.fec_encoder.n_protected_symbols());
+        }
+    }
+
+    #[allow(missing_docs)]
+    /// Open public [`crate::ranges::RangeSet`] wrapper.
+    pub struct OpenRangeSet {
+        pub ranges: RangeSet,
+    }
+
+    #[allow(missing_docs)]
+    impl OpenRangeSet {
+        pub fn new() -> Self {
+            Self {
+                ranges: RangeSet::default(),
+            }
+        }
+
+        pub fn populate(&mut self, range: Range<u64>) {
+            self.ranges.insert(range);
+        }
     }
 }
 
@@ -5587,6 +5633,7 @@ mod tests {
         let channel = &mut mc_pipe.mc_channel.channel;
         assert_eq!(channel.streams.get(1).unwrap().send.total_remaining(), None);
     }
+
 }
 
 pub mod authentication;
