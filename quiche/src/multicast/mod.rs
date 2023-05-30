@@ -2857,10 +2857,9 @@ pub mod testing {
 
         /// Only used for tests and benchmarks.
         /// Remove all source symbols in the FEC window.
-        pub fn remove_source_symbols(&mut self) {
-            let md = std::u64::MAX.to_be_bytes();
+        pub fn remove_source_symbols(&mut self, up_to: u64) {
+            let md = up_to.to_le_bytes();
             self.channel.fec_encoder.remove_up_to(md);
-            println!("FEC window size: {}", self.channel.fec_encoder.n_protected_symbols());
         }
     }
 

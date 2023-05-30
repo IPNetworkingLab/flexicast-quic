@@ -11,7 +11,6 @@ use criterion::BenchmarkId;
 use criterion::Criterion;
 
 const BENCH_STREAM_TOTAL_SIZE: usize = 10_000_000;
-const BENCH_STREAM_MAX_SIZE: usize = BENCH_STREAM_TOTAL_SIZE;
 const BENCH_STEP_SIZE: usize = 10;
 const NB_RECV: usize = 1;
 

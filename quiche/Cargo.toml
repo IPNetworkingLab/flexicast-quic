@@ -66,7 +66,7 @@ foreign-types-shared = { version = "0.3.0", optional = true }
 qlog = { version = "0.8", path = "../qlog", optional = true }
 sfv = { version = "0.9", optional = true }
 smallvec = { version = "1.10", features = ["serde", "union"] }
-networkcoding = { git = "ssh://git@github.com/francoismichel/networkcoding.git"}
+networkcoding = { path = "/Users/louisnavarre//Documents/Github/networkcoding" }
 
 [target."cfg(windows)".dependencies]
 winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tcpip"] }
@@ -77,7 +77,7 @@ url = "1"
 criterion = "0.4"
 
 [[bench]]
-name = "multicast"
+name = "multicast-repair"
 harness = false
 
 [lib]
