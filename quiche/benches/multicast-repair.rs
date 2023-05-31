@@ -2,8 +2,8 @@ use std::fmt::Display;
 
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::testing::MulticastPipe;
-use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::testing::OpenRangeSet;
+use quiche::multicast::MulticastChannelSource;
 
 use criterion::criterion_group;
 use criterion::criterion_main;
@@ -12,10 +12,27 @@ use criterion::BenchmarkId;
 use criterion::Criterion;
 
 const BENCH_STREAM_TOTAL_SIZE: usize = 30_000_000;
-const BENCH_LOST_STEP: u64 = 10_000;
+const BENCH_LOST_STEP: u64 = 2;
 const BENCH_LOST_MAX_GAP: u64 = 10_000;
-const BENCH_LOST_MIN_GAP: u64 = 1000;
+const BENCH_LOST_MIN_GAP: u64 = 10;
 const NB_RECV: usize = 1;
+
+#[derive(Copy, Clone)]
+enum FecResetFreq {
+    Auto,
+    Never,
+    Fixed(u64),
+}
+
+impl Display for FecResetFreq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            FecResetFreq::Auto => "true".to_string(),
+            FecResetFreq::Never => "false".to_string(),
+            FecResetFreq::Fixed(v) => v.to_string(),
+        })
+    }
+}
 
 fn setup_mc_only_source(buf: &[u8], auth: McAuthType) -> MulticastChannelSource {
     let mut pipe =
@@ -30,17 +47,21 @@ fn setup_mc_only_source(buf: &[u8], auth: McAuthType) -> MulticastChannelSource 
 struct McTuple {
     auth: McAuthType,
     nb_recv: u64,
-    remove_source_symbols: bool,
+    remove_source_symbols: FecResetFreq,
 }
 
 impl Display for McTuple {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}-{}-{}", self.auth, self.nb_recv, self.remove_source_symbols)
+        write!(
+            f,
+            "{:?}-{}-{}",
+            self.auth, self.nb_recv, self.remove_source_symbols
+        )
     }
 }
 
-impl From<(McAuthType, u64, bool)> for McTuple {
-    fn from(value: (McAuthType, u64, bool)) -> Self {
+impl From<(McAuthType, u64, FecResetFreq)> for McTuple {
+    fn from(value: (McAuthType, u64, FecResetFreq)) -> Self {
         Self {
             auth: value.0,
             nb_recv: value.1,
@@ -57,15 +78,23 @@ fn mc_channel_bench(c: &mut Criterion) {
         if *last >= BENCH_LOST_MAX_GAP {
             break;
         }
-        lost_gap.push(last + BENCH_LOST_STEP);
+        lost_gap.push(last * BENCH_LOST_STEP);
     }
 
     let mut group = c.benchmark_group("multicast-repair");
     for &auth in &[McAuthType::None] {
-        for &remove_source_symbols in &[true, false] {
+        for &remove_source_symbols in &[
+            // FecResetFreq::Auto,
+            // FecResetFreq::Never,
+            FecResetFreq::Fixed(1_000),
+        ] {
             for &lost_gap in lost_gap.iter() {
                 group.bench_with_input(
-                    BenchmarkId::from_parameter(McTuple::from((auth, lost_gap, remove_source_symbols))),
+                    BenchmarkId::from_parameter(McTuple::from((
+                        auth,
+                        lost_gap,
+                        remove_source_symbols,
+                    ))),
                     &(auth, lost_gap, remove_source_symbols),
                     |b, &(auth, lost_gap, remove_source_symbols)| {
                         b.iter_batched(
@@ -74,8 +103,9 @@ fn mc_channel_bench(c: &mut Criterion) {
                                 // Number of sent packets. Used to add losses.
                                 let mut nb_sent = 0;
                                 let mut nack_ranges = OpenRangeSet::new();
-    
-                                // Ask quiche to generate the outgoing packets with
+
+                                // Ask quiche to generate the outgoing packets
+                                // with
                                 // authentication.
                                 let mut buffer = [0u8; 1500];
                                 loop {
@@ -83,10 +113,14 @@ fn mc_channel_bench(c: &mut Criterion) {
                                         // Generate a loss.
                                         #[cfg(test)]
                                         {
-                                            nack_ranges.populate(nb_sent - 3..nb_sent - 2);
-    
+                                            nack_ranges.populate(
+                                                nb_sent - 3..nb_sent - 2,
+                                            );
+
                                             mc_channel
-                                                .set_source_nack_range(&nack_ranges)
+                                                .set_source_nack_range(
+                                                    &nack_ranges,
+                                                )
                                                 .unwrap();
                                         }
                                     }
@@ -97,12 +131,17 @@ fn mc_channel_bench(c: &mut Criterion) {
                                         Err(e) => panic!("Error: {}", e),
                                     }
 
-                                    if nb_sent % lost_gap == 0 {
-                                        if remove_source_symbols {
-                                            mc_channel.remove_source_symbols(nb_sent);
-                                        }
+                                    let remove = match remove_source_symbols {
+                                        FecResetFreq::Auto =>
+                                            nb_sent % lost_gap == 0,
+                                        FecResetFreq::Never => false,
+                                        FecResetFreq::Fixed(v) =>
+                                            nb_sent % v == 0,
+                                    };
+
+                                    if remove {
+                                        mc_channel.remove_source_symbols(nb_sent);
                                     }
-    
                                 }
                             },
                             PerIteration,
