@@ -2258,6 +2258,7 @@ pub mod testing {
     use std::collections::HashSet;
     use std::ops::Range;
 
+    use networkcoding::SourceSymbolMetadata;
     use ring::rand::SecureRandom;
 
     use crate::testing;
@@ -2729,6 +2730,18 @@ pub mod testing {
         config
             .set_application_protos(&[b"proto1", b"proto2"])
             .unwrap();
+        populate_test_mc_config(&mut config, mc_server, mc_client, use_fec, auth);
+        config
+    }
+
+    /// Populate a configuration with multicast values.
+    pub fn populate_test_mc_config(
+        config: &mut Config, mc_server: bool,
+        mc_client: Option<&MulticastClientTp>, use_fec: bool, auth: McAuthType,
+    ) {
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
         config.set_max_idle_timeout(5000);
         config.set_max_recv_udp_payload_size(1350);
         config.set_max_send_udp_payload_size(1350);
@@ -2755,7 +2768,6 @@ pub mod testing {
         } else {
             config.set_fec_symbol_size(1280);
         }
-        config
     }
 
     /// Simple McAnnounceData for testing the multicast extension only.
@@ -2843,23 +2855,46 @@ pub mod testing {
     impl MulticastChannelSource {
         /// Only used for tests and benchmarks.
         /// Sets the source nack range directly in the FEC scheduler.
-        pub fn set_source_nack_range(&mut self, rangeset: &OpenRangeSet) -> Result<()> {
+        pub fn set_source_nack_range(
+            &mut self, rangeset: &OpenRangeSet,
+        ) -> Result<()> {
             let conn_id_ref = self.channel.ids.get_dcid(0)?; // MC-TODO: replace hard-coded value.
-                if let Some(fec_scheduler) = self.channel.fec_scheduler.as_mut() {
-                    fec_scheduler.lost_source_symbol(
-                        &rangeset.ranges,
-                        conn_id_ref.cid.as_ref(),
-                    );
-                }
+            if let Some(fec_scheduler) = self.channel.fec_scheduler.as_mut() {
+                fec_scheduler.lost_source_symbol(
+                    &rangeset.ranges,
+                    conn_id_ref.cid.as_ref(),
+                );
+            }
 
-                Ok(())
+            Ok(())
         }
 
         /// Only used for tests and benchmarks.
-        /// Remove all source symbols in the FEC window.
-        pub fn remove_source_symbols(&mut self, up_to: u64) {
-            let md = up_to.to_le_bytes();
-            self.channel.fec_encoder.remove_up_to(md);
+        /// Removes all source symbols in the FEC window.
+        pub fn remove_source_symbols(&mut self, up_to: [u8; 8]) {
+            self.channel.fec_encoder.remove_up_to(up_to);
+            // println!("Number of source symbols: {}",
+            // self.channel.fec_encoder.n_protected_symbols());
+        }
+
+        /// Only used for tests and benchmarks.
+        /// Returns the metadata of the source symbols to remove.
+        #[inline]
+        pub fn fec_sliding_window_metadata(
+            &self, window_size: usize,
+        ) -> Option<SourceSymbolMetadata> {
+            let first_metadata = self.channel.fec_encoder.first_metadata()?;
+            let sid = u64::from_be_bytes(first_metadata);
+            let too_many_symbols = self
+                .channel
+                .fec_encoder
+                .n_protected_symbols()
+                .saturating_sub(window_size);
+            if too_many_symbols > 0 {
+                Some((sid + too_many_symbols as u64).to_be_bytes())
+            } else {
+                None
+            }
         }
     }
 
@@ -5623,16 +5658,19 @@ mod tests {
         let channel = &mut mc_pipe.mc_channel.channel;
         channel.stream_send(1, &buf[..1300], true).unwrap();
 
-        // Cannot fit the entire stream in the first packet because the MC_ASYM would not fit.
+        // Cannot fit the entire stream in the first packet because the MC_ASYM
+        // would not fit.
         mc_pipe.mc_channel.mc_send(&mut buf).unwrap();
         let channel = &mut mc_pipe.mc_channel.channel;
-        assert_eq!(channel.streams.get(1).unwrap().send.total_remaining(), Some(34));
+        assert_eq!(
+            channel.streams.get(1).unwrap().send.total_remaining(),
+            Some(34)
+        );
 
         mc_pipe.mc_channel.mc_send(&mut buf).unwrap();
         let channel = &mut mc_pipe.mc_channel.channel;
         assert_eq!(channel.streams.get(1).unwrap().send.total_remaining(), None);
     }
-
 }
 
 pub mod authentication;

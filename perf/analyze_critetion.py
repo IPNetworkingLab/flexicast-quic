@@ -6,9 +6,10 @@ import numpy as np
 import argparse
 from utils import latexify
 
-COLORS = ["#1b9e77", "#d95f02", "#7570b3", "#e7298a"]
-MARKERS = ["^", "v", ">", "<"]
-LINESTYLES = ["-", "--", "-.", (0, (1, 1))]
+# COLORS = ["#1b9e77", "#d95f02", "#7570b3", "#e7298a"]
+COLORS = ["#d7191c", "#fdae61", "#2b83ba", "#abdda4", "#999999"]
+MARKERS = ["^", "v", ">", "<", 's']
+LINESTYLES = ["-", "--", "-.", (0, (1, 1)), (0, (2, 1))]
 
 
 def parse_json(filename, convert=False, factor=1):
@@ -60,9 +61,8 @@ def read_multicast(dirname, convert=False, factor=1):
 
 def read_multicast_repair(dirname, convert=False, factor=1):
     # `convert` converts the time to send 10MB to a Gbps rate
-    no_reset = dict()
-    reset = dict()
     fixed = dict()
+    baseline = dict()
     
     
     for subdir in os.listdir(dirname):
@@ -72,10 +72,9 @@ def read_multicast_repair(dirname, convert=False, factor=1):
         auth_tag = subdir.split("-")[0]
         loss = int(subdir.split("-")[1])
         rst = subdir.split("-")[2]
-        if rst == "true":
-            reset[loss] = data
-        elif rst == "false":
-            no_reset[loss] = data
+        if rst == "false":
+            rst = int(subdir.split("-")[3])
+            baseline[loss] = data
         else:
             rst = int(rst)
             fixed_value = fixed.get(rst, dict())
@@ -83,7 +82,7 @@ def read_multicast_repair(dirname, convert=False, factor=1):
             fixed[rst] = fixed_value
 
     
-    return reset, no_reset, fixed
+    return baseline, fixed
 
 
 def cmp_mc_uc(root, convert=False, factor=1):
@@ -211,25 +210,24 @@ def cmp_mc_asym(root, convert=False, factor=1, save_as="bench-asym-server.pdf"):
 
 
 def cmp_mc_repair(root, convert=False, factor=1, save_as="bench-repair.pdf"):
-    reset, no_reset, fixed = read_multicast_repair(root, convert, factor)
+    baseline, fixed = read_multicast_repair(root, convert, factor)
 
-    data = [
-        (no_reset, "Keep all symbols"),
-        (reset, "Flush window after"),
-    ]
+    data = []
 
-    for (k, v) in fixed.items():
+    ks = sorted(fixed.keys())
+    for k in ks:
+        v = fixed[k]
         data.append((v, f"Fixed ({k})"))
 
     fig, ax = plt.subplots()
     for i, (d, label) in enumerate(data):
         k = sorted(d.keys())
-        v = [d[i][0] for i in k]
-        std = [d[i][1] for i in k]
+        v = [d[i][0] / baseline[i][0] for i in k]
+        std = [d[i][1] / baseline[i][0] for i in k]
 
         ax.errorbar(k, v, yerr=std, label=label, fmt=MARKERS[i], color=COLORS[i], linestyle=LINESTYLES[i])
 
-    legend = ax.legend(fancybox=True, loc=(0.5, 0.1))
+    legend = ax.legend(fancybox=True, loc=(0.65, 0.05))
     frame = legend.get_frame()
     frame.set_alpha(1)
     frame.set_color('white')
@@ -238,8 +236,8 @@ def cmp_mc_repair(root, convert=False, factor=1, save_as="bench-repair.pdf"):
 
     ax.set_xlabel("Loss percentage")
     if convert:
-        ax.set_ylabel("Goodput [Gbps]")
-        ax.set_yscale("log")
+        ax.set_ylabel("Goodput ratio")
+        # ax.set_yscale("log")
         ax.set_xscale("log")
     else:
         ax.set_ylabel("Time to send 10MB [s]")
@@ -252,7 +250,7 @@ def cmp_mc_repair(root, convert=False, factor=1, save_as="bench-repair.pdf"):
     ticks_labels = [100 / i for i in ticks]
     ticks_labels = [round(i, 3) for i in ticks_labels]
     ax.set_xticklabels(ticks_labels)
-    #ax.set_ylim((0.1, 10.0))
+    # ax.set_ylim((0.001, 1.0))
     ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     plt.tight_layout()
     plt.savefig(save_as)
