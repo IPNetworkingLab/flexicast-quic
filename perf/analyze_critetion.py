@@ -309,6 +309,69 @@ def cmp_mc_asym_client(root, convert=False, factor=1):
     plt.tight_layout()
     plt.savefig("bench-asym-client.pdf")
 
+
+def plot_generic(root, xlabel, ylabel="Gootput ratio", save_as="bench.pdf", factor=1, do_read_unicast=None, read_repair=False, ylog=False, legend_loc=None, xlog=True):
+    if read_repair:
+        baseline, fixed = read_multicast_repair(root, True, factor)
+        data = list()
+        ks = sorted(fixed.keys())
+        for k in ks:
+            v = fixed[k]
+            data.append((v, f"Fixed ({k})"))
+    else:
+        mc_auth_asym, mc_auth_sym, mc_no_auth, mc_auth_stream  = read_multicast(root, True, factor)
+        data = [
+            (mc_auth_asym, "Multicast asymmetric"),
+            (mc_no_auth, "Multicast no authentication"),
+            (mc_auth_sym, "Multicast symmetric"),
+            (mc_auth_stream, "Multicast stream"),
+        ]
+        data = list(filter(lambda x: len(x[0]) > 0, data))
+        baseline = data[1][0]
+        if do_read_unicast is not None:
+            uc = read_unicast(do_read_unicast, convert=True, factor=factor)
+            print(uc)
+            data.append((uc, "Unicast"))
+        
+    fig, ax = plt.subplots()
+    for i, (d, label) in enumerate(data):
+        k = sorted(d.keys())
+        v = [d[i][0] / baseline[i][0] for i in k]
+        std = [d[i][1] / baseline[i][0] for i in k]
+
+        ax.errorbar(k, v, yerr=std, label=label, fmt=MARKERS[i], color=COLORS[i], linestyle=LINESTYLES[i])
+
+    if legend_loc is None:
+        legend = ax.legend(fancybox=True)
+    else:
+        legend = ax.legend(fancybox=True, loc=legend_loc)
+    frame = legend.get_frame()
+    frame.set_alpha(1)
+    frame.set_color('white')
+    frame.set_edgecolor('black')
+    frame.set_boxstyle('Square', pad=0.1)
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if xlog:
+        ax.set_xscale("log")
+    if ylog:
+        ax.set_yscale("log")
+
+    ax.grid(True, which="both", ls="-")
+    if read_repair:
+        ticks = [10, 100, 1000, 10000]
+        ax.set_xticks(ticks)
+        ticks_labels = [100 / i for i in ticks]
+        ticks_labels = [round(i, 3) for i in ticks_labels]
+        ax.set_xticklabels(ticks_labels)
+    # ax.set_ylim((0.001, 1.0))
+    ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    # ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    plt.tight_layout()
+    plt.savefig(save_as)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--latex", help="Latex output", action="store_true")
@@ -320,14 +383,22 @@ if __name__ == "__main__":
     if args.latex:
         latexify()
     if args.repair:
-            cmp_mc_repair("../target/criterion/multicast-repair", convert=True, factor=3, save_as="bench-repair-server.pdf")
+            if args.clients:
+                plot_generic("../target/criterion/multicast-repair-client", factor=10, xlabel="Loss percentage", save_as="bench-repair-client.pdf", read_repair=True)
+            else:
+                # cmp_mc_repair("../target/criterion/multicast-repair", convert=True, factor=3, save_as="bench-repair-server.pdf")
+                plot_generic("../target/criterion/multicast-repair", factor=10, xlabel="Loss percentage", save_as="bench-repair-server.pdf", read_repair=True)
     elif args.clients:
         if args.asym:
-            cmp_mc_asym_client("../target/criterion", convert=True, factor=1)
+            plot_generic("../target/criterion/multicast-client-asym", factor=1, xlabel="Stream size", save_as="bench-asym-clients.pdf", ylog=True, legend_loc=(0.42, 0.2))
+            # cmp_mc_asym_client("../target/criterion", convert=True, factor=1)
         else:
-            cmp_mc_uc_client("../target/criterion", convert=True, factor=10)
+            # cmp_mc_uc_client("../target/criterion", convert=True, factor=10)
+            plot_generic("../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-server.pdf", ylog=False, do_read_unicast="../target/criterion/unicast-client-1G", xlog=False)
     else:
         if args.asym:
-            cmp_mc_asym("../target/criterion/multicast-asym", convert=True, factor=1)
+            plot_generic("../target/criterion/multicast-asym", factor=1, xlabel="Stream size", save_as="bench-asym-server.pdf", ylog=True, legend_loc=(0.42, 0.35))
+            # cmp_mc_asym("../target/criterion/multicast-asym", convert=True, factor=1)
         else:
-            cmp_mc_uc("../target/criterion", convert=True, factor=10, scale=True)
+            # cmp_mc_uc("../target/criterion", convert=True, factor=10, scale=True)
+            plot_generic("../target/criterion/multicast-1G", factor=1, xlabel="Number of receivers", save_as="bench-nb-recv-client.pdf", ylog=True, do_read_unicast="../target/criterion/unicast-1G", xlog=False, legend_loc=(0.4, 0.45))
