@@ -85,16 +85,24 @@ def read_multicast_repair(dirname, convert=False, factor=1):
     return baseline, fixed
 
 
-def cmp_mc_uc(root, convert=False, factor=1):
+def cmp_mc_uc(root, convert=False, factor=1, scale=False):
     mc_auth_asym, mc_auth_sym, mc_no_auth, _ = read_multicast(os.path.join(root, "multicast-1G"), convert, factor)
     uc = read_unicast(os.path.join(root, "unicast-1G"), convert, factor)
 
     data = [
-        (mc_auth_asym, "Multicast asymmetric"),
         (mc_no_auth, "Multicast no authentication"),
+        (mc_auth_asym, "Multicast asymmetric"),
         (mc_auth_sym, "Multicast symmetric"),
         (uc, "Unicast"),
     ]
+
+    if scale:
+        data2 = list()
+        baseline, _ = data[0]
+        for v, label in data:
+            v_scaled = {i: (v[i][0] / baseline[i][0], v[i][1] / baseline[i][0]) for i in v}
+            data2.append((v_scaled, label))
+        data = data2
 
     fig, ax = plt.subplots()
     for i, (d, label) in enumerate(data):
@@ -112,15 +120,21 @@ def cmp_mc_uc(root, convert=False, factor=1):
     frame.set_boxstyle('Square', pad=0.1)
 
     ax.set_xlabel("Number of receivers")
-    if convert:
+    if convert and not scale:
         ax.set_ylabel("Goodput [Gbps]")
+        ax.set_yscale("log")
+    elif scale:
+        ax.set_ylabel("Gootput ratio")
         ax.set_yscale("log")
     else:
         ax.set_ylabel("Time to send 10MB [s]")
 
     ax.grid(True, which="both", ls="-")
-    ax.set_yticks([0.1, 0.2, 0.5, 1, 2, 5, 10])
-    ax.set_ylim((0.1, 10.0))
+    if scale:
+        pass
+    else:
+        ax.set_yticks([0.1, 0.2, 0.5, 1, 2, 5, 10])
+        ax.set_ylim((0.1, 10.0))
     ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     plt.tight_layout()
 
@@ -316,4 +330,4 @@ if __name__ == "__main__":
         if args.asym:
             cmp_mc_asym("../target/criterion/multicast-asym", convert=True, factor=1)
         else:
-            cmp_mc_uc("../target/criterion", convert=True, factor=10)
+            cmp_mc_uc("../target/criterion", convert=True, factor=10, scale=True)

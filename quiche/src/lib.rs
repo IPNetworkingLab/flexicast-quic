@@ -1926,7 +1926,7 @@ impl Connection {
             )),
             fec_decoder: networkcoding::Decoder::VLC(VLCDecoder::new(
                 config.fec_symbol_size,
-                5000,
+                config.fec_window_size,
             )),
             fec_scheduler: Some(fec::fec_scheduler::new_fec_scheduler(
                 config.fec_scheduler_algorithm,
