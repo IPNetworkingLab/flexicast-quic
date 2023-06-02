@@ -396,7 +396,7 @@ if __name__ == "__main__":
             # cmp_mc_asym_client("../target/criterion", convert=True, factor=1)
         else:
             # cmp_mc_uc_client("../target/criterion", convert=True, factor=10)
-            plot_generic("../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-client.pdf", ylog=False, do_read_unicast="../target/criterion/unicast-client-1G", xlog=False, legend_loc=(0.4, 0.4))
+            plot_generic("../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-client.pdf", ylog=True, do_read_unicast="../target/criterion/unicast-client-1G", xlog=False, legend_loc=(0.1, 0.15))
     else:
         if args.asym:
             plot_generic("../target/criterion/multicast-asym", factor=1, xlabel="Stream size", save_as="bench-asym-server.pdf", ylog=True, legend_loc=(0.42, 0.35), ylim=(0, 1.1))
