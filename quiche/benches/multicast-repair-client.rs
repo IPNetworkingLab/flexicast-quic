@@ -16,9 +16,9 @@ use criterion::BenchmarkId;
 use criterion::Criterion;
 
 const BENCH_STREAM_TOTAL_SIZE: usize = 100_000_000;
-const BENCH_LOST_STEP: u64 = 10;
+const BENCH_LOST_STEP: u64 = 2;
 const BENCH_LOST_MAX_GAP: u64 = 10_000;
-const BENCH_LOST_MIN_GAP: u64 = 100;
+const BENCH_LOST_MIN_GAP: u64 = 10;
 const NB_RECV: usize = 1;
 
 #[derive(Copy, Clone)]
