@@ -2904,6 +2904,12 @@ pub mod testing {
         pub ranges: RangeSet,
     }
 
+    impl Default for OpenRangeSet {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     #[allow(missing_docs)]
     impl OpenRangeSet {
         pub fn new() -> Self {

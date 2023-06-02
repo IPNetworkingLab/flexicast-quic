@@ -32,7 +32,7 @@ impl Display for FecResetFreq {
     }
 }
 
-fn setup_mc_only_source(buf: &[u8], auth: McAuthType, fec: FecResetFreq) -> MulticastChannelSource {
+fn setup_mc_only_source(buf: &[u8], auth: McAuthType) -> MulticastChannelSource {
     // !matches!(fec, FecResetFreq::NoFec(_))
     let mut pipe =
         MulticastPipe::new(NB_RECV, "/tmp/bench", auth, true, false, None)
@@ -86,7 +86,7 @@ fn mc_channel_bench(c: &mut Criterion) {
             FecResetFreq::Sliding(1_000),
             FecResetFreq::Sliding(100),
             FecResetFreq::Sliding(10_000),
-            FecResetFreq::NoFec(100)
+            FecResetFreq::NoFec(100),
         ] {
             for &lost_gap in lost_gap.iter() {
                 group.bench_with_input(
@@ -98,7 +98,7 @@ fn mc_channel_bench(c: &mut Criterion) {
                     &(auth, lost_gap, remove_source_symbols),
                     |b, &(auth, lost_gap, remove_source_symbols)| {
                         b.iter_batched(
-                            || setup_mc_only_source(&buf, auth, remove_source_symbols),
+                            || setup_mc_only_source(&buf, auth),
                             |mut mc_channel| {
                                 // Number of sent packets. Used to add losses.
                                 let mut nb_sent = 0;
@@ -109,9 +109,15 @@ fn mc_channel_bench(c: &mut Criterion) {
                                 // authentication.
                                 let mut buffer = [0u8; 1500];
                                 loop {
-                                    let mut remove =match remove_source_symbols {
-                                        FecResetFreq::NoFec(v) => mc_channel.fec_sliding_window_metadata(v as usize),
-                                        FecResetFreq::Sliding(v) => mc_channel.fec_sliding_window_metadata(v as usize),
+                                    let mut remove = match remove_source_symbols {
+                                        FecResetFreq::NoFec(v) => mc_channel
+                                            .fec_sliding_window_metadata(
+                                                v as usize,
+                                            ),
+                                        FecResetFreq::Sliding(v) => mc_channel
+                                            .fec_sliding_window_metadata(
+                                                v as usize,
+                                            ),
                                     };
 
                                     if nb_sent % lost_gap == 0 {
@@ -121,7 +127,10 @@ fn mc_channel_bench(c: &mut Criterion) {
                                             nack_ranges.populate(
                                                 nb_sent - 3..nb_sent - 2,
                                             );
-                                            if matches!(remove_source_symbols, FecResetFreq::Sliding(_)) {
+                                            if matches!(
+                                                remove_source_symbols,
+                                                FecResetFreq::Sliding(_)
+                                            ) {
                                                 mc_channel
                                                     .set_source_nack_range(
                                                         &nack_ranges,
@@ -129,9 +138,17 @@ fn mc_channel_bench(c: &mut Criterion) {
                                                     .unwrap();
                                             }
 
-                                            // Use this time to remove old source symbols that are not in the window anymore.
-                                            if let (FecResetFreq::Sliding(_) | FecResetFreq::NoFec(_), Some(md)) = (remove_source_symbols, remove) {
-                                                mc_channel.remove_source_symbols(md);
+                                            // Use this time to remove old source
+                                            // symbols that are not in the window
+                                            // anymore.
+                                            if let (
+                                                FecResetFreq::Sliding(_) |
+                                                FecResetFreq::NoFec(_),
+                                                Some(md),
+                                            ) = (remove_source_symbols, remove)
+                                            {
+                                                mc_channel
+                                                    .remove_source_symbols(md);
                                                 remove = None;
                                             }
                                         }
@@ -144,7 +161,8 @@ fn mc_channel_bench(c: &mut Criterion) {
                                     }
 
                                     if let Some(metadata) = remove {
-                                        mc_channel.remove_source_symbols(metadata);
+                                        mc_channel
+                                            .remove_source_symbols(metadata);
                                     }
                                 }
                             },

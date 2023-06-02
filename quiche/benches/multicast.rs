@@ -1,10 +1,10 @@
 use std::fmt::Display;
 
-use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::authentication::McSymAuth;
 use quiche::multicast::testing::get_test_mc_config;
 use quiche::multicast::testing::MulticastPipe;
+use quiche::multicast::MulticastChannelSource;
 use quiche::testing::Pipe;
 
 use criterion::criterion_group;
@@ -19,16 +19,20 @@ const BENCH_STEP_RECV: usize = 5;
 
 fn setup_mc(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastPipe {
     let mut pipe =
-        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None).unwrap();
+        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None)
+            .unwrap();
 
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
     pipe
 }
 
-fn setup_mc_only_source(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastChannelSource {
+fn setup_mc_only_source(
+    buf: &[u8], nb_recv: usize, auth: McAuthType,
+) -> MulticastChannelSource {
     let mut pipe =
-        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None).unwrap();
+        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None)
+            .unwrap();
 
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
@@ -76,8 +80,7 @@ fn mc_channel_bench(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("multicast-1G");
     // for &auth in &[McAuthType::AsymSign, McAuthType::None]
-    for &auth in &[McAuthType::None]
-    {
+    for &auth in &[McAuthType::None] {
         for nb_recv in (1..2).chain(
             (BENCH_STEP_RECV..BENCH_NB_RECV_MAX + 1).step_by(BENCH_STEP_RECV),
         ) {
@@ -157,7 +160,6 @@ fn mc_channel_bench_sym(c: &mut Criterion) {
     }
 }
 
-
 fn uc_channel_bench(c: &mut Criterion) {
     // A benchmark consists in sending a fixed amount of bytes to the lib.
     let buf = vec![0; BENCH_STREAM_SIZE];
@@ -193,6 +195,11 @@ fn uc_channel_bench(c: &mut Criterion) {
     }
 }
 
-// criterion_group!(benches, mc_channel_bench, mc_channel_bench_sym, uc_channel_bench);
-criterion_group!(benches, mc_channel_bench);
+criterion_group!(
+    benches,
+    mc_channel_bench,
+    mc_channel_bench_sym,
+    uc_channel_bench
+);
+// criterion_group!(benches, mc_channel_bench);
 criterion_main!(benches);
