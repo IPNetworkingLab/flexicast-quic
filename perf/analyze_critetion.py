@@ -310,7 +310,7 @@ def cmp_mc_asym_client(root, convert=False, factor=1):
     plt.savefig("bench-asym-client.pdf")
 
 
-def plot_generic(root, xlabel, ylabel="Gootput ratio", save_as="bench.pdf", factor=1, do_read_unicast=None, read_repair=False, ylog=False, legend_loc=None, xlog=True):
+def plot_generic(root, xlabel, ylabel="Gootput ratio", save_as="bench.pdf", factor=1, do_read_unicast=None, read_repair=False, ylog=False, legend_loc=None, xlog=True, ylim=None):
     if read_repair:
         baseline, fixed = read_multicast_repair(root, True, factor)
         data = list()
@@ -357,6 +357,8 @@ def plot_generic(root, xlabel, ylabel="Gootput ratio", save_as="bench.pdf", fact
         ax.set_xscale("log")
     if ylog:
         ax.set_yscale("log")
+    if ylim is not None:
+        ax.set_ylim(ylim)
 
     ax.grid(True, which="both", ls="-")
     if read_repair:
@@ -390,15 +392,15 @@ if __name__ == "__main__":
                 plot_generic("../target/criterion/multicast-repair", factor=10, xlabel="Loss percentage", save_as="bench-repair-server.pdf", read_repair=True)
     elif args.clients:
         if args.asym:
-            plot_generic("../target/criterion/multicast-client-asym", factor=1, xlabel="Stream size", save_as="bench-asym-clients.pdf", ylog=True, legend_loc=(0.42, 0.2))
+            plot_generic("../target/criterion/multicast-client-asym", factor=1, xlabel="Stream size", save_as="bench-asym-clients.pdf", ylog=True, legend_loc=(0.42, 0.2), ylim=(0, 1.1))
             # cmp_mc_asym_client("../target/criterion", convert=True, factor=1)
         else:
             # cmp_mc_uc_client("../target/criterion", convert=True, factor=10)
-            plot_generic("../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-server.pdf", ylog=False, do_read_unicast="../target/criterion/unicast-client-1G", xlog=False)
+            plot_generic("../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-client.pdf", ylog=False, do_read_unicast="../target/criterion/unicast-client-1G", xlog=False, legend_loc=(0.4, 0.4))
     else:
         if args.asym:
-            plot_generic("../target/criterion/multicast-asym", factor=1, xlabel="Stream size", save_as="bench-asym-server.pdf", ylog=True, legend_loc=(0.42, 0.35))
+            plot_generic("../target/criterion/multicast-asym", factor=1, xlabel="Stream size", save_as="bench-asym-server.pdf", ylog=True, legend_loc=(0.42, 0.35), ylim=(0, 1.1))
             # cmp_mc_asym("../target/criterion/multicast-asym", convert=True, factor=1)
         else:
             # cmp_mc_uc("../target/criterion", convert=True, factor=10, scale=True)
-            plot_generic("../target/criterion/multicast-1G", factor=1, xlabel="Number of receivers", save_as="bench-nb-recv-client.pdf", ylog=True, do_read_unicast="../target/criterion/unicast-1G", xlog=False, legend_loc=(0.4, 0.45))
+            plot_generic("../target/criterion/multicast-1G", factor=1, xlabel="Number of receivers", save_as="bench-nb-recv-server.pdf", ylog=True, do_read_unicast="../target/criterion/unicast-1G", xlog=False, legend_loc=(0.4, 0.45))
