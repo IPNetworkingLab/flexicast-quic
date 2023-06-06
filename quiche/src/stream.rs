@@ -26,6 +26,7 @@
 
 use std::cmp;
 
+use std::convert::TryInto;
 use std::sync::Arc;
 
 use std::collections::hash_map;
@@ -1176,6 +1177,12 @@ pub struct SendBuf {
 
     /// The error code received via STOP_SENDING.
     error: Option<u64>,
+
+    /// Hash of the stream in the order of sending.
+    /// This variable has a meaning only if multicast is enabled and
+    /// [`crate::multicast::authentication::McAuthType::StreamAsym`] method is
+    /// used, while the stream is not authenticated yet by the signature.
+    pub hash: [u8; 32],
 }
 
 impl SendBuf {
@@ -1707,6 +1714,8 @@ impl PartialEq for RangeBuf {
 
 pub trait McStream {
     /// Hash the stream data using [`ring::digest::SHA256`].
+    /// Hashes the stream as a whole once.
+    ///
     /// The input buffer must be at least 32 bytes long.
     /// The stream must be closed and contain all data. This method should not
     /// be called if the stream is not finished and/or incomplete.
@@ -1733,6 +1742,26 @@ impl McStream for SendBuf {
     }
 }
 
+impl SendBuf {
+    /// Hash the stream data using [`ring::digest::SHA256`].
+    /// Hashes the stream incrementally.
+    /// [`data`] is the pointer to the stream data piece that is sent.
+    ///
+    /// This function should be called with the result of [`SendBuf::emit`].
+    pub fn hash_stream_incr(&mut self, data: &[u8]) -> Result<()> {
+        let mut buffer = vec![0; data.len() + self.hash.len()];
+        buffer[..self.hash.len()].copy_from_slice(&self.hash);
+        buffer[self.hash.len()..].copy_from_slice(&data);
+
+        let digest = ring::digest::digest(&ring::digest::SHA256, &buffer);
+        self.hash = digest.as_ref().try_into().map_err(|_| {
+            Error::Multicast(crate::multicast::MulticastError::McInvalidSign)
+        })?;
+
+        Ok(())
+    }
+}
+
 impl McStream for RecvBuf {
     fn hash_stream(&self, buf: &mut [u8]) -> Result<Vec<u8>> {
         if buf.len() < 32 {
@@ -1749,6 +1778,33 @@ impl McStream for RecvBuf {
         // let digest = ring::digest::digest(&ring::digest::SHA256, &stream_data);
         // buf[..32].copy_from_slice(digest.as_ref());
         Ok(stream_data)
+    }
+}
+
+impl RecvBuf {
+    /// Hash the stream data using [`ring::digest::SHA256`].
+    /// Hashes the stream incrementally.
+    /// As the receiver may receive Stream data out of order, this function must
+    /// be called once the stream is complete. Ideally, it should also be
+    /// incremental, and if a piece of stream is received out of order, the
+    /// function should try to hash as much as possible.
+    ///
+    /// Returns the hash.
+    pub fn hash_stream_incr(&self) -> Result<[u8; 32]> {
+        if !self.is_fully_readable() {
+            return Err(Error::Done);
+        }
+        let mut hash = [0u8; 32];
+        for (_, range_buf) in self.data.iter() {
+            let mut buffer = vec![0; hash.len() + range_buf.len()];
+            buffer[..hash.len()].copy_from_slice(&hash);
+            buffer[hash.len()..].copy_from_slice(range_buf);
+
+            let digest = ring::digest::digest(&ring::digest::SHA256, &buffer);
+            hash.copy_from_slice(digest.as_ref());
+        }
+
+        Ok(hash)
     }
 }
 
@@ -3529,7 +3585,7 @@ mod tests {
         assert!(stream.recv.is_fully_readable());
     }
 
-    /// Check the `McStream::hash_stream` method for both `SendBuf` and
+    /// Checks the `McStream::hash_stream` method for both `SendBuf` and
     /// `RecvBuf`.
     #[test]
     fn test_mc_stream_hash_stream() {
@@ -3577,5 +3633,37 @@ mod tests {
         // assert_eq!(send.hash_stream(&mut send_hash), Ok(()));
         // assert_eq!(recv.hash_stream(&mut recv_hash), Ok(()));
         // assert_eq!(send_hash[..32], recv_hash[..32]);
+    }
+
+    /// Checks the behavior of `SendBuf::hash_stream_incr` and
+    /// `RecvBuf::hash_stream_incr`. Both functions must give the same hash.
+    #[test]
+    fn test_mc_hash_stream_incr() {
+        let mut send = SendBuf::new(std::u64::MAX);
+        let mut recv = RecvBuf::new(std::u64::MAX, std::u64::MAX);
+
+        let mut buf = [0u8; 10];
+
+        assert_eq!(send.write(b"h", false), Ok(1));
+        assert_eq!(send.write(b"el", false), Ok(2));
+        assert_eq!(send.write(b"lo", false), Ok(2));
+        assert_eq!(send.emit(&mut buf), Ok((5, false)));
+        assert_eq!(send.hash_stream_incr(&buf[..5]), Ok(()));
+
+        let first = RangeBuf::from(&buf[..5], 0, false);
+        assert_eq!(recv.write(first), Ok(()));
+        assert_eq!(recv.hash_stream_incr(), Err(Error::Done));
+
+        assert_eq!(send.write(b"wor", false), Ok(3));
+        assert_eq!(send.write(b"l", false), Ok(1));
+        assert_eq!(send.write(b"d!", true), Ok(2));
+        assert_eq!(send.emit(&mut buf), Ok((6, true)));
+        assert_eq!(send.hash_stream_incr(&buf[..6]), Ok(()));
+
+        let first = RangeBuf::from(&buf[..6], 5, true);
+        assert_eq!(recv.write(first), Ok(()));
+        let hash_recv = recv.hash_stream_incr().unwrap();
+
+        assert_eq!(hash_recv.as_ref(), &send.hash);
     }
 }

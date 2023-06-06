@@ -16,6 +16,7 @@ use crate::ranges::RangeSet;
 use crate::recovery::multicast::MulticastRecovery;
 use crate::CongestionControlAlgorithm;
 use crate::SendInfo;
+use crate::stream::McStream;
 use networkcoding::source_symbol_metadata_from_u64;
 use ring::rand;
 use ring::rand::SecureRandom;
@@ -1783,6 +1784,7 @@ impl MulticastConnection for Connection {
                     .ok_or(Error::Multicast(MulticastError::McInvalidAuth))?;
                 let mut buf = vec![0u8; 32 + authentication.len()];
                 let mut data = stream.recv.hash_stream(&mut buf[..32])?;
+                // let mut data = stream.recv.hash_stream_incr()?.to_vec();
                 buf[32..].copy_from_slice(authentication);
                 data.extend_from_slice(authentication);
                 self.mc_verify_asym(&data)?;
@@ -5684,4 +5686,3 @@ use authentication::McAuthType;
 
 use self::authentication::McAuthentication;
 use self::authentication::McSymSign;
-use crate::stream::McStream;

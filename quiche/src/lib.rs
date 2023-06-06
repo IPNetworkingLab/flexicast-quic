@@ -346,8 +346,6 @@
 #[macro_use]
 extern crate log;
 
-use multicast::MC_ASYM_CODE;
-
 use networkcoding::DecoderError;
 use networkcoding::EncoderError;
 use networkcoding::SourceSymbolMetadata;
@@ -5076,7 +5074,7 @@ impl Connection {
                 if mc_used_auth_packet == McAuthType::StreamAsym {
                     if let Some(remaining) = stream.send.total_remaining() {
                         if remaining as usize <= max_len {
-                            max_len -= 64 + 1 + octets::varint_len(MC_ASYM_CODE);
+                            max_len -= 64 + 1 + octets::varint_len(multicast::MC_ASYM_CODE);
                         }
                     }
                 }
@@ -5087,6 +5085,10 @@ impl Connection {
                 // Write stream data into the packet buffer.
                 let (len, fin) =
                     stream.send.emit(&mut stream_payload.as_mut()[..max_len])?;
+                
+                if mc_used_auth_packet == McAuthType::StreamAsym {
+                    // stream.send.hash_stream_incr(&stream_payload.as_ref()[..len])?;
+                }
 
                 // Encode the frame's header.
                 //
@@ -5124,7 +5126,9 @@ impl Connection {
                 // complete.
                 let mut mc_tmp = [0u8; 1500];
                 if mc_used_auth_packet == McAuthType::StreamAsym && fin {
+                    let tm0 = std::time::Instant::now();
                     let mut stream_to_auth = stream.send.hash_stream(&mut mc_tmp)?;
+                   //  let mut stream_to_auth = stream.send.hash.to_vec();
                     // If the stream is no longer flushable, remove it from the
                     // queue
                     if !stream.is_flushable() {
@@ -5132,8 +5136,11 @@ impl Connection {
                     }
                     stream_to_auth.extend_from_slice(&[0u8; 64]);
                     let stream_len = stream_to_auth.len() - 64;
+                    let tm1 = std::time::Instant::now();
                     // println!("Will sign data of length: {}. First bytes are: {:?}", stream_len, &stream_to_auth[..10]);
                     self.mc_sign_asym(&mut stream_to_auth, stream_len)?;
+                    let tm2 = std::time::Instant::now();
+                    println!("Sign here. Time: {:?} and {:?}. Stream size: {:?}", tm1.duration_since(tm0), tm2.duration_since(tm1), stream_to_auth.len());
 
                     let frame = frame::Frame::McAsym {
                         signature: stream_to_auth[stream_len..].to_vec(),
