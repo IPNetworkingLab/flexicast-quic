@@ -40,6 +40,7 @@ use crate::multicast::MC_ASYM_CODE;
 use crate::multicast::MC_AUTH_CODE;
 use crate::multicast::MC_EXPIRE_CODE;
 use crate::multicast::MC_KEY_CODE;
+use crate::multicast::MC_NACK_CODE;
 use crate::multicast::MC_STATE_CODE;
 use crate::packet;
 use crate::ranges;
@@ -254,6 +255,11 @@ pub enum Frame {
 
     McAsym {
         signature: Vec<u8>,
+    },
+
+    McNack {
+        channel_id: Vec<u8>,
+        ranges: ranges::RangeSet,
     },
 
     Repair {
@@ -550,6 +556,13 @@ impl Frame {
                 let signature = b.get_bytes_with_u8_length()?.to_vec();
 
                 Frame::McAsym { signature }
+            },
+
+            MC_NACK_CODE => {
+                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
+                let (_, ranges, _) = parse_common_ack_frame(b, false)?;
+
+                Frame::McNack { channel_id, ranges }
             },
 
             0x32 => {
@@ -976,6 +989,14 @@ impl Frame {
                 b.put_bytes(signature)?;
             },
 
+            Frame::McNack { channel_id, ranges } => {
+                debug!("Going to encode the MC_NACK frame: {:?}", ranges);
+                b.put_varint(MC_NACK_CODE)?;
+                b.put_u8(channel_id.len() as u8)?;
+                b.put_bytes(channel_id.as_ref())?;
+                common_ack_to_bytes(b, &0, ranges, &None)?;
+            },
+
             Frame::Repair { repair_symbol } => {
                 b.put_varint(0x32)?;
                 b.put_bytes(repair_symbol.get())?;
@@ -1366,6 +1387,14 @@ impl Frame {
                 signature.len()
             },
 
+            Frame::McNack { channel_id, ranges } => {
+                let frame_type_size = octets::varint_len(MC_NACK_CODE);
+                frame_type_size +
+                1 + // channel_id_len
+                channel_id.len() +
+                common_ack_wire_len(&0, ranges, &None)
+            },
+
             Frame::Repair { repair_symbol } => {
                 1 + // frame_type
                 repair_symbol.wire_len()
@@ -1709,6 +1738,12 @@ impl Frame {
                 raw: Some("105".to_string()),
             },
 
+            Frame::McNack { .. } => QuicFrame::Unknown {
+                raw_frame_type: MC_NACK_CODE,
+                raw_length: Some(16),
+                raw: Some("106".to_string()),
+            },
+
             Frame::Repair { repair_symbol } => QuicFrame::Unknown {
                 raw_frame_type: 0x32,
                 raw_length: Some(repair_symbol.wire_len() as u32),
@@ -2001,6 +2036,14 @@ impl std::fmt::Debug for Frame {
 
             Frame::McAsym { signature } => {
                 write!(f, "MC_ASYM signature={:?}", signature)?;
+            },
+
+            Frame::McNack { channel_id, ranges } => {
+                write!(
+                    f,
+                    "MC_NACL channel ID={:?} ranges={:?}",
+                    channel_id, ranges
+                )?;
             },
 
             Frame::Repair { repair_symbol } => {
@@ -3928,6 +3971,53 @@ mod tests {
         };
 
         assert_eq!(wire_len, 8);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
+                .is_err()
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
+                .is_ok()
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            &get_decoder()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mc_nack() {
+        let mut d = [41; 400];
+
+        let mut ranges = ranges::RangeSet::default();
+        ranges.insert(0..4);
+        ranges.insert(100..400);
+
+        let frame = Frame::McNack {
+            channel_id: vec![0xff, 0xee, 0x45],
+            ranges,
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 15);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

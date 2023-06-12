@@ -14,9 +14,9 @@ use crate::rand::rand_bytes;
 use crate::ranges;
 use crate::ranges::RangeSet;
 use crate::recovery::multicast::MulticastRecovery;
+use crate::stream::McStream;
 use crate::CongestionControlAlgorithm;
 use crate::SendInfo;
-use crate::stream::McStream;
 use networkcoding::source_symbol_metadata_from_u64;
 use ring::rand;
 use ring::rand::SecureRandom;
@@ -100,6 +100,8 @@ pub const MC_EXPIRE_CODE: u64 = 0xf6;
 pub const MC_AUTH_CODE: u64 = 0xf7;
 /// MC_ASYM frame type.
 pub const MC_ASYM_CODE: u64 = 0xf8;
+/// MC_NACK frame type.
+pub const MC_NACK_CODE: u64 = 0xf9;
 
 /// The leaving action is requested by the client.
 pub const LEAVE_FROM_CLIENT: u64 = 0x0;
@@ -363,6 +365,9 @@ pub struct MulticastAttributes {
     /// Ordered list of streams received that need authentication.
     /// Only used for [`McAuthType::StreamAsym`] method.
     mc_recv_stream: VecDeque<u64>,
+
+    /// The multicast state has been updated.
+    pub mc_need_ack: bool,
 }
 
 impl MulticastAttributes {
@@ -546,6 +551,8 @@ impl MulticastAttributes {
             },
         };
 
+        self.mc_need_ack = true;
+
         self.mc_role = match self.mc_role {
             MulticastRole::Client(_) => MulticastRole::Client(new_status),
             MulticastRole::ServerUnicast(_) =>
@@ -719,7 +726,7 @@ impl MulticastAttributes {
     }
 
     /// Sets the multicast nack ranges received from the client.
-    /// Returns an error if it is not a [`ServerUnicast`].
+    /// Returns an error if it is not a [`ServerUnicast`] or a Client.
     pub fn set_mc_nack_ranges(
         &mut self, ranges_opt: Option<&ranges::RangeSet>,
     ) -> Result<()> {
@@ -838,6 +845,7 @@ impl Default for MulticastAttributes {
             mc_sym_signs: McSymSign::Client(HashMap::new()),
             mc_state_in_flight: false,
             mc_recv_stream: VecDeque::new(),
+            mc_need_ack: false,
         }
     }
 }

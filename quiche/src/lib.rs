@@ -3724,6 +3724,12 @@ impl Connection {
                                 }
                             },
 
+                            frame::Frame::McNack { channel_id, ranges } => {
+                                if let Some(multicast) = self.multicast.as_mut() {
+                                    // MC-TODO.
+                                }
+                            },
+
                             _ => (),
                         }
                     },
@@ -3971,13 +3977,10 @@ impl Connection {
         // Create MC_NACK frame if needed.
         // MC_NACK frames are only sent on active multicast path.
         // MC-TODO.
-        let mut sent_mc_nack = false;
         if self.multicast.is_some() && !self.is_server {
             if let Some(mc_space_id) =
                 self.multicast.as_ref().unwrap().get_mc_space_id()
             {
-                let ack_delay = pkt_num_space.largest_rx_pkt_time.elapsed();
-
                 // If the result is None, it means that either it is empty or an
                 // error occured.
                 // MC-TODO: verify that the space ID corresponds to the multicast
@@ -3997,22 +4000,21 @@ impl Connection {
                     );
 
                     // We have some nack range to send! Create the MC_NACK frame.
-                    // Maybe this is not optimal, but we will reuse ACKMP frames
-                    // to carry the nack ranges. If the space
-                    // identifier is equal to the multicast path, it is an MC_NACK
-                    // frame. Otherwise, it is an ACKMP frame.
-                    let ack_delay = ack_delay.as_micros() as u64 /
-                        2_u64.pow(
-                            self.local_transport_params.ack_delay_exponent as u32,
-                        );
 
                     info!("Send an MC_NACK with ranges: {:?}", nack_range);
 
-                    let frame = frame::Frame::ACKMP {
-                        space_identifier: mc_space_id as u64,
-                        ack_delay,
+                    let frame = frame::Frame::McNack {
+                        channel_id: self
+                            .multicast
+                            .as_ref()
+                            .unwrap()
+                            .get_mc_announce_data_path()
+                            .ok_or(Error::Multicast(
+                                multicast::MulticastError::McAnnounce,
+                            ))?
+                            .channel_id
+                            .to_owned(),
                         ranges: nack_range,
-                        ecn_counts: None,
                     };
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
@@ -4020,7 +4022,6 @@ impl Connection {
                         // is sent.
                         ack_eliciting = true;
                         in_flight = true;
-                        sent_mc_nack = true;
                     }
                 }
             }
@@ -4029,14 +4030,11 @@ impl Connection {
         // Create ACK_MP frames if needed.
         if multiple_application_data_pkt_num_spaces &&
             !is_closing &&
-            !sent_mc_nack &&
             self.paths.get(send_pid)?.active()
         {
             debug!(
-                "Enter the first: {} {} {}",
-                multiple_application_data_pkt_num_spaces,
-                !is_closing,
-                !sent_mc_nack
+                "Enter the first: {} {}",
+                multiple_application_data_pkt_num_spaces, !is_closing,
             );
             // We first check if we should bundle the ACK_MP belonging to our
             // path. We only bundle additional ACK_MP from other paths if we
@@ -4056,10 +4054,9 @@ impl Connection {
                     (pns.ack_elicited || ack_elicit_required)
                 {
                     debug!(
-                        "Will send an MP_ACK because {} {} {} {} {} {}",
+                        "Will send an MP_ACK because {} {} {} {} {}",
                         multiple_application_data_pkt_num_spaces,
                         !is_closing,
-                        !sent_mc_nack,
                         pns.recv_pkt_need_ack.len(),
                         pns.ack_elicited,
                         ack_elicit_required
@@ -4098,7 +4095,7 @@ impl Connection {
                         // Multicast: client does not send ACKMP frames for frames
                         // received on the multicast path.
                         // MC-TODO: need to test this condition.
-                        if !self.is_server {
+                        if true {
                             if let Some(multicast) = self.multicast.as_ref() {
                                 if let Some(mc_space_id) =
                                     multicast.get_mc_space_id()
@@ -4212,6 +4209,21 @@ impl Connection {
         }
 
         if pkt_type == packet::Type::Short && !is_closing {
+            if self.recovered_symbols_need_ack.len() > 0 {
+                // For multicast, we do not ACK recovered symbols to the source.
+                if let Some(multicast) = self.multicast.as_ref() {
+                    if multicast.get_mc_role() ==
+                        multicast::MulticastRole::Client(
+                            multicast::MulticastClientStatus::ListenMcPath(true),
+                        )
+                    {
+                        debug!("Reset the recovered symbols need ack");
+                        self.recovered_symbols_need_ack =
+                            ranges::RangeSet::new(crate::MAX_ACK_RANGES);
+                    }
+                }
+            }
+
             // create SOURCE_SYMBOL_ACK frame
             if self.recovered_symbols_need_ack.len() > 0 {
                 let frame = frame::Frame::SourceSymbolACK {
@@ -4219,6 +4231,7 @@ impl Connection {
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
+                    debug!("Sent a recovered symbols ack");
                     self.recovered_symbols_need_ack =
                         ranges::RangeSet::new(crate::MAX_ACK_RANGES);
                 }
@@ -5074,7 +5087,9 @@ impl Connection {
                 if mc_used_auth_packet == McAuthType::StreamAsym {
                     if let Some(remaining) = stream.send.total_remaining() {
                         if remaining as usize <= max_len {
-                            max_len -= 64 + 1 + octets::varint_len(multicast::MC_ASYM_CODE);
+                            max_len -= 64 +
+                                1 +
+                                octets::varint_len(multicast::MC_ASYM_CODE);
                         }
                     }
                 }
@@ -5085,10 +5100,6 @@ impl Connection {
                 // Write stream data into the packet buffer.
                 let (len, fin) =
                     stream.send.emit(&mut stream_payload.as_mut()[..max_len])?;
-                
-                if mc_used_auth_packet == McAuthType::StreamAsym {
-                    // stream.send.hash_stream_incr(&stream_payload.as_ref()[..len])?;
-                }
 
                 // Encode the frame's header.
                 //
@@ -5126,9 +5137,9 @@ impl Connection {
                 // complete.
                 let mut mc_tmp = [0u8; 1500];
                 if mc_used_auth_packet == McAuthType::StreamAsym && fin {
-                    let tm0 = std::time::Instant::now();
-                    let mut stream_to_auth = stream.send.hash_stream(&mut mc_tmp)?;
-                   //  let mut stream_to_auth = stream.send.hash.to_vec();
+                    let mut stream_to_auth =
+                        stream.send.hash_stream(&mut mc_tmp)?;
+                    //  let mut stream_to_auth = stream.send.hash.to_vec();
                     // If the stream is no longer flushable, remove it from the
                     // queue
                     if !stream.is_flushable() {
@@ -5136,11 +5147,7 @@ impl Connection {
                     }
                     stream_to_auth.extend_from_slice(&[0u8; 64]);
                     let stream_len = stream_to_auth.len() - 64;
-                    let tm1 = std::time::Instant::now();
-                    // println!("Will sign data of length: {}. First bytes are: {:?}", stream_len, &stream_to_auth[..10]);
                     self.mc_sign_asym(&mut stream_to_auth, stream_len)?;
-                    let tm2 = std::time::Instant::now();
-                    println!("Sign here. Time: {:?} and {:?}. Stream size: {:?}", tm1.duration_since(tm0), tm2.duration_since(tm1), stream_to_auth.len());
 
                     let frame = frame::Frame::McAsym {
                         signature: stream_to_auth[stream_len..].to_vec(),
@@ -8562,23 +8569,6 @@ impl Connection {
 
                 let handshake_status = self.handshake_status();
 
-                // If this is a multicast MC_NACK packet, the server may have no
-                // idea of the additional paths.
-                if let Some(multicast) = self.multicast.as_mut() {
-                    if matches!(
-                        multicast.get_mc_role(),
-                        multicast::MulticastRole::ServerUnicast(_)
-                    ) {
-                        if let Some(mc_space_id) = multicast.get_mc_space_id() {
-                            if mc_space_id as u64 == space_identifier {
-                                multicast.set_mc_nack_ranges(Some(&ranges))?;
-                                info!("After setting it on server for {:?}, it is: {:?}", self.multicast.as_ref().unwrap().get_self_client_id(), ranges);
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-
                 // If an endpoint receives an ACK_MP frame with a packet number
                 // space ID which was never issued by endpoints (i.e., with a
                 // sequence number larger than the largest one advertised), it
@@ -8804,6 +8794,40 @@ impl Connection {
                 } else {
                     return Err(Error::Multicast(
                         multicast::MulticastError::McInvalidSymKey,
+                    ));
+                }
+            },
+
+            frame::Frame::McNack {
+                channel_id: _,
+                ranges,
+            } => {
+                // If this is a multicast MC_NACK packet, the server may have no
+                // idea of the additional paths.
+                if let Some(multicast) = self.multicast.as_mut() {
+                    if matches!(
+                        multicast.get_mc_role(),
+                        multicast::MulticastRole::ServerUnicast(_)
+                    ) {
+                        if multicast.get_mc_space_id().is_some() {
+                            multicast.set_mc_nack_ranges(Some(&ranges))?;
+                            multicast.mc_need_ack = true;
+                            info!("After setting it on server for {:?}, it is: {:?}", self.multicast.as_ref().unwrap().get_self_client_id(), ranges);
+                        } else {
+                            return Err(Error::Multicast(
+                                multicast::MulticastError::McPath,
+                            ));
+                        }
+                    } else {
+                        return Err(Error::Multicast(
+                            multicast::MulticastError::McInvalidRole(
+                                multicast.get_mc_role(),
+                            ),
+                        ));
+                    }
+                } else {
+                    return Err(Error::Multicast(
+                        multicast::MulticastError::McDisabled,
                     ));
                 }
             },

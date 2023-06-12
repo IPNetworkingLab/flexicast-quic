@@ -1743,6 +1743,7 @@ impl McStream for SendBuf {
 }
 
 impl SendBuf {
+    #[allow(unused)]
     /// Hash the stream data using [`ring::digest::SHA256`].
     /// Hashes the stream incrementally.
     /// [`data`] is the pointer to the stream data piece that is sent.
@@ -1782,6 +1783,7 @@ impl McStream for RecvBuf {
 }
 
 impl RecvBuf {
+    #[allow(unused)]
     /// Hash the stream data using [`ring::digest::SHA256`].
     /// Hashes the stream incrementally.
     /// As the receiver may receive Stream data out of order, this function must
