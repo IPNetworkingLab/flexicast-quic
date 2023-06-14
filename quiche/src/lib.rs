@@ -3195,9 +3195,13 @@ impl Connection {
         // packet is received.
         self.paths.get_mut(recv_pid)?.recovery.pacer.reset(now);
 
-        // Reset the received complete streams for multicast.
         if let Some(multicast) = self.multicast.as_mut() {
+            // Reset the received complete streams for multicast.
             multicast.reset_recv_mc_stream();
+            
+            // Update the last received packet number (max).
+            multicast.mc_max_pn = multicast.mc_max_pn.max(pn);
+
         }
 
         Ok(read)
@@ -3724,7 +3728,7 @@ impl Connection {
                                 }
                             },
 
-                            frame::Frame::McNack { channel_id, ranges } => {
+                            frame::Frame::McNack { channel_id, last_pn, ranges } => {
                                 if let Some(multicast) = self.multicast.as_mut() {
                                     // MC-TODO.
                                 }
@@ -4003,17 +4007,17 @@ impl Connection {
 
                     info!("Send an MC_NACK with ranges: {:?}", nack_range);
 
+                    let multicast = self.multicast.as_ref().unwrap();
+
                     let frame = frame::Frame::McNack {
-                        channel_id: self
-                            .multicast
-                            .as_ref()
-                            .unwrap()
+                        channel_id: multicast
                             .get_mc_announce_data_path()
                             .ok_or(Error::Multicast(
                                 multicast::MulticastError::McAnnounce,
                             ))?
                             .channel_id
                             .to_owned(),
+                        last_pn: multicast.mc_max_pn,
                         ranges: nack_range,
                     };
 
@@ -4899,6 +4903,15 @@ impl Connection {
                                     .sent_repair_symbol();
                                 ack_eliciting = true;
                                 self.repair_symbols_sent_count += 1;
+
+                                if let Some(multicast) = self.multicast.as_mut() {
+                                    if let Some(repairs) = multicast.mc_sent_repairs.as_mut() {
+                                        info!("Set repair sent: {:?}", pn..pn + 1);
+                                        repairs.insert(pn..pn + 1);
+                                    } else {
+                                        warn!("Could not set sent repair because None?!");
+                                    }
+                                }
                             } else {
                                 return Err(BufferTooShort);
                             }
@@ -8800,6 +8813,7 @@ impl Connection {
 
             frame::Frame::McNack {
                 channel_id: _,
+                last_pn,
                 ranges,
             } => {
                 // If this is a multicast MC_NACK packet, the server may have no
@@ -8812,6 +8826,15 @@ impl Connection {
                         if multicast.get_mc_space_id().is_some() {
                             multicast.set_mc_nack_ranges(Some(&ranges))?;
                             multicast.mc_need_ack = true;
+                            if let Some(sent_repairs) = multicast.mc_sent_repairs.to_owned() {
+                                if let Some(scheduler) = self.fec_scheduler.as_mut() {
+                                    scheduler.recv_nack(last_pn, &ranges, sent_repairs);
+                                } else {
+                                    warn!("FEC disabled but received MC_NACK");
+                                }
+                            } else {
+                                warn!("No sent repairs but received an MC_NACK");
+                            }
                             info!("After setting it on server for {:?}, it is: {:?}", self.multicast.as_ref().unwrap().get_self_client_id(), ranges);
                         } else {
                             return Err(Error::Multicast(

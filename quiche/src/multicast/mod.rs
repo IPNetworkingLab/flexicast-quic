@@ -368,6 +368,13 @@ pub struct MulticastAttributes {
 
     /// The multicast state has been updated.
     pub mc_need_ack: bool,
+
+    /// Highest packet number received on the multicast channel.
+    pub mc_max_pn: u64,
+
+    /// Range of packet numbers not expired yet where a REPAIR frame was sent.
+    /// Only some for [`MulticastRole::ServerMulticast`].
+    pub mc_sent_repairs: Option<RangeSet>,
 }
 
 impl MulticastAttributes {
@@ -846,6 +853,8 @@ impl Default for MulticastAttributes {
             mc_state_in_flight: false,
             mc_recv_stream: VecDeque::new(),
             mc_need_ack: false,
+            mc_max_pn: 0,
+            mc_sent_repairs: None,
         }
     }
 }
@@ -1441,8 +1450,18 @@ impl MulticastConnection for Connection {
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData> {
         // Some data has expired.
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
-            if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(multicast) = self.multicast.as_mut() {
                 if self.is_server {
+                    // Reset the sent repair frames.
+                    if multicast.mc_sent_repairs.is_some() {
+                        multicast.mc_sent_repairs = Some(ranges::RangeSet::default());
+                    }
+
+                    // Reset the number of FEC repair packets in flight.
+                    if let Some(fec_scheduler) = self.fec_scheduler.as_mut() {
+                        fec_scheduler.reset_fec_state();
+                    }
+
                     info!("Call on_mc_timeout on server");
                     let mc_auth_space_id = multicast.mc_auth_space_id;
 
@@ -1455,11 +1474,6 @@ impl MulticastConnection for Connection {
                             None,
                             now,
                         )?;
-                    }
-
-                    // Reset the number of FEC repair packets in flight.
-                    if let Some(fec_scheduler) = self.fec_scheduler.as_mut() {
-                        fec_scheduler.reset_fec_state();
                     }
 
                     let multicast = self.multicast.as_ref().unwrap();
@@ -1967,6 +1981,7 @@ impl MulticastChannelSource {
             mc_auth_type: authentication,
             mc_pn_need_sym_sign: Some(VecDeque::new()),
             mc_last_recv_time: Some(time::Instant::now()),
+            mc_sent_repairs: Some(ranges::RangeSet::default()),
             ..Default::default()
         });
 

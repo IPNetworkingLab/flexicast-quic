@@ -21,38 +21,16 @@ impl RetransmissionFecScheduler {
     }
 
     pub fn should_send_repair(&mut self) -> bool {
-        // Compute the maximum number of repair symbols to generate.
-        if self.new_nack {
-            self.n_repair_to_send = self
-                .client_losses
-                .values()
-                .map(|rs| rs.flatten().count())
-                .max()
-                .unwrap_or(0) as u64;
-            self.new_nack = false;
-            info!("Number of repair to send: {} because: {:?}", self.n_repair_to_send, self.client_losses);
-        }
-
-        if !self.client_losses.is_empty() &&
-            self.n_repair_in_flight >= self.n_repair_to_send
-        {
-            // We sent enough repair symbols. We flush the hashmap to avoid
-            // sending repair symbols for old data.
-            self.client_losses = HashMap::new();
-        }
-
-        self.n_repair_in_flight < self.n_repair_to_send && (if let Some(max_rs) = self.max_n_repair_in_flight {
-            info!("Sent repair in flight: {} and max: {:?}", self.n_repair_in_flight, self.max_n_repair_in_flight);
-            self.n_repair_in_flight < max_rs as u64
-        } else {
-            true
-        })
-
-        // trace!("fec_scheduler dgrams_to_emit={} stream_to_emit={}
-        // n_repair_in_flight={} max_repair_data={}",
-        //         dgrams_to_emit, stream_to_emit, self.n_repair_in_flight,
-        // max_repair_data); !dgrams_to_emit && !stream_to_emit &&
-        // (self.n_repair_in_flight as usize *symbol_size) < max_repair_data
+        self.n_repair_in_flight < self.n_repair_to_send &&
+            (if let Some(max_rs) = self.max_n_repair_in_flight {
+                info!(
+                    "Sent repair in flight: {} and max: {:?}",
+                    self.n_repair_in_flight, self.max_n_repair_in_flight
+                );
+                self.n_repair_in_flight < max_rs as u64
+            } else {
+                true
+            })
     }
 
     pub fn sent_repair_symbol(&mut self) {
@@ -79,6 +57,22 @@ impl RetransmissionFecScheduler {
         self.n_repair_in_flight = 0;
         self.n_repair_to_send = 0;
         self.client_losses = HashMap::new();
+    }
+
+    pub fn recv_nack(
+        &mut self, pn: u64, ranges: &RangeSet, mut repairs: RangeSet,
+    ) {
+        // Total number of repair asked.
+        let nb_required = ranges.len(); // MC-TODO: number of ranges or of values?
+
+        // The client is desynchronized with the source, so it may receive a
+        // REPAIR that we sent earlier after sending this MC_NACK.
+        repairs.remove_until(pn);
+        let sent_repairs_not_received = repairs.len();
+
+        self.n_repair_to_send = self
+            .n_repair_to_send
+            .max(nb_required.saturating_sub(sent_repairs_not_received) as u64);
     }
 }
 
@@ -107,7 +101,8 @@ mod tests {
     }
 
     #[test]
-    /// Test with multiple clients. The number of repair symbols to generate is the maximum among all clients.
+    /// Test with multiple clients. The number of repair symbols to generate is
+    /// the maximum among all clients.
     fn test_send_repair_using_nack_two_clients() {
         let mut scheduler = RetransmissionFecScheduler::new(None);
         let cid_1 = vec![1, 2, 3];

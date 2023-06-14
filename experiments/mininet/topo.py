@@ -50,16 +50,26 @@ class MyAutoTopo(Topo):
 
         all_links = set()
         bw = kwargs["args"].bw
-        loss = kwargs["args"].u_loss
+        loss = kwargs["args"].loss
+        loss_pattern = kwargs["args"].loss_pattern
+        do_loss = loss_pattern != "none"
         with open(kwargs["links"]) as fd:
             txt = fd.read().split("\n")
-        for link_info in txt:
+        for i, link_info in enumerate(txt):
             if len(link_info) == 0:
                 continue
             id1, id2, _, _, _ = link_info.split(" ")
             if (id1, id2) in all_links or (id2, id1) in all_links:
                 continue
-            self.addLink(all_nodes[id1], all_nodes[id2], cls=TCLink, bw=bw, loss=loss, delay="3ms")
+            loss_loc = 0
+            if do_loss:
+                if loss_pattern == "first" and i == 0:
+                    loss_loc = loss
+                if loss_pattern == "half" and (i == 2 or i == 4):
+                    loss_loc = loss
+                if loss_pattern == "lasts" and (int(id1) > 25 or int(id2) > 25):
+                    loss_loc = loss
+            self.addLink(all_nodes[id1], all_nodes[id2], cls=TCLink, bw=bw, loss=loss_loc, delay="3ms")
             all_links.add((id1, id2))
 
 
@@ -209,7 +219,7 @@ def simpleRun(args, core_range):
         # Create dir if not exists.
         os.makedirs(args.out, exist_ok=True)
 
-        log_trace = "RUST_LOG=info" if args.log else ""
+        log_trace = "RUST_LOG=trace" if args.log else ""
 
         for i_run in range(args.nb_run):
             for method in methods:
@@ -230,7 +240,7 @@ def simpleRun(args, core_range):
                     # Capture packets.
                     if args.tcpdump:
                         os.makedirs(os.path.join(args.out, "pcaps"), exist_ok=True)
-                        dump_tmp = lambda i, j: os.path.join(args.out, "pcaps", f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.u_loss}-{args.nb_rs}-{i}-{j}.pcap")
+                        dump_tmp = lambda i, j: os.path.join(args.out, "pcaps", f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.loss}-{args.nb_rs}-{i}-{j}.pcap")
                         for node_id in range(nb_nodes):
                             itfs = net[str(node_id)].intfList()
                             for itf in itfs:
@@ -240,7 +250,7 @@ def simpleRun(args, core_range):
 
 
                     # Output filename of the experiment.
-                    output_file_without_dir = lambda idx: f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.u_loss}-{args.nb_rs}-{idx}.txt"
+                    output_file_without_dir = lambda idx: f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}-{i_run}-{args.bw}-{args.loss}-{args.nb_rs}-{idx}.txt"
                     output_file = lambda idx: os.path.join(args.out, output_file_without_dir(idx))
 
                     # Start the quiche server on CloudLab.
@@ -303,14 +313,15 @@ if __name__ == "__main__":
     parser.add_argument("--nb-frames", type=int, help="Number of frames of the test. Default: all", default=None)
     parser.add_argument("--file", type=str, help="File name to send/trace", default="../perf/tixeo_trace.repr")
     parser.add_argument("--wait", help="Make server wait for the client to connect", action="store_true")
-    parser.add_argument("--auth", help="Authentication methods to test. Default: all", choices=["asymmetric", "symmetric", "none", "all"])
+    parser.add_argument("--auth", help="Authentication methods to test. Default: all", choices=["asymmetric", "symmetric", "none", "all", "stream"])
     parser.add_argument("--method", help="Multicast or unicast delivery. Default: both", choices=["mc", "uc", "both"])
     parser.add_argument("--out", help="Output directory", default="results", type=str)
     parser.add_argument("--ttl", help="Data expiration for multicast (in ms). Default: 1000", default="1000", type=int)
     parser.add_argument("--release", help="Compile and execute the code in release mode", action="store_true")
     parser.add_argument("--nb-run", help="Number of repetitions of each experiment", type=int, default=1)
     parser.add_argument("--bw", help="Set the same bandwidth value on each link (Mbps)", type=float, default=100)
-    parser.add_argument("--u-loss", help="Uniform loss on each link (%)", type=float, default=0)
+    parser.add_argument("--loss", help="Uniform loss on each link (%)", type=float, default=0)
+    parser.add_argument("--loss-pattern", help="Loss pattern", choices=["first", "half", "lasts"], type=str, default="none")
     parser.add_argument("--cores", help="Cores available for the experiment, following Python range synthax (e.g., '1,10')", type=str, default="1,2")
     parser.add_argument("--nb-rs", help="Number of FEC repair symbols to send", type=int, default=5)
     parser.add_argument("--tcpdump", help="Capture the traces of all interfaces of all nodes", action="store_true")
