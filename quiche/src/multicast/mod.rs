@@ -318,7 +318,9 @@ pub struct MulticastAttributes {
     /// Nack ranges received by the server from the client.
     /// Only present for the server unicast.
     /// For the client, it contains the last sent nack ranges.
-    mc_nack_ranges: Option<RangeSet>,
+    /// Contains the maximum received packet number (on the client) at which
+    /// this range was sent by the client.
+    mc_nack_ranges: Option<(RangeSet, u64)>,
 
     /// Last expired packet num (0) and stream ID (1).
     pub(crate) mc_last_expired: Option<ExpiredData>,
@@ -735,7 +737,7 @@ impl MulticastAttributes {
     /// Sets the multicast nack ranges received from the client.
     /// Returns an error if it is not a [`ServerUnicast`] or a Client.
     pub fn set_mc_nack_ranges(
-        &mut self, ranges_opt: Option<&ranges::RangeSet>,
+        &mut self, ranges_opt: Option<(&ranges::RangeSet, u64)>,
     ) -> Result<()> {
         if !matches!(
             self.mc_role,
@@ -746,8 +748,8 @@ impl MulticastAttributes {
             )));
         }
 
-        if let Some(ranges) = ranges_opt {
-            self.mc_nack_ranges = Some(ranges.clone());
+        if let Some((ranges, pn)) = ranges_opt {
+            self.mc_nack_ranges = Some((ranges.clone(), pn));
         } else {
             self.mc_nack_ranges = None;
         }
@@ -1312,14 +1314,14 @@ impl MulticastConnection for Connection {
 
             if let Ok(pns) = self.pkt_num_spaces.get(epoch, space_id) {
                 let nack_range = pns.recv_pkt_need_ack.get_missing();
-                if nack_range.len() == 0 ||
-                    multicast.mc_nack_ranges.as_ref() == Some(&nack_range)
-                {
-                    // Avoid sending exactly the same nack range as before.
-                    None
-                } else {
-                    Some(nack_range)
+                if nack_range.len() == 0 {
+                    return None;
+                } else if let Some((range, _)) = multicast.mc_nack_ranges.as_ref() {
+                    if range == &nack_range {
+                        return None;
+                    }
                 }
+                Some(nack_range)
             } else {
                 None
             }
@@ -1454,7 +1456,8 @@ impl MulticastConnection for Connection {
                 if self.is_server {
                     // Reset the sent repair frames.
                     if multicast.mc_sent_repairs.is_some() {
-                        multicast.mc_sent_repairs = Some(ranges::RangeSet::default());
+                        multicast.mc_sent_repairs =
+                            Some(ranges::RangeSet::default());
                     }
 
                     // Reset the number of FEC repair packets in flight.
@@ -1603,7 +1606,7 @@ impl MulticastConnection for Connection {
             }
 
             // MC_NACK ranges.
-            if let Some(nack_ranges) = multicast.mc_nack_ranges.as_mut() {
+            if let Some((nack_ranges, pn)) = multicast.mc_nack_ranges.as_mut() {
                 // Filter from the nack ranges packets that are expired on the
                 // source. This is necessary in case of
                 // desynchronization with the client.
@@ -1615,15 +1618,17 @@ impl MulticastConnection for Connection {
 
                 // The multicast source updates its FEC scheduler with the
                 // received losses.
-                let conn_id_ref = self.ids.get_dcid(0)?; // MC-TODO: replace hard-coded value.
                 if let Some(fec_scheduler) = mc_channel.fec_scheduler.as_mut() {
-                    fec_scheduler.lost_source_symbol(
-                        nack_ranges,
-                        conn_id_ref.cid.as_ref(),
-                    );
+                    if let Some(sent_repairs) = mc_channel.multicast.as_ref().unwrap().mc_sent_repairs.to_owned() {
+                            fec_scheduler.recv_nack(*pn, nack_ranges, sent_repairs);
+                    } else {
+                        println!("No sent repairs but received an MC_NACK");
+                    }
 
                     // Reset nack ranges of the unicast server to avoid loops.
                     multicast.set_mc_nack_ranges(None)?;
+                } else {
+                    println!("FEC disabled but received MC_NACK");
                 }
             }
 
@@ -3929,7 +3934,7 @@ mod tests {
                 .unwrap()
                 .mc_nack_ranges
                 .as_ref(),
-            Some(&expected_ranges)
+            Some(&(expected_ranges.clone(), 6))
         );
 
         // The unicast server receives the MC_NACK.
@@ -3940,10 +3945,14 @@ mod tests {
             .unwrap()
             .mc_nack_ranges
             .as_ref();
-        assert_eq!(nack_on_source, Some(&expected_ranges));
+        assert_eq!(nack_on_source, Some(&(expected_ranges.clone(), 6)));
 
         // The unicast server forwards information to the multicast source.
         assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+
+        let mut tr = ranges::RangeSet::default();
+        tr.insert(0..100);
+        assert_eq!(tr.len(), 99);
 
         // The server generates FEC repair packets and forwards them to the
         // client.

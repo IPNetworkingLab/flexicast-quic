@@ -995,8 +995,8 @@ impl Frame {
                 debug!("Going to encode the MC_NACK frame: {:?}", ranges);
                 b.put_varint(MC_NACK_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
-                b.put_varint(*last_pn)?;
                 b.put_bytes(channel_id.as_ref())?;
+                b.put_varint(*last_pn)?;
                 common_ack_to_bytes(b, &0, ranges, &None)?;
             },
 
@@ -4023,7 +4023,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 17);
+        assert_eq!(wire_len, 19);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

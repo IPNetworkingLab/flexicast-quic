@@ -3992,10 +3992,11 @@ impl Connection {
                 if let Some(nack_range) =
                     self.mc_nack_range(epoch, mc_space_id as u64)
                 {
+                    let max_pn = self.multicast.as_ref().unwrap().mc_max_pn;
                     self.multicast
                         .as_mut()
                         .unwrap()
-                        .set_mc_nack_ranges(Some(&nack_range))?;
+                        .set_mc_nack_ranges(Some((&nack_range, max_pn)))?;
 
                     info!(
                         "After setting it on client for {:?}, it is: {:?}",
@@ -8824,18 +8825,9 @@ impl Connection {
                         multicast::MulticastRole::ServerUnicast(_)
                     ) {
                         if multicast.get_mc_space_id().is_some() {
-                            multicast.set_mc_nack_ranges(Some(&ranges))?;
+                            multicast.set_mc_nack_ranges(Some((&ranges, last_pn)))?;
                             multicast.mc_need_ack = true;
-                            if let Some(sent_repairs) = multicast.mc_sent_repairs.to_owned() {
-                                if let Some(scheduler) = self.fec_scheduler.as_mut() {
-                                    scheduler.recv_nack(last_pn, &ranges, sent_repairs);
-                                } else {
-                                    warn!("FEC disabled but received MC_NACK");
-                                }
-                            } else {
-                                warn!("No sent repairs but received an MC_NACK");
-                            }
-                            info!("After setting it on server for {:?}, it is: {:?}", self.multicast.as_ref().unwrap().get_self_client_id(), ranges);
+                            println!("After setting it on server for {:?}, it is: {:?}", self.multicast.as_ref().unwrap().get_self_client_id(), ranges);
                         } else {
                             return Err(Error::Multicast(
                                 multicast::MulticastError::McPath,

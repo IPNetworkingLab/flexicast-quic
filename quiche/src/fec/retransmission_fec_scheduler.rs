@@ -21,6 +21,7 @@ impl RetransmissionFecScheduler {
     }
 
     pub fn should_send_repair(&mut self) -> bool {
+        println!("Nb sent: {} to send: {}", self.n_repair_in_flight, self.n_repair_to_send);
         self.n_repair_in_flight < self.n_repair_to_send &&
             (if let Some(max_rs) = self.max_n_repair_in_flight {
                 info!(
@@ -62,6 +63,7 @@ impl RetransmissionFecScheduler {
     pub fn recv_nack(
         &mut self, pn: u64, ranges: &RangeSet, mut repairs: RangeSet,
     ) {
+        println!("RECV NACK: {} {:?} {:?}", pn, ranges, repairs);
         // Total number of repair asked.
         let nb_required = ranges.len(); // MC-TODO: number of ranges or of values?
 
