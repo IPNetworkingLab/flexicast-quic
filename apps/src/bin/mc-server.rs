@@ -259,12 +259,12 @@ fn main() {
     config.set_disable_active_migration(true);
     config.set_active_connection_id_limit(5);
     config.enable_early_data();
-    // config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     if args.multicast {
         config.set_multipath(true);
         config.set_enable_server_multicast(true);
         debug!("Set multicase true");
     }
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
 
     let rng = SystemRandom::new();
     let conn_id_seed =

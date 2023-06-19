@@ -3728,7 +3728,7 @@ impl Connection {
                                 }
                             },
 
-                            frame::Frame::McNack { channel_id, last_pn, ranges } => {
+                            frame::Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges } => {
                                 if let Some(multicast) = self.multicast.as_mut() {
                                     // MC-TODO.
                                 }
@@ -3993,10 +3993,12 @@ impl Connection {
                     self.mc_nack_range(epoch, mc_space_id as u64)
                 {
                     let max_pn = self.multicast.as_ref().unwrap().mc_max_pn;
+                    let nb_degree_needed = self.fec_decoder.nb_missing_degrees();
+                    println!("NB DEgree needed: {:?}", nb_degree_needed);
                     self.multicast
                         .as_mut()
                         .unwrap()
-                        .set_mc_nack_ranges(Some((&nack_range, max_pn)))?;
+                        .set_mc_nack_ranges(Some((&nack_range, max_pn)), nb_degree_needed)?;
 
                     info!(
                         "After setting it on client for {:?}, it is: {:?}",
@@ -4019,6 +4021,7 @@ impl Connection {
                             .channel_id
                             .to_owned(),
                         last_pn: multicast.mc_max_pn,
+                        nb_repair_needed: nb_degree_needed.unwrap_or(0),
                         ranges: nack_range,
                     };
 
@@ -6109,6 +6112,7 @@ impl Connection {
             None => return true,
         };
 
+        // stream.recv.is_fully_readable()
         stream.recv.has_fin()
     }
 
@@ -8815,6 +8819,7 @@ impl Connection {
             frame::Frame::McNack {
                 channel_id: _,
                 last_pn,
+                nb_repair_needed,
                 ranges,
             } => {
                 // If this is a multicast MC_NACK packet, the server may have no
@@ -8824,8 +8829,13 @@ impl Connection {
                         multicast.get_mc_role(),
                         multicast::MulticastRole::ServerUnicast(_)
                     ) {
+                        let nb_repair_opt = if nb_repair_needed == 0 {
+                            None
+                        } else {
+                            Some(nb_repair_needed)
+                        };
                         if multicast.get_mc_space_id().is_some() {
-                            multicast.set_mc_nack_ranges(Some((&ranges, last_pn)))?;
+                            multicast.set_mc_nack_ranges(Some((&ranges, last_pn)), nb_repair_opt)?;
                             multicast.mc_need_ack = true;
                             println!("After setting it on server for {:?}, it is: {:?}", self.multicast.as_ref().unwrap().get_self_client_id(), ranges);
                         } else {

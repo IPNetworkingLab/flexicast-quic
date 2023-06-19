@@ -6,10 +6,14 @@ import os
 import subprocess
 import tqdm
 from utils import latexify
+import seaborn as sns
+import pandas as pd
+import matplotlib
 
-COLORS = ["#1b9e77", "#d95f02", "#7570b3", "#e7298a"]
-MARKERS = ["^", "v", ">", "<"]
-LINESTYLES = ["-", "--", "-.", (0, (1, 1))]
+COLORS = ["#d7191c", "#fdae61", "#2b83ba", "#abd9e9", "#abdda4", "#999999"]
+COLORS_GREY = ["dimgray", "silver", "whitesmoke"]
+MARKERS = ["^", "v", ">", "<", 's']
+LINESTYLES = ["-", "--", "-.", (0, (1, 1)), (0, (2, 1))]
 
 
 def get_files_labels(directory, server_only):
@@ -97,8 +101,8 @@ def read_and_rm_delay(trace_file, res_file):
         (time_res, bytes_res) = sid_time_res[i]
         (time_trace, bytes_trace) = sid_time_trace[i]
 
-        # if bytes_res != bytes_trace:
-        #     print(f"Different number of bytes for stream {i}: {bytes_res} vs {bytes_trace}")
+        #if bytes_res != bytes_trace:
+        #    print(f"Different number of bytes for stream {i}: {bytes_res} vs {bytes_trace} (filename is {res_file})")
 
         min_dist = min(min_dist, time_res - time_trace)
     
@@ -107,6 +111,9 @@ def read_and_rm_delay(trace_file, res_file):
 
     # Remove the "delay" from all collected samples in the result file.
     # Also remove the trace timestamp to get the lateness.
+    for i in sid_time_res.keys():
+        if sid_time_res[i][1] <= 1:
+            print(sid_time_res[i])
     return {
         i: (sid_time_res[i][0] - min_dist - sid_time_trace[i][0]) / 1000 for i in sid_time_res.keys() if sid_time_res[i][1] > 1
     }, lost_frames
@@ -124,25 +131,36 @@ def compute_cdf(values, nb_bins: int = 200, add_zero: bool = False):
 
 
 def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", ylim=None, xlim=None):
+    print(save_as, xlim)
     res = dict()
     for (files, label) in all_files_labels:
+        # if not label == "UC": continue
         tmp = list()
         total_loss = 0
         for file in files:
             r, lost_frames = read_and_rm_delay(trace, file)
-            frames_too_long = [i for i in r if r[i] > 50]
-            # print("Frames too long:", frames_too_long)
+            frames_too_long = sorted([(i, r[i]) for i in r if r[i] > 200])
+            if len(frames_too_long) > 0:
+                print(f"Frames too long for {file}:", frames_too_long, len(frames_too_long))
+            if len(lost_frames) > 0:
+                print(f"Lost frames {file}", lost_frames)
+
+            # Add frames with a result.
             tmp += list(r.values())
+
+            # Add lost frames outside the limit for a non-finishing curve.
             if xlim is not None:
                 tmp += [xlim[1] + 10] * len(lost_frames)
             total_loss += len(lost_frames)
         if xlim is not None:
+            # Too long = also lost video frames.
             too_long = [i for i in tmp if i > xlim[1]]
             print("Too long:", label, len(too_long))
+            # Replace really too long frames because otherwise the bins is bad.
             tmp = [i if i <= xlim[1] else xlim[1] + 10 for i in tmp]
-        print(f"Nb points for {label}: {len(tmp)}")
-        print(f"Nb lost frames for {label}: {total_loss}")
-        res[label] = compute_cdf(tmp, add_zero=True, nb_bins=7000)
+            print(f"Nb points for {label}: {len(tmp)}")
+            print(f"Nb lost frames for {label}: {total_loss}")
+        res[label] = compute_cdf(tmp, add_zero=True, nb_bins=1000)
 
     fig, ax = plt.subplots()
 
@@ -157,8 +175,9 @@ def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", 
     if xlim is not None:
         ax.set_xlim(xlim)
     plt.legend()
-    plt.savefig("test.pdf")
-    # plt.savefig(save_as, dpi=500)
+    # plt.savefig("test.pdf")
+    plt.tight_layout()
+    plt.savefig(save_as, dpi=500)
 
 
 def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf", ylim=None, xlim=None, cmp_uc=None, ylabel=""):
@@ -238,30 +257,108 @@ def plot_pcap(all_files_labels, trace, title="", save_as="bytes.pdf"):
     #         total_mc_auth += read_tshark_out(out)
     #     res[label] = (total_uc, total_mc_data, total_mc_auth)
 
-    res = {'MC asymmetric': (19882098, 1785258200, 0), 'MC none': (19856060, 1679857800, 0), 'MC symmetric': (19884532, 1678992632, 1631735100), 'UC': (7447411584, 0, 0)}
-    # print(res)
-    keys = sorted(list(res.keys()))
+    # res = {'MC none': (24656352, 1210067600, 0), 'UC': (5636354844, 0, 0)}
+    # res = {'MC asymmetric': (19882098, 1785258200, 0), 'MC none': (19856060, 1679857800, 0), 'MC symmetric': (19884532, 1678992632, 1631735100), 'UC': (7447411584, 0, 0)}
+
+    res = {
+        0: {'MC none': (6292526, 1201353900, 0), 'UC': (5979727826, 0, 0)},
+        1: {'MC none': (24656352, 1210067600, 0), 'UC': (5636354844, 0, 0)},
+        2: {'MC none': (40882932, 1219662500, 0), 'UC': (5667614838, 0, 0)},
+        3: {'MC none': (64450485, 1232994880, 0), 'UC': (5684334016, 0, 0)},
+        4: {'MC none': (79492908, 1246982700, 0), 'UC': (5706839872, 0, 0)},
+        5: {'MC none': (89114122, 1256883550, 0), 'UC': (5717149050, 0, 0)}
+    }
+    print(res)
+    
+    mega_values = list()
+    for loss, data in res.items():
+        for label, (val1, val2, val3) in data.items():
+            mega_values.append((loss, label, val1 + val2 + val3))
+    
+    df = pd.DataFrame(mega_values, columns=["Loss [%]", "Method", "Nb bytes"])
 
     fig, ax = plt.subplots()
-    bottom = np.zeros(len(keys))
-    width = 0.5
 
-    species = keys
-
-    for idx, t in enumerate(["UC session", "MC data channel", "MC auth channel"]):
-        tmp = [res[k][idx] for k in keys]
-        p = ax.bar(species, tmp, width, label=t, bottom=bottom, color=COLORS[idx])
-        bottom += tmp
+    sns.barplot(data=df, x="Loss [%]", y="Nb bytes", hue="Method")
     
-    ax.set_xlabel("Communication type")
-    ax.set_ylabel("Number of bytes")
-    ax.set_title(title)
-    ax.grid(axis="y")
-    ax.set_axisbelow(True)
-    plt.legend()
+    # ax.set_xlabel("Communication type")
+    # ax.set_ylabel("Number of bytes")
+    # ax.set_title(title)
+    # ax.grid(axis="y")
+    # ax.set_axisbelow(True)
+    ax.set_yscale("log")
+    # plt.legend()
     plt.savefig(save_as, dpi=500)
+
+
+
+def plot_losses(directories, trace, filter, save_as):
+    res = dict()
+    for subdir in directories:
+        files_labels, ttl, nb_frames = get_files_labels(subdir, filter)
+        loss = int(subdir.split("-")[-1])
+        res_this_loss = dict()
+        for (files, label) in files_labels:
+            tmp = list()
+            for file in files:
+                r, _ = read_and_rm_delay(trace, file)
+                if len(r.values()) == 0:
+                    print(file)
+                    continue
+
+                # Keep only th percentile.
+                perc = np.percentile(list(r.values()), args.perc)
+                r2 = {k: v for k, v in r.items() if v >= perc}
+                # print(f"Before {len(r)}. After: {len(r2)}")
+                r = r2
+                tmp += list(r.values())
+            res_this_loss[label] = tmp
+        res[loss] = res_this_loss
+        # if len(res) > 1: break
     
-    print(res)
+    fig, ax = plt.subplots()
+
+    keys = sorted(list(res.keys()))
+
+    # Convert to df.
+    mega_values = list()
+    in_timer = dict()
+    for loss, data in res.items():
+        tmp = dict()
+        for label, values in data.items():
+            for value in values:
+                if value >= 350:
+                    tmp[label] = tmp.get(label, 0) + 1
+                    print(value, loss, label)
+                else:
+                    mega_values.append((loss, label, value))
+        in_timer[loss] = tmp
+    df = pd.DataFrame(mega_values, columns=["Loss [%]", "Method", "Lateness [ms]"])
+    print(df)
+    print(in_timer)
+
+    # sns.violinplot(data=df, x="loss", y="Lateness [ms]", hue="method")
+    sns.boxplot(data=df, x="Loss [%]", y="Lateness [ms]", hue="Method", showfliers=False, palette=COLORS_GREY)
+    # ax.set_ylim((-10, 300))
+    ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+
+    legend = ax.legend(fancybox=True, ncol = 3)
+    frame = legend.get_frame()
+    frame.set_alpha(1)
+    frame.set_color('white')
+    frame.set_edgecolor('black')
+    frame.set_boxstyle('Square', pad=0.1)
+    plt.tight_layout()
+    ax.yaxis.grid(True, ls="-")
+    ax.set_xlabel(r"Loss [\%]")
+    ax.set_axisbelow(True)
+    plt.savefig(save_as)
+
+
+def plot_file_losses(args):
+    all_files_labels, ttl, nb_frames = get_files_labels(args.directory, args.filter)
+    print(all_files_labels)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -273,15 +370,35 @@ if __name__ == "__main__":
     parser.add_argument("--filter", help="Server or client lateness", default="clients", choices=["clients", "server"])
     parser.add_argument("--pcap", help="Plot using the PCAPs", action="store_true")
     parser.add_argument("--latex", help="Latex rendering", action="store_true")
+    parser.add_argument("--losses", help="Losses plot", action="store_true")
+    parser.add_argument("--perc", help="Percentile to filter", type=int, default=0)
+    parser.add_argument("--save", help="Save as file", type=str, default="fig.pdf")
+    parser.add_argument("--file", help="File plot", action="store_true")
     args = parser.parse_args()
 
     if args.latex:
-        latexify()
+        latexify(columns=2)
 
+    # File.
+    if args.file:
+        plot_file_losses(args)
     # Pcaps.
-    if args.pcap:
-        all_files_labels, ttl, nb_frames = get_files_labels(os.path.join(args.directory, "pcaps"), False)
-        plot_pcap(all_files_labels, args.trace, title=f"Mininet ({nb_frames} frames, ttl={ttl})", save_as=f"bytes_{nb_frames}_{ttl}_{args.filter}.png")
+    elif args.losses:
+        # Get all directories with this prefix.
+        all_subdirs = list()
+        for subdir in os.listdir(args.directory):
+            all_subdirs.append(os.path.join(args.directory, subdir))
+        plot_losses(all_subdirs, args.trace, args.filter, save_as=args.save)
+    elif args.pcap:
+        # for subdir in os.listdir(args.directory):
+        #     path = os.path.join(args.directory, subdir)
+        #     print(path)
+        #     all_files_labels, ttl, nb_frames = get_files_labels(os.path.join(path, "pcaps"), False)
+        all_files_labels = list()
+        nb_frames = 5000
+        ttl = 350
+
+        plot_pcap(all_files_labels, args.trace, title=f"Mininet ({nb_frames} frames, ttl={ttl})", save_as=f"bytes_{nb_frames}_{ttl}.png")
     else:
         all_files_labels, ttl, nb_frames = get_files_labels(args.directory, args.filter)
 
@@ -293,4 +410,4 @@ if __name__ == "__main__":
 
         # Mininet.
         xlim = (0, args.xlim) if args.xlim is not None else None
-        plot_distribution(all_files_labels, args.trace, title=f"Mininet ({nb_frames} frames, ttl={ttl})", save_as=f"cdf_lat_{nb_frames}_{ttl}_{args.filter}.png", ylim=(args.ylim, 1), xlim=xlim)
+        plot_distribution(all_files_labels, args.trace, title=f"", save_as=f"cdf_lat_{nb_frames}_{ttl}_{args.filter}.pdf", ylim=(args.ylim, 1), xlim=xlim)

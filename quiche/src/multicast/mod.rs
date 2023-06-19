@@ -320,7 +320,7 @@ pub struct MulticastAttributes {
     /// For the client, it contains the last sent nack ranges.
     /// Contains the maximum received packet number (on the client) at which
     /// this range was sent by the client.
-    mc_nack_ranges: Option<(RangeSet, u64)>,
+    mc_nack_ranges: (Option<(RangeSet, u64)>, Option<u64>),
 
     /// Last expired packet num (0) and stream ID (1).
     pub(crate) mc_last_expired: Option<ExpiredData>,
@@ -737,7 +737,7 @@ impl MulticastAttributes {
     /// Sets the multicast nack ranges received from the client.
     /// Returns an error if it is not a [`ServerUnicast`] or a Client.
     pub fn set_mc_nack_ranges(
-        &mut self, ranges_opt: Option<(&ranges::RangeSet, u64)>,
+        &mut self, ranges_opt: Option<(&ranges::RangeSet, u64)>, nb_degree_needed: Option<u64>,
     ) -> Result<()> {
         if !matches!(
             self.mc_role,
@@ -749,9 +749,9 @@ impl MulticastAttributes {
         }
 
         if let Some((ranges, pn)) = ranges_opt {
-            self.mc_nack_ranges = Some((ranges.clone(), pn));
+            self.mc_nack_ranges = (Some((ranges.clone(), pn)), nb_degree_needed);
         } else {
-            self.mc_nack_ranges = None;
+            self.mc_nack_ranges = (None, None);
         }
 
         Ok(())
@@ -842,7 +842,7 @@ impl Default for MulticastAttributes {
             mc_public_key: None,
             mc_private_key: None,
             mc_space_id: None,
-            mc_nack_ranges: None,
+            mc_nack_ranges: (None, None),
             mc_last_expired: None,
             mc_last_expired_needs_notif: false,
             mc_last_recv_time: None,
@@ -1316,7 +1316,7 @@ impl MulticastConnection for Connection {
                 let nack_range = pns.recv_pkt_need_ack.get_missing();
                 if nack_range.len() == 0 {
                     return None;
-                } else if let Some((range, _)) = multicast.mc_nack_ranges.as_ref() {
+                } else if let Some((range, _)) = multicast.mc_nack_ranges.0.as_ref() {
                     if range == &nack_range {
                         return None;
                     }
@@ -1451,6 +1451,7 @@ impl MulticastConnection for Connection {
 
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredData> {
         // Some data has expired.
+        info!("Call on_mc_timeout on server done");
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
             if let Some(multicast) = self.multicast.as_mut() {
                 if self.is_server {
@@ -1465,7 +1466,6 @@ impl MulticastConnection for Connection {
                         fec_scheduler.reset_fec_state();
                     }
 
-                    info!("Call on_mc_timeout on server");
                     let mc_auth_space_id = multicast.mc_auth_space_id;
 
                     // Expire packets from the authentication path.
@@ -1500,6 +1500,8 @@ impl MulticastConnection for Connection {
                             // Update last time a timeout event occured.
                             self.multicast.as_mut().unwrap().mc_last_recv_time =
                                 Some(now);
+                            
+                                info!("Call on_mc_timeout on server done ok");
 
                             return Ok(v);
                         }
@@ -1509,7 +1511,7 @@ impl MulticastConnection for Connection {
                 }
             }
         }
-
+        info!("Call on_mc_timeout on server done ok 2");
         Ok((None, None, None))
     }
 
@@ -1606,7 +1608,8 @@ impl MulticastConnection for Connection {
             }
 
             // MC_NACK ranges.
-            if let Some((nack_ranges, pn)) = multicast.mc_nack_ranges.as_mut() {
+            let nb_degree_opt = multicast.mc_nack_ranges.1;
+            if let Some((nack_ranges, pn)) = multicast.mc_nack_ranges.0.as_mut() {
                 // Filter from the nack ranges packets that are expired on the
                 // source. This is necessary in case of
                 // desynchronization with the client.
@@ -1620,13 +1623,13 @@ impl MulticastConnection for Connection {
                 // received losses.
                 if let Some(fec_scheduler) = mc_channel.fec_scheduler.as_mut() {
                     if let Some(sent_repairs) = mc_channel.multicast.as_ref().unwrap().mc_sent_repairs.to_owned() {
-                            fec_scheduler.recv_nack(*pn, nack_ranges, sent_repairs);
+                            fec_scheduler.recv_nack(*pn, nack_ranges, sent_repairs, nb_degree_opt);
                     } else {
                         println!("No sent repairs but received an MC_NACK");
                     }
 
                     // Reset nack ranges of the unicast server to avoid loops.
-                    multicast.set_mc_nack_ranges(None)?;
+                    multicast.set_mc_nack_ranges(None, None)?;
                 } else {
                     println!("FEC disabled but received MC_NACK");
                 }
@@ -1698,6 +1701,7 @@ impl MulticastConnection for Connection {
             // but that the client did not get from the multicast channel.
             let multicast = self.multicast.as_mut().unwrap();
             if multicast.mc_client_left_need_sync {
+                println!("NEED SYNC BECAUSE CLIENT LEAVES");
                 multicast.mc_client_left_need_sync = false;
 
                 for (&stream_id, stream) in mc_channel.streams.iter() {
@@ -1831,6 +1835,9 @@ impl MulticastConnection for Connection {
 pub trait MissingRangeSet {
     /// Returns a RangeSet containing the numbers missing in the RangeSet.
     fn get_missing(&self) -> Self;
+
+    /// Returns the number of elements in the RangeSet.
+    fn nb_elements(&self) -> usize;
 }
 
 impl MissingRangeSet for ranges::RangeSet {
@@ -1850,6 +1857,10 @@ impl MissingRangeSet for ranges::RangeSet {
         }
 
         missing
+    }
+
+    fn nb_elements(&self) -> usize {
+        self.flatten().collect::<Vec<_>>().len()
     }
 }
 
@@ -3933,6 +3944,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .mc_nack_ranges
+                .0
                 .as_ref(),
             Some(&(expected_ranges.clone(), 6))
         );
@@ -3944,15 +3956,12 @@ mod tests {
             .as_ref()
             .unwrap()
             .mc_nack_ranges
+            .0
             .as_ref();
         assert_eq!(nack_on_source, Some(&(expected_ranges.clone(), 6)));
 
         // The unicast server forwards information to the multicast source.
         assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
-
-        let mut tr = ranges::RangeSet::default();
-        tr.insert(0..100);
-        assert_eq!(tr.len(), 99);
 
         // The server generates FEC repair packets and forwards them to the
         // client.
@@ -5710,6 +5719,31 @@ mod tests {
         mc_pipe.mc_channel.mc_send(&mut buf).unwrap();
         let channel = &mut mc_pipe.mc_channel.channel;
         assert_eq!(channel.streams.get(1).unwrap().send.total_remaining(), None);
+    }
+
+    #[test]
+    fn test_rangeset_get_size() {
+        let mut range = ranges::RangeSet::default();
+        range.insert(0..100);
+        range.insert(90..101);
+        range.insert(200..201);
+        assert_eq!(range.nb_elements(), 102);
+    }
+
+    #[test]
+    fn test_fec_decoder_nb_missing_degrees() {
+        let use_auth = McAuthType::None;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_fec_decoder_nb_missing_degrees.txt",
+            use_auth,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(mc_pipe.unicast_pipes[0].0.client.fec_decoder.nb_missing_degrees(), Some(0));
     }
 }
 

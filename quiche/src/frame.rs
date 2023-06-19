@@ -260,6 +260,7 @@ pub enum Frame {
     McNack {
         channel_id: Vec<u8>,
         last_pn: u64,
+        nb_repair_needed: u64,
         ranges: ranges::RangeSet,
     },
 
@@ -562,9 +563,10 @@ impl Frame {
             MC_NACK_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
                 let last_pn = b.get_varint()?;
+                let nb_repair_needed = b.get_varint()?;
                 let (_, ranges, _) = parse_common_ack_frame(b, false)?;
 
-                Frame::McNack { channel_id, last_pn, ranges }
+                Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges }
             },
 
             0x32 => {
@@ -991,12 +993,13 @@ impl Frame {
                 b.put_bytes(signature)?;
             },
 
-            Frame::McNack { channel_id, last_pn, ranges } => {
+            Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges } => {
                 debug!("Going to encode the MC_NACK frame: {:?}", ranges);
                 b.put_varint(MC_NACK_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
                 b.put_varint(*last_pn)?;
+                b.put_varint(*nb_repair_needed)?;
                 common_ack_to_bytes(b, &0, ranges, &None)?;
             },
 
@@ -1390,13 +1393,15 @@ impl Frame {
                 signature.len()
             },
 
-            Frame::McNack { channel_id, last_pn, ranges } => {
+            Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges } => {
                 let frame_type_size = octets::varint_len(MC_NACK_CODE);
                 let last_pn_size = octets::varint_len(*last_pn);
+                let nb_repair_needed_size = octets::varint_len(*nb_repair_needed);
                 frame_type_size +
                 1 + // channel_id_len
                 channel_id.len() +
                 last_pn_size +
+                nb_repair_needed_size +
                 common_ack_wire_len(&0, ranges, &None)
             },
 
@@ -2043,11 +2048,11 @@ impl std::fmt::Debug for Frame {
                 write!(f, "MC_ASYM signature={:?}", signature)?;
             },
 
-            Frame::McNack { channel_id, last_pn, ranges } => {
+            Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges } => {
                 write!(
                     f,
-                    "MC_NACL channel ID={:?} last pn={:?} ranges={:?}",
-                    channel_id, last_pn, ranges
+                    "MC_NACK channel ID={:?} last pn={:?} nb repair needed={:?} ranges={:?}",
+                    channel_id, last_pn, nb_repair_needed, ranges
                 )?;
             },
 
@@ -4015,6 +4020,7 @@ mod tests {
         let frame = Frame::McNack {
             channel_id: vec![0xff, 0xee, 0x45],
             last_pn: 0xff4433,
+            nb_repair_needed: 455,
             ranges,
         };
 
@@ -4023,7 +4029,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 19);
+        assert_eq!(wire_len, 21);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

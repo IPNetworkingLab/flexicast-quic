@@ -156,9 +156,9 @@ impl FECScheduler {
         }
     }
 
-    pub fn recv_nack(&mut self, pn: u64, ranges: &RangeSet, repairs: RangeSet) {
+    pub fn recv_nack(&mut self, pn: u64, ranges: &RangeSet, repairs: RangeSet, nb_degree: Option<u64>) {
         if let RetransmissionFec(scheduler) = self {
-            scheduler.recv_nack(pn, ranges, repairs);
+            scheduler.recv_nack(pn, ranges, repairs, nb_degree);
         }
     }
 }

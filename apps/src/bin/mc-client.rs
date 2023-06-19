@@ -176,6 +176,7 @@ fn main() {
     config.set_initial_max_streams_uni(1_000_000);
     config.set_active_connection_id_limit(5);
     config.verify_peer(false);
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     // config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
 
     if args.multicast {
@@ -338,6 +339,7 @@ fn main() {
                         .get_mc_auth_type() ==
                         quiche::multicast::authentication::McAuthType::SymSign
                     {
+                        debug!("Ici appelle symetrique ?");
                         // Get the packet number used as identifier. Woops for the
                         // unwrap.
                         let pn = match conn.mc_get_pn(&buf[..len]) {
@@ -371,6 +373,7 @@ fn main() {
                             ),
                         }
                     } else {
+                        debug!("Set to true read incoming packet");
                         true
                     };
                     if can_read_pkt {
@@ -399,7 +402,8 @@ fn main() {
         }
 
         // Read incomming UDP packets from the multicast authentication socket and
-        // feed them to multicast quiche.
+        // feed them to multicast quiche
+        debug!("Before authentication");
         if let Some(mc_socket_auth) = mc_socket_auth_opt.as_mut() {
             'mc_read_auth: loop {
                 let (len, _) = match mc_socket_auth.recv_from(&mut buf) {
@@ -493,6 +497,7 @@ fn main() {
         }
 
         // Process multicast events.
+        debug!("Before processing multicast events");
         if conn.get_multicast_attributes().is_some() {
             let mut probe_already = false;
             // Join the multicast channel and create the listening socket if not
@@ -667,6 +672,7 @@ fn main() {
 
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
+        debug!("Before outgoing");
         loop {
             let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,
@@ -732,10 +738,13 @@ fn main() {
             }
             let mut total = 0;
 
-            while let Ok((read, fin)) = conn.stream_recv(s, &mut buf) {
+            while let Ok((read, fin)) = conn.stream_recv(s, &mut buf[total..]) {
+                if !fin {
+                    debug!("Not fin and read: {}", read);
+                }
                 total += read;
                 if fin {
-                    debug!("Add a new stream in the list of received: {}.", s);
+                    debug!("Add a new stream in the list of received: {} of length: {}.", s, total);
                     app_handler.on_stream_complete(&buf[..total], s);
                 }
             }
