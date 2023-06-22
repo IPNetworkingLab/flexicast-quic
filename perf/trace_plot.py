@@ -13,7 +13,10 @@ import matplotlib
 COLORS = ["#d7191c", "#fdae61", "#2b83ba", "#abd9e9", "#abdda4", "#999999"]
 COLORS_GREY = ["dimgray", "silver", "whitesmoke"]
 MARKERS = ["^", "v", ">", "<", 's']
-LINESTYLES = ["-", "--", "-.", (0, (1, 1)), (0, (2, 1))]
+LINESTYLES = ["solid", (0, (1, 1)), "dashed", "dashdot", (5, (10, 3)), (0, (3, 1, 1, 1))]
+LINEWIDTH = 4
+
+sns.set_palette("colorblind")
 
 
 def get_files_labels(directory, server_only):
@@ -62,9 +65,14 @@ def read_data_brut(filename):
     res = dict()
     for line in data:
         tab = line.split(" ")
+        if len(tab) < 2:
+            print(f"Error with line {line} from {filename}")
+            continue
         res[int(tab[0])] = int(tab[1])
     
     # Remove minimum value
+    if len(res) == 0:
+        return res
     min_v = min(list(res.values()))
     return {i: (res[i] - min_v) / 1000000 for i in res.keys()}
 
@@ -165,7 +173,7 @@ def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", 
     fig, ax = plt.subplots()
 
     for i, (label, (bins, cdf)) in enumerate(res.items()):
-        ax.plot(bins, cdf, label=label, color=COLORS[i], linestyle=LINESTYLES[i])
+        ax.plot(bins, cdf, label=label, linestyle=LINESTYLES[i], linewidth=LINEWIDTH)
     
     ax.set_xlabel("Lateness [ms]")
     ax.set_ylabel("CDF")
@@ -355,9 +363,101 @@ def plot_losses(directories, trace, filter, save_as):
     plt.savefig(save_as)
 
 
+def get_files_labels_file(directory):
+    res = dict()
+    for subdir in os.listdir(directory):
+        # if not "4-1000" in subdir: continue
+        for file in os.listdir(os.path.join(directory, subdir)):
+            if "server" in file: continue
+            path = os.path.join(directory, subdir, file)
+            tab = file.split("-")
+            label = subdir[5:]
+            print(label)
+                
+            ttl = None
+            nb_frames = None
+            if ttl == None:
+                ttl = int(tab[4])
+            elif ttl != int(tab[4]):
+                print("ERROR: found different TTL values", ttl, tab[4])
+            
+            if label in res.keys():
+                res[label].append(path)
+            else:
+                res[label] = [path]
+            
+            if nb_frames == None:
+                nb_frames = int(tab[3])
+            elif nb_frames != int(tab[3]):
+                print("ERROR: found different NB FRAMES values", nb_frames, tab[3])
+
+    return res, ttl, nb_frames
+
+
 def plot_file_losses(args):
-    all_files_labels, ttl, nb_frames = get_files_labels(args.directory, args.filter)
+    all_files_labels, ttl, nb_frames = get_files_labels_file(args.directory)
     print(all_files_labels)
+
+    res = dict()
+    keys = sorted(all_files_labels.keys())
+
+    for label in keys:
+        files = all_files_labels[label]
+        for file in files:
+            if "stream-400" in file:
+                continue
+            data = read_data_brut(file)
+            (complete, total) = res.get(label, (0, 0))
+            if len(data) == 5000:
+                complete += 1
+            else:
+                print(len(data), file)
+            res[label] = (complete, total + 1)
+    
+    # Split into appropriate representation.
+    res_per_timer = dict()
+    for label, (complete, total) in res.items():
+        tab = label.split("-")
+        loss = int(tab[0])
+        timer = int(tab[1])
+        this_timer = res_per_timer.get(timer, dict())
+        this_timer[loss] = complete / total
+        res_per_timer[timer] = this_timer
+    
+    fig, ax = plt.subplots()
+    labels = sorted(res_per_timer.keys())
+
+    # Convert to df.
+    mega_values = list()
+    for timer in labels:
+        data = res_per_timer[timer]
+        for loss, data_loss in data.items():
+            mega_values.append((timer, loss, data_loss))
+    df = pd.DataFrame(mega_values, columns=["Exp. timer", "Loss [%]", "Ratio of clients"])
+    print(df)
+    
+    sns.set_palette("colorblind")
+    sns.barplot(data=df, x="Loss [%]", y="Ratio of clients", hue="Exp. timer")
+
+    # for label in labels:
+    #     loss_data = res_per_timer[label]
+    #     keys = sorted(loss_data.keys())
+    #     v = [loss_data[k] for k in keys]
+    #     ax.plot(keys, v, label=label)
+    #     # ax.scatter(keys, v, label=label)
+    
+    legend = ax.legend(fancybox=True, loc=(0.03, 0.03), ncol=4, columnspacing=0.5, handletextpad=0.1)
+    frame = legend.get_frame()
+    frame.set_alpha(1)
+    frame.set_color('white')
+    frame.set_edgecolor('black')
+    frame.set_boxstyle('Square', pad=0.1)
+    plt.tight_layout()
+    ax.yaxis.grid(True, ls="-")
+    ax.set_xlabel(r"Loss [\%]")
+    ax.set_axisbelow(True)
+    plt.savefig("file-losses.pdf")
+
 
 
 if __name__ == "__main__":
@@ -369,15 +469,15 @@ if __name__ == "__main__":
     parser.add_argument("--ylim", type=float, help="Maximum ylim for the plot distribution", default=0.0)
     parser.add_argument("--filter", help="Server or client lateness", default="clients", choices=["clients", "server"])
     parser.add_argument("--pcap", help="Plot using the PCAPs", action="store_true")
-    parser.add_argument("--latex", help="Latex rendering", action="store_true")
+    parser.add_argument("--latex", help="Latex rendering", type=float, default=None)
     parser.add_argument("--losses", help="Losses plot", action="store_true")
     parser.add_argument("--perc", help="Percentile to filter", type=int, default=0)
     parser.add_argument("--save", help="Save as file", type=str, default="fig.pdf")
     parser.add_argument("--file", help="File plot", action="store_true")
     args = parser.parse_args()
 
-    if args.latex:
-        latexify(columns=2)
+    if args.latex is not None:
+        latexify(columns=args.latex)
 
     # File.
     if args.file:

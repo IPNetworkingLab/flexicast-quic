@@ -143,7 +143,7 @@ def build_topo(args):
                 cmd = f"ip -6 addr add {link} dev {id1}-eth{itf}"
             links[(id1, id2)] = link[:-3]
             links_per_itf[(id1, itf)] = link[:-3]
-            print(id1, cmd)
+            # print(id1, cmd)
             net[id1].cmd(cmd)
 
             # Start a tcpdump capture for each interface
@@ -164,7 +164,7 @@ def build_topo(args):
                 cmd = f"ip route add {loopback} via {link}"
             else:
                 cmd = f"ip -6 route add {loopback} via {link}"
-            print(id1, cmd)
+            # print(id1, cmd)
             net[id1].cmd(cmd)
     
     # Install multicast routes.
@@ -254,7 +254,9 @@ def simpleRun(args, core_range):
                     output_file = lambda idx: os.path.join(args.out, output_file_without_dir(idx))
 
                     # Start the quiche server on CloudLab.
-                    cmd = f"{log_trace} taskset -c {server_core} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} -f {args.file} -s {links[('0', '1')]}:4433 --app {args.app} --cert-path {CERT_PATH} {'-w ' + str(nb_nodes - 1) if args.wait else ''} -n {args.nb_frames} -r {output_file('server-0')} -k my-server.txt --max-fec-rs {args.nb_rs} > {'log-server.log 2>&1' if args.log else '/dev/null'}"
+                    file_cmd = "" if args.file is None else f"-f {args.file}"
+                    delay_cmd = "" if args.delay is None else f"-d {args.delay}"
+                    cmd = f"{log_trace} taskset -c {server_core} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} {file_cmd} -s {links[('0', '1')]}:4433 --app {args.app} --cert-path {CERT_PATH} {'-w ' + str(nb_nodes - 1) if args.wait else ''} -n {args.nb_frames} -r {output_file('server-0')} -k my-server.txt --max-fec-rs {args.nb_rs} {delay_cmd} > {'log-server.log 2>&1' if args.log else '/dev/null'}"
                     print("Command to start the server on CloudLab:", cmd)
                     my_cmd(net, "0", cmd, wait=False)
 
@@ -264,8 +266,7 @@ def simpleRun(args, core_range):
 
                     # Start the clients on cloudlab.
                     for client in range(1, nb_nodes - 1):  # Not the source
-                        lll = "RUST_LOG=trace" if client == 25 else log_trace
-                        cmd = f"{lll} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > {f'log-{client}.log 2>&1' if args.log else '/dev/null'}"
+                        cmd = f"{log_trace} taskset -c {client_cores[client % len(client_cores)]} {CARGO_PATH} run --manifest-path {MANIFEST_PATH} --bin mc-client {'--release' if args.release else ''} -- {links[('0', '1')]}:4433 -o {output_file(client)} {'--multicast' if method == 'mc' else ''} --app {args.app} --local {links_per_itf[(str(client), '0')]} > {f'log-{client}.log 2>&1' if args.log else '/dev/null'}"
                         print("Client command:", client, cmd)
                         my_cmd(net, str(client), cmd, wait=False)  # Act as a daemon
 
@@ -291,6 +292,7 @@ def simpleRun(args, core_range):
                         cmd = "pkill tcpdump"
                         my_cmd(net, str(node_id), cmd, wait=True, log=False)
                     net.stop()
+                    os.system("pkill mc-")
     else:
         net, nb_nodes, links, links_per_itf = build_topo(args)
         print([str(i) for i in  net["3"].intfList()])
@@ -311,7 +313,7 @@ if __name__ == "__main__":
     
     parser.add_argument("--app", choices=["tixeo", "file"], default="tixeo", help="Application of the test", type=str)
     parser.add_argument("--nb-frames", type=int, help="Number of frames of the test. Default: all", default=None)
-    parser.add_argument("--file", type=str, help="File name to send/trace", default="../perf/tixeo_trace.repr")
+    parser.add_argument("--file", type=str, help="File name to send/trace", default=None)
     parser.add_argument("--wait", help="Make server wait for the client to connect", action="store_true")
     parser.add_argument("--auth", help="Authentication methods to test. Default: all", choices=["asymmetric", "symmetric", "none", "all", "stream"])
     parser.add_argument("--method", help="Multicast or unicast delivery. Default: both", choices=["mc", "uc", "both"])
@@ -325,6 +327,8 @@ if __name__ == "__main__":
     parser.add_argument("--cores", help="Cores available for the experiment, following Python range synthax (e.g., '1,10')", type=str, default="1,2")
     parser.add_argument("--nb-rs", help="Number of FEC repair symbols to send", type=int, default=5)
     parser.add_argument("--tcpdump", help="Capture the traces of all interfaces of all nodes", action="store_true")
+    parser.add_argument("--chunk-size", help="Cunk size for the file transfer", default="1100")
+    parser.add_argument("--delay", help="Delay between file frames", default=None)
 
     args = parser.parse_args() 
 
