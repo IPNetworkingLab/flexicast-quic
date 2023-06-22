@@ -58,19 +58,20 @@ impl From<(McAuthType, usize)> for McTuple {
 
 fn mc_channel_bench(c: &mut Criterion) {
     let buf = vec![0; BENCH_STREAM_TOTAL_SIZE];
-    let mut stream_sizes = vec![100];
-    loop {
-        let last = stream_sizes.last().unwrap();
-        if *last >= BENCH_STREAM_TOTAL_SIZE {
-            break;
-        }
-        stream_sizes.push(last * BENCH_STEP_SIZE);
-    }
+    // let mut stream_sizes = vec![100];
+    // loop {
+    //     let last = stream_sizes.last().unwrap();
+    //     if *last >= BENCH_STREAM_TOTAL_SIZE {
+    //         break;
+    //     }
+    //     stream_sizes.push(last * BENCH_STEP_SIZE);
+    // }
+    let stream_sizes = vec![BENCH_STREAM_TOTAL_SIZE / 2];
 
-    let mut group = c.benchmark_group("multicast-asym");
+    let mut group = c.benchmark_group("multicast-asym-tmp");
     for &auth in &[
-        McAuthType::AsymSign,
-        McAuthType::None,
+        // McAuthType::AsymSign,
+        // McAuthType::None,
         McAuthType::StreamAsym,
     ] {
         for &stream_size in
@@ -85,6 +86,7 @@ fn mc_channel_bench(c: &mut Criterion) {
                         |mut mc_channel| {
                             // Ask quiche to generate the outgoing packets with
                             // authentication.
+                            println!("New benchmark");
                             let mut buffer = [0u8; 1500];
                             loop {
                                 match mc_channel.mc_send(&mut buffer[..]) {

@@ -61,12 +61,14 @@ ring = "0.16"
 slab = "0.4"
 lazy_static = "1"
 octets = { version = "0.2", path = "../octets" }
-boring = { version = "2.0.0", optional = true }
+# boring = { version = "2.0.0", optional = true }
+boring = { path = "/home/louisna/boring/boring", optional = true }
 foreign-types-shared = { version = "0.3.0", optional = true }
 qlog = { version = "0.8", path = "../qlog", optional = true }
 sfv = { version = "0.9", optional = true }
 smallvec = { version = "1.10", features = ["serde", "union"] }
-networkcoding = { path = "/Users/louisnavarre//Documents/Github/networkcoding" }
+# networkcoding = { git = "ssh://git@github.com/francoismichel/networkcoding.git"}
+networkcoding = { path = "/home/louisna/networkcoding" }
 
 [target."cfg(windows)".dependencies]
 winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tcpip"] }
@@ -77,7 +79,7 @@ url = "1"
 criterion = "0.4"
 
 [[bench]]
-name = "multicast-repair"
+name = "multicast-asym"
 harness = false
 
 [lib]

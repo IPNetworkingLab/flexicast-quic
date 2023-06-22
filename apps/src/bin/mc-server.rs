@@ -262,6 +262,7 @@ fn main() {
     if args.multicast {
         config.set_multipath(true);
         config.set_enable_server_multicast(true);
+        config.set_fec_window_size(2000);
         debug!("Set multicase true");
     }
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
@@ -635,12 +636,12 @@ fn main() {
                 let uc_server_role = client
                     .conn
                     .get_multicast_attributes()
-                    .map(|mc| mc.get_mc_role());
+                    .map(|mc| (mc.get_mc_role(), mc.mc_client_has_key()));
                 info!("APP HAS NOT STARTED: {:?}", uc_server_role);
                 if uc_server_role ==
-                    Some(MulticastRole::ServerUnicast(
+                    Some((MulticastRole::ServerUnicast(
                         multicast::MulticastClientStatus::ListenMcPath(true),
-                    )) ||
+                    ), true)) && !client.active_client ||
                     !args.multicast &&
                         client.conn.is_established() &&
                         !client.active_client
@@ -1270,6 +1271,7 @@ pub fn get_test_mc_config(
     );
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     config.set_fec_symbol_size(1280 - 64); // MC-TODO: make dynamic with auth.
+    config.set_fec_window_size(2000);
     config
 }
 

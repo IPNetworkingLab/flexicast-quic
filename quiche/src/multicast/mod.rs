@@ -377,6 +377,9 @@ pub struct MulticastAttributes {
     /// Range of packet numbers not expired yet where a REPAIR frame was sent.
     /// Only some for [`MulticastRole::ServerMulticast`].
     pub mc_sent_repairs: Option<RangeSet>,
+
+    /// The client leaves the multicast channel on timeout, i.e., in [`MulticastConnection::on_mc_timeout`].
+    mc_leave_on_timeout: bool,
 }
 
 impl MulticastAttributes {
@@ -627,6 +630,11 @@ impl MulticastAttributes {
         self.mc_key_up_to_date = v;
     }
 
+    /// Whether the multicast decryption key is received by the client.
+    pub fn mc_client_has_key(&self) -> bool {
+        self.mc_key_up_to_date
+    }
+
     /// Get the channel decryption key secret.
     pub fn get_decryption_key_secret(&self) -> Result<&[u8]> {
         match self.mc_role {
@@ -737,7 +745,8 @@ impl MulticastAttributes {
     /// Sets the multicast nack ranges received from the client.
     /// Returns an error if it is not a [`ServerUnicast`] or a Client.
     pub fn set_mc_nack_ranges(
-        &mut self, ranges_opt: Option<(&ranges::RangeSet, u64)>, nb_degree_needed: Option<u64>,
+        &mut self, ranges_opt: Option<(&ranges::RangeSet, u64)>,
+        nb_degree_needed: Option<u64>,
     ) -> Result<()> {
         if !matches!(
             self.mc_role,
@@ -857,6 +866,7 @@ impl Default for MulticastAttributes {
             mc_need_ack: false,
             mc_max_pn: 0,
             mc_sent_repairs: None,
+            mc_leave_on_timeout: true,
         }
     }
 }
@@ -941,11 +951,12 @@ pub trait MulticastConnection {
     fn mc_has_control_data(&self, send_pid: usize) -> bool;
 
     /// Joins a multicast channel advertised by a server.
+    /// Sets the possibility to leave the multicast channel on timeout on this multicast channel, i.e., in [`MulticastConnection::on_mc_timeout`].
     /// Returns an Error if:
     /// * This is not a client
     /// * There is no multicast state with valid MC_ANNOUNCE data
     /// * The status is not AwareUnjoined
-    fn mc_join_channel(&mut self) -> Result<MulticastClientStatus>;
+    fn mc_join_channel(&mut self, leave_on_timeout: bool) -> Result<MulticastClientStatus>;
 
     /// Leaves a previously joined multicast channel.
     /// Returns an Error if:
@@ -1239,7 +1250,7 @@ impl MulticastConnection for Connection {
         false
     }
 
-    fn mc_join_channel(&mut self) -> Result<MulticastClientStatus> {
+    fn mc_join_channel(&mut self, leave_on_timeout: bool) -> Result<MulticastClientStatus> {
         let multicast = match self.multicast.as_mut() {
             None => return Err(Error::Multicast(MulticastError::McDisabled)),
             Some(multicast) => match multicast.mc_role {
@@ -1251,6 +1262,7 @@ impl MulticastConnection for Connection {
                     ))),
             },
         };
+        multicast.mc_leave_on_timeout = leave_on_timeout;
         multicast.update_client_state(MulticastClientAction::Join, None)
     }
 
@@ -1316,7 +1328,9 @@ impl MulticastConnection for Connection {
                 let nack_range = pns.recv_pkt_need_ack.get_missing();
                 if nack_range.len() == 0 {
                     return None;
-                } else if let Some((range, _)) = multicast.mc_nack_ranges.0.as_ref() {
+                } else if let Some((range, _)) =
+                    multicast.mc_nack_ranges.0.as_ref()
+                {
                     if range == &nack_range {
                         return None;
                     }
@@ -1341,6 +1355,7 @@ impl MulticastConnection for Connection {
             if !matches!(
                 multicast.mc_role,
                 MulticastRole::Client(MulticastClientStatus::ListenMcPath(true)) |
+                    MulticastRole::Client(MulticastClientStatus::JoinedAndKey) |
                     MulticastRole::ServerMulticast,
             ) {
                 return Err(Error::Multicast(MulticastError::McInvalidRole(
@@ -1436,13 +1451,24 @@ impl MulticastConnection for Connection {
 
         // MC-TODO: should use mc_role instead of server.
         let multicast = self.multicast.as_ref()?;
+        if matches!(
+            multicast.mc_role,
+            MulticastRole::Client(MulticastClientStatus::Left) |
+                MulticastRole::Client(MulticastClientStatus::Leaving(_))
+        ) {
+            return None;
+        }
         let timeout = if self.is_server {
             multicast.mc_last_recv_time? + time::Duration::from_millis(ttl_data)
         } else {
             multicast.mc_last_recv_time? +
-                time::Duration::from_millis(ttl_data * 3)
+                time::Duration::from_millis(ttl_data * 10)
         };
         if timeout <= now {
+            println!(
+                "Client has timeout of 0 despite its role: {:?}",
+                multicast.mc_role
+            );
             Some(time::Duration::ZERO)
         } else {
             Some(timeout.duration_since(now))
@@ -1500,13 +1526,14 @@ impl MulticastConnection for Connection {
                             // Update last time a timeout event occured.
                             self.multicast.as_mut().unwrap().mc_last_recv_time =
                                 Some(now);
-                            
-                                info!("Call on_mc_timeout on server done ok");
+
+                            info!("Call on_mc_timeout on server done ok");
 
                             return Ok(v);
                         }
                     }
-                } else {
+                } else if multicast.mc_leave_on_timeout {
+                    debug!("Will leave the multicast channel");
                     self.mc_leave_channel()?;
                 }
             }
@@ -1622,8 +1649,19 @@ impl MulticastConnection for Connection {
                 // The multicast source updates its FEC scheduler with the
                 // received losses.
                 if let Some(fec_scheduler) = mc_channel.fec_scheduler.as_mut() {
-                    if let Some(sent_repairs) = mc_channel.multicast.as_ref().unwrap().mc_sent_repairs.to_owned() {
-                            fec_scheduler.recv_nack(*pn, nack_ranges, sent_repairs, nb_degree_opt);
+                    if let Some(sent_repairs) = mc_channel
+                        .multicast
+                        .as_ref()
+                        .unwrap()
+                        .mc_sent_repairs
+                        .to_owned()
+                    {
+                        fec_scheduler.recv_nack(
+                            *pn,
+                            nack_ranges,
+                            sent_repairs,
+                            nb_degree_opt,
+                        );
                     } else {
                         println!("No sent repairs but received an MC_NACK");
                     }
@@ -2492,7 +2530,7 @@ pub mod testing {
                     assert!(pipe.advance().is_ok());
 
                     // Client joins the multicast channel.
-                    pipe.client.mc_join_channel().unwrap();
+                    pipe.client.mc_join_channel(true).unwrap();
                     pipe.advance().unwrap();
 
                     // Server computes the client ID.
@@ -3109,7 +3147,7 @@ mod tests {
         // Client joins the multicast channel.
         // It changes its status to WaitingToJoin.
         // It sends an MC_STATE with a JOIN notification to the server.
-        let res = pipe.client.mc_join_channel();
+        let res = pipe.client.mc_join_channel(true);
         assert!(res.is_ok());
         assert_eq!(
             pipe.client.multicast.as_ref().unwrap().mc_role,
@@ -3218,7 +3256,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(pipe.advance(), Ok(()));
-        assert!(pipe.client.mc_join_channel().is_ok());
+        assert!(pipe.client.mc_join_channel(true).is_ok());
         assert_eq!(pipe.advance(), Ok(()));
 
         assert!(!pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
@@ -5733,7 +5771,7 @@ mod tests {
     #[test]
     fn test_fec_decoder_nb_missing_degrees() {
         let use_auth = McAuthType::None;
-        let mut mc_pipe = MulticastPipe::new(
+        let mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_fec_decoder_nb_missing_degrees.txt",
             use_auth,
@@ -5743,7 +5781,14 @@ mod tests {
         )
         .unwrap();
 
-    assert_eq!(mc_pipe.unicast_pipes[0].0.client.fec_decoder.nb_missing_degrees(), Some(0));
+        assert_eq!(
+            mc_pipe.unicast_pipes[0]
+                .0
+                .client
+                .fec_decoder
+                .nb_missing_degrees(),
+            Some(0)
+        );
     }
 }
 

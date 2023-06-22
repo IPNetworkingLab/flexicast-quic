@@ -29,22 +29,20 @@ impl FileClient {
 
     pub fn on_finish(&mut self) {
         let mut file = std::fs::File::create(&self.output_filename).unwrap();
-        // for (stream_id, time, bytes) in self.chunk_recv.iter() {
-        //     writeln!(
-        //         file,
-        //         "{} {} {}",
-        //         (stream_id - 1) / 4,
-        //         time.duration_since(time::UNIX_EPOCH).unwrap().as_micros(),
-        //         nb_bytes
-        //     )
-        //     .unwrap();
-        // }
-        // Sort the streams according to the stream ID.
-        self.chunk_recv
-            .sort_by(|first, second| first.0.cmp(&second.0));
-        for (_, _, bytes) in self.chunk_recv.iter() {
-            file.write_all(bytes).unwrap();
+        for (stream_id, time, v) in self.chunk_recv.iter() {
+            writeln!(
+                file,
+                "{} {} {}",
+                (stream_id - 1) / 4,
+                time.duration_since(time::UNIX_EPOCH).unwrap().as_micros(),
+                v.len()
+            )
+            .unwrap();
         }
+    }
+
+    pub fn leave_on_mc_timeout(&self) -> bool {
+        true
     }
 }
 

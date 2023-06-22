@@ -36,6 +36,10 @@ impl TixeoClient {
             .unwrap();
         }
     }
+
+    pub fn leave_on_mc_timeout(&self) -> bool {
+        true
+    }
 }
 
 pub struct TixeoServer {

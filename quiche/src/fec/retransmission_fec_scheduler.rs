@@ -22,10 +22,6 @@ impl RetransmissionFecScheduler {
     }
 
     pub fn should_send_repair(&mut self) -> bool {
-        println!(
-            "Nb sent: {} to send: {}",
-            self.n_repair_in_flight, self.n_repair_to_send
-        );
         self.n_repair_to_send > 0 &&
             (if let Some(max_rs) = self.max_n_repair_in_flight {
                 info!(

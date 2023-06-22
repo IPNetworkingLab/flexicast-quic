@@ -187,6 +187,7 @@ fn main() {
             quiche::FECSchedulerAlgorithm::RetransmissionFec,
         );
         config.set_fec_symbol_size(1280 - 64);
+        config.set_fec_window_size(2000);
     }
 
     // Generate a random source connection ID for the connection.
@@ -496,6 +497,13 @@ fn main() {
             break;
         }
 
+        if let Some(multicast) = conn.get_multicast_attributes() {
+            if matches!(multicast.get_mc_role(), multicast::MulticastRole::Client(MulticastClientStatus::Leaving(_)) | multicast::MulticastRole::Client(MulticastClientStatus::Left)) {
+                info!("Client leaves the multicast channel. Closing...");
+                break;
+            }
+        }
+
         // Process multicast events.
         debug!("Before processing multicast events");
         if conn.get_multicast_attributes().is_some() {
@@ -585,7 +593,7 @@ fn main() {
                             .unwrap();
                         mc_socket_opt = Some(mc_socket);
                         probe_mc_path = true;
-                        conn.mc_join_channel().unwrap();
+                        conn.mc_join_channel(app_handler.leave_on_mc_timeout()).unwrap();
                         probe_already = true;
                     }
                 }

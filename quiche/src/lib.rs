@@ -2606,6 +2606,9 @@ impl Connection {
                 match multicast.get_mc_role() {
                     multicast::MulticastRole::Client(
                         multicast::MulticastClientStatus::ListenMcPath(true),
+                    ) |
+                    multicast::MulticastRole::Client(
+                        multicast::MulticastClientStatus::JoinedAndKey,
                     ) => multicast.get_mc_crypto_open(),
                     multicast::MulticastRole::Client(_) =>
                         self.pkt_num_spaces.crypto(epoch).crypto_open.as_ref(),
@@ -2716,6 +2719,10 @@ impl Connection {
             aead,
         )
         .map_err(|e| {
+            debug!(
+                "Current role: {:?}",
+                self.multicast.as_ref().unwrap().get_mc_role()
+            );
             debug!("Here because drop packet decrypt packet");
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
@@ -3198,10 +3205,9 @@ impl Connection {
         if let Some(multicast) = self.multicast.as_mut() {
             // Reset the received complete streams for multicast.
             multicast.reset_recv_mc_stream();
-            
+
             // Update the last received packet number (max).
             multicast.mc_max_pn = multicast.mc_max_pn.max(pn);
-
         }
 
         Ok(read)
@@ -3728,10 +3734,12 @@ impl Connection {
                                 }
                             },
 
-                            frame::Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges } => {
-                                if let Some(multicast) = self.multicast.as_mut() {
-                                    // MC-TODO.
-                                }
+                            frame::Frame::McNack {
+                                ..
+                            } => {
+                                // if let Some(multicast) = self.multicast.as_mut() {
+                                //     // MC-TODO.
+                                // }
                             },
 
                             _ => (),
@@ -3995,10 +4003,10 @@ impl Connection {
                     let max_pn = self.multicast.as_ref().unwrap().mc_max_pn;
                     let nb_degree_needed = self.fec_decoder.nb_missing_degrees();
                     println!("NB DEgree needed: {:?}", nb_degree_needed);
-                    self.multicast
-                        .as_mut()
-                        .unwrap()
-                        .set_mc_nack_ranges(Some((&nack_range, max_pn)), nb_degree_needed)?;
+                    self.multicast.as_mut().unwrap().set_mc_nack_ranges(
+                        Some((&nack_range, max_pn)),
+                        nb_degree_needed,
+                    )?;
 
                     info!(
                         "After setting it on client for {:?}, it is: {:?}",
@@ -4909,8 +4917,13 @@ impl Connection {
                                 self.repair_symbols_sent_count += 1;
 
                                 if let Some(multicast) = self.multicast.as_mut() {
-                                    if let Some(repairs) = multicast.mc_sent_repairs.as_mut() {
-                                        info!("Set repair sent: {:?}", pn..pn + 1);
+                                    if let Some(repairs) =
+                                        multicast.mc_sent_repairs.as_mut()
+                                    {
+                                        info!(
+                                            "Set repair sent: {:?}",
+                                            pn..pn + 1
+                                        );
                                         repairs.insert(pn..pn + 1);
                                     } else {
                                         warn!("Could not set sent repair because None?!");
@@ -8835,7 +8848,10 @@ impl Connection {
                             Some(nb_repair_needed)
                         };
                         if multicast.get_mc_space_id().is_some() {
-                            multicast.set_mc_nack_ranges(Some((&ranges, last_pn)), nb_repair_opt)?;
+                            multicast.set_mc_nack_ranges(
+                                Some((&ranges, last_pn)),
+                                nb_repair_opt,
+                            )?;
                             multicast.mc_need_ack = true;
                             println!("After setting it on server for {:?}, it is: {:?}", self.multicast.as_ref().unwrap().get_self_client_id(), ranges);
                         } else {

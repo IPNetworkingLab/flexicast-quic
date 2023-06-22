@@ -87,6 +87,14 @@ impl AppDataClient {
             AppDataClient::File(f) => f.on_finish(),
         }
     }
+
+    #[inline]
+    pub fn leave_on_mc_timeout(&self) -> bool {
+        match self {
+            AppDataClient::Tixeo(t) => t.leave_on_mc_timeout(),
+            AppDataClient::File(f) => f.leave_on_mc_timeout(),
+        }
+    }
 }
 
 pub enum AppDataServer {
