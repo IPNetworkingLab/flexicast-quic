@@ -5,16 +5,10 @@ import argparse
 import os
 import subprocess
 import tqdm
-from utils import latexify
+from utils import *
 import seaborn as sns
 import pandas as pd
 import matplotlib
-
-COLORS = ["#d7191c", "#fdae61", "#2b83ba", "#abd9e9", "#abdda4", "#999999"]
-COLORS_GREY = ["dimgray", "silver", "whitesmoke"]
-MARKERS = ["^", "v", ">", "<", 's']
-LINESTYLES = ["solid", (0, (1, 1)), "dashed", "dashdot", (5, (10, 3)), (0, (3, 1, 1, 1))]
-LINEWIDTH = 4
 
 sns.set_palette("colorblind")
 
@@ -138,7 +132,7 @@ def compute_cdf(values, nb_bins: int = 200, add_zero: bool = False):
     return bin_edges[1:], cdf
 
 
-def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", ylim=None, xlim=None):
+def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", ylim=None, xlim=None, from_ax=None):
     print(save_as, xlim)
     res = dict()
     for (files, label) in all_files_labels:
@@ -170,7 +164,10 @@ def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", 
             print(f"Nb lost frames for {label}: {total_loss}")
         res[label] = compute_cdf(tmp, add_zero=True, nb_bins=1000)
 
-    fig, ax = plt.subplots()
+    if from_ax is None:
+        fig, ax = plt.subplots()
+    else:
+        ax = from_ax
 
     for i, (label, (bins, cdf)) in enumerate(res.items()):
         ax.plot(bins, cdf, label=label, linestyle=LINESTYLES[i], linewidth=LINEWIDTH)
@@ -182,10 +179,11 @@ def plot_distribution(all_files_labels, trace, title="", save_as="cdf_lat.pdf", 
         ax.set_ylim(ylim)
     if xlim is not None:
         ax.set_xlim(xlim)
-    plt.legend()
     # plt.savefig("test.pdf")
-    plt.tight_layout()
-    plt.savefig(save_as, dpi=500)
+    if from_ax is None:
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(save_as, dpi=500)
 
 
 def plot_stream_recv_time(all_files_labels, title="", save_as="recv_stream.pdf", ylim=None, xlim=None, cmp_uc=None, ylabel=""):
@@ -346,7 +344,7 @@ def plot_losses(directories, trace, filter, save_as):
     print(in_timer)
 
     # sns.violinplot(data=df, x="loss", y="Lateness [ms]", hue="method")
-    sns.boxplot(data=df, x="Loss [%]", y="Lateness [ms]", hue="Method", showfliers=False, palette=COLORS_GREY)
+    sns.boxplot(data=df, x="Loss [%]", y="Lateness [ms]", hue="Method", showfliers=False, palette=COLORS_SEQUENTIAL)
     # ax.set_ylim((-10, 300))
     ax.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
 
@@ -361,6 +359,134 @@ def plot_losses(directories, trace, filter, save_as):
     ax.set_xlabel(r"Loss [\%]")
     ax.set_axisbelow(True)
     plt.savefig(save_as)
+
+
+def convert_label(label):
+    if label == "UC":
+        l = r"$UC$"
+    elif label == "MC none":
+        l = r"$MC_N$"
+    elif label == "MC stream":
+        l = f"$MC_S$"
+    else:
+        print(label)
+    return l
+
+
+def plot_losses_3(directories, trace, filter, save_as, args):
+    csv_file1 = "tmp1.csv"
+    csv_file2 = "tmp2.csv"
+
+    ok = True
+    if os.path.exists(csv_file1):
+        df0 = pd.read_csv(csv_file1)
+    else:
+        ok = False
+    if os.path.exists(csv_file2):
+        df1 = pd.read_csv(csv_file2)
+    else:
+        ok = False
+
+    if ok:
+        dfs = [df0, df1]
+    # dfs = list()
+
+    if not ok:
+        res_0 = dict()
+        res_90 = dict()
+        for subdir in directories:
+            files_labels, ttl, nb_frames = get_files_labels(subdir, filter)
+            loss = int(subdir.split("-")[-1])
+            res_this_loss_0 = dict()
+            res_this_loss_90 = dict()
+            for (files, label) in files_labels:
+                tmp_0 = list()
+                tmp_90 = list()
+                for file in files:
+                    r, _ = read_and_rm_delay(trace, file)
+                    if len(r.values()) == 0:
+                        print(file)
+                        continue
+
+                    # Keep only th percentile.
+                    perc = np.percentile(list(r.values()), args.perc)
+                    r2 = {k: v for k, v in r.items() if v >= perc}
+                    # print(f"Before {len(r)}. After: {len(r2)}")
+                    tmp_0 += list(r.values())
+                    tmp_90 += list(r2.values())
+                res_this_loss_0[label] = tmp_0
+                res_this_loss_90[label] = tmp_90
+            res_0[loss] = res_this_loss_0
+            res_90[loss] = res_this_loss_90
+            # if len(res) > 1: break
+
+        keys = sorted(list(res_0.keys()))
+
+        # Convert to df.
+        dfs = list()
+        for res in [res_0, res_90]:
+            mega_values = list()
+            in_timer = dict()
+            for loss, data in res.items():
+                tmp = dict()
+                for label, values in data.items():
+                    l = convert_label(label)
+                    for value in values:
+                        if value >= 350:
+                            tmp[label] = tmp.get(label, 0) + 1
+                            print(value, loss, label)
+                        else:
+                            mega_values.append((loss, l, value))
+                in_timer[loss] = tmp
+            df = pd.DataFrame(mega_values, columns=["Loss [%]", "Method", "Lateness [ms]"])
+            dfs.append(df)
+    
+        dfs[0].to_csv(csv_file1)
+        dfs[1].to_csv(csv_file2)
+    
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+
+    # With all data.
+    sns.boxplot(data=dfs[0], x="Loss [%]", y="Lateness [ms]", hue="Method", showfliers=False, palette=COLORS_SEQUENTIAL_3, ax=ax1)
+    ax1.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax1.legend([],[], frameon=False)
+
+    # 90th percentile only.
+    g = sns.boxplot(data=dfs[1], x="Loss [%]", y="Lateness [ms]", hue="Method", showfliers=False, palette=COLORS_SEQUENTIAL_3, ax=ax2)
+
+    legend = ax2.legend(fancybox=True, loc=(0.03, 0.54))
+    frame = legend.get_frame()
+    frame.set_alpha(1)
+    frame.set_color('white')
+    frame.set_edgecolor('black')
+    frame.set_boxstyle('Square', pad=0.1)
+    for ax in (ax1, ax2):
+        ax.yaxis.grid(True, ls="-")
+        ax.set_xlabel(r"Loss [\%]")
+        ax.set_axisbelow(True)
+    
+    # CDF plot.
+    all_files_labels, _, _ = get_files_labels(os.path.join(args.directory, "loss-5"), "clients")
+    r2 = list()
+    for (files, label) in all_files_labels:
+        r2.append((files, convert_label(label)))
+    
+    plot_distribution(r2, trace, from_ax=ax3, xlim=(0, 160), ylim=(0.90, 1))
+    ax3.grid()
+
+    legend = ax3.legend(fancybox=True)
+    frame = legend.get_frame()
+    frame.set_alpha(1)
+    frame.set_color('white')
+    frame.set_edgecolor('black')
+    frame.set_boxstyle('Square', pad=0.1)
+
+    ax1.set_title("(a) All data.")
+    ax2.set_title("(b) $90^{th}$ percentile.")
+    ax3.set_title("(c) 5\% loss.")
+
+    plt.tight_layout()
+    plt.savefig(save_as, bbox_inches='tight')
 
 
 def get_files_labels_file(directory):
@@ -394,50 +520,80 @@ def get_files_labels_file(directory):
     return res, ttl, nb_frames
 
 
-def plot_file_losses(args):
-    all_files_labels, ttl, nb_frames = get_files_labels_file(args.directory)
-    print(all_files_labels)
+def plot_file_losses(args, dirs):
+    dfs = list()
+    csv1 = "csv-file1.csv"
+    csv2 = "csv-file1.csv"
+    csv3 = "csv-file3.csv"
 
-    res = dict()
-    keys = sorted(all_files_labels.keys())
+    ok = True
+    if os.path.exists(csv1):
+        df1 = pd.read_csv(csv1)
+    else:
+        ok = False
+    if os.path.exists(csv2):
+        df2 = pd.read_csv(csv2)
+    else:
+        ok = False
+    if os.path.exists(csv3):
+        df3 = pd.read_csv(csv3)
+    else:
+        ok = False
+    
+    if ok:
+        dfs = [df1, df2, df3]
+    else:
+        for dir in dirs:
+            all_files_labels, ttl, nb_frames = get_files_labels_file(dir)
+            print(all_files_labels)
 
-    for label in keys:
-        files = all_files_labels[label]
-        for file in files:
-            if "stream-400" in file:
-                continue
-            data = read_data_brut(file)
-            (complete, total) = res.get(label, (0, 0))
-            if len(data) == 5000:
-                complete += 1
-            else:
-                print(len(data), file)
-            res[label] = (complete, total + 1)
-    
-    # Split into appropriate representation.
-    res_per_timer = dict()
-    for label, (complete, total) in res.items():
-        tab = label.split("-")
-        loss = int(tab[0])
-        timer = int(tab[1])
-        this_timer = res_per_timer.get(timer, dict())
-        this_timer[loss] = complete / total
-        res_per_timer[timer] = this_timer
-    
-    fig, ax = plt.subplots()
-    labels = sorted(res_per_timer.keys())
+            res = dict()
+            keys = sorted(all_files_labels.keys())
 
-    # Convert to df.
-    mega_values = list()
-    for timer in labels:
-        data = res_per_timer[timer]
-        for loss, data_loss in data.items():
-            mega_values.append((timer, loss, data_loss))
-    df = pd.DataFrame(mega_values, columns=["Exp. timer", "Loss [%]", "Ratio of clients"])
-    print(df)
-    
-    sns.set_palette("colorblind")
-    sns.barplot(data=df, x="Loss [%]", y="Ratio of clients", hue="Exp. timer")
+            for label in keys:
+                files = all_files_labels[label]
+                for file in files:
+                    if "stream-400" in file:
+                        continue
+                    data = read_data_brut(file)
+                    (complete, total) = res.get(label, (0, 0))
+                    if len(data) == 5000:
+                        complete += 1
+                    else:
+                        print(len(data), file)
+                    res[label] = (complete, total + 1)
+            
+            # Split into appropriate representation.
+            res_per_timer = dict()
+            for label, (complete, total) in res.items():
+                tab = label.split("-")
+                loss = int(tab[0])
+                timer = int(tab[1])
+                this_timer = res_per_timer.get(timer, dict())
+                this_timer[loss] = complete / total
+                res_per_timer[timer] = this_timer
+            
+            fig, ax = plt.subplots()
+            labels = sorted(res_per_timer.keys())
+
+            # Convert to df.
+            mega_values = list()
+            for timer in labels:
+                data = res_per_timer[timer]
+                for loss, data_loss in data.items():
+                    mega_values.append((timer, loss, data_loss))
+            df = pd.DataFrame(mega_values, columns=["Exp. timer", "Loss [%]", "Ratio of clients"])
+            dfs.append(df)
+        
+        dfs[0].to_csv(csv1)
+        dfs[1].to_csv(csv2)
+        dfs[2].to_csv(csv3)
+
+    fig, axs = plt.subplots(1, 2, 3, sharey=True)
+    sns.set_palette(sns.color_palette(COLORS_SEQUENTIAL_4))
+    sns.barplot(data=dfs[0], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[0])
+    sns.barplot(data=dfs[1], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[1])
+    sns.barplot(data=dfs[2], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[2])
 
     # for label in labels:
     #     loss_data = res_per_timer[label]
@@ -469,19 +625,20 @@ if __name__ == "__main__":
     parser.add_argument("--ylim", type=float, help="Maximum ylim for the plot distribution", default=0.0)
     parser.add_argument("--filter", help="Server or client lateness", default="clients", choices=["clients", "server"])
     parser.add_argument("--pcap", help="Plot using the PCAPs", action="store_true")
-    parser.add_argument("--latex", help="Latex rendering", type=float, default=None)
+    parser.add_argument("--latex", help="Latex rendering", action="store_true")
     parser.add_argument("--losses", help="Losses plot", action="store_true")
     parser.add_argument("--perc", help="Percentile to filter", type=int, default=0)
     parser.add_argument("--save", help="Save as file", type=str, default="fig.pdf")
     parser.add_argument("--file", help="File plot", action="store_true")
+    parser.add_argument("--losses-3", help="Losses plot but all in one", action="store_true")
     args = parser.parse_args()
 
-    if args.latex is not None:
-        latexify(columns=args.latex)
+    if args.latex:
+        latexify(fig_height=FIG_HEIGHT)
 
     # File.
     if args.file:
-        plot_file_losses(args)
+        plot_file_losses(args, ["test-file-lasts",])
     # Pcaps.
     elif args.losses:
         # Get all directories with this prefix.
@@ -489,6 +646,14 @@ if __name__ == "__main__":
         for subdir in os.listdir(args.directory):
             all_subdirs.append(os.path.join(args.directory, subdir))
         plot_losses(all_subdirs, args.trace, args.filter, save_as=args.save)
+    elif args.losses_3:
+        if args.latex:
+            latexify(fig_height=FIG_HEIGHT, nb_subplots_line=3, columns=1)
+        # Get all directories with this prefix.
+        all_subdirs = list()
+        for subdir in os.listdir(args.directory):
+            all_subdirs.append(os.path.join(args.directory, subdir))
+        plot_losses_3(all_subdirs, args.trace, args.filter, save_as=args.save, args=args)
     elif args.pcap:
         # for subdir in os.listdir(args.directory):
         #     path = os.path.join(args.directory, subdir)
