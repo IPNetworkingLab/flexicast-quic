@@ -4,12 +4,11 @@ import os
 import json
 import numpy as np
 import argparse
-from utils import latexify
+from utils import *
+import seaborn as sns
+import math
 
-# COLORS = ["#1b9e77", "#d95f02", "#7570b3", "#e7298a"]
-COLORS = ["#d7191c", "#fdae61", "#2b83ba", "#abdda4", "#999999"]
-MARKERS = ["^", "v", ">", "<", 's']
-LINESTYLES = ["-", "--", "-.", (0, (1, 1)), (0, (2, 1))]
+sns.set_palette("colorblind")
 
 
 def parse_json(filename, convert=False, factor=1):
@@ -45,7 +44,7 @@ def read_multicast(dirname, convert=False, factor=1):
 
         auth_tag = subdir.split("-")[0]
         nb_recv = int(subdir.split("-")[1])
-        if auth_tag == "StreamAsymOld":
+        if auth_tag == "AsymSign":
             auth_asym[nb_recv] = data
         elif auth_tag == "SymSign":
             auth_sym[nb_recv] = data
@@ -149,32 +148,111 @@ def plot_generic(root, xlabel, ylabel="Gootput ratio", save_as="bench.pdf", fact
     plt.savefig(save_as)
 
 
+def plot_generic_both(root_server, root_client, xlabel, ylabel="Gootput ratio", save_as="bench.pdf", factor=1, do_read_unicast=None, read_repair=False, ylog=False, legend_loc=None, xlog=True, ylim=None):
+    def read_one(root, unicast):
+        if read_repair:
+            baseline, fixed = read_multicast_repair(root, True, factor)
+            data = list()
+            ks = sorted(fixed.keys())
+            for k in ks:
+                v = fixed[k]
+                l = math.log(k, 10)
+                if abs(l - round(l)) < 0.0001:
+                    data.append((v, rf"$10^{round(l)}$"))
+                else:
+                    data.append((v, k))
+        else:
+            mc_auth_asym, mc_auth_sym, mc_no_auth, mc_auth_stream  = read_multicast(root, True, factor)
+            data = [
+                (mc_auth_asym, r"$MC_A$"),
+                (mc_no_auth, r"$MC_N$"),
+                (mc_auth_sym, r"$MC_Y$"),
+                (mc_auth_stream, r"$MC_S$"),
+            ]
+            data = list(filter(lambda x: len(x[0]) > 0, data))
+            baseline = data[1][0]
+            if unicast is not None:
+                uc = read_unicast(unicast, convert=True, factor=factor)
+                print(uc)
+                data.append((uc, "UC"))
+        return data, baseline
+
+    data_server, baseline_server = read_one(root_server, do_read_unicast[0] if do_read_unicast is not None else None)
+    data_client, baseline_client = read_one(root_client, do_read_unicast[1] if do_read_unicast is not None else None)
+    
+    fix, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
+
+    for data, baseline, ax in zip([data_server, data_client], [baseline_server, baseline_client], [ax1, ax2]):
+        for i, (d, label) in enumerate(data):
+            k = sorted(d.keys())
+            v = [d[i][0] / baseline[i][0] for i in k]
+            std = [d[i][1] / baseline[i][0] for i in k]
+
+            ax.errorbar(k, v, yerr=std, label=label, fmt=MARKERS[i], linestyle=LINESTYLES[i], linewidth=LINEWIDTH, markersize=MARKERSIZE)
+    
+    if legend_loc is None:
+        legend = ax2.legend(fancybox=True, handletextpad=HANDLETEXTPAD, handlelength=HANDLELENGTH)
+    else:
+        legend = ax2.legend(fancybox=True, loc=legend_loc, handletextpad=HANDLETEXTPAD, handlelength=HANDLELENGTH)
+    frame = legend.get_frame()
+    frame.set_alpha(1)
+    frame.set_color('white')
+    frame.set_edgecolor('black')
+    frame.set_boxstyle('Square', pad=0.1)
+
+    ax1.set_xlabel(xlabel)
+    ax2.set_xlabel(xlabel)
+    ax1.set_ylabel(ylabel)
+    if xlog:
+        ax1.set_xscale("log")
+        ax2.set_xscale("log")
+    if ylog:
+        ax1.set_yscale("log")
+    # if ylim is not None:
+    #     ax.set_ylim(ylim)
+
+    ax1.set_title("Server")
+    ax2.set_title("Client")
+
+    ax1.grid(True, which="both", ls="-")
+    ax2.grid(True, which="both", ls="-")
+    plt.tight_layout()
+
+    plt.savefig(save_as, bbox_inches='tight')
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--latex", help="Latex output", action="store_true")
     parser.add_argument("--clients", help="Client benchmark instead of server", action="store_true")
     parser.add_argument("--asym", help="Compare asymmetric with stream size", action="store_true")
     parser.add_argument("--repair", help="Reparation FEC", action="store_true")
+    parser.add_argument("--both", help="Both client and server in the same plot", action="store_true")
     args = parser.parse_args()
 
     if args.latex:
-        latexify()
+        latexify(nb_subplots_line=1, columns=2, fig_height=FIG_HEIGHT)
     if args.repair:
-            if args.clients:
+            if args.both:
+                plot_generic_both("../target/criterion/multicast-repair", "../target/criterion/multicast-repair-client", factor=10, xlabel="Loss percentage", save_as="bench-repair-both.pdf", read_repair=True)
+            elif args.clients:
                 plot_generic("../target/criterion/multicast-repair-client", factor=10, xlabel="Loss percentage", save_as="bench-repair-client.pdf", read_repair=True)
             else:
                 # cmp_mc_repair("../target/criterion/multicast-repair", convert=True, factor=3, save_as="bench-repair-server.pdf")
                 plot_generic("../target/criterion/multicast-repair", factor=10, xlabel="Loss percentage", save_as="bench-repair-server.pdf", read_repair=True)
-    elif args.clients:
-        if args.asym:
+    if args.asym:
+        if args.both:
+            plot_generic_both("../target/criterion/multicast-asym", "../target/criterion/multicast-client-asym", factor=1, xlabel="Stream size", save_as="bench-asym-both.pdf", ylog=True, legend_loc=(0.53, 0.15), ylim=(0, 1.1))
+        elif args.clients:
             plot_generic("../target/criterion/multicast-client-asym", factor=1, xlabel="Stream size", save_as="bench-asym-clients.pdf", ylog=True, legend_loc=(0.42, 0.2), ylim=(0, 1.1))
             # cmp_mc_asym_client("../target/criterion", convert=True, factor=1)
         else:
-            # cmp_mc_uc_client("../target/criterion", convert=True, factor=10)
-            plot_generic("../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-client.pdf", ylog=True, do_read_unicast="../target/criterion/unicast-client-1G", xlog=False, legend_loc=(0.1, 0.15))
-    else:
-        if args.asym:
             plot_generic("../target/criterion/multicast-asym", factor=1, xlabel="Stream size", save_as="bench-asym-server.pdf", ylog=True, legend_loc=(0.42, 0.35), ylim=(0, 1.1))
+            # cmp_mc_uc_client("../target/criterion", convert=True, factor=10)
+    else:
+        if args.both:
+            plot_generic_both("../target/criterion/multicast-1G", "../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-both.pdf", ylog=True, do_read_unicast=("../target/criterion/unicast-1G", "../target/criterion/unicast-client-1G"), xlog=False, legend_loc=(0.03, 0.085))
+        elif args.clients:
+            plot_generic("../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-client.pdf", ylog=True, do_read_unicast="../target/criterion/unicast-client-1G", xlog=False, legend_loc=(0.1, 0.15))
             # cmp_mc_asym("../target/criterion/multicast-asym", convert=True, factor=1)
         else:
             # cmp_mc_uc("../target/criterion", convert=True, factor=10, scale=True)
