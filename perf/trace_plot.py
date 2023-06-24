@@ -23,6 +23,7 @@ def get_files_labels(directory, server_only):
         path = os.path.join(directory, file)
 
         tab = file.split("-")
+        if tab[-1] == "pkt.txt": continue
         if tab[-2] == "server" and server_only == "clients" or tab[-2] != "server" and server_only == "server": 
             continue
         if tab[1] == "mc":
@@ -450,11 +451,15 @@ def plot_losses_3(directories, trace, filter, save_as, args):
     sns.boxplot(data=dfs[0], x="Loss [%]", y="Lateness [ms]", hue="Method", showfliers=False, palette=COLORS_SEQUENTIAL_3, ax=ax1)
     ax1.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     ax1.legend([],[], frameon=False)
+    
+
+    # for x in range(0, 6, 2):
+    #     ax1.axvspan(x - 0.5, x + 0.5, color='black', alpha=0.1, zorder=0)
 
     # 90th percentile only.
     g = sns.boxplot(data=dfs[1], x="Loss [%]", y="Lateness [ms]", hue="Method", showfliers=False, palette=COLORS_SEQUENTIAL_3, ax=ax2)
 
-    legend = ax2.legend(fancybox=True, loc=(0.03, 0.54))
+    legend = ax2.legend(fancybox=True, loc=(0.03, 0.54), handletextpad=0.2, columnspacing=0.5)
     frame = legend.get_frame()
     frame.set_alpha(1)
     frame.set_color('white')
@@ -474,7 +479,7 @@ def plot_losses_3(directories, trace, filter, save_as, args):
     plot_distribution(r2, trace, from_ax=ax3, xlim=(0, 160), ylim=(0.90, 1))
     ax3.grid()
 
-    legend = ax3.legend(fancybox=True)
+    legend = ax3.legend(fancybox=True, handletextpad=0.2, columnspacing=0.5)
     frame = legend.get_frame()
     frame.set_alpha(1)
     frame.set_color('white')
@@ -523,7 +528,7 @@ def get_files_labels_file(directory):
 def plot_file_losses(args, dirs):
     dfs = list()
     csv1 = "csv-file1.csv"
-    csv2 = "csv-file1.csv"
+    csv2 = "csv-file2.csv"
     csv3 = "csv-file3.csv"
 
     ok = True
@@ -568,12 +573,12 @@ def plot_file_losses(args, dirs):
             for label, (complete, total) in res.items():
                 tab = label.split("-")
                 loss = int(tab[0])
+                if loss > 5: continue
                 timer = int(tab[1])
                 this_timer = res_per_timer.get(timer, dict())
                 this_timer[loss] = complete / total
                 res_per_timer[timer] = this_timer
             
-            fig, ax = plt.subplots()
             labels = sorted(res_per_timer.keys())
 
             # Convert to df.
@@ -589,11 +594,13 @@ def plot_file_losses(args, dirs):
         dfs[1].to_csv(csv2)
         dfs[2].to_csv(csv3)
 
-    fig, axs = plt.subplots(1, 2, 3, sharey=True)
+    fig, axs = plt.subplots(1, 3, sharey=True)
     sns.set_palette(sns.color_palette(COLORS_SEQUENTIAL_4))
     sns.barplot(data=dfs[0], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[0])
-    sns.barplot(data=dfs[1], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[1])
-    sns.barplot(data=dfs[2], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[2])
+    g = sns.barplot(data=dfs[1], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[1])
+    g.set(ylabel=None)
+    g = sns.barplot(data=dfs[2], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[2])
+    g.set(ylabel=None)
 
     # for label in labels:
     #     loss_data = res_per_timer[label]
@@ -602,17 +609,24 @@ def plot_file_losses(args, dirs):
     #     ax.plot(keys, v, label=label)
     #     # ax.scatter(keys, v, label=label)
     
-    legend = ax.legend(fancybox=True, loc=(0.03, 0.03), ncol=4, columnspacing=0.5, handletextpad=0.1)
+    legend = axs[0].legend(fancybox=True, loc=(0.62, 0.02), columnspacing=0.5, handletextpad=0.1)
     frame = legend.get_frame()
     frame.set_alpha(1)
     frame.set_color('white')
     frame.set_edgecolor('black')
     frame.set_boxstyle('Square', pad=0.1)
+    axs[1].legend([],[], frameon=False)
+    axs[2].legend([],[], frameon=False)
+    for ax in axs:
+        ax.yaxis.grid(True, ls="-")
+        ax.set_xlabel(r"Loss [\%]")
+        ax.set_axisbelow(True)
+    
+    axs[0].set_title(r"(a) 2 Mbps.")
+    axs[1].set_title(r"(b) 1 Mbps.")
+    axs[2].set_title(r"(c) 0.5 Mbps.")
     plt.tight_layout()
-    ax.yaxis.grid(True, ls="-")
-    ax.set_xlabel(r"Loss [\%]")
-    ax.set_axisbelow(True)
-    plt.savefig("file-losses.pdf")
+    plt.savefig("file-losses.pdf", bbox_inches='tight')
 
 
 
@@ -638,7 +652,9 @@ if __name__ == "__main__":
 
     # File.
     if args.file:
-        plot_file_losses(args, ["test-file-lasts",])
+        files = ["test-file-lasts-5", "test-file-lasts-10", "test-file-lasts-20"]
+        latexify(fig_height=FIG_HEIGHT, nb_subplots_line=3, columns=1)
+        plot_file_losses(args, [os.path.join(args.directory, i) for i in files])
     # Pcaps.
     elif args.losses:
         # Get all directories with this prefix.

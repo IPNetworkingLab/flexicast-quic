@@ -101,7 +101,7 @@ def plot_didactique_3(directory, trace):
         frame.set_color('white')
         frame.set_edgecolor('black')
         frame.set_boxstyle('Square', pad=0.1)
-        ax.set_xlabel(r"Loss [\%]")
+        ax.set_xlabel(r"Lateness [ms]")
         ax.set_axisbelow(True)
     
     legend = axs[2].legend(fancybox=True, loc=locs[-1], handletextpad=0.2, ncol=2, columnspacing=0.5)
@@ -112,6 +112,11 @@ def plot_didactique_3(directory, trace):
     frame.set_boxstyle('Square', pad=0.1)
     axs[2].set_xlabel(r"Nb clients")
     axs[2].set_axisbelow(True)
+
+    # Background for boxplot.
+    # xlims = axs[2].get_xlim()
+    # axs[2].axvspan(0.5, xlims[1], color='black', alpha=0.075, zorder=1)
+    # axs[2].set_xlim(xlims)
 
     axs[0].grid(True)
     axs[1].grid(True)

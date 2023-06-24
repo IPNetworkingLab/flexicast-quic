@@ -1,6 +1,22 @@
 import numpy as np
 
 
+COLORS = ["#d7191c", "#fdae61", "#2b83ba", "#abd9e9", "#abdda4", "#999999"]
+COLORS_GREY = ["dimgray", "silver", "white"]
+COLORS_BLACK_WHITE = ["black", "dimgray", "silver", "white"]
+COLORS_SEQUENTIAL_5 = ["#253494", "#2c7fb8", "#41b6c4", "#a1dab4", "#ffffcc"]
+COLORS_SEQUENTIAL_4 = ["#253494", "#2c7fb8", "#a1dab4", "#ffffcc"]
+COLORS_SEQUENTIAL_3 = ["#253494", "#41b6c4", "#ffffcc"]
+COLORS_SEQUENTIAL_2 = ["#41b6c4", "#ffffcc"]
+MARKERS = ["d", "s", "D", "v", "P", "*", "^"]
+LINESTYLES = ["solid", (0, (1, 1)), "dashed", "dashdot", (5, (10, 3)), (0, (3, 1, 1, 1))]
+LINEWIDTH = 3
+MARKERSIZE = 8
+HANDLETEXTPAD = 0.2
+HANDLELENGTH = 2.5
+FIG_HEIGHT = 3.5
+
+
 def latexify(fig_width=None, fig_height=None, columns=2, nb_subplots_line=1):
     """Set up matplotlib's RC params for LaTeX plotting.
     Call this before plotting a figure.
