@@ -4851,8 +4851,29 @@ impl Connection {
         let can_send_fec = self.emit_fec &&
             (self.paths.get(send_pid)?.fec_only ||
                 self.paths.iter().all(|(_, p)| !p.fec_only));
+        
+        let mut prioritize_fec = false;
+        if let Some(multicast) = self.multicast.as_ref() {
+            if can_send_fec &&
+            multicast.mc_prioritize_fec &&
+            pkt_type == packet::Type::Short &&
+            self.should_send_repair_symbol(send_pid)? &&
+            self.fec_encoder.can_send_repair_symbols() {
+                if let Some(md) =
+                self.latest_metadata_of_symbol_with_fec_protected_frames
+            {
+                if left >=
+                    octets::varint_len(0x32) +
+                        self.fec_encoder.next_repair_symbol_size(md)?
+                {
+                    debug!("Prioritise FEC");
+                    prioritize_fec = true;
+                }
+            }
+            }
+        }
 
-        if should_protect_packet {
+        if should_protect_packet && !prioritize_fec {
             left = std::cmp::min(
                 left,
                 self.fec_encoder
@@ -4863,13 +4884,17 @@ impl Connection {
                 metadata: self.fec_encoder.next_metadata()?,
                 recovered: false,
             };
+            if let Some(fec_scheduler) = &mut self.fec_scheduler {
+                        fec_scheduler.sent_source_symbol();
+                    }
+            
             if frame.wire_len() < left {
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     in_flight = true;
                     fec_protected = true;
-                    if let Some(fec_scheduler) = &mut self.fec_scheduler {
-                        fec_scheduler.sent_source_symbol();
-                    }
+                    // if let Some(fec_scheduler) = &mut self.fec_scheduler {
+                    //     fec_scheduler.sent_source_symbol();
+                    // }
                 } else {
                     error!("buffer too short when adding ID frame");
                     return Err(BufferTooShort);

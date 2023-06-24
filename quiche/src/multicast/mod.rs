@@ -380,6 +380,9 @@ pub struct MulticastAttributes {
 
     /// The client leaves the multicast channel on timeout, i.e., in [`MulticastConnection::on_mc_timeout`].
     mc_leave_on_timeout: bool,
+
+    /// Send FEC repair packets instead of source symbols if possible.
+    pub(crate) mc_prioritize_fec: bool,
 }
 
 impl MulticastAttributes {
@@ -867,6 +870,7 @@ impl Default for MulticastAttributes {
             mc_max_pn: 0,
             mc_sent_repairs: None,
             mc_leave_on_timeout: true,
+            mc_prioritize_fec: false,
         }
     }
 }
@@ -1084,6 +1088,9 @@ pub trait MulticastConnection {
     fn mc_stream_recv(
         &mut self, stream_id: u64, out: &mut [u8],
     ) -> Result<(usize, bool)>;
+
+    /// Sets the [`MulticastAttributes::mc_prioritize_fec`].
+    fn set_mc_prioritize_fec(&mut self, v: bool);
 }
 
 impl MulticastConnection for Connection {
@@ -1535,6 +1542,8 @@ impl MulticastConnection for Connection {
                 } else if multicast.mc_leave_on_timeout {
                     debug!("Will leave the multicast channel");
                     self.mc_leave_channel()?;
+                } else {
+                    debug!("Cannot leave the multicast channel");
                 }
             }
         }
@@ -1866,6 +1875,12 @@ impl MulticastConnection for Connection {
         }
 
         self.stream_recv(stream_id, out)
+    }
+
+    fn set_mc_prioritize_fec(&mut self, v: bool) {
+        if let Some(multicast) = self.multicast.as_mut() {
+            multicast.mc_prioritize_fec = v;
+        }
     }
 }
 
@@ -2845,7 +2860,7 @@ pub mod testing {
         if auth == McAuthType::AsymSign {
             config.set_fec_symbol_size(1280 - 64);
         } else {
-            config.set_fec_symbol_size(1280);
+            config.set_fec_symbol_size(1216);
         }
     }
 
@@ -2935,14 +2950,14 @@ pub mod testing {
         /// Only used for tests and benchmarks.
         /// Sets the source nack range directly in the FEC scheduler.
         pub fn set_source_nack_range(
-            &mut self, rangeset: &OpenRangeSet,
+            &mut self, rangeset: &OpenRangeSet, pn: u64
         ) -> Result<()> {
-            let conn_id_ref = self.channel.ids.get_dcid(0)?; // MC-TODO: replace hard-coded value.
             if let Some(fec_scheduler) = self.channel.fec_scheduler.as_mut() {
-                fec_scheduler.lost_source_symbol(
-                    &rangeset.ranges,
-                    conn_id_ref.cid.as_ref(),
-                );
+                // fec_scheduler.lost_source_symbol(
+                //     &rangeset.ranges,
+                //     conn_id_ref.cid.as_ref(),
+                // );
+                fec_scheduler.recv_nack(pn, &rangeset.ranges, RangeSet::default(), Some(rangeset.ranges.len() as u64));
             }
 
             Ok(())
