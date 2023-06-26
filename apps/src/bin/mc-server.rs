@@ -48,6 +48,7 @@ use quiche_apps::common::ClientIdMap;
 use quiche_apps::mc_app;
 use quiche_apps::sendto::*;
 use std::collections::HashMap;
+use std::io::Write;
 
 use clap::Parser;
 use ring::rand::*;
@@ -198,6 +199,10 @@ fn main() {
 
     let authentication = args.authentication;
     let mut nb_active_mc_receivers = 0;
+
+    // Log every packet sent on unicast and multicast.
+    let mut log_uc_pkt = Vec::with_capacity(10000);
+    let mut log_mc_pkt = Vec::with_capacity(10000);
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -445,6 +450,7 @@ fn main() {
                     }
                     continue 'read;
                 }
+                log_uc_pkt.push(len);
 
                 let mut scid = [0; 16];
                 scid.copy_from_slice(conn_id);
@@ -480,6 +486,7 @@ fn main() {
 
                         panic!("send() failed: {:?}", e);
                     }
+                    log_uc_pkt.push(len);
                     continue 'read;
                 }
 
@@ -824,7 +831,7 @@ fn main() {
                                 args.pacing.is_some(),
                                 false,
                             )
-                            .map(|_| ())
+                            .map(|r| log_uc_pkt.push(r))
                         })
                     } else {
                         // Use pacing socket.
@@ -836,7 +843,7 @@ fn main() {
                             args.pacing.is_some(),
                             false,
                         )
-                        .map(|_| ())
+                        .map(|r| log_mc_pkt.push(r))
                     };
 
                     if let Err(e) = err {
@@ -905,12 +912,12 @@ fn main() {
                                         &out[..write],
                                         client.soft_mc_addr_auth,
                                     )
-                                    .map(|_| ())
+                                    .map(|r| log_uc_pkt.push(r))
                             })
                         } else {
                             mc_socket
                                 .send_to(&out[..write], mc_auth_addr)
-                                .map(|_| ())
+                                .map(|r| log_mc_pkt.push(r))
                         };
 
                         if let Err(e) = err {
@@ -985,6 +992,7 @@ fn main() {
 
                         panic!("send() failed: {:?}", e);
                     }
+                    log_uc_pkt.push(write);
 
                     debug!("{} written {} bytes", client.conn.trace_id(), write);
 
@@ -1036,6 +1044,21 @@ fn main() {
 
     // Record the timestamp results.
     app_handler.on_finish();
+
+    // Write the number of packets sent.
+    let mut file =
+        std::fs::File::create(format!("{}-uc-pkt.txt", &args.result_wire_trace))
+            .unwrap();
+    for nb_bytes in log_uc_pkt.iter() {
+        writeln!(file, "{}", nb_bytes).unwrap();
+    }
+
+    let mut file =
+        std::fs::File::create(format!("{}-mc-pkt.txt", &args.result_wire_trace))
+            .unwrap();
+    for nb_bytes in log_mc_pkt.iter() {
+        writeln!(file, "{}", nb_bytes).unwrap();
+    }
 }
 
 /// Generate a stateless retry token.
@@ -1105,9 +1128,9 @@ fn get_multicast_channel(
     Option<McAnnounceData>, // Data.
     Option<McAnnounceData>, // Authentication.
 ) {
-    let mc_addr = "224.3.0.225:8889".parse().unwrap();
+    let mc_addr = "239.239.230.35:8889".parse().unwrap();
     // let mc_addr = "127.0.0.1:8889".parse().unwrap();
-    let mc_addr_bytes = [224, 3, 0, 225];
+    let mc_addr_bytes = [239, 239, 239, 35];
     // let mc_addr_bytes = [127, 0, 0, 1];
     let mc_port = 8889;
     // let source_addr = "127.0.0.1:4434".parse().unwrap();
@@ -1145,7 +1168,7 @@ fn get_multicast_channel(
         rng.fill(&mut channel_id_auth).unwrap();
         let channel_id = quiche::ConnectionId::from_ref(&channel_id_auth);
 
-        let dummy_ip = std::net::Ipv4Addr::new(224, 3, 0, 225);
+        let dummy_ip = std::net::Ipv4Addr::new(239, 239, 239, 35);
         // let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
         let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
             dummy_ip,

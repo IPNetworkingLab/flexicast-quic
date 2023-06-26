@@ -45,6 +45,7 @@ use quiche::multicast;
 use quiche::multicast::McPathType;
 use quiche::multicast::MulticastConnection;
 use quiche::ConnectionId;
+use std::io::Write;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -139,6 +140,9 @@ fn main() {
         std::net::SocketAddr::V6(_) => format!("[::]:{}", args.source_port),
     };
 
+    // Log every packet sent on unicast.
+    let mut log_uc_pkt = Vec::with_capacity(10000);
+
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
     let mut socket =
@@ -221,6 +225,7 @@ fn main() {
 
         panic!("send() failed: {:?}", e);
     }
+    log_uc_pkt.push(write);
 
     debug!("written {}", write);
 
@@ -498,7 +503,14 @@ fn main() {
         }
 
         if let Some(multicast) = conn.get_multicast_attributes() {
-            if matches!(multicast.get_mc_role(), multicast::MulticastRole::Client(MulticastClientStatus::Leaving(_)) | multicast::MulticastRole::Client(MulticastClientStatus::Left)) {
+            if matches!(
+                multicast.get_mc_role(),
+                multicast::MulticastRole::Client(MulticastClientStatus::Leaving(
+                    _
+                )) | multicast::MulticastRole::Client(
+                    MulticastClientStatus::Left
+                )
+            ) {
                 info!("Client leaves the multicast channel. Closing...");
                 break;
             }
@@ -593,7 +605,8 @@ fn main() {
                             .unwrap();
                         mc_socket_opt = Some(mc_socket);
                         probe_mc_path = true;
-                        conn.mc_join_channel(app_handler.leave_on_mc_timeout()).unwrap();
+                        conn.mc_join_channel(app_handler.leave_on_mc_timeout())
+                            .unwrap();
                         probe_already = true;
                     }
                 }
@@ -722,6 +735,7 @@ fn main() {
 
                 panic!("send() failed: {:?}", e);
             }
+            log_uc_pkt.push(write);
         }
 
         if conn.is_closed() {
@@ -761,6 +775,14 @@ fn main() {
 
     // Record the application results.
     app_handler.on_finish();
+
+    // Write the number of packets sent.
+    let mut file =
+        std::fs::File::create(format!("{}-uc-pkt.txt", &args.output_latency))
+            .unwrap();
+    for nb_bytes in log_uc_pkt.iter() {
+        writeln!(file, "{}", nb_bytes).unwrap();
+    }
 }
 
 fn hex_dump(buf: &[u8]) -> String {

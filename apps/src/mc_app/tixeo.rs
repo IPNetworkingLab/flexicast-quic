@@ -232,7 +232,7 @@ fn replay_trace(
         Ok(v[..limit.unwrap_or(v.len() as u64) as usize].into())
     } else {
         Ok((0..limit.unwrap_or(1000))
-            .map(|i| (delay_no_replay * i, 1000))
+            .map(|i| (delay_no_replay * i, 100))
             .collect())
     }
 }
