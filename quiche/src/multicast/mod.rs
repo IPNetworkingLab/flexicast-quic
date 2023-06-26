@@ -2,6 +2,7 @@
 
 use std::cmp;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::convert::TryInto;
@@ -383,6 +384,8 @@ pub struct MulticastAttributes {
 
     /// Send FEC repair packets instead of source symbols if possible.
     pub(crate) mc_prioritize_fec: bool,
+
+    pub(crate) mc_ss_pn: RangeSet,
 }
 
 impl MulticastAttributes {
@@ -871,6 +874,7 @@ impl Default for MulticastAttributes {
             mc_sent_repairs: None,
             mc_leave_on_timeout: true,
             mc_prioritize_fec: false,
+            mc_ss_pn: RangeSet::default(),
         }
     }
 }
@@ -1488,11 +1492,6 @@ impl MulticastConnection for Connection {
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
             if let Some(multicast) = self.multicast.as_mut() {
                 if self.is_server {
-                    // Reset the sent repair frames.
-                    if multicast.mc_sent_repairs.is_some() {
-                        multicast.mc_sent_repairs =
-                            Some(ranges::RangeSet::default());
-                    }
 
                     // Reset the number of FEC repair packets in flight.
                     if let Some(fec_scheduler) = self.fec_scheduler.as_mut() {
@@ -1534,6 +1533,14 @@ impl MulticastConnection for Connection {
                             self.multicast.as_mut().unwrap().mc_last_recv_time =
                                 Some(now);
 
+                            if let Some(e) = v.0 {
+                                self.multicast.as_mut().unwrap().mc_ss_pn.remove_until(e);
+                                if let Some(mc_repairs) = self.multicast.as_mut().unwrap().mc_sent_repairs.as_mut() {
+                                    debug!("Repairs before: {:?}", mc_repairs);
+                                    mc_repairs.remove_until(e);
+                                    debug!("Repairs after: {:?}", mc_repairs);
+                                }
+                            }
                             info!("Call on_mc_timeout on server done ok");
 
                             return Ok(v);
@@ -1645,7 +1652,7 @@ impl MulticastConnection for Connection {
 
             // MC_NACK ranges.
             let nb_degree_opt = multicast.mc_nack_ranges.1;
-            if let Some((nack_ranges, pn)) = multicast.mc_nack_ranges.0.as_mut() {
+            if let Some((mut nack_ranges, pn)) = multicast.mc_nack_ranges.0.to_owned() {
                 // Filter from the nack ranges packets that are expired on the
                 // source. This is necessary in case of
                 // desynchronization with the client.
@@ -1654,6 +1661,24 @@ impl MulticastConnection for Connection {
                 {
                     nack_ranges.remove_until(last_expired_pn + 1);
                 }
+
+                // Filter from the nack ranges packets that are not mapped to source symbols.
+                debug!("Before removing useless packets: {:?}", nack_ranges);
+                if nb_degree_opt.is_none() || nb_degree_opt == Some(0) {
+                    let mc_ss_pn: HashSet<u64> = mc_channel.multicast.as_ref().unwrap().mc_ss_pn.flatten().collect();
+                    let mut new_nack = RangeSet::default();
+                    for elem in nack_ranges.iter() {
+                        for pn in elem {
+                            if mc_ss_pn.contains(&pn) {
+                                new_nack.insert(pn..pn + 1);
+                            }
+                        }
+                    }
+                    nack_ranges = new_nack;
+                }
+
+
+                debug!("After removing useless packets: {:?}", nack_ranges);
 
                 // The multicast source updates its FEC scheduler with the
                 // received losses.
@@ -1666,8 +1691,8 @@ impl MulticastConnection for Connection {
                         .to_owned()
                     {
                         fec_scheduler.recv_nack(
-                            *pn,
-                            nack_ranges,
+                            pn,
+                            &nack_ranges,
                             sent_repairs,
                             nb_degree_opt,
                         );

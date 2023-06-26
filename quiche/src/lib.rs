@@ -2719,10 +2719,6 @@ impl Connection {
             aead,
         )
         .map_err(|e| {
-            debug!(
-                "Current role: {:?}",
-                self.multicast.as_ref().unwrap().get_mc_role()
-            );
             debug!("Here because drop packet decrypt packet");
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
@@ -4001,43 +3997,46 @@ impl Connection {
                     self.mc_nack_range(epoch, mc_space_id as u64)
                 {
                     let max_pn = self.multicast.as_ref().unwrap().mc_max_pn;
-                    let nb_degree_needed = self.fec_decoder.nb_missing_degrees();
-                    println!("NB DEgree needed: {:?}", nb_degree_needed);
-                    self.multicast.as_mut().unwrap().set_mc_nack_ranges(
-                        Some((&nack_range, max_pn)),
-                        nb_degree_needed,
-                    )?;
+                    let nb_degree_needed_opt: Option<u64> = self.fec_decoder.nb_missing_degrees();
+                    println!("NB degree needed: {:?}", nb_degree_needed_opt);
 
-                    info!(
-                        "After setting it on client for {:?}, it is: {:?}",
-                        self.multicast.as_ref().unwrap().get_self_client_id(),
-                        nack_range
-                    );
-
-                    // We have some nack range to send! Create the MC_NACK frame.
-
-                    info!("Send an MC_NACK with ranges: {:?}", nack_range);
-
-                    let multicast = self.multicast.as_ref().unwrap();
-
-                    let frame = frame::Frame::McNack {
-                        channel_id: multicast
-                            .get_mc_announce_data_path()
-                            .ok_or(Error::Multicast(
-                                multicast::MulticastError::McAnnounce,
-                            ))?
-                            .channel_id
-                            .to_owned(),
-                        last_pn: multicast.mc_max_pn,
-                        nb_repair_needed: nb_degree_needed.unwrap_or(0),
-                        ranges: nack_range,
-                    };
-
-                    if push_frame_to_pkt!(b, frames, frame, left) {
-                        // We want the MC_NACK frames to be sent even if no data
-                        // is sent.
-                        ack_eliciting = true;
-                        in_flight = true;
+                    if let Some(nb_degree_needed) = nb_degree_needed_opt {
+                        self.multicast.as_mut().unwrap().set_mc_nack_ranges(
+                            Some((&nack_range, max_pn)),
+                            Some(nb_degree_needed),
+                        )?;
+    
+                        info!(
+                            "After setting it on client for {:?}, it is: {:?}",
+                            self.multicast.as_ref().unwrap().get_self_client_id(),
+                            nack_range
+                        );
+    
+                        // We have some nack range to send! Create the MC_NACK frame.
+    
+                        info!("Send an MC_NACK with ranges: {:?} and degree: {:?}", nack_range, nb_degree_needed);
+    
+                        let multicast = self.multicast.as_ref().unwrap();
+    
+                        let frame = frame::Frame::McNack {
+                            channel_id: multicast
+                                .get_mc_announce_data_path()
+                                .ok_or(Error::Multicast(
+                                    multicast::MulticastError::McAnnounce,
+                                ))?
+                                .channel_id
+                                .to_owned(),
+                            last_pn: multicast.mc_max_pn,
+                            nb_repair_needed: nb_degree_needed,
+                            ranges: nack_range,
+                        };
+    
+                        if push_frame_to_pkt!(b, frames, frame, left) {
+                            // We want the MC_NACK frames to be sent even if no data
+                            // is sent.
+                            ack_eliciting = true;
+                            in_flight = true;
+                        }
                     }
                 }
             }
@@ -4884,17 +4883,17 @@ impl Connection {
                 metadata: self.fec_encoder.next_metadata()?,
                 recovered: false,
             };
-            if let Some(fec_scheduler) = &mut self.fec_scheduler {
-                        fec_scheduler.sent_source_symbol();
-                    }
             
             if frame.wire_len() < left {
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     in_flight = true;
                     fec_protected = true;
-                    // if let Some(fec_scheduler) = &mut self.fec_scheduler {
-                    //     fec_scheduler.sent_source_symbol();
-                    // }
+                    if let Some(fec_scheduler) = &mut self.fec_scheduler {
+                        fec_scheduler.sent_source_symbol();
+                    }
+                    if let Some(multicast) = self.multicast.as_mut() {
+                        multicast.mc_ss_pn.insert(pn..pn + 1);
+                    }
                 } else {
                     error!("buffer too short when adding ID frame");
                     return Err(BufferTooShort);

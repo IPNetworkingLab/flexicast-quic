@@ -82,12 +82,13 @@ impl RetransmissionFecScheduler {
         if let Some(degree) = nb_degree {
             let degree_after_already_sent = degree.saturating_sub(sent_repairs_not_received as u64);
             debug!(
-                "Use degree instead: {} vs {} ({} after repairs) {}",
+                "Use degree instead. Current to send {}. degree {} ({} after repairs) and to send local {}",
                 self.n_repair_to_send, degree, degree_after_already_sent, to_send_local,
             );
-            self.n_repair_to_send = self.n_repair_to_send.max(degree.min(to_send_local));
+            self.n_repair_to_send = self.n_repair_to_send.max(degree_after_already_sent.min(to_send_local));
         } else {
             self.n_repair_to_send = self.n_repair_to_send.max(to_send_local);
+            debug!("Set n_repair_to_send: {}", self.n_repair_to_send);
         }
     }
 }
