@@ -14,16 +14,17 @@ sns.set_palette("colorblind")
 def parse_json(filename, convert=False, factor=1):
     with open(filename) as fd:
         data = json.load(fd)
-    times = [i / 1000000000 for i in data["times"]]
-    if convert:
-        times = [8 / (i * 100 / factor) for i in times]
-    return np.median(times), np.std(times)
+    return (8 / (data["median"]["point_estimate"] * 100), 0)
+    # times = [i / 1000000000 for i in data["times"]]
+    # if convert:
+    #     times = [8 / (i * 100 / factor) for i in times]
+    # return np.median(times), np.std(times)
 
 
 def read_unicast(dirname, convert=False, factor=1):
     all_data = dict()
     for subdir in os.listdir(dirname):
-        file_path = os.path.join(dirname, subdir, "new", "sample.json")
+        file_path = os.path.join(dirname, subdir, "new", "estimates.json")
         all_data[int(subdir)] = parse_json(file_path, convert, factor)
     return all_data
 
@@ -36,7 +37,7 @@ def read_multicast(dirname, convert=False, factor=1):
     auth_stream = dict()
     
     for subdir in os.listdir(dirname):
-        filepath = os.path.join(dirname, subdir, "new", "sample.json")
+        filepath = os.path.join(dirname, subdir, "new", "estimates.json")
         if "100000000" in filepath:
             data = parse_json(filepath, convert, factor * 10)
         else:
@@ -65,7 +66,7 @@ def read_multicast_repair(dirname, convert=False, factor=1):
     
     
     for subdir in os.listdir(dirname):
-        filepath = os.path.join(dirname, subdir, "new", "sample.json")
+        filepath = os.path.join(dirname, subdir, "new", "estimates.json")
         data = parse_json(filepath, convert, factor)
 
         auth_tag = subdir.split("-")[0]
@@ -203,7 +204,7 @@ def plot_generic_both(root_server, root_client, baselines, xlabel, ylabel="Gootp
     if legend_loc is None:
         legend = ax_leg.legend(fancybox=True, handletextpad=HANDLETEXTPAD, handlelength=HANDLELENGTH)
     else:
-        legend = ax_leg.legend(fancybox=True, loc=legend_loc, handletextpad=HANDLETEXTPAD, handlelength=HANDLELENGTH)
+        legend = ax_leg.legend(fancybox=True, loc=legend_loc, handletextpad=HANDLETEXTPAD, handlelength=HANDLELENGTH, columnspacing=0.5, ncol=2)
     frame = legend.get_frame()
     frame.set_alpha(1)
     frame.set_color('white')
@@ -250,9 +251,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.latex:
-        latexify(nb_subplots_line=1, columns=2, fig_height=FIG_HEIGHT)
+        latexify(nb_subplots_line=2, columns=1, fig_height=FIG_HEIGHT)
     
-    baselines = ("../target/criterion/unicast-1G/1/new/sample.json", "../target/criterion/unicast-client-1G/1/new/sample.json")
+    # baselines = ("../target/criterion/unicast-1G-fec/1/new/estimates.json", "../target/criterion/unicast-client-1G-fec/1/new/estimates.json")
+    baselines = ("../target/criterion/unicast-1G/1/new/estimates.json", "../target/criterion/unicast-client-1G/1/new/estimates.json")
     if args.repair:
             if args.both:
                 plot_generic_both("../target/criterion/multicast-repair", "../target/criterion/multicast-repair-client", baselines, factor=10, xlabel=r"Loss [\%]", save_as="bench-repair-both.pdf", read_repair=True, ylog=True, ylim=(0.0025, 1.1))
@@ -272,9 +274,10 @@ if __name__ == "__main__":
             # cmp_mc_uc_client("../target/criterion", convert=True, factor=10)
     else:
         if args.both:
-            plot_generic_both("../target/criterion/multicast-1G", "../target/criterion/multicast-client-1G", baselines, factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-both.pdf", ylog=True, do_read_unicast=("../target/criterion/unicast-1G", "../target/criterion/unicast-client-1G"), xlog=False, legend_loc=(0.03, 0.085))
+            # plot_generic_both("../target/criterion/multicast-1G-fec", "../target/criterion/multicast-client-1G-fec", baselines, factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-both.pdf", ylog=True, do_read_unicast=("../target/criterion/unicast-1G-fec", "../target/criterion/unicast-client-1G-fec"), xlog=False, legend_loc=(0.1, 0.15))
+            plot_generic_both("../target/criterion/multicast-1G", "../target/criterion/multicast-client-1G", baselines, factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-both.pdf", ylog=True, do_read_unicast=("../target/criterion/unicast-1G", "../target/criterion/unicast-client-1G"), xlog=False, legend_loc=(0.1, 0.15))
         elif args.clients:
-            plot_generic("../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-client.pdf", ylog=True, do_read_unicast="../target/criterion/unicast-client-1G", xlog=False, legend_loc=(0.1, 0.15))
+            plot_generic("../target/criterion/multicast-client-1G", factor=10, xlabel="Number of receivers", save_as="bench-nb-recv-client.pdf", ylog=True, do_read_unicast="../target/criterion/unicast-client-1G", xlog=False, legend_loc=(0.15, 0.25))
             # cmp_mc_asym("../target/criterion/multicast-asym", convert=True, factor=1)
         else:
             # cmp_mc_uc("../target/criterion", convert=True, factor=10, scale=True)

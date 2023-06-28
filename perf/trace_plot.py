@@ -13,7 +13,7 @@ import matplotlib
 sns.set_palette("colorblind")
 
 
-def get_files_labels(directory, server_only):
+def get_files_labels(directory, server_only, extension=False):
     res = dict()
     ttl = None
     nb_frames = None
@@ -23,7 +23,11 @@ def get_files_labels(directory, server_only):
         path = os.path.join(directory, file)
 
         tab = file.split("-")
-        if tab[-1] == "pkt.txt": continue
+        if tab[-1] == "pkt.txt" and not extension: continue
+        elif tab[-1] != "pkt.txt" and extension: 
+            continue
+        if extension:
+            tab = tab[:-2]
         if tab[-2] == "server" and server_only == "clients" or tab[-2] != "server" and server_only == "server": 
             continue
         if tab[1] == "mc":
@@ -378,19 +382,20 @@ def plot_losses_3(directories, trace, filter, save_as, args):
     csv_file1 = "tmp1.csv"
     csv_file2 = "tmp2.csv"
 
-    ok = True
-    if os.path.exists(csv_file1):
-        df0 = pd.read_csv(csv_file1)
-    else:
-        ok = False
-    if os.path.exists(csv_file2):
-        df1 = pd.read_csv(csv_file2)
-    else:
-        ok = False
+    # ok = True
+    # if os.path.exists(csv_file1):
+    #     df0 = pd.read_csv(csv_file1)
+    # else:
+    #     ok = False
+    # if os.path.exists(csv_file2):
+    #     df1 = pd.read_csv(csv_file2)
+    # else:
+    #     ok = False
 
+    ok = False
     if ok:
         dfs = [df0, df1]
-    # dfs = list()
+    dfs = list()
 
     if not ok:
         res_0 = dict()
@@ -494,7 +499,7 @@ def plot_losses_3(directories, trace, filter, save_as, args):
     plt.savefig(save_as, bbox_inches='tight')
 
 
-def get_files_labels_file(directory):
+def get_files_labels_file(directory, extension=False):
     res = dict()
     for subdir in os.listdir(directory):
         # if not "4-1000" in subdir: continue
@@ -502,6 +507,7 @@ def get_files_labels_file(directory):
             if "server" in file: continue
             path = os.path.join(directory, subdir, file)
             tab = file.split("-")
+            if tab[-1] == "pkt.txt" and not extension: continue
             label = subdir[5:]
             print(label)
                 
@@ -525,7 +531,7 @@ def get_files_labels_file(directory):
     return res, ttl, nb_frames
 
 
-def plot_file_losses(args, dirs):
+def plot_file_losses(args, dirs, only_first=False):
     dfs = list()
     csv1 = "csv-file1.csv"
     csv2 = "csv-file2.csv"
@@ -544,7 +550,7 @@ def plot_file_losses(args, dirs):
         df3 = pd.read_csv(csv3)
     else:
         ok = False
-    
+    ok = False
     if ok:
         dfs = [df1, df2, df3]
     else:
@@ -575,6 +581,7 @@ def plot_file_losses(args, dirs):
                 loss = int(tab[0])
                 if loss > 5: continue
                 timer = int(tab[1])
+                if timer > 500: continue
                 this_timer = res_per_timer.get(timer, dict())
                 this_timer[loss] = complete / total
                 res_per_timer[timer] = this_timer
@@ -594,13 +601,19 @@ def plot_file_losses(args, dirs):
         dfs[1].to_csv(csv2)
         dfs[2].to_csv(csv3)
 
-    fig, axs = plt.subplots(1, 3, sharey=True)
+    if only_first:
+        fig, axs = plt.subplots(1, 1)
+        axs = [axs]
+    else:
+        fig, axs = plt.subplots(1, 3, sharey=True)
+
     sns.set_palette(sns.color_palette(COLORS_SEQUENTIAL_4))
     sns.barplot(data=dfs[0], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[0])
-    g = sns.barplot(data=dfs[1], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[1])
-    g.set(ylabel=None)
-    g = sns.barplot(data=dfs[2], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[2])
-    g.set(ylabel=None)
+    if not only_first:
+        g = sns.barplot(data=dfs[1], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[1])
+        g.set(ylabel=None)
+        g = sns.barplot(data=dfs[2], x="Loss [%]", y="Ratio of clients", hue="Exp. timer", linewidth=1, edgecolor=".5", ax=axs[2])
+        g.set(ylabel=None)
 
     # for label in labels:
     #     loss_data = res_per_timer[label]
@@ -609,24 +622,121 @@ def plot_file_losses(args, dirs):
     #     ax.plot(keys, v, label=label)
     #     # ax.scatter(keys, v, label=label)
     
-    legend = axs[0].legend(fancybox=True, loc=(0.62, 0.02), columnspacing=0.5, handletextpad=0.1)
+    legend = axs[0].legend(fancybox=True, loc=(0.2, 0.02), columnspacing=0.5, handletextpad=0.1, ncol=2)
     frame = legend.get_frame()
     frame.set_alpha(1)
     frame.set_color('white')
     frame.set_edgecolor('black')
     frame.set_boxstyle('Square', pad=0.1)
-    axs[1].legend([],[], frameon=False)
-    axs[2].legend([],[], frameon=False)
+    if not only_first:
+        axs[1].legend([],[], frameon=False)
+        axs[2].legend([],[], frameon=False)
     for ax in axs:
         ax.yaxis.grid(True, ls="-")
         ax.set_xlabel(r"Loss [\%]")
         ax.set_axisbelow(True)
     
-    axs[0].set_title(r"(a) 2 Mbps.")
-    axs[1].set_title(r"(b) 1 Mbps.")
-    axs[2].set_title(r"(c) 0.5 Mbps.")
+    axs[0].set_title(r"2 Mbps bitrate.")
+    if not only_first:
+        axs[1].set_title(r"(b) 1 Mbps.")
+        axs[2].set_title(r"(c) 0.5 Mbps.")
     plt.tight_layout()
-    plt.savefig("file-losses.pdf", bbox_inches='tight')
+    plt.savefig("file-losses-final.pdf", bbox_inches='tight')
+
+
+def read_nb_bytes(filename):
+    with open(filename) as fd:
+        data = fd.read().strip().split("\n")
+    return sum([int(i) for i in data[:-1]])
+    # return len(data)
+
+
+def plot_losses_bytes(directories, save_as, args):
+    def read_endhost(filter):
+        res_uc = dict()
+        res_mc = dict()
+        for subdir in directories:
+            files_labels, ttl, nb_frames = get_files_labels(subdir, filter, extension=True)
+            loss = int(subdir.split("-")[-1])
+            res_uc_local = dict()
+            res_mc_local = dict()
+            for (files, label) in files_labels:
+                tmp_uc = list()
+                tmp_mc = list()
+                for file in files:
+                    nb = read_nb_bytes(file)
+                    if file.split("-")[-2] == "mc":
+                        tmp_mc.append(nb)
+                    else:
+                        tmp_uc.append(nb)
+                if len(tmp_uc) > 0:
+                    res_uc_local[label] = tmp_uc
+                if len(tmp_mc) > 0:
+                    res_mc_local[label] = tmp_mc
+            if len(res_uc_local) > 0:
+                res_uc[loss] = res_uc_local
+            if len(res_mc_local) > 0:
+                res_mc[loss] = res_mc_local
+        return res_uc, res_mc
+    
+    server_uc, server_mc = read_endhost("server")
+    clients_uc, _ = read_endhost("clients")
+
+    max_v_s = 0
+    max_v_c = 0
+    for loss in server_mc.keys():
+        for label in server_mc[loss].keys():
+            max_v_s = max([max_v_s, server_uc[loss][label][0], server_mc[loss][label][0]])
+            max_v_c = max([max_v_c, clients_uc[loss][label][0]])
+
+    # Transform server in df.
+    mega_value = list()
+    for loss in server_mc.keys():
+        for label in server_mc[loss].keys():
+            l = convert_label(label)
+            mega_value.append((loss, l, (server_uc[loss][label][0] + server_mc[loss][label][0]) / max_v_s))
+    df_server = pd.DataFrame(mega_value, columns=["Loss", "Method", "MB"])
+
+    print(df_server)
+
+    # Transfom client in df.
+    mega_value = list()
+    for loss in clients_uc.keys():
+        for label in clients_uc[loss].keys():
+            l = convert_label(label)
+            for bytes in clients_uc[loss][label]:
+                mega_value.append((loss, l, bytes / max_v_c))
+    df_clients = pd.DataFrame(mega_value, columns=["Loss", "Method", "MB"])
+
+    fig, axs = plt.subplots(1, 2, sharey=True)
+
+    sns.barplot(data=df_server, x="Loss", y="MB", hue="Method", palette=COLORS_SEQUENTIAL_3, ax=axs[0], linewidth=1, edgecolor=".5")
+    # axs[0].set_yscale("log")
+    axs[0].set_ylabel("Bytes ratio")
+
+    g = sns.barplot(data=df_clients, x="Loss", y="MB", hue="Method", palette=COLORS_SEQUENTIAL_3, ax=axs[1], linewidth=1, edgecolor=".5")
+    g.set(ylabel=None)
+    # sns.boxplot(data=df_clients, x="Loss", y="Nb bytes", hue="Method", palette=COLORS_SEQUENTIAL_3, ax=axs[1])
+    axs[1].legend([],[], frameon=False)
+
+    legend = axs[0].legend(fancybox=True, loc=(0.47, 0.1), columnspacing=0.5, handletextpad=0.1)
+    frame = legend.get_frame()
+    frame.set_alpha(1)
+    frame.set_color('white')
+    frame.set_edgecolor('black')
+    frame.set_boxstyle('Square', pad=0.1)
+    for ax in axs:
+        ax.yaxis.grid(True, ls="-")
+        ax.set_xlabel(r"Loss [\%]")
+        ax.set_axisbelow(True)
+    axs[0].set_title("(a) Sent by the server.")
+    axs[1].set_title("(b) Sent by the clients.")
+
+    plt.tight_layout()
+    plt.savefig("losses-bytes.pdf", bbox_inches='tight')
+
+
+
 
 
 
@@ -645,6 +755,7 @@ if __name__ == "__main__":
     parser.add_argument("--save", help="Save as file", type=str, default="fig.pdf")
     parser.add_argument("--file", help="File plot", action="store_true")
     parser.add_argument("--losses-3", help="Losses plot but all in one", action="store_true")
+    parser.add_argument("--losses-bytes", help="Bytes sent for the loss experiment", action="store_true")
     args = parser.parse_args()
 
     if args.latex:
@@ -652,9 +763,15 @@ if __name__ == "__main__":
 
     # File.
     if args.file:
-        files = ["test-file-lasts-5", "test-file-lasts-10", "test-file-lasts-20"]
-        latexify(fig_height=FIG_HEIGHT, nb_subplots_line=3, columns=1)
-        plot_file_losses(args, [os.path.join(args.directory, i) for i in files])
+        # files = ["test-file-nous-lasts-5", "test-file-nous-lasts-10", "test-file-nous-lasts-20"]
+        files = ["test-file-final-lasts-5", "test-file-final-lasts-10", "test-file-final-lasts-20"]
+        alone = True
+        if alone:
+            latexify(fig_height=FIG_HEIGHT, nb_subplots_line=1, columns=1)
+            plot_file_losses(args, [os.path.join(args.directory, i) for i in files], only_first=alone)
+        else:
+            latexify(fig_height=FIG_HEIGHT, nb_subplots_line=3, columns=1)
+            plot_file_losses(args, [os.path.join(args.directory, i) for i in files])
     # Pcaps.
     elif args.losses:
         # Get all directories with this prefix.
@@ -670,6 +787,13 @@ if __name__ == "__main__":
         for subdir in os.listdir(args.directory):
             all_subdirs.append(os.path.join(args.directory, subdir))
         plot_losses_3(all_subdirs, args.trace, args.filter, save_as=args.save, args=args)
+    elif args.losses_bytes:
+        if args.latex:
+            latexify(fig_height=FIG_HEIGHT, nb_subplots_line=2, columns=1)
+        all_subdirs = list()
+        for subdir in os.listdir(args.directory):
+            all_subdirs.append(os.path.join(args.directory, subdir))
+        plot_losses_bytes(all_subdirs, save_as=args.save, args=args)
     elif args.pcap:
         # for subdir in os.listdir(args.directory):
         #     path = os.path.join(args.directory, subdir)
