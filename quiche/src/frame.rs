@@ -1297,7 +1297,8 @@ impl Frame {
                     octets::varint_len(public_key.len() as u64);
                 let path_type_size = octets::varint_len(*path_type);
                 let auth_type_size = octets::varint_len(*auth_type);
-                1 + // frame type
+                let frame_type_size = octets::varint_len(MC_ANNOUNCE_CODE);
+                frame_type_size + // frame type
                 1 + // channel_id len
                 channel_id.len() +
                 path_type_size +
@@ -1308,7 +1309,7 @@ impl Frame {
                 2 + // udp_port
                 8 + // ttl_data
                 public_key_len_size +
-                public_key.len()
+                public_key.len() // + 20
             },
 
             Frame::McState {
@@ -1318,7 +1319,8 @@ impl Frame {
             } => {
                 let action_size = octets::varint_len(*action);
                 let action_data_size = octets::varint_len(*action_data);
-                1 + // frame type
+                let frame_type_size = octets::varint_len(MC_STATE_CODE);
+                frame_type_size + // frame type
                 1 + // channel_id len
                 channel_id.len() +
                 action_size +
@@ -1334,7 +1336,8 @@ impl Frame {
                 let key_len_size = octets::varint_len(key.len() as u64);
                 let first_pn_size = octets::varint_len(*first_pn);
                 let client_id_size = octets::varint_len(*client_id);
-                1 + // frame type
+                let frame_type_size = octets::varint_len(MC_KEY_CODE);
+                frame_type_size + // frame type
                 1 + // channel_id len
                 channel_id.len() +
                 key_len_size +
@@ -1355,7 +1358,8 @@ impl Frame {
                     stream_id.map(octets::varint_len).unwrap_or(0);
                 let fec_metadata_len =
                     fec_metadata.map(octets::varint_len).unwrap_or(0);
-                1 + // frame type
+                    let frame_type_size = octets::varint_len(MC_EXPIRE_CODE);
+                    frame_type_size + // frame type
                 1 + // channel_id len
                 channel_id.len() +
                 pkt_num_len +
@@ -3733,16 +3737,15 @@ mod tests {
         let mut d = [42; 128];
 
         let frame = Frame::McAnnounce {
-            channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
-            path_type: crate::multicast::McPathType::Data.into(),
-            auth_type: crate::multicast::authentication::McAuthType::SymSign
-                .into(),
-            is_ipv6: 1,
+            channel_id: [180, 12, 104, 233, 220, 221, 226, 11, 141, 195, 27, 5, 100, 51, 58, 220].to_vec(),
+            path_type: 0,
+            auth_type: 3,
+            is_ipv6: 0,
             source_ip: [127, 0, 0, 1],
-            group_ip: [244, 1, 1, 255],
-            udp_port: 1,
-            ttl_data: 123_456_789,
-            public_key: vec![41; 32],
+            group_ip: [239, 239, 239, 35],
+            udp_port: 8889,
+            ttl_data: 350,
+            public_key: vec![],
         };
 
         let wire_len = {
