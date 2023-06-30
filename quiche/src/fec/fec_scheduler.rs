@@ -10,8 +10,8 @@ use crate::fec::fec_scheduler::FECScheduler::NoRedundancy;
 use crate::fec::fec_scheduler::FECScheduler::RetransmissionFec;
 use crate::fec::retransmission_fec_scheduler::RetransmissionFecScheduler;
 use crate::path::Path;
-use crate::Connection;
 use crate::ranges::RangeSet;
+use crate::Connection;
 
 /// Available FEC redundancy schedulers.
 ///
@@ -60,14 +60,17 @@ pub(crate) enum FECScheduler {
     RetransmissionFec(RetransmissionFecScheduler),
 }
 
-pub(crate) fn new_fec_scheduler(alg: FECSchedulerAlgorithm, max_rs: Option<u32>) -> FECScheduler {
+pub(crate) fn new_fec_scheduler(
+    alg: FECSchedulerAlgorithm, max_rs: Option<u32>,
+) -> FECScheduler {
     match alg {
         FECSchedulerAlgorithm::NoRedundancy => FECScheduler::NoRedundancy,
         FECSchedulerAlgorithm::BackgroundOnly => new_background_scheduler(),
         FECSchedulerAlgorithm::BurstsOnly => new_bursts_only_scheduler(),
         FECSchedulerAlgorithm::BurstsOnlyOnFECOnlyPath =>
             new_bursts_only_on_fec_only_path_scheduler(),
-        FECSchedulerAlgorithm::RetransmissionFec => new_retransmission_fec(max_rs),
+        FECSchedulerAlgorithm::RetransmissionFec =>
+            new_retransmission_fec(max_rs),
     }
 }
 
@@ -99,8 +102,7 @@ impl FECScheduler {
             BurstyOnFECOnly(scheduler) =>
                 scheduler.should_send_repair(conn, path, symbol_size),
             NoRedundancy => false,
-            RetransmissionFec(scheduler) =>
-                scheduler.should_send_repair(),
+            RetransmissionFec(scheduler) => scheduler.should_send_repair(),
         }
     }
 
@@ -144,19 +146,16 @@ impl FECScheduler {
         }
     }
 
-    pub fn lost_source_symbol(&mut self, ranges: &RangeSet, client_cid: &[u8]) {
-        if let RetransmissionFec(scheduler) = self {
-            scheduler.lost_source_symbol(ranges.to_owned(), client_cid);
-        }
-    }
-
     pub fn reset_fec_state(&mut self) {
         if let RetransmissionFec(scheduler) = self {
             scheduler.reset_fec_state();
         }
     }
 
-    pub fn recv_nack(&mut self, pn: u64, ranges: &RangeSet, repairs: RangeSet, nb_degree: Option<u64>) {
+    pub fn recv_nack(
+        &mut self, pn: u64, ranges: &RangeSet, repairs: RangeSet,
+        nb_degree: Option<u64>,
+    ) {
         if let RetransmissionFec(scheduler) = self {
             scheduler.recv_nack(pn, ranges, repairs, nb_degree);
         }

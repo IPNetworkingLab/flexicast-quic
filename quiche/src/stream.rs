@@ -1752,7 +1752,7 @@ impl SendBuf {
     pub fn hash_stream_incr(&mut self, data: &[u8]) -> Result<()> {
         let mut buffer = vec![0; data.len() + self.hash.len()];
         buffer[..self.hash.len()].copy_from_slice(&self.hash);
-        buffer[self.hash.len()..].copy_from_slice(&data);
+        buffer[self.hash.len()..].copy_from_slice(data);
 
         let digest = ring::digest::digest(&ring::digest::SHA256, &buffer);
         self.hash = digest.as_ref().try_into().map_err(|_| {

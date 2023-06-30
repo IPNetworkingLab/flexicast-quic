@@ -1309,7 +1309,7 @@ impl Frame {
                 2 + // udp_port
                 8 + // ttl_data
                 public_key_len_size +
-                public_key.len() // + 20
+                public_key.len()
             },
 
             Frame::McState {
@@ -3745,7 +3745,7 @@ mod tests {
             group_ip: [239, 239, 239, 35],
             udp_port: 8889,
             ttl_data: 350,
-            public_key: vec![],
+            public_key: vec![64, 33, 53, 127],
         };
 
         let wire_len = {
@@ -3753,7 +3753,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 64);
+        assert_eq!(wire_len, 45);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

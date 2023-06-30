@@ -1128,9 +1128,9 @@ fn get_multicast_channel(
     Option<McAnnounceData>, // Data.
     Option<McAnnounceData>, // Authentication.
 ) {
-    let mc_addr = "239.239.230.35:8889".parse().unwrap();
+    let mc_addr = "224.3.0.225:8889".parse().unwrap();
     // let mc_addr = "127.0.0.1:8889".parse().unwrap();
-    let mc_addr_bytes = [239, 239, 239, 35];
+    let mc_addr_bytes = [224, 3, 0, 225];
     // let mc_addr_bytes = [127, 0, 0, 1];
     let mc_port = 8889;
     // let source_addr = "127.0.0.1:4434".parse().unwrap();
@@ -1168,7 +1168,7 @@ fn get_multicast_channel(
         rng.fill(&mut channel_id_auth).unwrap();
         let channel_id = quiche::ConnectionId::from_ref(&channel_id_auth);
 
-        let dummy_ip = std::net::Ipv4Addr::new(239, 239, 239, 35);
+        let dummy_ip = std::net::Ipv4Addr::new(224, 3, 0, 225);
         // let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
         let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
             dummy_ip,

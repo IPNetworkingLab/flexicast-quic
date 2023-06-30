@@ -137,9 +137,8 @@ fn main() {
     let mc_addr_auth = "0.0.0.0:8890".parse().unwrap();
 
     // Multicast delay before joining and leaving.
-    let delay_join_leave = args
-        .delay_in_mc_group
-        .map(|t| std::time::Duration::from_millis(t));
+    let delay_join_leave =
+        args.delay_in_mc_group.map(std::time::Duration::from_millis);
     let mut times_join_leave = Vec::with_capacity(5);
     times_join_leave.push(std::time::SystemTime::now());
     let mut recv_packets = Vec::with_capacity(10000);
@@ -556,7 +555,8 @@ fn main() {
                 )) | multicast::MulticastRole::Client(
                     MulticastClientStatus::Left
                 )
-            ) && delay_join_leave.is_none() {
+            ) && delay_join_leave.is_none()
+            {
                 info!("Client leaves the multicast channel. Closing...");
                 break;
             }
@@ -660,41 +660,45 @@ fn main() {
                 }
                 added_mc_cid = true;
             }
-            if args.multicast &&
-                delay_join_leave.is_some() &&
-                probe_mc_path &&
-                added_mc_cid
-            {
-                let now = std::time::SystemTime::now();
-                if now
-                    .duration_since(times_join_leave.last().unwrap().to_owned())
-                    .unwrap() >=
-                    delay_join_leave.unwrap()
-                {
-                    // Change in the client status in the multicast channel.
-                    // If a single value in the Vec => join the multicast group.
-                    if times_join_leave.len() == 1 {
-                        conn.mc_join_channel(app_handler.leave_on_mc_timeout())
-                            .unwrap();
-                        let multicast = conn.get_multicast_attributes().unwrap();
-                        let mc_announce_data = multicast
-                            .get_mc_announce_data_path()
-                            .unwrap()
-                            .to_owned();
-                        mc_socket_opt
-                            .as_mut()
-                            .unwrap()
-                            .join_multicast_v4(
-                                &net::Ipv4Addr::from(
-                                    mc_announce_data.group_ip.to_owned(),
-                                ),
-                                &args.local_ip,
+            if let Some(delay) = delay_join_leave {
+                if args.multicast && probe_mc_path && added_mc_cid {
+                    let now = std::time::SystemTime::now();
+                    if now
+                        .duration_since(
+                            times_join_leave.last().unwrap().to_owned(),
+                        )
+                        .unwrap() >=
+                        delay
+                    {
+                        // Change in the client status in the multicast channel.
+                        // If a single value in the Vec => join the multicast
+                        // group.
+                        if times_join_leave.len() == 1 {
+                            conn.mc_join_channel(
+                                app_handler.leave_on_mc_timeout(),
                             )
                             .unwrap();
-                        times_join_leave.push(now);
-                    } else if times_join_leave.len() == 2 {
-                        conn.mc_leave_channel().unwrap();
-                        times_join_leave.push(now);
+                            let multicast =
+                                conn.get_multicast_attributes().unwrap();
+                            let mc_announce_data = multicast
+                                .get_mc_announce_data_path()
+                                .unwrap()
+                                .to_owned();
+                            mc_socket_opt
+                                .as_mut()
+                                .unwrap()
+                                .join_multicast_v4(
+                                    &net::Ipv4Addr::from(
+                                        mc_announce_data.group_ip.to_owned(),
+                                    ),
+                                    &args.local_ip,
+                                )
+                                .unwrap();
+                            times_join_leave.push(now);
+                        } else if times_join_leave.len() == 2 {
+                            conn.mc_leave_channel().unwrap();
+                            times_join_leave.push(now);
+                        }
                     }
                 }
             }
@@ -904,7 +908,9 @@ fn main() {
         writeln!(
             file,
             "{}",
-            time.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_micros(),
+            time.duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_micros(),
         )
         .unwrap()
     }
@@ -916,7 +922,9 @@ fn main() {
         writeln!(
             file,
             "{} {} {}",
-            time.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_micros(),
+            time.duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_micros(),
             nb,
             u64::from(*from)
         )

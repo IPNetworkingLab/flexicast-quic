@@ -6,7 +6,6 @@ pub struct RetransmissionFecScheduler {
     n_repair_in_flight: u64,
     client_losses: HashMap<Vec<u8>, RangeSet>,
     n_repair_to_send: u64,
-    new_nack: bool,
     max_n_repair_in_flight: Option<u32>,
 }
 
@@ -16,7 +15,6 @@ impl RetransmissionFecScheduler {
             n_repair_in_flight: 0,
             client_losses: HashMap::new(),
             n_repair_to_send: 0,
-            new_nack: false,
             max_n_repair_in_flight: max_rs,
         }
     }
@@ -49,11 +47,6 @@ impl RetransmissionFecScheduler {
         self.acked_repair_symbol()
     }
 
-    pub fn lost_source_symbol(&mut self, ranges: RangeSet, client_cid: &[u8]) {
-        self.client_losses.insert(client_cid.into(), ranges);
-        self.new_nack = true;
-    }
-
     pub fn reset_fec_state(&mut self) {
         info!("Reset FEC state");
         self.n_repair_in_flight = 0;
@@ -80,12 +73,15 @@ impl RetransmissionFecScheduler {
         debug!("After filtering. Useful repairs {:?} and number to send: {} while current max is {}", repairs, to_send_local, self.n_repair_to_send);
 
         if let Some(degree) = nb_degree {
-            let degree_after_already_sent = degree.saturating_sub(sent_repairs_not_received as u64);
+            let degree_after_already_sent =
+                degree.saturating_sub(sent_repairs_not_received as u64);
             debug!(
                 "Use degree instead. Current to send {}. degree {} ({} after repairs) and to send local {}",
                 self.n_repair_to_send, degree, degree_after_already_sent, to_send_local,
             );
-            self.n_repair_to_send = self.n_repair_to_send.max(degree_after_already_sent.min(to_send_local));
+            self.n_repair_to_send = self
+                .n_repair_to_send
+                .max(degree_after_already_sent.min(to_send_local));
         } else {
             self.n_repair_to_send = self.n_repair_to_send.max(to_send_local);
             debug!("Set n_repair_to_send: {}", self.n_repair_to_send);

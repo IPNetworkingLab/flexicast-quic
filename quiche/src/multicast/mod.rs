@@ -379,7 +379,8 @@ pub struct MulticastAttributes {
     /// Only some for [`MulticastRole::ServerMulticast`].
     pub mc_sent_repairs: Option<RangeSet>,
 
-    /// The client leaves the multicast channel on timeout, i.e., in [`MulticastConnection::on_mc_timeout`].
+    /// The client leaves the multicast channel on timeout, i.e., in
+    /// [`MulticastConnection::on_mc_timeout`].
     mc_leave_on_timeout: bool,
 
     /// Send FEC repair packets instead of source symbols if possible.
@@ -959,12 +960,15 @@ pub trait MulticastConnection {
     fn mc_has_control_data(&self, send_pid: usize) -> bool;
 
     /// Joins a multicast channel advertised by a server.
-    /// Sets the possibility to leave the multicast channel on timeout on this multicast channel, i.e., in [`MulticastConnection::on_mc_timeout`].
+    /// Sets the possibility to leave the multicast channel on timeout on this
+    /// multicast channel, i.e., in [`MulticastConnection::on_mc_timeout`].
     /// Returns an Error if:
     /// * This is not a client
     /// * There is no multicast state with valid MC_ANNOUNCE data
     /// * The status is not AwareUnjoined
-    fn mc_join_channel(&mut self, leave_on_timeout: bool) -> Result<MulticastClientStatus>;
+    fn mc_join_channel(
+        &mut self, leave_on_timeout: bool,
+    ) -> Result<MulticastClientStatus>;
 
     /// Leaves a previously joined multicast channel.
     /// Returns an Error if:
@@ -1261,7 +1265,9 @@ impl MulticastConnection for Connection {
         false
     }
 
-    fn mc_join_channel(&mut self, leave_on_timeout: bool) -> Result<MulticastClientStatus> {
+    fn mc_join_channel(
+        &mut self, leave_on_timeout: bool,
+    ) -> Result<MulticastClientStatus> {
         let multicast = match self.multicast.as_mut() {
             None => return Err(Error::Multicast(MulticastError::McDisabled)),
             Some(multicast) => match multicast.mc_role {
@@ -1473,13 +1479,9 @@ impl MulticastConnection for Connection {
             multicast.mc_last_recv_time? + time::Duration::from_millis(ttl_data)
         } else {
             multicast.mc_last_recv_time? +
-                time::Duration::from_millis(ttl_data * 10)
+                time::Duration::from_millis(ttl_data * 3)
         };
         if timeout <= now {
-            println!(
-                "Client has timeout of 0 despite its role: {:?}",
-                multicast.mc_role
-            );
             Some(time::Duration::ZERO)
         } else {
             Some(timeout.duration_since(now))
@@ -1492,7 +1494,6 @@ impl MulticastConnection for Connection {
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
             if let Some(multicast) = self.multicast.as_mut() {
                 if self.is_server {
-
                     // Reset the number of FEC repair packets in flight.
                     if let Some(fec_scheduler) = self.fec_scheduler.as_mut() {
                         fec_scheduler.reset_fec_state();
@@ -1534,8 +1535,18 @@ impl MulticastConnection for Connection {
                                 Some(now);
 
                             if let Some(e) = v.0 {
-                                self.multicast.as_mut().unwrap().mc_ss_pn.remove_until(e);
-                                if let Some(mc_repairs) = self.multicast.as_mut().unwrap().mc_sent_repairs.as_mut() {
+                                self.multicast
+                                    .as_mut()
+                                    .unwrap()
+                                    .mc_ss_pn
+                                    .remove_until(e);
+                                if let Some(mc_repairs) = self
+                                    .multicast
+                                    .as_mut()
+                                    .unwrap()
+                                    .mc_sent_repairs
+                                    .as_mut()
+                                {
                                     debug!("Repairs before: {:?}", mc_repairs);
                                     mc_repairs.remove_until(e);
                                     debug!("Repairs after: {:?}", mc_repairs);
@@ -1547,14 +1558,14 @@ impl MulticastConnection for Connection {
                         }
                     }
                 } else if multicast.mc_leave_on_timeout {
-                    debug!("Will leave the multicast channel");
+                    println!("Will leave the multicast channel");
                     self.mc_leave_channel()?;
                 } else {
-                    debug!("Cannot leave the multicast channel");
+                    println!("Cannot leave the multicast channel");
                 }
             }
         }
-        info!("Call on_mc_timeout on server done ok 2");
+        println!("Call on_mc_timeout on server done ok 2");
         Ok((None, None, None))
     }
 
@@ -1652,7 +1663,9 @@ impl MulticastConnection for Connection {
 
             // MC_NACK ranges.
             let nb_degree_opt = multicast.mc_nack_ranges.1;
-            if let Some((mut nack_ranges, pn)) = multicast.mc_nack_ranges.0.to_owned() {
+            if let Some((mut nack_ranges, pn)) =
+                multicast.mc_nack_ranges.0.to_owned()
+            {
                 // Filter from the nack ranges packets that are expired on the
                 // source. This is necessary in case of
                 // desynchronization with the client.
@@ -1662,10 +1675,17 @@ impl MulticastConnection for Connection {
                     nack_ranges.remove_until(last_expired_pn + 1);
                 }
 
-                // Filter from the nack ranges packets that are not mapped to source symbols.
+                // Filter from the nack ranges packets that are not mapped to
+                // source symbols.
                 debug!("Before removing useless packets: {:?}", nack_ranges);
                 if nb_degree_opt.is_none() || nb_degree_opt == Some(0) {
-                    let mc_ss_pn: HashSet<u64> = mc_channel.multicast.as_ref().unwrap().mc_ss_pn.flatten().collect();
+                    let mc_ss_pn: HashSet<u64> = mc_channel
+                        .multicast
+                        .as_ref()
+                        .unwrap()
+                        .mc_ss_pn
+                        .flatten()
+                        .collect();
                     let mut new_nack = RangeSet::default();
                     for elem in nack_ranges.iter() {
                         for pn in elem {
@@ -1676,7 +1696,6 @@ impl MulticastConnection for Connection {
                     }
                     nack_ranges = new_nack;
                 }
-
 
                 debug!("After removing useless packets: {:?}", nack_ranges);
 
@@ -2885,7 +2904,7 @@ pub mod testing {
         if auth == McAuthType::AsymSign {
             config.set_fec_symbol_size(1280 - 64);
         } else {
-            config.set_fec_symbol_size(1216);
+            config.set_fec_symbol_size(1280);
         }
     }
 
@@ -2975,14 +2994,19 @@ pub mod testing {
         /// Only used for tests and benchmarks.
         /// Sets the source nack range directly in the FEC scheduler.
         pub fn set_source_nack_range(
-            &mut self, rangeset: &OpenRangeSet, pn: u64
+            &mut self, rangeset: &OpenRangeSet, pn: u64,
         ) -> Result<()> {
             if let Some(fec_scheduler) = self.channel.fec_scheduler.as_mut() {
                 // fec_scheduler.lost_source_symbol(
                 //     &rangeset.ranges,
                 //     conn_id_ref.cid.as_ref(),
                 // );
-                fec_scheduler.recv_nack(pn, &rangeset.ranges, RangeSet::default(), Some(rangeset.ranges.len() as u64));
+                fec_scheduler.recv_nack(
+                    pn,
+                    &rangeset.ranges,
+                    RangeSet::default(),
+                    Some(rangeset.ranges.len() as u64),
+                );
             }
 
             Ok(())
