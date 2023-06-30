@@ -1,10 +1,8 @@
 use crate::multicast::MissingRangeSet;
 use crate::ranges::RangeSet;
-use std::collections::HashMap;
 
 pub struct RetransmissionFecScheduler {
     n_repair_in_flight: u64,
-    client_losses: HashMap<Vec<u8>, RangeSet>,
     n_repair_to_send: u64,
     max_n_repair_in_flight: Option<u32>,
 }
@@ -13,7 +11,6 @@ impl RetransmissionFecScheduler {
     pub fn new(max_rs: Option<u32>) -> RetransmissionFecScheduler {
         RetransmissionFecScheduler {
             n_repair_in_flight: 0,
-            client_losses: HashMap::new(),
             n_repair_to_send: 0,
             max_n_repair_in_flight: max_rs,
         }
@@ -51,7 +48,6 @@ impl RetransmissionFecScheduler {
         info!("Reset FEC state");
         self.n_repair_in_flight = 0;
         self.n_repair_to_send = 0;
-        self.client_losses = HashMap::new();
     }
 
     pub fn recv_nack(
@@ -220,5 +216,28 @@ mod tests {
         nack_client.insert(19..20);
         scheduler.recv_nack(20, &nack_client, repairs.clone(), None);
         assert_eq!(scheduler.n_repair_to_send, 3);
+    }
+
+    #[test]
+    fn test_send_repair_and_degree() {
+        let mut scheduler = RetransmissionFecScheduler::new(None);
+
+        let mut nack = RangeSet::default();
+        nack.insert(5..10);
+        nack.insert(8..11);
+
+        let repairs = RangeSet::default();
+        // Send fewer repair symbols using the degree.
+        scheduler.recv_nack(12, &nack, repairs.clone(), Some(1));
+        assert_eq!(scheduler.n_repair_to_send, 1);
+
+        scheduler.recv_nack(12, &nack, repairs.clone(), Some(12));
+        assert_eq!(scheduler.n_repair_to_send, 6);
+
+        scheduler.recv_nack(230, &nack, repairs.clone(), Some(12));
+        assert_eq!(scheduler.n_repair_to_send, 6);
+
+        scheduler.recv_nack(230, &nack, repairs.clone(), Some(4));
+        assert_eq!(scheduler.n_repair_to_send, 6);
     }
 }

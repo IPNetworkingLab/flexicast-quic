@@ -4184,6 +4184,7 @@ mod tests {
         expected_ranges.insert(3..4);
         expected_ranges.insert(5..6);
         assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
+        assert_eq!(uc_pipe_0.client.fec_decoder.nb_missing_degrees(), Some(0));
 
         // The second client has received 2 streams.
         let uc_pipe_1 = &mc_pipe.unicast_pipes.get(1).unwrap().0;
@@ -4224,6 +4225,31 @@ mod tests {
             Err(Error::Done)
         );
 
+        let mut expected_sources_symbols_pn = RangeSet::default();
+        expected_sources_symbols_pn.insert(2..7);
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_ss_pn,
+            expected_sources_symbols_pn
+        );
+
+        let sent_repairs = mc_pipe
+            .mc_channel
+            .channel
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_sent_repairs
+            .clone();
+        let mut expected = RangeSet::default();
+        expected.insert(7..9);
+        assert_eq!(sent_repairs, Some(expected));
+
         // The clients recover the lost packets with FEC.
         // Even if the lost packet were not the same, both clients recover all of
         // them using FEC. This results in receiving all streams.
@@ -4246,6 +4272,42 @@ mod tests {
                 .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
             assert_eq!(nack_ranges.as_ref(), None);
         }
+
+        // Timeout on the server. It removes the sent repair symbols from its
+        // window.
+        let now = time::Instant::now();
+        let expired_timer = now +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data * 3 + 100,
+            ); // Margin
+
+        assert_eq!(
+            mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer),
+            Ok((Some(8), Some(9), Some(4)))
+        );
+
+        let sent_repairs = mc_pipe
+            .mc_channel
+            .channel
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_sent_repairs
+            .clone();
+        let expected = RangeSet::default();
+        assert_eq!(sent_repairs, Some(expected));
+
+        let expected_sources_symbols_pn = RangeSet::default();
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_ss_pn,
+            expected_sources_symbols_pn
+        );
     }
 
     #[test]
@@ -4540,8 +4602,8 @@ mod tests {
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1314));
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(509));
 
-        // The client knows that they lost the first packet of the new stream, but
-        // also the two older (and expired!) packets because they did not receive
+        // The client knows that it lost the first packet of the new stream, but
+        // also the two older (and expired!) packets because it did not receive
         // the MC_EXPIRE frame from the multicast source..
         let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
         let nack_ranges = uc_pipe
@@ -4549,6 +4611,9 @@ mod tests {
             .mc_nack_range(Epoch::Application, client_mc_space_id as u64);
         expected_ranges.insert(6..8); // The client also lost the packet with the MC_EXPIRE.
         assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
+
+        // The client has a missing source symbol only.
+        assert_eq!(uc_pipe.client.fec_decoder.nb_missing_degrees(), Some(0));
 
         // The client sends an MC_NACK to the server.
         // This MC_NACK also contains expired data.
@@ -4568,6 +4633,19 @@ mod tests {
             mc_pipe.source_send_single(None, signature_len),
             Err(Error::Done)
         );
+
+        // The source records the sent repair symbol.
+        let sent_repairs = mc_pipe
+            .mc_channel
+            .channel
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_sent_repairs
+            .clone();
+        let mut expected = RangeSet::default();
+        expected.insert(11..12);
+        assert_eq!(sent_repairs, Some(expected));
 
         // The client recovers the lost packet and can read the stream.
         let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
@@ -5833,17 +5911,19 @@ mod tests {
     }
 
     #[test]
-    fn test_fec_decoder_nb_missing_degrees() {
+    fn test_mc_fec_lost_useless_packets() {
         let use_auth = McAuthType::None;
-        let mc_pipe = MulticastPipe::new(
+        let mut mc_pipe = MulticastPipe::new(
             1,
-            "/tmp/test_fec_decoder_nb_missing_degrees.txt",
+            "/tmp/test_mc_fec_lost_useless_packets.txt",
             use_auth,
             true,
             true,
             None,
         )
         .unwrap();
+        let mut clients_losing_packets = RangeSet::default();
+        clients_losing_packets.insert(0..1);
 
         assert_eq!(
             mc_pipe.unicast_pipes[0]
@@ -5852,6 +5932,113 @@ mod tests {
                 .fec_decoder
                 .nb_missing_degrees(),
             Some(0)
+        );
+
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                true,
+                Some(&clients_losing_packets),
+                0,
+                1
+            ),
+            Ok(348)
+        );
+        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 5), Ok(348));
+
+        // Client did not receive the first source symbol.
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+
+        // The source sends a repair symbol.
+        assert_eq!(mc_pipe.source_send_single(None, 0), Ok(1335));
+        assert_eq!(
+            mc_pipe.unicast_pipes[0]
+                .0
+                .client
+                .fec_decoder
+                .nb_missing_degrees(),
+            Some(1)
+        );
+
+        assert_eq!(
+            mc_pipe.source_send_single_stream(
+                true,
+                Some(&clients_losing_packets),
+                0,
+                9
+            ),
+            Ok(348)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, None, 0, 13),
+            Ok(348)
+        );
+
+        assert_eq!(
+            mc_pipe.unicast_pipes[0]
+                .0
+                .client
+                .fec_decoder
+                .nb_missing_degrees(),
+            Some(1)
+        );
+
+        // Client did not receive the source symbol.
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+
+        // The source sends a repair symbol.
+        assert_eq!(
+            mc_pipe.source_send_single(Some(&clients_losing_packets), 0),
+            Ok(1335)
+        );
+
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, None, 0, 17),
+            Ok(348)
+        );
+
+        // Client did not receive the repair packet. Asks for two repair symbols
+        // but not useful. The source only generates one.
+        let nack_ranges = mc_pipe.unicast_pipes[0]
+            .0
+            .client
+            .multicast
+            .as_ref()
+            .unwrap()
+            .mc_nack_ranges
+            .0
+            .as_ref()
+            .unwrap();
+        let mut expected_nack_ranges = RangeSet::default();
+        expected_nack_ranges.insert(2..3);
+        expected_nack_ranges.insert(5..6);
+        assert_eq!(nack_ranges, &(expected_nack_ranges, 6));
+
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.source_send_single(Some(&clients_losing_packets), 0),
+            Ok(1335)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single(Some(&clients_losing_packets), 0),
+            Err(Error::Done)
+        );
+
+        let mut expected_sources_symbols_pn = RangeSet::default();
+        expected_sources_symbols_pn.insert(2..4);
+        expected_sources_symbols_pn.insert(5..7);
+        expected_sources_symbols_pn.insert(8..9);
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .multicast
+                .as_ref()
+                .unwrap()
+                .mc_ss_pn,
+            expected_sources_symbols_pn
         );
     }
 }
