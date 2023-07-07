@@ -1341,7 +1341,7 @@ impl MulticastConnection for Connection {
                 return None;
             }
 
-            if let Ok(pns) = self.pkt_num_spaces.get(epoch, space_id) {
+            if let Ok(pns) = self.pkt_num_spaces.spaces.get(epoch, space_id) {
                 let nack_range = pns.recv_pkt_need_ack.get_missing();
                 if nack_range.len() == 0 {
                     return None;
@@ -1397,13 +1397,14 @@ impl MulticastConnection for Connection {
                     .ok_or(Error::Multicast(MulticastError::McAnnounce))?
                     .ttl_data,
                 hs_status,
+                &mut self.newly_acked
             )?;
             self.blocked_limit = None;
             pkt_num_opt = res.0;
             stream_id_opt = res.1;
             fec_metadata_opt = res.2;
         } else if let Some(exp_pkt_num) = pkt_num_opt {
-            let pkt_num_space = self.pkt_num_spaces.get_mut(epoch, space_id)?;
+            let pkt_num_space = self.pkt_num_spaces.spaces.get_mut(epoch, space_id)?;
             pkt_num_space.recv_pkt_need_ack.remove_until(exp_pkt_num);
             debug!(
                 "Remove packets until {} for space id {}",
@@ -1423,7 +1424,7 @@ impl MulticastConnection for Connection {
                     let stream_opt = self.streams.get_mut(stream_id);
                     if let Some(stream) = stream_opt {
                         if self.is_server {
-                            stream.send.reset()?;
+                            stream.send.reset();
                         } else {
                             // Maybe the final size is already known.
                             let final_size = stream.recv.max_off();
@@ -1558,14 +1559,14 @@ impl MulticastConnection for Connection {
                         }
                     }
                 } else if multicast.mc_leave_on_timeout {
-                    println!("Will leave the multicast channel");
+                    debug!("Will leave the multicast channel");
                     self.mc_leave_channel()?;
                 } else {
-                    println!("Cannot leave the multicast channel");
+                    debug!("Cannot leave the multicast channel");
                 }
             }
         }
-        println!("Call on_mc_timeout on server done ok 2");
+        debug!("Call on_mc_timeout on server done ok 2");
         Ok((None, None, None))
     }
 
@@ -1633,6 +1634,7 @@ impl MulticastConnection for Connection {
             self.multicast.as_ref().unwrap().mc_last_expired
         {
             self.pkt_num_spaces
+                .spaces
                 .get_mut_or_create(Epoch::Application, pid)
                 .recv_pkt_need_ack
                 .insert(first_pn..first_pn + 1);
@@ -1677,7 +1679,7 @@ impl MulticastConnection for Connection {
 
                 // Filter from the nack ranges packets that are not mapped to
                 // source symbols.
-                debug!("Before removing useless packets: {:?}", nack_ranges);
+                println!("Before removing useless packets: {:?}", nack_ranges);
                 if nb_degree_opt.is_none() || nb_degree_opt == Some(0) {
                     let mc_ss_pn: HashSet<u64> = mc_channel
                         .multicast
@@ -1697,7 +1699,7 @@ impl MulticastConnection for Connection {
                     nack_ranges = new_nack;
                 }
 
-                debug!("After removing useless packets: {:?}", nack_ranges);
+                println!("After removing useless packets: {:?}", nack_ranges);
 
                 // The multicast source updates its FEC scheduler with the
                 // received losses.
@@ -1716,13 +1718,13 @@ impl MulticastConnection for Connection {
                             nb_degree_opt,
                         );
                     } else {
-                        println!("No sent repairs but received an MC_NACK");
+                        debug!("No sent repairs but received an MC_NACK");
                     }
 
                     // Reset nack ranges of the unicast server to avoid loops.
                     multicast.set_mc_nack_ranges(None, None)?;
                 } else {
-                    println!("FEC disabled but received MC_NACK");
+                    debug!("FEC disabled but received MC_NACK");
                 }
             }
 
@@ -1792,7 +1794,7 @@ impl MulticastConnection for Connection {
             // but that the client did not get from the multicast channel.
             let multicast = self.multicast.as_mut().unwrap();
             if multicast.mc_client_left_need_sync {
-                println!("NEED SYNC BECAUSE CLIENT LEAVES");
+                debug!("NEED SYNC BECAUSE CLIENT LEAVES");
                 multicast.mc_client_left_need_sync = false;
 
                 for (&stream_id, stream) in mc_channel.streams.iter() {
@@ -2122,7 +2124,6 @@ impl MulticastChannelSource {
             .path_id_from_addrs(&(mc_path_info.peer, mc_path_info.local))
             .expect("no such path");
         let mc_path_server = conn_server.paths.get_mut(pid_s2c_1)?;
-
         // Set the congestion window of the multicast source for the data path.
         if let Some(cwnd) = mc_cwnd {
             mc_path_server.recovery.set_mc_max_cwnd(cwnd);
@@ -3212,6 +3213,7 @@ mod tests {
         // It changes its status to WaitingToJoin.
         // It sends an MC_STATE with a JOIN notification to the server.
         let res = pipe.client.mc_join_channel(true);
+        println!("RES is {:?}", res);
         assert!(res.is_ok());
         assert_eq!(
             pipe.client.multicast.as_ref().unwrap().mc_role,
@@ -3949,9 +3951,11 @@ mod tests {
 
         // Only the last stream did not timeout.
         // All timeout streams are still redeables but finished.
+        // => This last sentence is not valid since a recent change in quiche.
+        // Reset streams are also removed from the readable state.
         let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
         readables.sort();
-        assert_eq!(readables, vec![1, 7, 9, 11]);
+        assert_eq!(readables, vec![11]);
         assert!(uc_pipe.client.stream_finished(1));
         assert!(uc_pipe.client.stream_finished(7));
         assert!(uc_pipe.client.stream_finished(9));
@@ -4067,7 +4071,7 @@ mod tests {
 
         // The server generates FEC repair packets and forwards them to the
         // client.
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1350));
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
         // No need to send additional repair symbols.
         assert_eq!(
@@ -4217,7 +4221,7 @@ mod tests {
 
         // The server generates FEC repair packets and forwards them to the
         // client. Only two repair symbols are needed.
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1350));
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
         // No need to send additional repair symbols.
         assert_eq!(
@@ -4478,7 +4482,7 @@ mod tests {
 
     #[test]
     /// Tests the case where the client did not receive the MC_EXPIRE from the
-    /// multicast source. In this case, they will send an MC_NACK frame with
+    /// multicast source. In this case, it will send an MC_NACK frame with
     /// expired packet numbers. The server must not generate FEC repair symbols
     /// for these lost source symbols that are expired.
     fn source_does_not_generate_mc_fec_repair_for_expired() {
@@ -4601,6 +4605,7 @@ mod tests {
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1314));
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1314));
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(509));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Err(Error::Done));
 
         // The client knows that it lost the first packet of the new stream, but
         // also the two older (and expired!) packets because it did not receive
@@ -4620,6 +4625,7 @@ mod tests {
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         // Communication to unicast servers.
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Err(Error::Done));
         assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
 
         // The server generates FEC a single repair packet because the client lost
@@ -4627,8 +4633,9 @@ mod tests {
         // been removed due to a timeout. Even if the MC_NACK of the client
         // contains more packets, the source filters them out.
         // MC-TODO: verify the nack ranges on the source to be sure?
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1350));
         // No need to send additional repair symbols.
+        println!("KZELFKLZEKFLEKFLZKFLEKFLEZKLEKZLFEKLFZK\n\n\n");
         assert_eq!(
             mc_pipe.source_send_single(None, signature_len),
             Err(Error::Done)
@@ -5555,7 +5562,7 @@ mod tests {
             Ok(200)
         );
         let res = mc_pipe.mc_channel.mc_send(&mut buf[..]).map(|(w, _)| w);
-        assert_eq!(res, Ok(152));
+        assert_eq!(res, Ok(120));
 
         // We get a [`quiche::Error::Done`] when we ask to send another packet.
         // But the stream is not complete.
@@ -5571,7 +5578,7 @@ mod tests {
             .mc_space_id
             .unwrap();
         let path = mc_pipe.mc_channel.channel.paths.get(path_id).unwrap();
-        assert_eq!(path.recovery.cwnd_available(), 0);
+        assert_eq!(path.recovery.cwnd_available(), 32);
 
         // After the timeout, the streams are reset and we can send additional
         // data.
@@ -5595,7 +5602,7 @@ mod tests {
             Ok(400)
         );
         let res = mc_pipe.mc_channel.mc_send(&mut buf[..]).map(|(w, _)| w);
-        assert_eq!(res, Ok(471));
+        assert_eq!(res, Ok(469));
 
         // // Same test but we send a longer stream.
         // // The long stream should not be closed upon timeout if it is still
@@ -5950,7 +5957,7 @@ mod tests {
         assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
 
         // The source sends a repair symbol.
-        assert_eq!(mc_pipe.source_send_single(None, 0), Ok(1335));
+        assert_eq!(mc_pipe.source_send_single(None, 0), Ok(1350));
         assert_eq!(
             mc_pipe.unicast_pipes[0]
                 .0

@@ -180,7 +180,8 @@ impl McAuthentication for Connection {
     fn mc_sign_sym_slice(&self, buf: &[u8], pn: u64) -> Result<Vec<u8>> {
         let aead = self
             .pkt_num_spaces
-            .crypto(Epoch::Application)
+            .crypto
+            .get(Epoch::Application)
             .crypto_seal
             .as_ref()
             .unwrap();
@@ -204,7 +205,8 @@ impl McAuthentication for Connection {
         } else {
             let open = &self
                 .pkt_num_spaces
-                .crypto(Epoch::Application)
+                .crypto
+                .get(Epoch::Application)
                 .crypto_open
                 .as_ref()
                 .unwrap();

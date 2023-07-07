@@ -30,6 +30,8 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 
+use smallvec::SmallVec;
+
 use slab::Slab;
 
 use crate::Error;
@@ -268,9 +270,11 @@ pub struct Path {
 
     /// Whether or not we should force eliciting of an ACK (e.g. via PING frame)
     pub needs_ack_eliciting: bool,
+
     /// The expected sequence number of the PATH_STATUS to be received.
     expected_path_status_seq_num: u64,
 
+    /// FEC only path.
     pub fec_only: bool,
 }
 
@@ -424,6 +428,15 @@ impl Path {
     pub fn on_challenge_sent(&mut self) {
         self.promote_to(PathValidationState::Validating);
         self.challenge_requested = false;
+    }
+
+    /// Handles the sending of PATH_CHALLENGE.
+    pub fn add_challenge_sent(
+        &mut self, data: [u8; 8], pkt_size: usize, sent_time: time::Instant,
+    ) {
+        self.on_challenge_sent();
+        self.in_flight_challenges
+            .push_back((data, pkt_size, sent_time));
     }
 
     pub fn on_challenge_received(&mut self, data: [u8; 8]) {
@@ -613,6 +626,8 @@ impl Path {
             lost_spurious: self.recovery.lost_spurious_count,
             retrans: self.retrans_count,
             rtt: self.recovery.rtt(),
+            min_rtt: self.recovery.min_rtt(),
+            rttvar: self.recovery.rttvar(),
             rtt_update: self.recovery.rtt_update_count,
             cwnd: self.recovery.cwnd(),
             sent_bytes: self.sent_bytes,
@@ -628,7 +643,8 @@ impl Path {
 /// An iterator over SocketAddr.
 #[derive(Default)]
 pub struct SocketAddrIter {
-    pub(crate) sockaddrs: Vec<SocketAddr>,
+    pub(crate) sockaddrs: SmallVec<[SocketAddr; 8]>,
+    pub(crate) index: usize,
 }
 
 impl Iterator for SocketAddrIter {
@@ -636,14 +652,16 @@ impl Iterator for SocketAddrIter {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.sockaddrs.pop()
+        let v = self.sockaddrs.get(self.index)?;
+        self.index += 1;
+        Some(*v)
     }
 }
 
 impl ExactSizeIterator for SocketAddrIter {
     #[inline]
     fn len(&self) -> usize {
-        self.sockaddrs.len()
+        self.sockaddrs.len() - self.index
     }
 }
 
@@ -674,7 +692,7 @@ pub struct PathMap {
 
     /// Whether a connection-wide PATH_STATUS frame should be sent.
     path_status_to_advertise: VecDeque<(usize, u64, u64)>,
-    /// The sequence number for the next PATH_ABANDON.
+    /// The sequence number for the next PATH_STATUS.
     next_path_status_seq_num: u64,
 }
 
@@ -936,20 +954,6 @@ impl PathMap {
         self.iter().filter(|(_, p)| !p.is_standby()).count() == 0
     }
 
-    /// Handles the sending of PATH_CHALLENGE.
-    pub fn on_challenge_sent(
-        &mut self, path_id: usize, data: [u8; 8], pkt_size: usize,
-        sent_time: time::Instant,
-    ) -> Result<()> {
-        let path = self.get_mut(path_id)?;
-
-        path.on_challenge_sent();
-        path.in_flight_challenges
-            .push_back((data, pkt_size, sent_time));
-
-        Ok(())
-    }
-
     /// Handles incoming PATH_RESPONSE data.
     pub fn on_response_received(&mut self, data: [u8; 8]) -> Result<()> {
         let active_pid = self.get_active_path_id()?;
@@ -1109,28 +1113,6 @@ impl PathMap {
         Ok(())
     }
 
-    /// Handles potential connection migration.
-    pub fn on_peer_migrated(
-        &mut self, new_pid: usize, disable_dcid_reuse: bool,
-    ) -> Result<()> {
-        let active_path_id = self.get_active_path_id()?;
-
-        if active_path_id == new_pid {
-            return Ok(());
-        }
-
-        self.set_active_path(new_pid)?;
-
-        let no_spare_dcid = self.get_mut(new_pid)?.active_dcid_seq.is_none();
-
-        if no_spare_dcid && !disable_dcid_reuse {
-            self.get_mut(new_pid)?.active_dcid_seq =
-                self.get_mut(active_path_id)?.active_dcid_seq;
-        }
-
-        Ok(())
-    }
-
     /// Sets the provided `status` on he path identified by `path_id`.
     pub fn set_path_status(
         &mut self, path_id: usize, status: PathStatus,
@@ -1223,6 +1205,13 @@ pub struct PathStats {
     /// The estimated round-trip time of the connection.
     pub rtt: time::Duration,
 
+    /// The minimum round-trip time observed.
+    pub min_rtt: Option<time::Duration>,
+
+    /// The estimated round-trip time variation in samples using a mean
+    /// variation.
+    pub rttvar: time::Duration,
+
     /// The number of round-trip time updates over that path.
     pub rtt_update: usize,
 
@@ -1270,14 +1259,8 @@ impl std::fmt::Debug for PathStats {
         )?;
         write!(
             f,
-            "recv={} sent={} lost={} lost_spurious={} retrans={} ",
-            self.recv, self.sent, self.lost, self.lost_spurious, self.retrans,
-        )?;
-
-        write!(
-            f,
-            "rtt={:?} rtt_update={} cwnd={}",
-            self.rtt, self.rtt_update, self.cwnd,
+            "recv={} sent={} lost={} lost_spurious={} retrans={} rtt={:?} min_rtt={:?} rttvar={:?} rtt_update={} cwnd={}",
+            self.recv, self.sent, self.lost, self.lost_spurious, self.retrans, self.rtt, self.min_rtt, self.rttvar, self.rtt_update, self.cwnd,
         )?;
 
         write!(
@@ -1324,25 +1307,22 @@ mod tests {
             .path_id_from_addrs(&(client_addr_2, server_addr))
             .unwrap();
         path_mgr.get_mut(pid).unwrap().request_validation();
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validation_requested(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().probing_required(), true);
+        assert!(path_mgr.get_mut(pid).unwrap().validation_requested());
+        assert!(path_mgr.get_mut(pid).unwrap().probing_required());
 
         // Fake sending of PathChallenge in a packet of MIN_CLIENT_INITIAL_LEN - 1
         // bytes.
         let data = rand::rand_u64().to_be_bytes();
-        path_mgr
-            .on_challenge_sent(
-                pid,
-                data,
-                MIN_CLIENT_INITIAL_LEN - 1,
-                time::Instant::now(),
-            )
-            .unwrap();
+        path_mgr.get_mut(pid).unwrap().add_challenge_sent(
+            data,
+            MIN_CLIENT_INITIAL_LEN - 1,
+            time::Instant::now(),
+        );
 
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validation_requested(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().probing_required(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().under_validation(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validated(), false);
+        assert!(!path_mgr.get_mut(pid).unwrap().validation_requested());
+        assert!(!path_mgr.get_mut(pid).unwrap().probing_required());
+        assert!(path_mgr.get_mut(pid).unwrap().under_validation());
+        assert!(!path_mgr.get_mut(pid).unwrap().validated());
         assert_eq!(
             path_mgr.get_mut(pid).unwrap().validation_state,
             PathValidationState::Validating
@@ -1353,10 +1333,10 @@ mod tests {
         // validated yet.
         path_mgr.on_response_received(data).unwrap();
 
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validation_requested(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().probing_required(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().under_validation(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validated(), false);
+        assert!(path_mgr.get_mut(pid).unwrap().validation_requested());
+        assert!(path_mgr.get_mut(pid).unwrap().probing_required());
+        assert!(path_mgr.get_mut(pid).unwrap().under_validation());
+        assert!(!path_mgr.get_mut(pid).unwrap().validated());
         assert_eq!(
             path_mgr.get_mut(pid).unwrap().validation_state,
             PathValidationState::ValidatingMTU
@@ -1366,21 +1346,18 @@ mod tests {
         // Fake sending of PathChallenge in a packet of MIN_CLIENT_INITIAL_LEN
         // bytes.
         let data = rand::rand_u64().to_be_bytes();
-        path_mgr
-            .on_challenge_sent(
-                pid,
-                data,
-                MIN_CLIENT_INITIAL_LEN,
-                time::Instant::now(),
-            )
-            .unwrap();
+        path_mgr.get_mut(pid).unwrap().add_challenge_sent(
+            data,
+            MIN_CLIENT_INITIAL_LEN,
+            time::Instant::now(),
+        );
 
         path_mgr.on_response_received(data).unwrap();
 
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validation_requested(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().probing_required(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().under_validation(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validated(), true);
+        assert!(!path_mgr.get_mut(pid).unwrap().validation_requested());
+        assert!(!path_mgr.get_mut(pid).unwrap().probing_required());
+        assert!(!path_mgr.get_mut(pid).unwrap().under_validation());
+        assert!(path_mgr.get_mut(pid).unwrap().validated());
         assert_eq!(
             path_mgr.get_mut(pid).unwrap().validation_state,
             PathValidationState::Validated
@@ -1410,26 +1387,27 @@ mod tests {
 
         // First probe.
         let data = rand::rand_u64().to_be_bytes();
+
         client_path_mgr
-            .on_challenge_sent(
-                client_pid,
+            .get_mut(client_pid)
+            .unwrap()
+            .add_challenge_sent(
                 data,
                 MIN_CLIENT_INITIAL_LEN,
                 time::Instant::now(),
-            )
-            .unwrap();
+            );
 
         // Second probe.
         let data_2 = rand::rand_u64().to_be_bytes();
+
         client_path_mgr
-            .on_challenge_sent(
-                client_pid,
+            .get_mut(client_pid)
+            .unwrap()
+            .add_challenge_sent(
                 data_2,
                 MIN_CLIENT_INITIAL_LEN,
                 time::Instant::now(),
-            )
-            .unwrap();
-
+            );
         assert_eq!(
             client_path_mgr
                 .get(client_pid)

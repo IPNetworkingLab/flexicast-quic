@@ -82,6 +82,21 @@ pub fn connect(
             addrs.push(*src);
         }
     }
+<<<<<<< HEAD
+=======
+
+    // Warn the user if there are more usable addresses than the advertised
+    // `active_connection_id_limit`.
+    if addrs.len() as u64 > conn_args.max_active_cids {
+        warn!(
+            "{} addresses provided, but configuration restricts to at most {} \
+               active CIDs; increase the --max-active-cids parameter to use all \
+               the provided addresses",
+            addrs.len(),
+            conn_args.max_active_cids
+        );
+    }
+>>>>>>> 3801d9fc9a511dd9ac147bdbd5975a03625a8daa
 
     // Create the configuration for the QUIC connection.
     let mut config = quiche::Config::new(args.version).unwrap();
@@ -141,7 +156,6 @@ pub fn connect(
     }
 
     let mut http_conn: Option<Box<dyn HttpConn>> = None;
-    let mut siduck_conn: Option<SiDuckConn> = None;
 
     let mut app_proto_selected = false;
 
@@ -322,10 +336,6 @@ pub fn connect(
                 }
             }
 
-            if let Some(si_conn) = siduck_conn {
-                si_conn.report_incomplete(&app_data_start);
-            }
-
             break;
         }
 
@@ -381,13 +391,6 @@ pub fn connect(
                 ));
 
                 app_proto_selected = true;
-            } else if alpns::SIDUCK.contains(&app_proto) {
-                siduck_conn = Some(SiDuckConn::new(
-                    conn_args.dgram_count,
-                    conn_args.dgram_data.clone(),
-                ));
-
-                app_proto_selected = true;
             }
         }
 
@@ -396,13 +399,6 @@ pub fn connect(
         if let Some(h_conn) = http_conn.as_mut() {
             h_conn.send_requests(&mut conn, &args.dump_response_path);
             h_conn.handle_responses(&mut conn, &mut buf, &app_data_start);
-        }
-
-        // If we have a siduck connection, first issue the quacks then
-        // process received data.
-        if let Some(si_conn) = siduck_conn.as_mut() {
-            si_conn.send_quacks(&mut conn);
-            si_conn.handle_quack_acks(&mut conn, &mut buf, &app_data_start);
         }
 
         // Handle path events.
@@ -570,10 +566,6 @@ pub fn connect(
                 }
             }
 
-            if let Some(si_conn) = siduck_conn {
-                si_conn.report_incomplete(&app_data_start);
-            }
-
             break;
         }
     }
@@ -651,4 +643,8 @@ fn lowest_latency_scheduler(
     conn.path_stats()
         .sorted_by_key(|p| p.rtt)
         .map(|p| (p.local_addr, p.peer_addr))
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 3801d9fc9a511dd9ac147bdbd5975a03625a8daa

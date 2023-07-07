@@ -231,12 +231,22 @@ fn main() {
             cfg.build_target("crypto").build().display().to_string()
         });
 
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", bssl_dir);
+
         let build_path = get_boringssl_platform_output_path();
-        let build_dir = format!("{bssl_dir}/build/{build_path}");
+        let mut build_dir = format!("{bssl_dir}/build/{build_path}");
+
+        // If build directory doesn't exist, use the specified path as is.
+        if !std::path::Path::new(&build_dir).is_dir() {
+            build_dir = bssl_dir;
+        }
+
         println!("cargo:rustc-link-search=native={build_dir}");
 
-        println!("cargo:rustc-link-lib=static=ssl");
-        println!("cargo:rustc-link-lib=static=crypto");
+        let bssl_link_kind = std::env::var("QUICHE_BSSL_LINK_KIND")
+            .unwrap_or("static".to_string());
+        println!("cargo:rustc-link-lib={bssl_link_kind}=ssl");
+        println!("cargo:rustc-link-lib={bssl_link_kind}=crypto");
     }
 
     if cfg!(feature = "boringssl-boring-crate") {

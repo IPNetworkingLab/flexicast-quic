@@ -6,6 +6,7 @@ use crate::Result;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::Acked;
 use super::HandshakeStatus;
 use super::SpaceId;
 
@@ -16,7 +17,7 @@ pub trait MulticastRecovery {
     /// Removes multicast data that passes above a defined time threshold.
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
-        handshake_status: HandshakeStatus,
+        handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
     ) -> Result<(Option<u64>, Option<u64>, Option<u64>)>;
 
     /// Returns the next expiring event.
@@ -30,6 +31,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus,
+        newly_acked: &mut Vec<Acked>,
     ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
@@ -84,6 +86,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     handshake_status,
                     now,
                     "",
+                    newly_acked
                 )?;
 
                 Ok((
@@ -292,7 +295,8 @@ mod tests {
                 Epoch::Application,
                 HandshakeStatus::default(),
                 now,
-                ""
+                "",
+                &mut Vec::new(),
             ),
             Ok((0, 0))
         );
@@ -311,6 +315,7 @@ mod tests {
             now,
             data_expiration_val,
             HandshakeStatus::default(),
+            &mut Vec::new(),
         );
         assert_eq!(res, Ok((Some(2), Some(9), Some(2))));
 
@@ -369,7 +374,8 @@ mod tests {
                 Epoch::Application,
                 HandshakeStatus::default(),
                 now,
-                ""
+                "",
+                &mut Vec::new(),
             ),
             Ok((1, 1000))
         );

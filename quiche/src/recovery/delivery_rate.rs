@@ -134,7 +134,7 @@ impl Rate {
                 .max(self.rate_sample.ack_elapsed);
 
             self.rate_sample.delivered =
-                self.delivered - self.rate_sample.prior_delivered;
+                self.delivered.saturating_sub(self.rate_sample.prior_delivered);
             self.rate_sample.interval = interval;
 
             if interval < min_rtt {
@@ -312,8 +312,8 @@ mod tests {
             );
         }
 
-        assert_eq!(r.app_limited(), false);
-        assert_eq!(r.delivery_rate.sample_is_app_limited(), false);
+        assert!(!r.app_limited());
+        assert!(!r.delivery_rate.sample_is_app_limited());
     }
 
     #[test]
@@ -367,13 +367,14 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                &mut Vec::new(),
             ),
             Ok((0, 0)),
         );
 
-        assert_eq!(r.app_limited(), true);
+        assert!(r.app_limited());
         // Rate sample is not app limited (all acked).
-        assert_eq!(r.delivery_rate.sample_is_app_limited(), false);
+        assert!(!r.delivery_rate.sample_is_app_limited());
         assert_eq!(r.delivery_rate.sample_rtt(), rtt);
     }
 }

@@ -197,10 +197,11 @@ fn on_packet_sent(r: &mut Recovery, sent_bytes: usize, now: Instant) {
 }
 
 fn on_packets_acked(
-    r: &mut Recovery, packets: &[Acked], epoch: packet::Epoch, now: Instant,
+    r: &mut Recovery, packets: &mut Vec<Acked>, epoch: packet::Epoch,
+    now: Instant,
 ) {
-    for pkt in packets {
-        on_packet_acked(r, pkt, epoch, now);
+    for pkt in packets.drain(..) {
+        on_packet_acked(r, &pkt, epoch, now);
     }
 }
 
@@ -495,7 +496,7 @@ mod tests {
 
         let cwnd_prev = r.cwnd();
 
-        let acked = vec![Acked {
+        let mut acked = vec![Acked {
             pkt_num: p.pkt_num,
             time_sent: p.time_sent,
             size: p.size,
@@ -506,7 +507,7 @@ mod tests {
             rtt: Duration::ZERO,
         }];
 
-        r.on_packets_acked(acked, packet::Epoch::Application, now);
+        r.on_packets_acked(&mut acked, packet::Epoch::Application, now);
 
         // Check if cwnd increased by packet size (slow start)
         assert_eq!(r.cwnd(), cwnd_prev + p.size);
@@ -544,7 +545,7 @@ mod tests {
 
         let cwnd_prev = r.cwnd();
 
-        let acked = vec![
+        let mut acked = vec![
             Acked {
                 pkt_num: p.pkt_num,
                 time_sent: p.time_sent,
@@ -577,7 +578,7 @@ mod tests {
             },
         ];
 
-        r.on_packets_acked(acked, packet::Epoch::Application, now);
+        r.on_packets_acked(&mut acked, packet::Epoch::Application, now);
 
         // Acked 3 packets.
         assert_eq!(r.cwnd(), cwnd_prev + p.size * 3);
@@ -644,7 +645,7 @@ mod tests {
         // During Congestion Avoidance, it will take
         // 5 ACKs to increase cwnd by 1 MSS.
         for _ in 0..5 {
-            let acked = vec![Acked {
+            let mut acked = vec![Acked {
                 pkt_num: recovery::SpacedPktNum(0, 0),
                 time_sent: now,
                 size: r.max_datagram_size,
@@ -655,7 +656,7 @@ mod tests {
                 rtt: Duration::ZERO,
             }];
 
-            r.on_packets_acked(acked, packet::Epoch::Application, now);
+            r.on_packets_acked(&mut acked, packet::Epoch::Application, now);
             now += rtt;
         }
 
@@ -688,7 +689,7 @@ mod tests {
             r.max_datagram_size * recovery::MINIMUM_WINDOW_PACKETS
         );
 
-        let acked = vec![Acked {
+        let mut acked = vec![Acked {
             pkt_num: recovery::SpacedPktNum(0, 0),
             // To exit from recovery
             time_sent: now + Duration::from_millis(1),
@@ -700,7 +701,7 @@ mod tests {
             rtt: Duration::ZERO,
         }];
 
-        r.on_packets_acked(acked, packet::Epoch::Application, now);
+        r.on_packets_acked(&mut acked, packet::Epoch::Application, now);
 
         // Slow start again - cwnd will be increased by 1 MSS
         assert_eq!(
@@ -757,7 +758,7 @@ mod tests {
         for _ in 0..n_rtt_sample {
             r.update_rtt(rtt_1st, Duration::from_millis(0), now);
 
-            let acked = vec![Acked {
+            let mut acked = vec![Acked {
                 pkt_num: ack_pn,
                 time_sent: p.time_sent,
                 size: p.size,
@@ -768,12 +769,12 @@ mod tests {
                 rtt: Duration::ZERO,
             }];
 
-            r.on_packets_acked(acked, epoch, now);
+            r.on_packets_acked(&mut acked, epoch, now);
             ack_pn.1 += 1;
         }
 
         // Not in CSS yet.
-        assert_eq!(r.hystart.css_start_time().is_some(), false);
+        assert!(r.hystart.css_start_time().is_none());
 
         // 2nd round.
         let mut rtt_2nd = Duration::from_millis(100);
@@ -795,7 +796,7 @@ mod tests {
             cwnd_prev = r.cwnd();
             r.update_rtt(rtt_2nd, Duration::from_millis(0), now);
 
-            let acked = vec![Acked {
+            let mut acked = vec![Acked {
                 pkt_num: ack_pn,
                 time_sent: p.time_sent,
                 size: p.size,
@@ -806,7 +807,7 @@ mod tests {
                 rtt: Duration::ZERO,
             }];
 
-            r.on_packets_acked(acked, epoch, now);
+            r.on_packets_acked(&mut acked, epoch, now);
             ack_pn.1 += 1;
 
             // Keep increasing RTT so that hystart exits to CSS.
@@ -814,7 +815,7 @@ mod tests {
         }
 
         // Now we are in CSS.
-        assert_eq!(r.hystart.css_start_time().is_some(), true);
+        assert!(r.hystart.css_start_time().is_some());
         assert_eq!(r.cwnd(), cwnd_prev + r.max_datagram_size);
 
         // 3rd round, which RTT is less than previous round to
@@ -836,7 +837,7 @@ mod tests {
         for _ in 0..n_rtt_sample {
             r.update_rtt(rtt_3rd, Duration::from_millis(0), now);
 
-            let acked = vec![Acked {
+            let mut acked = vec![Acked {
                 pkt_num: ack_pn,
                 time_sent: p.time_sent,
                 size: p.size,
@@ -847,12 +848,12 @@ mod tests {
                 rtt: Duration::ZERO,
             }];
 
-            r.on_packets_acked(acked, epoch, now);
+            r.on_packets_acked(&mut acked, epoch, now);
             ack_pn.1 += 1;
         }
 
         // Now we are back in Slow Start.
-        assert_eq!(r.hystart.css_start_time().is_some(), false);
+        assert!(r.hystart.css_start_time().is_none());
         assert_eq!(
             r.cwnd(),
             cwnd_prev +
@@ -909,7 +910,7 @@ mod tests {
         for _ in 0..n_rtt_sample {
             r.update_rtt(rtt_1st, Duration::from_millis(0), now);
 
-            let acked = vec![Acked {
+            let mut acked = vec![Acked {
                 pkt_num: ack_pn,
                 time_sent: p.time_sent,
                 size: p.size,
@@ -920,12 +921,12 @@ mod tests {
                 rtt: Duration::ZERO,
             }];
 
-            r.on_packets_acked(acked, epoch, now);
+            r.on_packets_acked(&mut acked, epoch, now);
             ack_pn.1 += 1;
         }
 
         // Not in CSS yet.
-        assert_eq!(r.hystart.css_start_time().is_some(), false);
+        assert!(r.hystart.css_start_time().is_none());
 
         // 2nd round.
         let mut rtt_2nd = Duration::from_millis(100);
@@ -947,7 +948,7 @@ mod tests {
             cwnd_prev = r.cwnd();
             r.update_rtt(rtt_2nd, Duration::from_millis(0), now);
 
-            let acked = vec![Acked {
+            let mut acked = vec![Acked {
                 pkt_num: ack_pn,
                 time_sent: p.time_sent,
                 size: p.size,
@@ -958,7 +959,7 @@ mod tests {
                 rtt: Duration::ZERO,
             }];
 
-            r.on_packets_acked(acked, epoch, now);
+            r.on_packets_acked(&mut acked, epoch, now);
             ack_pn.1 += 1;
 
             // Keep increasing RTT so that hystart exits to CSS.
@@ -966,7 +967,7 @@ mod tests {
         }
 
         // Now we are in CSS.
-        assert_eq!(r.hystart.css_start_time().is_some(), true);
+        assert!(r.hystart.css_start_time().is_some());
         assert_eq!(r.cwnd(), cwnd_prev + r.max_datagram_size);
 
         // Run 5 (CSS_ROUNDS) in CSS, to exit to congestion avoidance.
@@ -986,7 +987,7 @@ mod tests {
             for _ in 0..n_rtt_sample {
                 r.update_rtt(rtt_css, Duration::from_millis(0), now);
 
-                let acked = vec![Acked {
+                let mut acked = vec![Acked {
                     pkt_num: ack_pn,
                     time_sent: p.time_sent,
                     size: p.size,
@@ -997,7 +998,7 @@ mod tests {
                     rtt: Duration::ZERO,
                 }];
 
-                r.on_packets_acked(acked, epoch, now);
+                r.on_packets_acked(&mut acked, epoch, now);
                 ack_pn.1 += 1;
             }
         }
@@ -1034,7 +1035,7 @@ mod tests {
 
         let rtt = Duration::from_millis(100);
 
-        let acked = vec![Acked {
+        let mut acked = vec![Acked {
             pkt_num: recovery::SpacedPktNum(0, 0),
             // To exit from recovery
             time_sent: now + rtt,
@@ -1051,7 +1052,7 @@ mod tests {
 
         // Trigger detecting spurious congestion event
         r.on_packets_acked(
-            acked,
+            &mut acked,
             packet::Epoch::Application,
             now + rtt + Duration::from_millis(5),
         );
@@ -1076,7 +1077,7 @@ mod tests {
 
         let rtt = Duration::from_millis(100);
 
-        let acked = vec![Acked {
+        let mut acked = vec![Acked {
             pkt_num: recovery::SpacedPktNum(0, 0),
             // To exit from recovery
             time_sent: now + rtt,
@@ -1093,7 +1094,7 @@ mod tests {
 
         // Trigger detecting spurious congestion event.
         r.on_packets_acked(
-            acked,
+            &mut acked,
             packet::Epoch::Application,
             now + rtt + Duration::from_millis(5),
         );
@@ -1141,7 +1142,7 @@ mod tests {
         // During Congestion Avoidance, it will take
         // 5 ACKs to increase cwnd by 1 MSS.
         for _ in 0..5 {
-            let acked = vec![Acked {
+            let mut acked = vec![Acked {
                 pkt_num: recovery::SpacedPktNum(0, 0),
                 time_sent: now,
                 size: r.max_datagram_size,
@@ -1152,7 +1153,7 @@ mod tests {
                 rtt: Duration::ZERO,
             }];
 
-            r.on_packets_acked(acked, packet::Epoch::Application, now);
+            r.on_packets_acked(&mut acked, packet::Epoch::Application, now);
             now += rtt;
         }
 

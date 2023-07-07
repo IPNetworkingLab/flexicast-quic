@@ -585,6 +585,11 @@ impl ConnectionIdentifiers {
         Ok(e.path_id)
     }
 
+    /// Returns an iterator over the source connection IDs.
+    pub fn scids_iter(&self) -> impl Iterator<Item = &ConnectionId> {
+        self.scids.iter().map(|e| &e.cid)
+    }
+
     /// Updates the Source Connection ID entry with the provided sequence number
     /// to indicate that it is now linked to the provided path ID.
     pub fn link_scid_to_path_id(
@@ -803,6 +808,13 @@ impl ConnectionIdentifiers {
         self.scids.len()
     }
 
+    /// Returns the number of source Connection IDs that are retired. This is
+    /// only meaningful if the host uses non-zero length Source Connection IDs.
+    #[inline]
+    pub fn retired_source_cids(&self) -> usize {
+        self.retired_scids.len()
+    }
+
     pub fn pop_retired_scid(&mut self) -> Option<ConnectionId<'static>> {
         self.retired_scids.pop_front()
     }
@@ -811,43 +823,6 @@ impl ConnectionIdentifiers {
     #[inline]
     pub fn largest_dcid_seq(&self) -> u64 {
         self.largest_destination_seq
-    }
-
-    /// Translates the wire-format path identifier as used by PATH_ABANDON and
-    /// PATH_STATUS frames into internal PIDs.
-    ///
-    /// The wire-format path identifier is differently handled depending whether
-    /// we sent or received it. The mode 0 (resp. 1) refers to the sequence
-    /// number of the CID issued by the sender (resp. receiver). When acting as
-    /// a sender, this corresponds to a source (resp. destination) CID, while
-    /// when acting as a receiver, this corresponds to a destination (resp.
-    /// source) CID. Given that we need to process it when we receive them and
-    /// when we got notified that a PATH_ABANDON got acknowledged, we need to
-    /// handle both cases. This is done by the `from_peer` parameter, which is
-    /// set to `true` when acting as a receiver of the path identifier.
-    pub fn path_id_from_wire(
-        &self, wire_pid: (u64, Option<u64>), recv_pid: usize, from_peer: bool,
-    ) -> Result<usize> {
-        let wire_pid = if from_peer {
-            wire_pid
-        } else {
-            match wire_pid {
-                (0x00, x) => (0x01, x),
-                (0x01, x) => (0x00, x),
-                _ => wire_pid,
-            }
-        };
-        match wire_pid {
-            // In `path_id_to_wire`, we store in the `Option` part of the tuple
-            // the internal path ID.
-            (0x02, Some(pid)) => Ok(pid as usize),
-            (0x02, None) => Ok(recv_pid),
-            (0x00, Some(dcid_seq)) =>
-                self.get_dcid(dcid_seq)?.path_id.ok_or(Error::InvalidFrame),
-            (0x01, Some(scid_seq)) =>
-                self.get_scid(scid_seq)?.path_id.ok_or(Error::InvalidFrame),
-            _ => Err(Error::InvalidFrame),
-        }
     }
 }
 
@@ -867,7 +842,7 @@ mod tests {
 
         assert_eq!(ids.available_dcids(), 0);
         assert_eq!(ids.available_scids(), 0);
-        assert_eq!(ids.has_new_scids(), false);
+        assert!(!ids.has_new_scids());
         assert_eq!(ids.next_advertise_new_scid_seq(), None);
 
         let (scid2, rt2) = create_cid_and_reset_token(16);
@@ -875,7 +850,7 @@ mod tests {
         assert_eq!(ids.new_scid(scid2, Some(rt2), true, None, false), Ok(1));
         assert_eq!(ids.available_dcids(), 0);
         assert_eq!(ids.available_scids(), 1);
-        assert_eq!(ids.has_new_scids(), true);
+        assert!(ids.has_new_scids());
         assert_eq!(ids.next_advertise_new_scid_seq(), Some(1));
 
         let (scid3, rt3) = create_cid_and_reset_token(16);
@@ -883,7 +858,7 @@ mod tests {
         assert_eq!(ids.new_scid(scid3, Some(rt3), true, None, false), Ok(2));
         assert_eq!(ids.available_dcids(), 0);
         assert_eq!(ids.available_scids(), 2);
-        assert_eq!(ids.has_new_scids(), true);
+        assert!(ids.has_new_scids());
         assert_eq!(ids.next_advertise_new_scid_seq(), Some(1));
 
         // If now we give another CID, it reports an error since it exceeds the
@@ -896,14 +871,14 @@ mod tests {
         );
         assert_eq!(ids.available_dcids(), 0);
         assert_eq!(ids.available_scids(), 2);
-        assert_eq!(ids.has_new_scids(), true);
+        assert!(ids.has_new_scids());
         assert_eq!(ids.next_advertise_new_scid_seq(), Some(1));
 
         // Assume we sent one of them.
         ids.mark_advertise_new_scid_seq(1, false);
         assert_eq!(ids.available_dcids(), 0);
         assert_eq!(ids.available_scids(), 2);
-        assert_eq!(ids.has_new_scids(), true);
+        assert!(ids.has_new_scids());
         assert_eq!(ids.next_advertise_new_scid_seq(), Some(2));
 
         // Send the other.
@@ -911,7 +886,7 @@ mod tests {
 
         assert_eq!(ids.available_dcids(), 0);
         assert_eq!(ids.available_scids(), 2);
-        assert_eq!(ids.has_new_scids(), false);
+        assert!(!ids.has_new_scids());
         assert_eq!(ids.next_advertise_new_scid_seq(), None);
     }
 
@@ -945,19 +920,19 @@ mod tests {
         ids.link_dcid_to_path_id(1, 0).unwrap();
         assert_eq!(ids.available_dcids(), 1);
         assert_eq!(ids.dcids.len(), 2);
-        assert_eq!(ids.has_retire_dcids(), true);
+        assert!(ids.has_retire_dcids());
         assert_eq!(ids.next_retire_dcid_seq(), Some(0));
 
         // Fake RETIRE_CONNECTION_ID sending.
         ids.mark_retire_dcid_seq(0, false);
-        assert_eq!(ids.has_retire_dcids(), false);
+        assert!(!ids.has_retire_dcids());
         assert_eq!(ids.next_retire_dcid_seq(), None);
 
         // Now tries to experience CID retirement. If the server tries to remove
         // non-existing DCIDs, it fails.
         assert_eq!(ids.retire_dcid(0), Err(Error::InvalidState));
         assert_eq!(ids.retire_dcid(3), Err(Error::InvalidState));
-        assert_eq!(ids.has_retire_dcids(), false);
+        assert!(!ids.has_retire_dcids());
         assert_eq!(ids.dcids.len(), 2);
 
         // Now it removes DCID with sequence 1.
@@ -965,19 +940,19 @@ mod tests {
         // The CID module does not handle path replacing. Fake it now.
         ids.link_dcid_to_path_id(2, 0).unwrap();
         assert_eq!(ids.available_dcids(), 0);
-        assert_eq!(ids.has_retire_dcids(), true);
+        assert!(ids.has_retire_dcids());
         assert_eq!(ids.next_retire_dcid_seq(), Some(1));
         assert_eq!(ids.dcids.len(), 1);
 
         // Fake RETIRE_CONNECTION_ID sending.
         ids.mark_retire_dcid_seq(1, false);
-        assert_eq!(ids.has_retire_dcids(), false);
+        assert!(!ids.has_retire_dcids());
         assert_eq!(ids.next_retire_dcid_seq(), None);
 
         // Trying to remove the last DCID triggers an error.
         assert_eq!(ids.retire_dcid(2), Err(Error::OutOfIdentifiers));
         assert_eq!(ids.available_dcids(), 0);
-        assert_eq!(ids.has_retire_dcids(), false);
+        assert!(!ids.has_retire_dcids());
         assert_eq!(ids.dcids.len(), 1);
     }
 
