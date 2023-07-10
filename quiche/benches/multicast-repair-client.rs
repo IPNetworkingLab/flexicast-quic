@@ -68,7 +68,7 @@ fn setup_mc(
                 nack_ranges.populate(nb_sent - 3..nb_sent - 2);
 
                 if matches!(remove_source_symbols, FecResetFreq::Sliding(_)) {
-                    pipe.mc_channel.set_source_nack_range(&nack_ranges).unwrap();
+                    pipe.mc_channel.set_source_nack_range(&nack_ranges, u64::MAX).unwrap();
                 }
 
                 // Use this time to remove old source symbols that are not in the

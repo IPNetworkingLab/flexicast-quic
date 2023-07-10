@@ -134,6 +134,7 @@ fn mc_channel_bench(c: &mut Criterion) {
                                                 mc_channel
                                                     .set_source_nack_range(
                                                         &nack_ranges,
+                                                        u64::MAX
                                                     )
                                                     .unwrap();
                                             }

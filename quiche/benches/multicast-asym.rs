@@ -58,15 +58,14 @@ impl From<(McAuthType, usize)> for McTuple {
 
 fn mc_channel_bench(c: &mut Criterion) {
     let buf = vec![0; BENCH_STREAM_TOTAL_SIZE];
-    // let mut stream_sizes = vec![100];
-    // loop {
-    //     let last = stream_sizes.last().unwrap();
-    //     if *last >= BENCH_STREAM_TOTAL_SIZE {
-    //         break;
-    //     }
-    //     stream_sizes.push(last * BENCH_STEP_SIZE);
-    // }
-    let stream_sizes = vec![BENCH_STREAM_TOTAL_SIZE / 2];
+    let mut stream_sizes = vec![100];
+    loop {
+        let last = stream_sizes.last().unwrap();
+        if *last >= BENCH_STREAM_TOTAL_SIZE {
+            break;
+        }
+        stream_sizes.push(last * BENCH_STEP_SIZE);
+    }
 
     let mut group = c.benchmark_group("multicast-asym-tmp");
     for &auth in &[
