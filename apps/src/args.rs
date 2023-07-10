@@ -56,11 +56,8 @@ pub struct CommonArgs {
     pub qpack_max_table_capacity: Option<u64>,
     pub qpack_blocked_streams: Option<u64>,
     pub multipath: bool,
-<<<<<<< HEAD
     pub send_fec: bool,
     pub receive_fec: bool,
-=======
->>>>>>> 3801d9fc9a511dd9ac147bdbd5975a03625a8daa
 }
 
 /// Creates a new `CommonArgs` structure using the provided [`Docopt`].
@@ -222,11 +219,8 @@ impl Args for CommonArgs {
             qpack_max_table_capacity,
             qpack_blocked_streams,
             multipath,
-<<<<<<< HEAD
             send_fec,
             receive_fec,
-=======
->>>>>>> 3801d9fc9a511dd9ac147bdbd5975a03625a8daa
         }
     }
 }
@@ -256,11 +250,8 @@ impl Default for CommonArgs {
             qpack_max_table_capacity: None,
             qpack_blocked_streams: None,
             multipath: false,
-<<<<<<< HEAD
             send_fec: false,
             receive_fec: false,
-=======
->>>>>>> 3801d9fc9a511dd9ac147bdbd5975a03625a8daa
         }
     }
 }
@@ -481,13 +472,9 @@ Options:
   --qpack-max-table-capacity BYTES  Max capacity of QPACK dynamic table decoding. Any value other that 0 is currently unsupported.
   --qpack-blocked-streams STREAMS   Limit of streams that can be blocked while decoding. Any value other that 0 is currently unsupported.
   --disable-gso               Disable GSO (linux only).
-<<<<<<< HEAD
-  --multipath                 Enable multipath support.
-  --send-fec               Sends FEC to protect the STREAM and DATAGRAM frames
-=======
   --disable-pacing            Disable pacing (linux only).
   --multipath                 Enable multipath support.
->>>>>>> 3801d9fc9a511dd9ac147bdbd5975a03625a8daa
+  --send-fec               Sends FEC to protect the STREAM and DATAGRAM frames
   -h --help                   Show this screen.
 ";
 
