@@ -530,7 +530,12 @@ impl Frame {
                 let nb_repair_needed = b.get_varint()?;
                 let (_, ranges, _) = parse_common_ack_frame(b, false)?;
 
-                Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges }
+                Frame::McNack {
+                    channel_id,
+                    last_pn,
+                    nb_repair_needed,
+                    ranges,
+                }
             },
 
             0x32 => {
@@ -961,7 +966,12 @@ impl Frame {
                 b.put_bytes(signature)?;
             },
 
-            Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges } => {
+            Frame::McNack {
+                channel_id,
+                last_pn,
+                nb_repair_needed,
+                ranges,
+            } => {
                 debug!("Going to encode the MC_NACK frame: {:?}", ranges);
                 b.put_varint(MC_NACK_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
@@ -1318,8 +1328,8 @@ impl Frame {
                     stream_id.map(octets::varint_len).unwrap_or(0);
                 let fec_metadata_len =
                     fec_metadata.map(octets::varint_len).unwrap_or(0);
-                    let frame_type_size = octets::varint_len(MC_EXPIRE_CODE);
-                    frame_type_size + // frame type
+                let frame_type_size = octets::varint_len(MC_EXPIRE_CODE);
+                frame_type_size + // frame type
                 1 + // channel_id len
                 channel_id.len() +
                 pkt_num_len +
@@ -1357,7 +1367,12 @@ impl Frame {
                 signature.len()
             },
 
-            Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges } => {
+            Frame::McNack {
+                channel_id,
+                last_pn,
+                nb_repair_needed,
+                ranges,
+            } => {
                 let frame_type_size = octets::varint_len(MC_NACK_CODE);
                 let last_pn_size = octets::varint_len(*last_pn);
                 let nb_repair_needed_size = octets::varint_len(*nb_repair_needed);
@@ -1717,19 +1732,19 @@ impl Frame {
                 raw: None,
             },
 
-            Frame::Repair { repair_symbol } => QuicFrame::Unknown {
+            Frame::Repair { .. } => QuicFrame::Unknown {
                 raw_frame_type: 0x32,
                 frame_type_value: None,
                 raw: None,
             },
 
-            Frame::SourceSymbolHeader { metadata, .. } => QuicFrame::Unknown {
+            Frame::SourceSymbolHeader { .. } => QuicFrame::Unknown {
                 raw_frame_type: 0x33,
                 frame_type_value: None,
                 raw: None,
             },
 
-            Frame::SourceSymbol { source_symbol } => QuicFrame::Unknown {
+            Frame::SourceSymbol { .. } => QuicFrame::Unknown {
                 raw_frame_type: 0x33,
                 frame_type_value: None,
                 raw: None,
@@ -2006,7 +2021,12 @@ impl std::fmt::Debug for Frame {
                 write!(f, "MC_ASYM signature={:?}", signature)?;
             },
 
-            Frame::McNack { channel_id, last_pn, nb_repair_needed, ranges } => {
+            Frame::McNack {
+                channel_id,
+                last_pn,
+                nb_repair_needed,
+                ranges,
+            } => {
                 write!(
                     f,
                     "MC_NACK channel ID={:?} last pn={:?} nb repair needed={:?} ranges={:?}",
@@ -3409,13 +3429,24 @@ mod tests {
         );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder()).is_err());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
+                .is_err()
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder()).is_ok());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
+                .is_ok()
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, &get_decoder()).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            &get_decoder()
+        )
+        .is_err());
 
         let frame_data = match &frame {
             Frame::Datagram { data } => data.clone(),
@@ -3450,13 +3481,24 @@ mod tests {
         );
 
         let mut b = octets::Octets::with_slice(&mut d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder()).is_err());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
+                .is_err()
+        );
 
         let mut b = octets::Octets::with_slice(&mut d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder()).is_err());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
+                .is_err()
+        );
 
         let mut b = octets::Octets::with_slice(&mut d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, &get_decoder()).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            &get_decoder()
+        )
+        .is_err());
     }
 
     #[test]
@@ -3484,16 +3526,30 @@ mod tests {
         assert_eq!(wire_len, 24);
 
         let mut b = octets::Octets::with_slice(&d);
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder()).is_err());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
+                .is_err()
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder()).is_err());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
+                .is_err()
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, &get_decoder()).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            &get_decoder()
+        )
+        .is_err());
     }
 
     #[test]
@@ -3527,16 +3583,30 @@ mod tests {
         assert_eq!(wire_len, 30);
 
         let mut b = octets::Octets::with_slice(&d);
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder()).is_err());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
+                .is_err()
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder()).is_err());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
+                .is_err()
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, &get_decoder()).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            &get_decoder()
+        )
+        .is_err());
     }
 
     #[test]
@@ -3562,16 +3632,30 @@ mod tests {
         assert_eq!(wire_len, 15);
 
         let mut b = octets::Octets::with_slice(&d);
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder()).is_err());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
+                .is_err()
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder()).is_err());
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
+                .is_err()
+        );
 
         let mut b = octets::Octets::with_slice(&d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, &get_decoder()).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            &get_decoder()
+        )
+        .is_err());
     }
 
     #[test]
@@ -3579,7 +3663,11 @@ mod tests {
         let mut d = [42; 128];
 
         let frame = Frame::McAnnounce {
-            channel_id: [180, 12, 104, 233, 220, 221, 226, 11, 141, 195, 27, 5, 100, 51, 58, 220].to_vec(),
+            channel_id: [
+                180, 12, 104, 233, 220, 221, 226, 11, 141, 195, 27, 5, 100, 51,
+                58, 220,
+            ]
+            .to_vec(),
             path_type: 0,
             auth_type: 3,
             is_ipv6: 0,

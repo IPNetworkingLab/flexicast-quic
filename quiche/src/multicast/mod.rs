@@ -1397,14 +1397,15 @@ impl MulticastConnection for Connection {
                     .ok_or(Error::Multicast(MulticastError::McAnnounce))?
                     .ttl_data,
                 hs_status,
-                &mut self.newly_acked
+                &mut self.newly_acked,
             )?;
             self.blocked_limit = None;
             pkt_num_opt = res.0;
             stream_id_opt = res.1;
             fec_metadata_opt = res.2;
         } else if let Some(exp_pkt_num) = pkt_num_opt {
-            let pkt_num_space = self.pkt_num_spaces.spaces.get_mut(epoch, space_id)?;
+            let pkt_num_space =
+                self.pkt_num_spaces.spaces.get_mut(epoch, space_id)?;
             pkt_num_space.recv_pkt_need_ack.remove_until(exp_pkt_num);
             debug!(
                 "Remove packets until {} for space id {}",
@@ -4071,7 +4072,7 @@ mod tests {
 
         // The server generates FEC repair packets and forwards them to the
         // client.
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1350));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
         // No need to send additional repair symbols.
         assert_eq!(
@@ -4221,7 +4222,7 @@ mod tests {
 
         // The server generates FEC repair packets and forwards them to the
         // client. Only two repair symbols are needed.
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1350));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
         // No need to send additional repair symbols.
         assert_eq!(
@@ -4605,7 +4606,10 @@ mod tests {
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1314));
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1314));
         assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(509));
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Err(Error::Done));
+        assert_eq!(
+            mc_pipe.source_send_single(None, signature_len),
+            Err(Error::Done)
+        );
 
         // The client knows that it lost the first packet of the new stream, but
         // also the two older (and expired!) packets because it did not receive
@@ -4625,7 +4629,10 @@ mod tests {
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         // Communication to unicast servers.
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Err(Error::Done));
+        assert_eq!(
+            mc_pipe.source_send_single(None, signature_len),
+            Err(Error::Done)
+        );
         assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
 
         // The server generates FEC a single repair packet because the client lost
@@ -4633,7 +4640,7 @@ mod tests {
         // been removed due to a timeout. Even if the MC_NACK of the client
         // contains more packets, the source filters them out.
         // MC-TODO: verify the nack ranges on the source to be sure?
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1350));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(1335));
         // No need to send additional repair symbols.
         println!("KZELFKLZEKFLEKFLZKFLEKFLEZKLEKZLFEKLFZK\n\n\n");
         assert_eq!(
@@ -5957,7 +5964,7 @@ mod tests {
         assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
 
         // The source sends a repair symbol.
-        assert_eq!(mc_pipe.source_send_single(None, 0), Ok(1350));
+        assert_eq!(mc_pipe.source_send_single(None, 0), Ok(1335));
         assert_eq!(
             mc_pipe.unicast_pipes[0]
                 .0

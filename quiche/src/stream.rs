@@ -3682,27 +3682,27 @@ mod tests {
     }
 
     #[test]
-        fn send_buf_final_size_retransmit() {
-            let mut buf = [0; 50];
-            let mut send = SendBuf::new(u64::MAX);
+    fn send_buf_final_size_retransmit() {
+        let mut buf = [0; 50];
+        let mut send = SendBuf::new(u64::MAX);
 
-            send.write(&buf, false).unwrap();
-            assert_eq!(send.off_front(), 0);
+        send.write(&buf, false).unwrap();
+        assert_eq!(send.off_front(), 0);
 
-            // Emit the whole buffer
-            let (written, _fin) = send.emit(&mut buf).unwrap();
-            assert_eq!(written, buf.len());
-            assert_eq!(send.off_front(), buf.len() as u64);
+        // Emit the whole buffer
+        let (written, _fin) = send.emit(&mut buf).unwrap();
+        assert_eq!(written, buf.len());
+        assert_eq!(send.off_front(), buf.len() as u64);
 
-            // Server decides to retransmit the last 10 bytes. It's possible
-            // it's not actually lost and that the client did receive it.
-            send.retransmit(40, 10);
+        // Server decides to retransmit the last 10 bytes. It's possible
+        // it's not actually lost and that the client did receive it.
+        send.retransmit(40, 10);
 
-            // Server receives STOP_SENDING from client. The final_size we
-            // send in the RESET_STREAM should be 50. If we send anything less,
-            // it's a FINAL_SIZE_ERROR.
-            let (fin_off, unsent) = send.stop(0).unwrap();
-            assert_eq!(fin_off, 50);
-            assert_eq!(unsent, 0);
-        }
+        // Server receives STOP_SENDING from client. The final_size we
+        // send in the RESET_STREAM should be 50. If we send anything less,
+        // it's a FINAL_SIZE_ERROR.
+        let (fin_off, unsent) = send.stop(0).unwrap();
+        assert_eq!(fin_off, 50);
+        assert_eq!(unsent, 0);
+    }
 }

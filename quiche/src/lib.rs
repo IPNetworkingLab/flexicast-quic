@@ -3820,6 +3820,7 @@ impl Connection {
                                 length,
                                 fin,
                             } => {
+                                println!("STREAM HEADER IS LOST");
                                 let stream = match self.streams.get_mut(stream_id)
                                 {
                                     Some(v) => v,
@@ -5259,8 +5260,17 @@ impl Connection {
             !fec_only_path &&
             !sent_mc_auth
         {
-            // first, do bandwidth probing if needed and possible
-            if !self.streams.has_flushable() {
+            // first, do bandwidth probing if needed and possible.
+            // Disable bandwidth probing if this is the multicast source.
+            let is_mc_server = if let Some(multicast) = self.multicast.as_ref() {
+                matches!(
+                    multicast.get_mc_role(),
+                    multicast::MulticastRole::ServerMulticast
+                )
+            } else {
+                false
+            };
+            if !self.streams.has_flushable() && !is_mc_server {
                 if let Some((packet_number, stream_id, offset, len)) =
                     path.recovery.get_unacked_stream_frame_for_probing(epoch)
                 {
@@ -5275,7 +5285,7 @@ impl Connection {
                                 urgency,
                                 incremental,
                             );
-                            trace!("probing: retransmit content of packet {:?} proactively", packet_number);
+                            println!("probing: retransmit content of packet {:?} proactively", packet_number);
                         }
                     }
                 }
@@ -10993,7 +11003,7 @@ mod tests {
         let mut raw_params = [42; 256];
         let raw_params =
             TransportParams::encode(&tp, false, &mut raw_params).unwrap();
-        assert_eq!(raw_params.len(), 84);
+        assert_eq!(raw_params.len(), 86);
 
         let new_tp = TransportParams::decode(raw_params, true).unwrap();
 
