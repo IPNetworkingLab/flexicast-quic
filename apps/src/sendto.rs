@@ -62,32 +62,11 @@ fn send_to_gso_pacing(
     let dst = SockaddrStorage::from(send_info.to);
     let sockfd = socket.as_raw_fd();
 
-    let at = send_info.at.checked_add(std::time::Duration::from_micros(5000)).unwrap();
-
     // GSO option.
     let cmsg_gso = ControlMessage::UdpGsoSegments(&segment_size);
 
     // Pacing option.
-<<<<<<< HEAD
-    let mut time_spec = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            &at as *const _ as *const libc::timespec,
-            &mut time_spec,
-            1,
-        )
-    };
-
-    let send_time =
-        time_spec.tv_sec as u64 * nanos_per_sec + time_spec.tv_nsec as u64;
-
-=======
     let send_time = std_time_to_u64(&send_info.at);
->>>>>>> 3801d9fc9a511dd9ac147bdbd5975a03625a8daa
     let cmsg_txtime = ControlMessage::TxTime(&send_time);
     match sendmsg(
         sockfd,

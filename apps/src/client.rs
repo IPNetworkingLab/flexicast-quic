@@ -82,8 +82,6 @@ pub fn connect(
             addrs.push(*src);
         }
     }
-<<<<<<< HEAD
-=======
 
     // Warn the user if there are more usable addresses than the advertised
     // `active_connection_id_limit`.
@@ -96,7 +94,6 @@ pub fn connect(
             conn_args.max_active_cids
         );
     }
->>>>>>> 3801d9fc9a511dd9ac147bdbd5975a03625a8daa
 
     // Create the configuration for the QUIC connection.
     let mut config = quiche::Config::new(args.version).unwrap();
@@ -643,8 +640,4 @@ fn lowest_latency_scheduler(
     conn.path_stats()
         .sorted_by_key(|p| p.rtt)
         .map(|p| (p.local_addr, p.peer_addr))
-<<<<<<< HEAD
 }
-=======
-}
->>>>>>> 3801d9fc9a511dd9ac147bdbd5975a03625a8daa
