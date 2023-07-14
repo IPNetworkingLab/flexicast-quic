@@ -120,9 +120,6 @@ pub enum MulticastClientStatus {
     /// the server.
     Leaving(bool),
 
-    /// Left the multicast channel. Acknowledged by the unicast server.
-    Left,
-
     /// Refused to join the multicast channel.
     DeclinedJoin,
 
@@ -508,7 +505,7 @@ impl MulticastAttributes {
                     if leaving_from == LEAVE_FROM_CLIENT {
                         if is_server {
                             self.mc_client_left_need_sync = true;
-                            MulticastClientStatus::Left
+                            MulticastClientStatus::AwareUnjoined
                         } else {
                             MulticastClientStatus::Leaving(false)
                         }
@@ -517,7 +514,7 @@ impl MulticastAttributes {
                             self.mc_client_left_need_sync = true;
                             MulticastClientStatus::Leaving(false)
                         } else {
-                            MulticastClientStatus::Left
+                            MulticastClientStatus::AwareUnjoined
                         }
                     } else {
                         debug!("Invalid action 1");
@@ -534,11 +531,11 @@ impl MulticastAttributes {
             (
                 MulticastClientStatus::Leaving(false),
                 MulticastClientAction::Leave,
-            ) => MulticastClientStatus::Left,
+            ) => MulticastClientStatus::AwareUnjoined,
             (
                 MulticastClientStatus::Leaving(true),
                 MulticastClientAction::Leave,
-            ) => MulticastClientStatus::Left,
+            ) => MulticastClientStatus::AwareUnjoined,
             (
                 MulticastClientStatus::JoinedAndKey |
                 MulticastClientStatus::JoinedNoKey,
@@ -554,8 +551,10 @@ impl MulticastAttributes {
                 self.mc_space_id = Some(action_data.unwrap() as usize);
                 MulticastClientStatus::ListenMcPath(true)
             },
-            (MulticastClientStatus::Left, MulticastClientAction::Leave) =>
-                MulticastClientStatus::Left,
+            (
+                MulticastClientStatus::AwareUnjoined,
+                MulticastClientAction::Leave,
+            ) => MulticastClientStatus::AwareUnjoined,
             (MulticastClientStatus::ListenMcPath(_), _) => current_status,
             (
                 MulticastClientStatus::JoinedAndKey,
@@ -569,6 +568,12 @@ impl MulticastAttributes {
                 current_status
             },
         };
+
+        // If the client leaves the multicast group, its key is not longer up to
+        // date.
+        if action == MulticastClientAction::Leave && is_server {
+            self.mc_key_up_to_date = false;
+        }
 
         self.mc_need_ack = true;
 
@@ -616,6 +621,7 @@ impl MulticastAttributes {
             return false;
         }
         if self.mc_key_up_to_date {
+            println!("Key is up to date now");
             return false;
         }
         if let MulticastRole::ServerUnicast(status) = self.mc_role {
@@ -1472,7 +1478,7 @@ impl MulticastConnection for Connection {
         let multicast = self.multicast.as_ref()?;
         if matches!(
             multicast.mc_role,
-            MulticastRole::Client(MulticastClientStatus::Left) |
+            MulticastRole::Client(MulticastClientStatus::AwareUnjoined) |
                 MulticastRole::Client(MulticastClientStatus::Leaving(_))
         ) {
             return None;
@@ -1770,7 +1776,9 @@ impl MulticastConnection for Connection {
             let multicast = self.multicast.as_ref().unwrap();
             if matches!(
                 multicast.mc_role,
-                MulticastRole::ServerUnicast(MulticastClientStatus::Left)
+                MulticastRole::ServerUnicast(
+                    MulticastClientStatus::AwareUnjoined
+                )
             ) && multicast.mc_client_id.is_some()
             {
                 if let Some(McClientId::MulticastServer(map)) =
@@ -2784,9 +2792,6 @@ pub mod testing {
                         from_mc: None,
                     };
                     pipe.server.recv(&mut buf[..written], recv_info)?;
-
-                    // The unicast server propagates potential NACK to the
-                    // server. MC-TODO.
                 }
             }
 
@@ -3296,7 +3301,7 @@ mod tests {
 
         assert_eq!(
             multicast.update_client_state(MulticastClientAction::Leave, None),
-            Ok(MulticastClientStatus::Left)
+            Ok(MulticastClientStatus::AwareUnjoined)
         );
     }
 
@@ -4812,11 +4817,11 @@ mod tests {
         // The client has left the multicast channel.
         assert_eq!(
             uc_pipe.client.multicast.as_ref().unwrap().mc_role,
-            MulticastRole::Client(MulticastClientStatus::Left)
+            MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
         );
         assert_eq!(
             uc_pipe.server.multicast.as_ref().unwrap().mc_role,
-            MulticastRole::ServerUnicast(MulticastClientStatus::Left)
+            MulticastRole::ServerUnicast(MulticastClientStatus::AwareUnjoined)
         );
     }
 
@@ -5011,11 +5016,13 @@ mod tests {
             // The client left the multicast channel.
             assert_eq!(
                 pipe.server.multicast.as_ref().unwrap().mc_role,
-                MulticastRole::ServerUnicast(MulticastClientStatus::Left)
+                MulticastRole::ServerUnicast(
+                    MulticastClientStatus::AwareUnjoined
+                )
             );
             assert_eq!(
                 pipe.client.multicast.as_ref().unwrap().mc_role,
-                MulticastRole::Client(MulticastClientStatus::Left)
+                MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
             );
 
             // Data received on the multicast channel is not handled by the
@@ -5110,11 +5117,11 @@ mod tests {
         // The client has left the multicast channel.
         assert_eq!(
             pipe.client.multicast.as_ref().unwrap().mc_role,
-            MulticastRole::Client(MulticastClientStatus::Left)
+            MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
         );
         assert_eq!(
             pipe.server.multicast.as_ref().unwrap().mc_role,
-            MulticastRole::ServerUnicast(MulticastClientStatus::Left)
+            MulticastRole::ServerUnicast(MulticastClientStatus::AwareUnjoined)
         );
 
         // The unicast server requests backup data from the multicast channel.
@@ -6054,6 +6061,72 @@ mod tests {
                 .mc_ss_pn,
             expected_sources_symbols_pn
         );
+    }
+
+    #[test]
+    /// Tests that the client can leave and join the multicast channel on the
+    /// fly.
+    fn test_mc_client_loop_join_leave() {
+        let use_auth = McAuthType::None;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_client_loop_join_leave.txt",
+            use_auth,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        let mut client = &mut mc_pipe.unicast_pipes[0].0.client;
+        assert_eq!(
+            client.multicast.as_ref().unwrap().get_mc_role(),
+            MulticastRole::Client(MulticastClientStatus::ListenMcPath(true))
+        );
+
+        for _ in 0..100 {
+            client = &mut mc_pipe.unicast_pipes[0].0.client;
+            assert_eq!(
+                client.mc_leave_channel(),
+                Ok(MulticastClientStatus::Leaving(false))
+            );
+
+            mc_pipe.unicast_pipes[0].0.advance().unwrap();
+
+            let server = &mut mc_pipe.unicast_pipes[0].0.server;
+            assert_eq!(
+                server.multicast.as_ref().unwrap().mc_role,
+                MulticastRole::ServerUnicast(
+                    MulticastClientStatus::AwareUnjoined
+                )
+            );
+
+            client = &mut mc_pipe.unicast_pipes[0].0.client;
+            assert_eq!(
+                client.multicast.as_ref().unwrap().mc_role,
+                MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+            );
+
+            assert_eq!(
+                client.mc_join_channel(false),
+                Ok(MulticastClientStatus::WaitingToJoin)
+            );
+
+            mc_pipe.unicast_pipes[0].0.advance().unwrap();
+
+            client = &mut mc_pipe.unicast_pipes[0].0.client;
+            assert_eq!(
+                client.multicast.as_ref().unwrap().mc_role,
+                MulticastRole::Client(MulticastClientStatus::ListenMcPath(true))
+            );
+            let server = &mut mc_pipe.unicast_pipes[0].0.server;
+            assert_eq!(
+                server.multicast.as_ref().unwrap().mc_role,
+                MulticastRole::ServerUnicast(
+                    MulticastClientStatus::ListenMcPath(true)
+                )
+            );
+        }
     }
 }
 

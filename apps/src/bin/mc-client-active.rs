@@ -552,9 +552,7 @@ fn main() {
                 multicast.get_mc_role(),
                 multicast::MulticastRole::Client(MulticastClientStatus::Leaving(
                     _
-                )) | multicast::MulticastRole::Client(
-                    MulticastClientStatus::Left
-                )
+                ))
             ) && delay_join_leave.is_none()
             {
                 info!("Client leaves the multicast channel. Closing...");
@@ -707,7 +705,7 @@ fn main() {
             // acknowledged.
             if let Some(multicast) = conn.get_multicast_attributes() {
                 if multicast.get_mc_role() ==
-                    MulticastRole::Client(MulticastClientStatus::Left) &&
+                    MulticastRole::Client(MulticastClientStatus::AwareUnjoined) &&
                     mc_socket_opt.is_some()
                 {
                     println!("Leave the multicast socket!");

@@ -507,9 +507,7 @@ fn main() {
                 multicast.get_mc_role(),
                 multicast::MulticastRole::Client(MulticastClientStatus::Leaving(
                     _
-                )) | multicast::MulticastRole::Client(
-                    MulticastClientStatus::Left
-                )
+                ))
             ) {
                 info!("Client leaves the multicast channel. Closing...");
                 break;

@@ -710,8 +710,6 @@ fn main() {
                         multicast.get_mc_role(),
                         MulticastRole::ServerUnicast(
                             multicast::MulticastClientStatus::Leaving(_)
-                        ) | MulticastRole::ServerUnicast(
-                            multicast::MulticastClientStatus::Left
                         )
                     )
                 {
