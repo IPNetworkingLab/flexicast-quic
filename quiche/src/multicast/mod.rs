@@ -87,6 +87,9 @@ pub enum MulticastError {
 
     /// Invalid crypto context on the multicast channel.
     McInvalidCrypto,
+
+    /// Attempt to use reliable multicast which is disabled.
+    ReliableDisabled,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -383,7 +386,11 @@ pub struct MulticastAttributes {
     /// Send FEC repair packets instead of source symbols if possible.
     pub(crate) mc_prioritize_fec: bool,
 
+    /// Packet numbers containing FEC source symbols.
     pub(crate) mc_ss_pn: RangeSet,
+
+    /// Reliable multicast attributes.
+    mc_reliable: Option<ReliableMc>,
 }
 
 impl MulticastAttributes {
@@ -882,6 +889,7 @@ impl Default for MulticastAttributes {
             mc_leave_on_timeout: true,
             mc_prioritize_fec: false,
             mc_ss_pn: RangeSet::default(),
+            mc_reliable: None,
         }
     }
 }
@@ -922,6 +930,9 @@ pub struct McAnnounceData {
 
     /// Authentication used for this path.
     pub auth_type: McAuthType,
+
+    /// Whether this multicast channel uses full reliability.
+    pub full_reliability: bool,
 }
 
 impl McAnnounceData {
@@ -1225,6 +1236,15 @@ impl MulticastConnection for Connection {
                         )
                     },
                 ),
+                mc_reliable: if mc_announce_data.full_reliability {
+                    Some(if self.is_server {
+                        ReliableMc::Server(RMcServer::default())
+                    } else {
+                        ReliableMc::Client(RMcClient::default())
+                    })
+                } else {
+                    None
+                },
                 ..Default::default()
             });
         }
@@ -2928,6 +2948,7 @@ pub mod testing {
             ttl_data: 1_000_000,
             is_processed: false,
             auth_type: McAuthType::None,
+            full_reliability: false,
         }
     }
 
@@ -6132,6 +6153,10 @@ mod tests {
 
 pub mod authentication;
 use authentication::McAuthType;
+pub mod reliable;
 
 use self::authentication::McAuthentication;
 use self::authentication::McSymSign;
+use self::reliable::RMcClient;
+use self::reliable::RMcServer;
+use self::reliable::ReliableMc;
