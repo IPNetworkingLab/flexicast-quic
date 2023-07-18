@@ -1440,26 +1440,30 @@ impl MulticastConnection for Connection {
         }
 
         // Reset expired (but still open) streams.
-        if let Some(exp_stream_id) = stream_id_opt {
-            let iterable: Vec<_> = self
-                .streams
-                .iter()
-                .map(|(stream_id, _)| *stream_id)
-                .collect();
-            for stream_id in iterable {
-                if stream_id <= exp_stream_id {
-                    let stream_opt = self.streams.get_mut(stream_id);
-                    if let Some(stream) = stream_opt {
-                        if self.is_server {
-                            stream.send.reset();
-                        } else {
-                            // Maybe the final size is already known.
-                            let final_size = stream.recv.max_off();
-                            stream.recv.reset(0, final_size)?;
-                        }
-                        let local = stream.local;
-                        self.streams.collect(stream_id, local);
-                    };
+        // This does not happen if reliable multicast is used as lost streams can
+        // be retransmitted on the unicast path.
+        if !multicast.mc_is_reliable() {
+            if let Some(exp_stream_id) = stream_id_opt {
+                let iterable: Vec<_> = self
+                    .streams
+                    .iter()
+                    .map(|(stream_id, _)| *stream_id)
+                    .collect();
+                for stream_id in iterable {
+                    if stream_id <= exp_stream_id {
+                        let stream_opt = self.streams.get_mut(stream_id);
+                        if let Some(stream) = stream_opt {
+                            if self.is_server {
+                                stream.send.reset();
+                            } else {
+                                // Maybe the final size is already known.
+                                let final_size = stream.recv.max_off();
+                                stream.recv.reset(0, final_size)?;
+                            }
+                            let local = stream.local;
+                            self.streams.collect(stream_id, local);
+                        };
+                    }
                 }
             }
         }
