@@ -1773,6 +1773,17 @@ impl SendBuf {
 
         Ok(())
     }
+
+    /// Start a `SendBuf` from a given offset.
+    ///
+    /// This function is used for reliable multicast as the unicast server may
+    /// need to retransmit some parts of a stream that has started on the
+    /// multicast path.
+    pub fn reset_at(&mut self, off: u64) -> Result<()> {
+        self.off = off;
+        self.emit_off = off;
+        Ok(())
+    }
 }
 
 impl McStream for RecvBuf {
@@ -3704,5 +3715,34 @@ mod tests {
         let (fin_off, unsent) = send.stop(0).unwrap();
         assert_eq!(fin_off, 50);
         assert_eq!(unsent, 0);
+    }
+
+    #[test]
+    fn send_buf_reset_at() {
+        let mut send = SendBuf::new(std::u64::MAX);
+        let mut buf = [0u8; 10];
+
+        assert_eq!(send.reset_at(500), Ok(()));
+        assert_eq!(send.data, VecDeque::new());
+        assert_eq!(send.emit_off, 500);
+        assert_eq!(send.off, 500);
+        assert_eq!(send.len, 0);
+
+        assert_eq!(send.write(b"hello", false), Ok(5));
+        assert_eq!(send.write(b", world", true), Ok(7));
+        assert!(send.is_fin());
+
+        assert_eq!(send.emit(&mut buf), Ok((10, false)));
+        assert_eq!(send.emit_off, 510);
+        assert_eq!(send.off, 512);
+
+        assert_eq!(send.emit(&mut buf), Ok((2, true)));
+        assert_eq!(send.emit_off, 512);
+        assert_eq!(send.off, 512);
+
+        send.retransmit(500, 5);
+        assert_eq!(send.emit(&mut buf), Ok((5, false)));
+
+        send.ack(500, 12);
     }
 }
