@@ -37,6 +37,13 @@ pub struct RMcServer {
     recv_acks_mc: RangeSet,
 }
 
+impl RMcServer {
+    /// Sets the packet number received by the client on the multicast channel.
+    pub fn set_rmc_received_pn(&mut self, ranges: RangeSet) {
+        self.recv_acks_mc = ranges;
+    }
+}
+
 /// Reliable multicast attributes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReliableMc {
@@ -89,6 +96,17 @@ pub trait ReliableMulticastConnection {
     fn rmc_set_next_timeout(
         &mut self, now: time::Instant, random: &SystemRandom,
     ) -> Result<()>;
+
+    /// Whether the client should send a positive acknowledgment packet to the
+    /// server.
+    ///
+    /// Returns a [`crate::Error::Multicast`] with
+    /// [`crate::multicast::MulticastError::McInvalidRole`] if this is not a
+    /// client.
+    /// Returns a [`crate::Error::Multicast`] with
+    /// [`crate::multicast::MulticastError::McReliableDisabled`] if reliable
+    /// multicast is disabled.
+    fn rmc_should_send_positive_ack(&self) -> Result<bool>;
 }
 
 impl ReliableMulticastConnection for Connection {
@@ -148,11 +166,25 @@ impl ReliableMulticastConnection for Connection {
                 );
                 Ok(())
             } else {
-                Err(Error::Multicast(MulticastError::ReliableDisabled))
+                Err(Error::Multicast(MulticastError::McReliableDisabled))
             }
         } else {
             Err(Error::Multicast(MulticastError::McDisabled))
         }
+    }
+
+    fn rmc_should_send_positive_ack(&self) -> Result<bool> {
+        self.multicast
+            .as_ref()
+            .ok_or(Error::Multicast(MulticastError::McDisabled))?
+            .mc_reliable
+            .as_ref()
+            .ok_or(Error::Multicast(MulticastError::McReliableDisabled))?
+            .client()
+            .ok_or(Error::Multicast(MulticastError::McInvalidRole(
+                MulticastRole::Undefined,
+            )))
+            .map(|c| c.rmc_client_send_ack)
     }
 }
 
@@ -162,6 +194,18 @@ impl MulticastAttributes {
         self.get_mc_announce_data_path()
             .map(|d| d.full_reliability)
             .unwrap_or(false)
+    }
+
+    /// Sets the reliable client needing to send positive ack frames.
+    pub fn rmc_set_send_ack(&mut self, v: bool) {
+        if let Some(ReliableMc::Client(c)) = self.mc_reliable.as_mut() {
+            c.set_rmc_client_send_ack(v);
+        }
+    }
+
+    /// Get the reliable multicast attributes.
+    pub fn rmc_get_attributes(&mut self) -> Option<&mut ReliableMc> {
+        self.mc_reliable.as_mut()
     }
 }
 
@@ -297,31 +341,69 @@ mod tests {
 
         // The client must now generate a positive ACK to the server for
         // synchronization.
-        let rmc_client = client
-            .multicast
-            .as_ref()
-            .unwrap()
-            .mc_reliable
-            .as_ref()
-            .unwrap()
-            .client()
-            .unwrap();
-        assert!(!rmc_client.rmc_client_send_ack);
+        assert_eq!(client.rmc_should_send_positive_ack(), Ok(false));
         let timeout = now
             .checked_add(time::Duration::from_millis(
                 (expiration_timer as f64 * 1.11) as u64,
             ))
             .unwrap();
         assert_eq!(client.on_rmc_timeout(timeout), Ok(()));
-        let rmc_client = client
+        assert_eq!(client.rmc_should_send_positive_ack(), Ok(true));
+    }
+
+    #[test]
+    fn test_rmc_client_send_ack() {
+        let mut mc_pipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_rmc_client_send_ack.txt",
+            McAuthType::None,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        mc_pipe.source_send_single_stream(true, None, 0, 1).unwrap();
+        mc_pipe.source_send_single_stream(true, None, 0, 5).unwrap();
+        mc_pipe.source_send_single_stream(true, None, 0, 9).unwrap();
+        mc_pipe
+            .source_send_single_stream(true, None, 0, 13)
+            .unwrap();
+
+        let now = time::Instant::now();
+        let random = SystemRandom::new();
+        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        assert_eq!(client.rmc_set_next_timeout(now, &random), Ok(()));
+        let et_ack_duration = client.rmc_timeout(now).unwrap();
+        let et_ack = now
+            .checked_add(
+                et_ack_duration
+                    .checked_add(time::Duration::from_millis(1))
+                    .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(client.on_rmc_timeout(et_ack), Ok(()));
+        assert_eq!(client.rmc_should_send_positive_ack(), Ok(true));
+        // The client sends the feedback to the source.
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        // The source knows the packets received by the client on the multicast
+        // channel.
+        let server = &mut mc_pipe.unicast_pipes[0].0.server;
+        let rmc = server
             .multicast
             .as_ref()
             .unwrap()
             .mc_reliable
             .as_ref()
             .unwrap()
-            .client()
+            .server()
             .unwrap();
-        assert!(rmc_client.rmc_client_send_ack);
+        let mut expected_ranges = RangeSet::default();
+        // Packet number 0 is received by the unicast source when opening the
+        // second path.
+        expected_ranges.insert(0..6);
+        assert_eq!(expected_ranges, rmc.recv_acks_mc);
     }
 }

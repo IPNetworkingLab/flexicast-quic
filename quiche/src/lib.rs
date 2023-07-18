@@ -4269,8 +4269,6 @@ impl Connection {
                 }
             }
         }
-        let flow_control = &mut self.flow_control;
-        let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
         let path = self.paths.get_mut(send_pid)?;
 
         // Create ACK_MP frames if needed.
@@ -4384,9 +4382,63 @@ impl Connection {
                         }
                     }
                 }
+
+                // Reliable multicast positive acknowledgment frame.
+                // The client adds an ACKMP frame for data receiver on the
+                // multicast path if reliable multicast is used in MCQUIC to let
+                // the server know the state of the received packets.
+                // At this point, the client may have sent an ACKMP for the
+                // unicast path to the server. However, in
+                // MCQUIC, the client never send positive acknowledgment for
+                // packets received on the multicast path.
+                // As a result, no ACKMP frame has been added for data received
+                // on the multicast path.
+                if let Ok(true) = self.rmc_should_send_positive_ack() {
+                    // This is a client using reliable multicast that needs to
+                    // send a positive ACK packet for data received on the
+                    // multicast path.
+                    if let Some(mc_space_id) =
+                        self.multicast.as_ref().unwrap().get_mc_space_id()
+                    {
+                        let pns = self
+                            .pkt_num_spaces
+                            .spaces
+                            .get_mut(epoch, mc_space_id as u64)?;
+                        // Send positive ACK even if not ack eliciting!
+                        if pns.recv_pkt_need_ack.len() > 0 {
+                            let ack_delay = pns.largest_rx_pkt_time.elapsed();
+
+                            let ack_delay = ack_delay.as_micros() as u64 /
+                                2_u64.pow(
+                                    self.local_transport_params.ack_delay_exponent
+                                        as u32,
+                                );
+
+                            let frame = frame::Frame::ACKMP {
+                                space_identifier: mc_space_id as u64,
+                                ack_delay,
+                                ranges: pns.recv_pkt_need_ack.clone(),
+                                ecn_counts: None, /* sending ECN is not
+                                                   * supported at
+                                                   * this time */
+                            };
+
+                            if push_frame_to_pkt!(b, frames, frame, left) {
+                                self.multicast
+                                    .as_mut()
+                                    .unwrap()
+                                    .rmc_set_send_ack(false);
+                            }
+                        }
+                    } else {
+                        return Err(Error::Multicast(MulticastError::McPath));
+                    }
+                }
             }
         }
 
+        let flow_control = &mut self.flow_control;
+        let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
         let path = self.paths.get_mut(send_pid)?;
 
         // Limit output packet size by congestion window size.
@@ -4746,7 +4798,11 @@ impl Connection {
                     path_type: mc_announce_data.path_type.into(),
                     auth_type: mc_announce_data.auth_type.into(),
                     is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
-                    full_reliability: if mc_announce_data.full_reliability { 1 } else { 0 },
+                    full_reliability: if mc_announce_data.full_reliability {
+                        1
+                    } else {
+                        0
+                    },
                     source_ip: mc_announce_data.source_ip,
                     group_ip: mc_announce_data.group_ip,
                     udp_port: mc_announce_data.udp_port,
@@ -8926,6 +8982,30 @@ impl Connection {
                 // MP_PROTOCOL_VIOLATION and close the connection.
                 if space_identifier > self.ids.largest_dcid_seq() {
                     return Err(Error::MultiPathViolation);
+                }
+
+                // If multicast is enabled, an ACKMP frame received on the
+                // multicast are only responsible to provide full reliability.
+                // If the peer receives an ACKMP for data received on the
+                // multicast path whereas full reliability is not enabled, it
+                // raises an error. We do not process ACKMP frames
+                // as usual in this context, but only store the packet numbers
+                // received by the client.
+                if let Some(multicast) = self.multicast.as_mut() {
+                    if multicast.get_mc_space_id() ==
+                        Some(space_identifier as usize)
+                    {
+                        if let Some(ReliableMc::Server(s)) =
+                            multicast.rmc_get_attributes()
+                        {
+                            s.set_rmc_received_pn(ranges);
+
+                            // Do not process the ACKMP as a normal one.
+                            return Ok(());
+                        } else {
+                            // Client should not send ACKMP for the
+                        }
+                    }
                 }
 
                 // If an endpoint receives an ACK_MP frame with a packet number
@@ -18618,6 +18698,8 @@ mod tests {
 
 use crate::multicast::authentication::McAuthType;
 use crate::multicast::authentication::McAuthentication;
+use crate::multicast::reliable::ReliableMc;
+use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::multicast::McPathType;
 use crate::multicast::MulticastConnection;
 use crate::multicast::MulticastError;

@@ -89,7 +89,7 @@ pub enum MulticastError {
     McInvalidCrypto,
 
     /// Attempt to use reliable multicast which is disabled.
-    ReliableDisabled,
+    McReliableDisabled,
 }
 
 /// MC_ANNOUNCE frame type.
