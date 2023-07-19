@@ -1440,9 +1440,9 @@ impl MulticastConnection for Connection {
         }
 
         // Reset expired (but still open) streams.
-        // This does not happen if reliable multicast is used as lost streams can
-        // be retransmitted on the unicast path.
-        if !multicast.mc_is_reliable() {
+        // This does not happen if reliable multicast is used for the client as
+        // lost streams can be retransmitted on the unicast path.
+        if !(multicast.mc_is_reliable() && !self.is_server) {
             if let Some(exp_stream_id) = stream_id_opt {
                 let iterable: Vec<_> = self
                     .streams

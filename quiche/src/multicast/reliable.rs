@@ -1,6 +1,7 @@
 //! Reliability extension for Multicast QUIC.
 
 use super::MulticastAttributes;
+use super::MulticastConnection;
 use super::MulticastError;
 use crate::ranges::RangeSet;
 use crate::Connection;
@@ -12,6 +13,18 @@ use std::time;
 
 use super::MulticastClientStatus;
 use super::MulticastRole;
+
+/// On rmc timeout for the server.
+#[macro_export]
+macro_rules! on_rmc_timeout_server {
+    ( $mc:expr, $ucs:expr, $now:expr ) => {
+        if $mc.mc_timeout($now) == Some(time::Duration::ZERO) {
+            $ucs.iter_mut().map(|uc| $mc.rmc_deleguate_streams(uc)).collect()
+        } else {
+            Ok(())
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Default)]
 /// Reliable multicast attributes for the client.
@@ -107,6 +120,15 @@ pub trait ReliableMulticastConnection {
     /// [`crate::multicast::MulticastError::McReliableDisabled`] if reliable
     /// multicast is disabled.
     fn rmc_should_send_positive_ack(&self) -> Result<bool>;
+
+    /// The multicast source delegates expired streams to the unicast path to provide full reliability to the transmission.
+    /// Start the stream at the first offset of a missing STREAM frame until the end of the stream.
+    /// As a result, the client may receive multiple times the same stream chunks.
+    /// RMC-TODO: does the stream library handle this correctly?
+    ///
+    /// Requires that the caller is the multicast source ([`crate::multicast::MulticastRole::ServerMulticast`]) and the callee the unicast server ([`crate::multicast::MulticastRole::ServerUnicast`]).
+    /// Returns the stream IDs of streams that are deleguated to the unicast path.
+    fn rmc_deleguate_streams(&mut self, uc: &mut Connection) -> Result<()>;
 }
 
 impl ReliableMulticastConnection for Connection {
@@ -185,6 +207,23 @@ impl ReliableMulticastConnection for Connection {
                 MulticastRole::Undefined,
             )))
             .map(|c| c.rmc_client_send_ack)
+    }
+
+    fn rmc_deleguate_streams(&mut self, uc: &mut Connection) -> Result<()> {
+        if let (Some(mc_s), Some(mc_u)) = (self.multicast.as_ref(), uc.get_multicast_attributes()) {
+            if mc_s.get_mc_role() != MulticastRole::ServerMulticast {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(mc_s.get_mc_role())));
+            }
+            if !matches!(mc_u.get_mc_role(), MulticastRole::ServerUnicast(_)) {
+                return Err(Error::Multicast(MulticastError::McInvalidRole(mc_u.get_mc_role())));
+            }
+        } else {
+            return Err(Error::Multicast(MulticastError::McDisabled));
+        }
+
+        println!("Deleguate stream!");
+
+        Ok(())
     }
 }
 
@@ -405,5 +444,28 @@ mod tests {
         // second path.
         expected_ranges.insert(0..6);
         assert_eq!(expected_ranges, rmc.recv_acks_mc);
+    }
+
+    #[test]
+    fn test_on_rmc_timeout_server() {
+        let mut mc_pipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_on_rmc_timeout_server.txt",
+            McAuthType::None,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        let expiration_timer = mc_pipe.mc_announce_data.ttl_data;
+        let now = time::Instant::now();
+        let expired = now.checked_add(time::Duration::from_millis(expiration_timer + 100)).unwrap();
+
+        let ucs = mc_pipe.unicast_pipes.iter_mut().take_while(|_| true);
+        let mut mc = mc_pipe.mc_channel.channel;
+        let mut ucs: Vec<_> = ucs.map(|c| &mut c.0.server).collect();
+
+        assert_eq!(on_rmc_timeout_server!(&mut mc, ucs, expired), Ok(()));
     }
 }
