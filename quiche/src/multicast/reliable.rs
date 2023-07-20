@@ -161,6 +161,14 @@ pub trait ReliableMulticastConnection {
     /// Returns the stream IDs of streams that are deleguated to the unicast
     /// path.
     fn rmc_deleguate_streams(&mut self, uc: &mut Connection) -> Result<()>;
+
+    /// Returns the [`crate::ranges::RangeSet`] of packet numbers received by
+    /// the client on the multicast path.
+    fn rmc_get_recv_pn(&self) -> Result<&RangeSet>;
+
+    /// Returns the [`crate::ranges::RangeSet`] of FEC recovered source symbols
+    /// received by the client.
+    fn rmc_get_rec_ss(&self) -> Result<&RangeSet>;
 }
 
 impl ReliableMulticastConnection for Connection {
@@ -275,6 +283,30 @@ impl ReliableMulticastConnection for Connection {
         }
 
         Ok(())
+    }
+
+    fn rmc_get_recv_pn(&self) -> Result<&RangeSet> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(ReliableMc::Server(s)) = multicast.mc_reliable.as_ref() {
+                Ok(&s.recv_pn_mc)
+            } else {
+                Err(Error::Multicast(MulticastError::McReliableDisabled))
+            }
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
+    }
+
+    fn rmc_get_rec_ss(&self) -> Result<&RangeSet> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(ReliableMc::Server(s)) = multicast.mc_reliable.as_ref() {
+                Ok(&s.recv_fec_mc)
+            } else {
+                Err(Error::Multicast(MulticastError::McReliableDisabled))
+            }
+        } else {
+            Err(Error::Multicast(MulticastError::McDisabled))
+        }
     }
 }
 

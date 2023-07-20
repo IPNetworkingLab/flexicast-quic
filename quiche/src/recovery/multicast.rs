@@ -1,6 +1,9 @@
 use networkcoding::source_symbol_metadata_to_u64;
 
+use crate::Connection;
+use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::packet::Epoch;
+use crate::frame;
 use crate::ranges;
 use crate::Result;
 use std::time::Duration;
@@ -111,6 +114,57 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn set_mc_max_cwnd(&mut self, cwnd: usize) {
         self.mc_cwnd = Some(cwnd);
         self.reset();
+    }
+}
+
+/// Reliable extensions of the recovery mechanism of Multicast QUIC.
+/// This extension attempts to add full reliability to
+/// the multicast extension of QUIC.
+pub trait ReliableMulticastRecovery {
+    /// Deleguates the streams to the unicast connection.
+    fn deleguate_stream(&mut self, uc: &mut Connection, now: Instant, expiration_timer: u64, space_id: u32) -> Result<()>;
+}
+
+impl ReliableMulticastRecovery for crate::recovery::Recovery {
+    fn deleguate_stream(&mut self, uc: &mut Connection, now: Instant, expiration_timer: u64, space_id: u32) -> Result<()> {
+        let recv_pn = uc.rmc_get_recv_pn()?;
+        let reco_ss = uc.rmc_get_rec_ss()?;
+        let expired_sent = self.sent[Epoch::Application]
+            .iter()
+            .take_while(|p| {
+                now.saturating_duration_since(p.time_sent) >=
+                    Duration::from_millis(expiration_timer)
+            })
+            .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
+
+        'per_packet: for packet in expired_sent {
+            // First check if the packet has been received by the client.
+            for r in recv_pn.iter() {
+                let lowest_recovered_in_block = r.start;
+                let largest_recovered_in_block = r.end - 1;
+                if packet.pkt_num.1 >= lowest_recovered_in_block && packet.pkt_num.1 <= largest_recovered_in_block {
+                    continue 'per_packet; // Packet was received.
+                }
+            }
+
+            // At this point, we know that the client did not receive the packet.
+            // Maybe it recovered it with FEC.
+            for frame in &packet.frames {
+                if let frame::Frame::SourceSymbolHeader { metadata, recovered } = frame {
+                    let mdu64 = source_symbol_metadata_to_u64(*metadata);
+                    for r in reco_ss.iter() {
+                        let lowest_recovered_in_block = r.start;
+                        let largest_recovered_in_block = r.end - 1;
+                        if mdu64 >= lowest_recovered_in_block && mdu64 <= largest_recovered_in_block {
+                            // Packet has been recovered through FEC.
+                            continue 'per_packet;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
