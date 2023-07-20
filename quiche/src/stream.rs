@@ -1784,6 +1784,34 @@ impl SendBuf {
         self.emit_off = off;
         Ok(())
     }
+
+    /// Inserts the given slice of data at the specified offset in the buffer.
+    ///
+    /// The number of bytes that were actually stored in the buffer is returned
+    /// (this may be lower than the size of the input buffer, in case of partial
+    /// writes).
+    ///
+    /// For simplification, only allow to write at offsets not already spanned
+    /// by the buffer. For example, calling this function with an offset of
+    /// 300 after a call with offset 500 will result in a [`Error::FinalSize`]
+    /// error. Future work may extend this to enable for in-between insertion of
+    /// stream data.
+    pub fn write_at_offset(
+        &mut self, data: &[u8], offset: u64, fin: bool,
+    ) -> Result<usize> {
+        // We "fill" the buffer with no data until we reach the expected offset.
+        // This "no data" is never sent, and we ask to retransmit this chunk of
+        // data only.
+        if self.off > offset {
+            return Err(Error::FinalSize);
+        } else if self.off != offset {
+            self.reset_at(offset)?;
+        }
+        let written = self.write(data, fin)?;
+        self.retransmit(offset, written);
+
+        Ok(written)
+    }
 }
 
 impl McStream for RecvBuf {
@@ -3733,16 +3761,54 @@ mod tests {
         assert!(send.is_fin());
 
         assert_eq!(send.emit(&mut buf), Ok((10, false)));
+        assert_eq!(&buf[..], b"hello, wor");
         assert_eq!(send.emit_off, 510);
         assert_eq!(send.off, 512);
 
         assert_eq!(send.emit(&mut buf), Ok((2, true)));
         assert_eq!(send.emit_off, 512);
         assert_eq!(send.off, 512);
+        assert_eq!(&buf[..2], b"ld");
 
         send.retransmit(500, 5);
         assert_eq!(send.emit(&mut buf), Ok((5, false)));
+        assert_eq!(&buf[..5], b"hello");
 
         send.ack(500, 12);
+    }
+
+    #[test]
+    /// Tests the extensions of `StreamBuf` to create a stream and send only
+    /// chunks at specific offsets.
+    fn send_buf_partial_chunks() {
+        let mut send = SendBuf::new(std::u64::MAX);
+        let mut buf = [0u8; 10];
+
+        assert_eq!(send.write_at_offset(b"hello", 100, false), Ok(5));
+        assert_eq!(send.write_at_offset(b", world!", 500, false), Ok(8));
+        assert_eq!(send.emit(&mut buf), Ok((5, false)));
+        assert_eq!(&buf[..5], b"hello");
+        assert_eq!(send.emit(&mut buf), Ok((8, false)));
+        assert_eq!(&buf[..8], b", world!");
+
+        assert_eq!(send.write_at_offset(b"test1000", 1000, false), Ok(8));
+        assert_eq!(
+            send.write_at_offset(b"test1000+8", 1007, false),
+            Err(Error::FinalSize)
+        );
+        assert_eq!(send.write_at_offset(b"test1000+8", 1008, false), Ok(10));
+        assert_eq!(
+            send.write_at_offset(b"test1000+8", 1017, false),
+            Err(Error::FinalSize)
+        );
+        assert_eq!(send.write_at_offset(b"test1000+1xx", 1100, true), Ok(12));
+        assert_eq!(send.emit(&mut buf), Ok((10, false)));
+        assert_eq!(&buf[..], b"test1000te");
+        assert_eq!(send.emit(&mut buf), Ok((8, false)));
+        assert_eq!(&buf[..8], b"st1000+8");
+        assert_eq!(send.emit(&mut buf), Ok((10, false)));
+        assert_eq!(&buf[..], b"test1000+1");
+        assert_eq!(send.emit(&mut buf), Ok((2, true)));
+        assert_eq!(&buf[..2], b"xx");
     }
 }
