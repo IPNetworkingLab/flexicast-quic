@@ -34,14 +34,22 @@ pub struct RMcClient {
     /// Next time the client will send a positive ACK.
     rmc_next_time_ack: Option<time::Instant>,
 
-    /// Whether the client must send a positive acknowledgment packet.
+    /// Whether the client must send positive acknowledgment packets.
     rmc_client_send_ack: bool,
+
+    /// Whether the client must send SourceSymbolAck frames.
+    rmc_client_send_ssa: bool,
 }
 
 impl RMcClient {
     /// Sets the [`RMcClient::rmc_client_send_ack`].
     pub fn set_rmc_client_send_ack(&mut self, v: bool) {
         self.rmc_client_send_ack = v;
+    }
+
+    /// Sets the [`RMcClient::rmc_client_send_ssa`].
+    pub fn set_rmc_client_send_ssa(&mut self, v: bool) {
+        self.rmc_client_send_ssa = v;
     }
 }
 
@@ -120,7 +128,7 @@ pub trait ReliableMulticastConnection {
         &mut self, now: time::Instant, random: &SystemRandom,
     ) -> Result<()>;
 
-    /// Whether the client should send a positive acknowledgment packet to the
+    /// Whether the client should send a positive acknowledgment frame to the
     /// server.
     ///
     /// Returns a [`crate::Error::Multicast`] with
@@ -130,6 +138,16 @@ pub trait ReliableMulticastConnection {
     /// [`crate::multicast::MulticastError::McReliableDisabled`] if reliable
     /// multicast is disabled.
     fn rmc_should_send_positive_ack(&self) -> Result<bool>;
+
+    /// Whether the client should send a SourceSymbolAck frame.
+    ///
+    /// Returns a [`crate::Error::Multicast`] with
+    /// [`crate::multicast::MulticastError::McInvalidRole`] if this is not a
+    /// client.
+    /// Returns a [`crate::Error::Multicast`] with
+    /// [`crate::multicast::MulticastError::McReliableDisabled`] if reliable
+    /// multicast is disabled.
+    fn rmc_should_send_source_symbol_ack(&self) -> Result<bool>;
 
     /// The multicast source delegates expired streams to the unicast path to
     /// provide full reliability to the transmission. Start the stream at
@@ -177,6 +195,7 @@ impl ReliableMulticastConnection for Connection {
                     multicast.mc_reliable.as_mut()
                 {
                     rmc.set_rmc_client_send_ack(true);
+                    rmc.set_rmc_client_send_ssa(true);
                 }
             }
         }
@@ -221,6 +240,20 @@ impl ReliableMulticastConnection for Connection {
                 MulticastRole::Undefined,
             )))
             .map(|c| c.rmc_client_send_ack)
+    }
+
+    fn rmc_should_send_source_symbol_ack(&self) -> Result<bool> {
+        self.multicast
+            .as_ref()
+            .ok_or(Error::Multicast(MulticastError::McDisabled))?
+            .mc_reliable
+            .as_ref()
+            .ok_or(Error::Multicast(MulticastError::McReliableDisabled))?
+            .client()
+            .ok_or(Error::Multicast(MulticastError::McInvalidRole(
+                MulticastRole::Undefined,
+            )))
+            .map(|c| c.rmc_client_send_ssa)
     }
 
     fn rmc_deleguate_streams(&mut self, uc: &mut Connection) -> Result<()> {
@@ -364,6 +397,7 @@ mod tests {
         let expected_rmc = ReliableMc::Client(RMcClient {
             rmc_next_time_ack: None,
             rmc_client_send_ack: false,
+            rmc_client_send_ssa: false,
         });
         assert_eq!(rmc, Some(&expected_rmc));
 
@@ -407,6 +441,7 @@ mod tests {
             .unwrap();
         assert_eq!(client.on_rmc_timeout(timeout), Ok(()));
         assert_eq!(client.rmc_should_send_positive_ack(), Ok(true));
+        assert_eq!(client.rmc_should_send_source_symbol_ack(), Ok(true));
     }
 
     #[test]
@@ -443,6 +478,7 @@ mod tests {
 
         assert_eq!(client.on_rmc_timeout(et_ack), Ok(()));
         assert_eq!(client.rmc_should_send_positive_ack(), Ok(true));
+        assert_eq!(client.rmc_should_send_source_symbol_ack(), Ok(true));
         // The client sends the feedback to the source.
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
