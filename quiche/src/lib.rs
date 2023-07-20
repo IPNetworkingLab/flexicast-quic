@@ -4384,7 +4384,7 @@ impl Connection {
                 }
 
                 // Reliable multicast positive acknowledgment frame.
-                // The client adds an ACKMP frame for data receiver on the
+                // The client adds an ACKMP frame for data received on the
                 // multicast path if reliable multicast is used in MCQUIC to let
                 // the server know the state of the received packets.
                 // At this point, the client may have sent an ACKMP for the
@@ -4437,7 +4437,6 @@ impl Connection {
             }
         }
 
-        let flow_control = &mut self.flow_control;
         let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
         let path = self.paths.get_mut(send_pid)?;
 
@@ -4489,16 +4488,25 @@ impl Connection {
 
         if pkt_type == packet::Type::Short && !is_closing {
             if self.recovered_symbols_need_ack.len() > 0 {
-                // For multicast, we do not ACK recovered symbols to the source.
-                if let Some(multicast) = self.multicast.as_ref() {
-                    if multicast.get_mc_role() ==
-                        multicast::MulticastRole::Client(
-                            multicast::MulticastClientStatus::ListenMcPath(true),
-                        )
-                    {
-                        debug!("Reset the recovered symbols need ack");
-                        self.recovered_symbols_need_ack =
-                            ranges::RangeSet::new(crate::MAX_ACK_RANGES);
+                // Reliable multicast positive acknowledgment frame. The client
+                // adds a SourceSymbolAck frame for data received on the multicast
+                // path if reliable multicast is used in MCQUIC to let the server
+                // know the state of the received packets.
+                if self.rmc_should_send_positive_ack() != Ok(true) {
+                    if let Some(multicast) = self.multicast.as_ref() {
+                        // For multicast, we do not ACK recovered symbols to the
+                        // source.
+                        if multicast.get_mc_role() ==
+                            multicast::MulticastRole::Client(
+                                multicast::MulticastClientStatus::ListenMcPath(
+                                    true,
+                                ),
+                            )
+                        {
+                            debug!("Reset the recovered symbols need ack");
+                            self.recovered_symbols_need_ack =
+                                ranges::RangeSet::new(crate::MAX_ACK_RANGES);
+                        }
                     }
                 }
             }
@@ -4530,6 +4538,9 @@ impl Connection {
                 }
             }
         }
+
+        let flow_control = &mut self.flow_control;
+        let path = self.paths.get_mut(send_pid)?;
 
         if pkt_type == packet::Type::Short && !is_closing && path.active() {
             // Create HANDSHAKE_DONE frame.
@@ -8940,6 +8951,25 @@ impl Connection {
 
             frame::Frame::SourceSymbolACK { ranges } => {
                 for (_, p) in self.paths.iter_mut() {
+                    // If multicast is enabled, a SourceSymbolAck frame received
+                    // on the multicast path is only responsible to provide full
+                    // reliability. If the peer receives a SourceSymbolAck for
+                    // data received on the multicast path whereas full
+                    // reliability is not enabled, it raises an error. We do not
+                    // process SourceSymbolAck frames as usual in this context,
+                    // but only store the metadata received by the client.
+                    if let Some(multicast) = self.multicast.as_mut() {
+                        // FIXME-RMC-TODO: assume that FEC cannot be used on the
+                        // unicat path, and only on the multicast path. As a
+                        // result, we do not need to keep track of the path on
+                        // which the source symbol is sent.
+                        if let Some(ReliableMc::Server(s)) =
+                            multicast.rmc_get_attributes()
+                        {
+                            s.set_rmc_received_fec_metadata(ranges);
+                            return Ok(());
+                        }
+                    }
                     p.recovery.on_source_symbol_ack_received(
                         &ranges,
                         epoch,
@@ -9002,8 +9032,6 @@ impl Connection {
 
                             // Do not process the ACKMP as a normal one.
                             return Ok(());
-                        } else {
-                            // Client should not send ACKMP for the
                         }
                     }
                 }

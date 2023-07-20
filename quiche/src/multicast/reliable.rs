@@ -19,11 +19,13 @@ use super::MulticastRole;
 macro_rules! on_rmc_timeout_server {
     ( $mc:expr, $ucs:expr, $now:expr ) => {
         if $mc.mc_timeout($now) == Some(time::Duration::ZERO) {
-            $ucs.iter_mut().map(|uc| $mc.rmc_deleguate_streams(uc)).collect()
+            $ucs.iter_mut()
+                .map(|uc| $mc.rmc_deleguate_streams(uc))
+                .collect()
         } else {
             Ok(())
         }
-    }
+    };
 }
 
 #[derive(Debug, PartialEq, Eq, Default)]
@@ -46,14 +48,22 @@ impl RMcClient {
 #[derive(Debug, PartialEq, Eq, Default)]
 /// Reliable multicast attributes for the server.
 pub struct RMcServer {
-    /// Positive acks sent by the client.
-    recv_acks_mc: RangeSet,
+    /// Packet numbers received by the client.
+    recv_pn_mc: RangeSet,
+
+    /// FEC metadata received by the client.
+    recv_fec_mc: RangeSet,
 }
 
 impl RMcServer {
     /// Sets the packet number received by the client on the multicast channel.
     pub fn set_rmc_received_pn(&mut self, ranges: RangeSet) {
-        self.recv_acks_mc = ranges;
+        self.recv_pn_mc = ranges;
+    }
+
+    /// Sets the FEC metadata received bu the client on the multicast channel.
+    pub fn set_rmc_received_fec_metadata(&mut self, ranges: RangeSet) {
+        self.recv_fec_mc = ranges;
     }
 }
 
@@ -121,13 +131,17 @@ pub trait ReliableMulticastConnection {
     /// multicast is disabled.
     fn rmc_should_send_positive_ack(&self) -> Result<bool>;
 
-    /// The multicast source delegates expired streams to the unicast path to provide full reliability to the transmission.
-    /// Start the stream at the first offset of a missing STREAM frame until the end of the stream.
-    /// As a result, the client may receive multiple times the same stream chunks.
-    /// RMC-TODO: does the stream library handle this correctly?
+    /// The multicast source delegates expired streams to the unicast path to
+    /// provide full reliability to the transmission. Start the stream at
+    /// the first offset of a missing STREAM frame until the end of the stream.
+    /// As a result, the client may receive multiple times the same stream
+    /// chunks. RMC-TODO: does the stream library handle this correctly?
     ///
-    /// Requires that the caller is the multicast source ([`crate::multicast::MulticastRole::ServerMulticast`]) and the callee the unicast server ([`crate::multicast::MulticastRole::ServerUnicast`]).
-    /// Returns the stream IDs of streams that are deleguated to the unicast path.
+    /// Requires that the caller is the multicast source
+    /// ([`crate::multicast::MulticastRole::ServerMulticast`]) and the callee
+    /// the unicast server ([`crate::multicast::MulticastRole::ServerUnicast`]).
+    /// Returns the stream IDs of streams that are deleguated to the unicast
+    /// path.
     fn rmc_deleguate_streams(&mut self, uc: &mut Connection) -> Result<()>;
 }
 
@@ -210,18 +224,22 @@ impl ReliableMulticastConnection for Connection {
     }
 
     fn rmc_deleguate_streams(&mut self, uc: &mut Connection) -> Result<()> {
-        if let (Some(mc_s), Some(mc_u)) = (self.multicast.as_ref(), uc.get_multicast_attributes()) {
+        if let (Some(mc_s), Some(mc_u)) =
+            (self.multicast.as_ref(), uc.get_multicast_attributes())
+        {
             if mc_s.get_mc_role() != MulticastRole::ServerMulticast {
-                return Err(Error::Multicast(MulticastError::McInvalidRole(mc_s.get_mc_role())));
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    mc_s.get_mc_role(),
+                )));
             }
             if !matches!(mc_u.get_mc_role(), MulticastRole::ServerUnicast(_)) {
-                return Err(Error::Multicast(MulticastError::McInvalidRole(mc_u.get_mc_role())));
+                return Err(Error::Multicast(MulticastError::McInvalidRole(
+                    mc_u.get_mc_role(),
+                )));
             }
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
-
-        println!("Deleguate stream!");
 
         Ok(())
     }
@@ -335,7 +353,8 @@ mod tests {
         let multicast = server.multicast.as_ref().unwrap();
         let rmc = multicast.mc_reliable.as_ref();
         let expected_rmc = ReliableMc::Server(RMcServer {
-            recv_acks_mc: RangeSet::default(),
+            recv_pn_mc: RangeSet::default(),
+            recv_fec_mc: RangeSet::default(),
         });
         assert_eq!(rmc, Some(&expected_rmc));
 
@@ -440,10 +459,11 @@ mod tests {
             .server()
             .unwrap();
         let mut expected_ranges = RangeSet::default();
+        assert_eq!(expected_ranges, rmc.recv_fec_mc);
         // Packet number 0 is received by the unicast source when opening the
         // second path.
         expected_ranges.insert(0..6);
-        assert_eq!(expected_ranges, rmc.recv_acks_mc);
+        assert_eq!(expected_ranges, rmc.recv_pn_mc);
     }
 
     #[test]
@@ -460,7 +480,9 @@ mod tests {
 
         let expiration_timer = mc_pipe.mc_announce_data.ttl_data;
         let now = time::Instant::now();
-        let expired = now.checked_add(time::Duration::from_millis(expiration_timer + 100)).unwrap();
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
 
         let ucs = mc_pipe.unicast_pipes.iter_mut().take_while(|_| true);
         let mut mc = mc_pipe.mc_channel.channel;
