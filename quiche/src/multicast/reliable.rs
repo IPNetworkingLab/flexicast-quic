@@ -4,6 +4,7 @@ use super::MulticastAttributes;
 use super::MulticastConnection;
 use super::MulticastError;
 use crate::ranges::RangeSet;
+use crate::recovery::multicast::ReliableMulticastRecovery;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
@@ -20,7 +21,7 @@ macro_rules! on_rmc_timeout_server {
     ( $mc:expr, $ucs:expr, $now:expr ) => {
         if $mc.mc_timeout($now) == Some(time::Duration::ZERO) {
             $ucs.iter_mut()
-                .map(|uc| $mc.rmc_deleguate_streams(uc))
+                .map(|uc| $mc.rmc_deleguate_streams(uc, $now))
                 .collect()
         } else {
             Ok(())
@@ -160,7 +161,9 @@ pub trait ReliableMulticastConnection {
     /// the unicast server ([`crate::multicast::MulticastRole::ServerUnicast`]).
     /// Returns the stream IDs of streams that are deleguated to the unicast
     /// path.
-    fn rmc_deleguate_streams(&mut self, uc: &mut Connection) -> Result<()>;
+    fn rmc_deleguate_streams(
+        &mut self, uc: &mut Connection, now: time::Instant,
+    ) -> Result<()>;
 
     /// Returns the [`crate::ranges::RangeSet`] of packet numbers received by
     /// the client on the multicast path.
@@ -264,7 +267,9 @@ impl ReliableMulticastConnection for Connection {
             .map(|c| c.rmc_client_send_ssa)
     }
 
-    fn rmc_deleguate_streams(&mut self, uc: &mut Connection) -> Result<()> {
+    fn rmc_deleguate_streams(
+        &mut self, uc: &mut Connection, now: time::Instant,
+    ) -> Result<()> {
         if let (Some(mc_s), Some(mc_u)) =
             (self.multicast.as_ref(), uc.get_multicast_attributes())
         {
@@ -278,6 +283,22 @@ impl ReliableMulticastConnection for Connection {
                     mc_u.get_mc_role(),
                 )));
             }
+
+            // Deleguate streams sent on the multicast path.
+            let expiration_timer = mc_s
+                .get_mc_announce_data_path()
+                .ok_or(Error::Multicast(MulticastError::McAnnounce))?
+                .ttl_data;
+            let space_id = mc_s
+                .get_mc_space_id()
+                .ok_or(Error::Multicast(MulticastError::McPath))?;
+            let path = self.paths.get_mut(space_id)?;
+            path.recovery.deleguate_stream(
+                uc,
+                now,
+                expiration_timer,
+                space_id as u32,
+            )?;
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -535,10 +556,10 @@ mod tests {
     }
 
     #[test]
-    fn test_on_rmc_timeout_server() {
+    fn test_on_rmc_timeout_server_small_streams() {
         let mut mc_pipe = MulticastPipe::new_reliable(
             1,
-            "/tmp/test_on_rmc_timeout_server.txt",
+            "/tmp/test_on_rmc_timeout_server_small_streams.txt",
             McAuthType::None,
             true,
             true,
@@ -546,16 +567,59 @@ mod tests {
         )
         .unwrap();
 
+        let mut client_loss = RangeSet::default();
+        client_loss.insert(0..1);
+
+        // Source sends four small streams. Second and last are not received on
+        // the client.
+        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 1), Ok(348));
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, Some(&client_loss), 0, 5),
+            Ok(348)
+        );
+        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 9), Ok(348));
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, Some(&client_loss), 0, 13),
+            Ok(348)
+        );
+
         let expiration_timer = mc_pipe.mc_announce_data.ttl_data;
         let now = time::Instant::now();
         let expired = now
             .checked_add(time::Duration::from_millis(expiration_timer + 100))
             .unwrap();
 
+        // Client sends positive ack to the source.
+        let random = SystemRandom::new();
+        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        assert_eq!(client.rmc_set_next_timeout(now, &random), Ok(()));
+        let et_ack_duration = client.rmc_timeout(now).unwrap();
+        let et_ack = now
+            .checked_add(
+                et_ack_duration
+                    .checked_add(time::Duration::from_millis(1))
+                    .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(client.on_rmc_timeout(et_ack), Ok(()));
+        assert_eq!(client.rmc_should_send_positive_ack(), Ok(true));
+        assert_eq!(client.rmc_should_send_source_symbol_ack(), Ok(true));
+        // The client sends the feedback to the source.
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
         let ucs = mc_pipe.unicast_pipes.iter_mut().take_while(|_| true);
         let mut mc = mc_pipe.mc_channel.channel;
         let mut ucs: Vec<_> = ucs.map(|c| &mut c.0.server).collect();
 
         assert_eq!(on_rmc_timeout_server!(&mut mc, ucs, expired), Ok(()));
+
+        // The unicast server now has state for the expired streams.
+        let open_stream_ids = ucs[0]
+            .streams
+            .iter()
+            .map(|(sid, _)| *sid)
+            .collect::<Vec<_>>();
+        assert_eq!(open_stream_ids, vec![5, 13]);
     }
 }

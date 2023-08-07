@@ -1,10 +1,10 @@
 use networkcoding::source_symbol_metadata_to_u64;
 
-use crate::Connection;
+use crate::frame;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::packet::Epoch;
-use crate::frame;
 use crate::ranges;
+use crate::Connection;
 use crate::Result;
 use std::time::Duration;
 use std::time::Instant;
@@ -33,8 +33,7 @@ pub trait MulticastRecovery {
 impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
-        handshake_status: HandshakeStatus,
-        newly_acked: &mut Vec<Acked>,
+        handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
     ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
@@ -89,7 +88,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     handshake_status,
                     now,
                     "",
-                    newly_acked
+                    newly_acked,
                 )?;
 
                 Ok((
@@ -106,7 +105,10 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
         let a = self.sent[Epoch::Application].back()?.time_sent;
         let b = self.sent[Epoch::Application].front()?.time_sent;
-        debug!("This sent of last packet and first packet: {:?} vs {:?}", a, b);
+        debug!(
+            "This sent of last packet and first packet: {:?} vs {:?}",
+            a, b
+        );
         debug!("Mais la somme: {:?}", b.checked_add(ttl_data));
         b.checked_add(ttl_data)
     }
@@ -122,13 +124,20 @@ impl MulticastRecovery for crate::recovery::Recovery {
 /// the multicast extension of QUIC.
 pub trait ReliableMulticastRecovery {
     /// Deleguates the streams to the unicast connection.
-    fn deleguate_stream(&mut self, uc: &mut Connection, now: Instant, expiration_timer: u64, space_id: u32) -> Result<()>;
+    fn deleguate_stream(
+        &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
+        space_id: u32,
+    ) -> Result<()>;
 }
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
-    fn deleguate_stream(&mut self, uc: &mut Connection, now: Instant, expiration_timer: u64, space_id: u32) -> Result<()> {
-        let recv_pn = uc.rmc_get_recv_pn()?;
-        let reco_ss = uc.rmc_get_rec_ss()?;
+    fn deleguate_stream(
+        &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
+        space_id: u32,
+    ) -> Result<()> {
+        println!("This is called");
+        let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
+        let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
         let expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
@@ -138,29 +147,96 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
         'per_packet: for packet in expired_sent {
+            println!(
+                "Expired packet? packet nb: {:?} and recv ranges: {:?}",
+                packet.pkt_num, recv_pn
+            );
             // First check if the packet has been received by the client.
             for r in recv_pn.iter() {
                 let lowest_recovered_in_block = r.start;
                 let largest_recovered_in_block = r.end - 1;
-                if packet.pkt_num.1 >= lowest_recovered_in_block && packet.pkt_num.1 <= largest_recovered_in_block {
+                if packet.pkt_num.1 >= lowest_recovered_in_block &&
+                    packet.pkt_num.1 <= largest_recovered_in_block
+                {
                     continue 'per_packet; // Packet was received.
                 }
             }
 
+            // RMC-TODO: error! Some packets are received!
+            println!("Packet not received by the client");
+
             // At this point, we know that the client did not receive the packet.
             // Maybe it recovered it with FEC.
+            // FIXME-RMC-TODO: assume that the SourceSymbolHeader always preceeds
+            // the STREAM frame.
+            let mut protected = false;
             for frame in &packet.frames {
-                if let frame::Frame::SourceSymbolHeader { metadata, recovered } = frame {
+                if let frame::Frame::SourceSymbolHeader {
+                    metadata,
+                    recovered: _,
+                } = frame
+                {
                     let mdu64 = source_symbol_metadata_to_u64(*metadata);
                     for r in reco_ss.iter() {
                         let lowest_recovered_in_block = r.start;
                         let largest_recovered_in_block = r.end - 1;
-                        if mdu64 >= lowest_recovered_in_block && mdu64 <= largest_recovered_in_block {
+                        if mdu64 >= lowest_recovered_in_block &&
+                            mdu64 <= largest_recovered_in_block
+                        {
                             // Packet has been recovered through FEC.
                             continue 'per_packet;
                         }
                     }
+                    protected = true;
                 }
+
+                // FIXME-RMC-TODO: assume that stream frames in sent packets have
+                // increasing offsets.
+                if let frame::Frame::StreamHeader {
+                    stream_id,
+                    offset,
+                    length,
+                    fin,
+                } = frame
+                {
+                    println!("Stream header packet with ID: {}", stream_id);
+                    if !protected {
+                        println!("Lost stream header was not protected. Stream ID={:?}, offset={:?}, length={:?}, fin={:?}", stream_id, offset, length, fin);
+                        continue 'per_packet;
+                    }
+
+                    // This STREAM frame was lost. Retransmit in a (new) stream on
+                    // unicast path.
+                    let stream = uc.get_or_create_stream(*stream_id, true)?;
+
+                    // We "ack" the recovery mechanism by asking to retransmit the
+                    // specified data... Since we call "send"
+                    // on the data that is retransmitted, we assume that the call
+                    // to "retransmit" wil be cancelled out.
+                    stream.send.retransmit(*offset, *length);
+
+                    // ...and we get the data. This is not optimized (2 copies)
+                    // but requires the fewest changes.
+                    let mut buf = vec![0u8; *length];
+                    let written = stream.send.write_at_offset(
+                        &mut buf[..],
+                        *offset,
+                        *fin,
+                    )?;
+                    assert_eq!(written, *length);
+                }
+
+                // if let frame::Frame::Stream { stream_id, data } = frame {
+                //     println!("There is a Stream frame");
+                //     if let (Some(streamid), Some(offset), Some(fin),
+                // Some(len)) =         (cstream_id, coffset,
+                // cfin, clen)     {
+                //         let stream = uc.get_or_create_stream(*stream_id,
+                // true)?;         assert_eq!(data.len(), *len);
+                //         assert_eq!(streamid, stream_id);
+                //         stream.send.write_at_offset(&data.to_vec(), *offset,
+                // *fin)?;     }
+                // }
             }
         }
 
