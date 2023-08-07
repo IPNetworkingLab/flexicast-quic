@@ -605,6 +605,12 @@ mod tests {
         assert_eq!(client.on_rmc_timeout(et_ack), Ok(()));
         assert_eq!(client.rmc_should_send_positive_ack(), Ok(true));
         assert_eq!(client.rmc_should_send_source_symbol_ack(), Ok(true));
+
+        // Client has only received 2 streams.
+        let mut readables = client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 9]);
+
         // The client sends the feedback to the source.
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
@@ -621,5 +627,19 @@ mod tests {
             .map(|(sid, _)| *sid)
             .collect::<Vec<_>>();
         assert_eq!(open_stream_ids, vec![5, 13]);
+
+        // RMC-TODO: assert on the data and offsets of the streams on the server.
+        println!("UNICAST ADVANCE");
+        assert_eq!(mc_pipe.unicast_pipes[0].0.server.streams.has_flushable(), true);
+        assert_eq!(mc_pipe.unicast_pipes[0].0.advance(), Ok(()));
+
+        // Client now has all four streams.
+        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        let mut readables = client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![1, 5, 9, 13]);
+        for stream_id in readables {
+            assert!(client.stream_complete(stream_id));
+        }
     }
 }

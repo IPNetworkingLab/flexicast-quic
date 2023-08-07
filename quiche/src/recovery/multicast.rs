@@ -224,6 +224,11 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         *fin,
                     )?;
                     assert_eq!(written, *length);
+
+                    // Mark the stream as flushable. We do not take into account flow limits because the data has already been sent once on the multicast channel, and this data should be considered as a retransmission only.
+                    let urgency = stream.urgency;
+                    let incr = stream.incremental;
+                    uc.streams.push_flushable(*stream_id, urgency, incr);
                 }
 
                 // if let frame::Frame::Stream { stream_id, data } = frame {
