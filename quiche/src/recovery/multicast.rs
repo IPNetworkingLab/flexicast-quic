@@ -4,7 +4,9 @@ use crate::frame;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::packet::Epoch;
 use crate::ranges;
+use crate::stream::StreamMap;
 use crate::Connection;
+use crate::Error;
 use crate::Result;
 use std::time::Duration;
 use std::time::Instant;
@@ -126,14 +128,14 @@ pub trait ReliableMulticastRecovery {
     /// Deleguates the streams to the unicast connection.
     fn deleguate_stream(
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
-        space_id: u32,
+        space_id: u32, local_streams: &mut StreamMap,
     ) -> Result<()>;
 }
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
     fn deleguate_stream(
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
-        space_id: u32,
+        space_id: u32, local_streams: &mut StreamMap,
     ) -> Result<()> {
         println!("This is called");
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
@@ -208,24 +210,32 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                     // This STREAM frame was lost. Retransmit in a (new) stream on
                     // unicast path.
                     let stream = uc.get_or_create_stream(*stream_id, true)?;
+                    let local_stream = local_streams
+                        .get_mut(*stream_id)
+                        .ok_or(Error::InvalidStreamState(*stream_id))?;
 
                     // We "ack" the recovery mechanism by asking to retransmit the
                     // specified data... Since we call "send"
                     // on the data that is retransmitted, we assume that the call
                     // to "retransmit" wil be cancelled out.
-                    stream.send.retransmit(*offset, *length);
+                    local_stream.send.retransmit(*offset, *length);
 
                     // ...and we get the data. This is not optimized (2 copies)
                     // but requires the fewest changes.
                     let mut buf = vec![0u8; *length];
+                    local_stream.send.emit(&mut buf)?;
+
                     let written = stream.send.write_at_offset(
-                        &mut buf[..],
+                        &buf[..],
                         *offset,
                         *fin,
                     )?;
                     assert_eq!(written, *length);
 
-                    // Mark the stream as flushable. We do not take into account flow limits because the data has already been sent once on the multicast channel, and this data should be considered as a retransmission only.
+                    // Mark the stream as flushable. We do not take into account
+                    // flow limits because the data has already been sent once on
+                    // the multicast channel, and this data should be considered
+                    // as a retransmission only.
                     let urgency = stream.urgency;
                     let incr = stream.incremental;
                     uc.streams.push_flushable(*stream_id, urgency, incr);

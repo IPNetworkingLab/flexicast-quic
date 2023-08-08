@@ -2778,7 +2778,7 @@ pub mod testing {
         /// Calls [`MulticastPipe::source_send_single`].
         ///
         /// `client_loss` is a RangeSet containing the indexes of clients that
-        /// DO NOT receive the packet. `None` if all clients receive the packet.
+        /// do not receive the packet. `None` if all clients receive the packet.
         pub fn source_send_single_stream(
             &mut self, send: bool, client_loss: Option<&RangeSet>,
             signature_len: usize, stream_id: u64,
