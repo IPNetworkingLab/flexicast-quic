@@ -406,22 +406,20 @@ pub mod testing {
         pub fn client_rmc_timeout(
             &mut self, now: time::Instant, random: &SystemRandom,
         ) -> Result<()> {
-            self.unicast_pipes
-                .iter_mut()
-                .try_for_each(|(pipe, ..)| {
-                    let client = &mut pipe.client;
-                    client.rmc_set_next_timeout(now, random)?;
+            self.unicast_pipes.iter_mut().try_for_each(|(pipe, ..)| {
+                let client = &mut pipe.client;
+                client.rmc_set_next_timeout(now, random)?;
 
-                    let et_ack_duration = client.rmc_timeout(now).unwrap();
-                    let et_ack = now
-                        .checked_add(
-                            et_ack_duration
-                                .checked_add(time::Duration::from_millis(1))
-                                .unwrap(),
-                        )
-                        .unwrap();
-                    client.on_rmc_timeout(et_ack)
-                })
+                let et_ack_duration = client.rmc_timeout(now).unwrap();
+                let et_ack = now
+                    .checked_add(
+                        et_ack_duration
+                            .checked_add(time::Duration::from_millis(1))
+                            .unwrap(),
+                    )
+                    .unwrap();
+                client.on_rmc_timeout(et_ack)
+            })
         }
     }
 }
@@ -756,5 +754,72 @@ mod tests {
         let mut out_buf = [0u8; 10_000];
         assert_eq!(client.stream_recv(1, &mut out_buf), Ok((10_000, false)));
         assert_eq!(data, out_buf);
+
+        // Source sends more data onto that stream.
+        random.fill(&mut data[..7000]).unwrap();
+        assert_eq!(
+            mc_pipe
+                .mc_channel
+                .channel
+                .stream_send(1, &data[..7000], true),
+            Ok(7000)
+        );
+
+        // Send as many packets as needed to forward the stream. Every other
+        // packet is lost.
+        let mut erase = false;
+        loop {
+            if let Err(Error::Done) = mc_pipe.source_send_single(
+                if erase { Some(&client_loss) } else { None },
+                0,
+            ) {
+                break;
+            }
+            erase = !erase;
+        }
+
+        // Client does not have the stream complete.
+        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        assert_eq!(client.readable().collect::<Vec<u64>>(), vec![1u64]);
+
+        // Client compute positive acknowledgment and send packets to the server.
+        let now = time::Instant::now();
+        assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        // Multicast source deleguates streams.
+        let expiration_timer = mc_pipe.mc_announce_data.ttl_data;
+        let now = time::Instant::now();
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer * 2 + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        // Multicast source expires and directly sends notificication to the
+        // clients, before the unicast servers can retransmit the lost stream
+        // frames.
+        let (exp_pn, exp_streams, exp_fec) =
+            mc_pipe.mc_channel.channel.on_mc_timeout(expired).unwrap();
+        assert_eq!(exp_pn, Some(15));
+        assert_eq!(exp_streams, Some(1));
+        assert_eq!(exp_fec, Some(13));
+
+        // The unicast server sends the retransmissions.
+        assert_eq!(
+            mc_pipe
+                .unicast_pipes
+                .iter_mut()
+                .map(|(pipe, ..)| pipe.advance())
+                .collect::<Result<()>>(),
+            Ok(())
+        );
+
+        // Client now has access to the full stream.
+        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        assert_eq!(client.readable().collect::<Vec<_>>(), vec![1]);
+        assert!(client.stream_complete(1)); // We do not know the end yet.
+        let mut out_buf = [0u8; 7000];
+        assert_eq!(client.stream_recv(1, &mut out_buf), Ok((7000, true)));
+        assert_eq!(data[..7000], out_buf[..7000]);
     }
 }

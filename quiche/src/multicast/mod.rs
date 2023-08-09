@@ -1442,7 +1442,9 @@ impl MulticastConnection for Connection {
         // Reset expired (but still open) streams.
         // This does not happen if reliable multicast is used for the client as
         // lost streams can be retransmitted on the unicast path.
+        // For the server, we only expire finished streams.
         if !multicast.mc_is_reliable() || self.is_server {
+            // If not RMC client.
             if let Some(exp_stream_id) = stream_id_opt {
                 let iterable: Vec<_> = self
                     .streams
@@ -1453,15 +1455,25 @@ impl MulticastConnection for Connection {
                     if stream_id <= exp_stream_id {
                         let stream_opt = self.streams.get_mut(stream_id);
                         if let Some(stream) = stream_opt {
-                            if self.is_server {
+                            if self.is_server &&
+                                (multicast.mc_is_reliable() &&
+                                    stream.send.is_complete() ||
+                                    !multicast.mc_is_reliable())
+                            {
+                                // Only reset the sending stream if:
+                                // * Non-reliable multicast,
+                                // * Reliable multicast and the sending stream is
+                                //   complete.
                                 stream.send.reset();
-                            } else {
+                                let local = stream.local;
+                                self.streams.collect(stream_id, local);
+                            } else if !self.is_server {
                                 // Maybe the final size is already known.
                                 let final_size = stream.recv.max_off();
                                 stream.recv.reset(0, final_size)?;
+                                let local = stream.local;
+                                self.streams.collect(stream_id, local);
                             }
-                            let local = stream.local;
-                            self.streams.collect(stream_id, local);
                         };
                     }
                 }
