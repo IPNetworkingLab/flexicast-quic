@@ -594,7 +594,7 @@ mod tests {
     #[test]
     fn test_on_rmc_timeout_server_small_streams() {
         let mut mc_pipe = MulticastPipe::new_reliable(
-            1,
+            2,
             "/tmp/test_on_rmc_timeout_server_small_streams.txt",
             McAuthType::None,
             true,
@@ -603,19 +603,27 @@ mod tests {
         )
         .unwrap();
 
-        let mut client_loss = RangeSet::default();
-        client_loss.insert(0..1);
+        let mut client_loss1 = RangeSet::default();
+        client_loss1.insert(0..1);
+        let mut client_loss2 = RangeSet::default();
+        client_loss2.insert(1..2);
 
         // Source sends four small streams. Second and last are not received on
         // the client.
-        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 1), Ok(348));
         assert_eq!(
-            mc_pipe.source_send_single_stream(true, Some(&client_loss), 0, 5),
+            mc_pipe.source_send_single_stream(true, Some(&client_loss2), 0, 1),
             Ok(348)
         );
-        assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 9), Ok(348));
         assert_eq!(
-            mc_pipe.source_send_single_stream(true, Some(&client_loss), 0, 13),
+            mc_pipe.source_send_single_stream(true, Some(&client_loss1), 0, 5),
+            Ok(348)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, Some(&client_loss2), 0, 9),
+            Ok(348)
+        );
+        assert_eq!(
+            mc_pipe.source_send_single_stream(true, Some(&client_loss1), 0, 13),
             Ok(348)
         );
 
@@ -629,14 +637,22 @@ mod tests {
         let random = SystemRandom::new();
         assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
 
-        let client = &mut mc_pipe.unicast_pipes[0].0.client;
-        assert_eq!(client.rmc_should_send_positive_ack(), Ok(true));
-        assert_eq!(client.rmc_should_send_source_symbol_ack(), Ok(true));
+        for pipe in mc_pipe.unicast_pipes.iter() {
+            let client = &pipe.0.client;
+            assert_eq!(client.rmc_should_send_positive_ack(), Ok(true));
+            assert_eq!(client.rmc_should_send_source_symbol_ack(), Ok(true));
+        }
 
         // Client has only received 2 streams.
+        let client = &mc_pipe.unicast_pipes[0].0.client;
         let mut readables = client.readable().collect::<Vec<_>>();
         readables.sort();
         assert_eq!(readables, vec![1, 9]);
+
+        let client = &mc_pipe.unicast_pipes[1].0.client;
+        let mut readables = client.readable().collect::<Vec<_>>();
+        readables.sort();
+        assert_eq!(readables, vec![5, 13]);
 
         assert_eq!(mc_pipe.clients_send(), Ok(()));
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
@@ -651,32 +667,40 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(open_stream_ids, vec![5, 13]);
 
-        // RMC-TODO: assert on the data and offsets of the streams on the server.
-        assert_eq!(
-            mc_pipe.unicast_pipes[0].0.server.streams.has_flushable(),
-            true
-        );
-        assert_eq!(mc_pipe.unicast_pipes[0].0.advance(), Ok(()));
+        let open_stream_ids = mc_pipe.unicast_pipes[1]
+            .0
+            .server
+            .streams
+            .iter()
+            .map(|(sid, _)| *sid)
+            .collect::<Vec<_>>();
+        assert_eq!(open_stream_ids, vec![1, 9]);
 
-        // Client now has all four streams.
-        let client = &mut mc_pipe.unicast_pipes[0].0.client;
-        let mut readables = client.readable().collect::<Vec<_>>();
-        readables.sort();
-        assert_eq!(readables, vec![1, 5, 9, 13]);
-        let mut out_buf = [0u8; 1000];
-        for stream_id in readables {
-            assert!(client.stream_complete(stream_id));
-            assert_eq!(
-                client.stream_recv(stream_id, &mut out_buf),
-                Ok((300, true))
-            );
+        // RMC-TODO: assert on the data and offsets of the streams on the server.
+        for pipe in mc_pipe.unicast_pipes.iter_mut() {
+            assert_eq!(pipe.0.server.streams.has_flushable(), true);
+            assert_eq!(pipe.0.advance(), Ok(()));
+
+            // Client now has all four streams.
+            let client = &mut pipe.0.client;
+            let mut readables = client.readable().collect::<Vec<_>>();
+            readables.sort();
+            assert_eq!(readables, vec![1, 5, 9, 13]);
+            let mut out_buf = [0u8; 1000];
+            for stream_id in readables {
+                assert!(client.stream_complete(stream_id));
+                assert_eq!(
+                    client.stream_recv(stream_id, &mut out_buf),
+                    Ok((300, true))
+                );
+            }
         }
     }
 
     #[test]
     fn test_on_rmc_timeout_large_stream() {
-        let mut mc_pipe = MulticastPipe::new_reliable(
-            1,
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            2,
             "/tmp/test_on_rmc_timeout_large_stream.txt",
             McAuthType::None,
             true,
@@ -685,8 +709,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut client_loss = RangeSet::default();
-        client_loss.insert(0..1);
+        let mut client_loss1 = RangeSet::default();
+        client_loss1.insert(0..1);
+        let mut client_loss2 = RangeSet::default();
+        client_loss2.insert(1..2);
 
         // Source sends a large (unfinished) stream.
         let random = SystemRandom::new();
@@ -703,7 +729,11 @@ mod tests {
         let mut erase = true;
         loop {
             if let Err(Error::Done) = mc_pipe.source_send_single(
-                if erase { Some(&client_loss) } else { None },
+                if erase {
+                    Some(&client_loss1)
+                } else {
+                    Some(&client_loss2)
+                },
                 0,
             ) {
                 break;
@@ -711,9 +741,13 @@ mod tests {
             erase = !erase;
         }
 
-        // Client does not have the stream complete.
-        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        // Client 1 did not receive the first packet => impossible to read the
+        // stream.
+        let client = &mc_pipe.unicast_pipes[0].0.client;
         assert!(client.readable().collect::<Vec<u64>>().is_empty());
+        // Client 2 received the first packet => possible to read the stream.
+        let client = &mc_pipe.unicast_pipes[1].0.client;
+        assert_eq!(client.readable().collect::<Vec<u64>>(), vec![1u64]);
 
         // Client compute positive acknowledgment and send packets to the server.
         let now = time::Instant::now();
@@ -747,13 +781,15 @@ mod tests {
             Ok(())
         );
 
-        // Client now has access to the full stream.
-        let client = &mut mc_pipe.unicast_pipes[0].0.client;
-        assert_eq!(client.readable().collect::<Vec<_>>(), vec![1]);
-        assert!(!client.stream_complete(1)); // We do not know the end yet.
         let mut out_buf = [0u8; 10_000];
-        assert_eq!(client.stream_recv(1, &mut out_buf), Ok((10_000, false)));
-        assert_eq!(data, out_buf);
+        for pipe in mc_pipe.unicast_pipes.iter_mut() {
+            // Client now has access to the full stream.
+            let client = &mut pipe.0.client;
+            assert_eq!(client.readable().collect::<Vec<_>>(), vec![1]);
+            assert!(!client.stream_complete(1)); // We do not know the end yet.
+            assert_eq!(client.stream_recv(1, &mut out_buf), Ok((10_000, false)));
+            assert_eq!(data, out_buf);
+        }
 
         // Source sends more data onto that stream.
         random.fill(&mut data[..7000]).unwrap();
@@ -770,7 +806,11 @@ mod tests {
         let mut erase = false;
         loop {
             if let Err(Error::Done) = mc_pipe.source_send_single(
-                if erase { Some(&client_loss) } else { None },
+                if erase {
+                    Some(&client_loss1)
+                } else {
+                    Some(&client_loss2)
+                },
                 0,
             ) {
                 break;
@@ -778,9 +818,13 @@ mod tests {
             erase = !erase;
         }
 
-        // Client does not have the stream complete.
-        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        // Client 1 received the first packet => possible to read the stream.
+        let client = &mc_pipe.unicast_pipes[0].0.client;
         assert_eq!(client.readable().collect::<Vec<u64>>(), vec![1u64]);
+        // Client 2 did not receive the first packet => impossible to read the
+        // stream.
+        let client = &mc_pipe.unicast_pipes[1].0.client;
+        assert!(client.readable().collect::<Vec<u64>>().is_empty());
 
         // Client compute positive acknowledgment and send packets to the server.
         let now = time::Instant::now();
@@ -815,11 +859,13 @@ mod tests {
         );
 
         // Client now has access to the full stream.
-        let client = &mut mc_pipe.unicast_pipes[0].0.client;
-        assert_eq!(client.readable().collect::<Vec<_>>(), vec![1]);
-        assert!(client.stream_complete(1)); // We do not know the end yet.
-        let mut out_buf = [0u8; 7000];
-        assert_eq!(client.stream_recv(1, &mut out_buf), Ok((7000, true)));
-        assert_eq!(data[..7000], out_buf[..7000]);
+        for pipe in mc_pipe.unicast_pipes.iter_mut() {
+            let client = &mut pipe.0.client;
+            assert_eq!(client.readable().collect::<Vec<_>>(), vec![1]);
+            assert!(client.stream_complete(1)); // We do not know the end yet.
+            let mut out_buf = [0u8; 7000];
+            assert_eq!(client.stream_recv(1, &mut out_buf), Ok((7000, true)));
+            assert_eq!(data[..7000], out_buf[..7000]);
+        }
     }
 }
