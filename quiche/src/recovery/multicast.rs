@@ -137,7 +137,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
         space_id: u32, local_streams: &mut StreamMap,
     ) -> Result<()> {
-        println!("This is called");
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
         let expired_sent = self.sent[Epoch::Application]
@@ -149,10 +148,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
         'per_packet: for packet in expired_sent {
-            println!(
-                "Expired packet? packet nb: {:?} and recv ranges: {:?}",
-                packet.pkt_num, recv_pn
-            );
             // First check if the packet has been received by the client.
             for r in recv_pn.iter() {
                 let lowest_recovered_in_block = r.start;
@@ -163,9 +158,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                     continue 'per_packet; // Packet was received.
                 }
             }
-
-            // RMC-TODO: error! Some packets are received!
-            println!("Packet not received by the client");
 
             // At this point, we know that the client did not receive the packet.
             // Maybe it recovered it with FEC.
@@ -201,9 +193,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                     fin,
                 } = frame
                 {
-                    println!("Stream header packet with ID: {}", stream_id);
                     if !protected {
-                        println!("Lost stream header was not protected. Stream ID={:?}, offset={:?}, length={:?}, fin={:?}", stream_id, offset, length, fin);
                         continue 'per_packet;
                     }
 
@@ -225,11 +215,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                     let mut buf = vec![0u8; *length];
                     local_stream.send.emit(&mut buf)?;
 
-                    let written = stream.send.write_at_offset(
-                        &buf[..],
-                        *offset,
-                        *fin,
-                    )?;
+                    let written =
+                        stream.send.write_at_offset(&buf[..], *offset, *fin)?;
                     assert_eq!(written, *length);
 
                     // Mark the stream as flushable. We do not take into account
@@ -240,18 +227,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                     let incr = stream.incremental;
                     uc.streams.push_flushable(*stream_id, urgency, incr);
                 }
-
-                // if let frame::Frame::Stream { stream_id, data } = frame {
-                //     println!("There is a Stream frame");
-                //     if let (Some(streamid), Some(offset), Some(fin),
-                // Some(len)) =         (cstream_id, coffset,
-                // cfin, clen)     {
-                //         let stream = uc.get_or_create_stream(*stream_id,
-                // true)?;         assert_eq!(data.len(), *len);
-                //         assert_eq!(streamid, stream_id);
-                //         stream.send.write_at_offset(&data.to_vec(), *offset,
-                // *fin)?;     }
-                // }
             }
         }
 
