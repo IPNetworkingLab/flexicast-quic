@@ -3820,7 +3820,6 @@ impl Connection {
                                 length,
                                 fin,
                             } => {
-                                println!("STREAM HEADER IS LOST");
                                 let stream = match self.streams.get_mut(stream_id)
                                 {
                                     Some(v) => v,
@@ -4222,7 +4221,6 @@ impl Connection {
                     let max_pn = self.multicast.as_ref().unwrap().mc_max_pn;
                     let nb_degree_needed_opt: Option<u64> =
                         self.fec_decoder.nb_missing_degrees();
-                    println!("NB degree needed: {:?}", nb_degree_needed_opt);
 
                     if let Some(nb_degree_needed) = nb_degree_needed_opt {
                         self.multicast.as_mut().unwrap().set_mc_nack_ranges(
@@ -5328,37 +5326,6 @@ impl Connection {
             !fec_only_path &&
             !sent_mc_auth
         {
-            // first, do bandwidth probing if needed and possible.
-            // Disable bandwidth probing if this is the multicast source.
-            let is_mc_server = if let Some(multicast) = self.multicast.as_ref() {
-                matches!(
-                    multicast.get_mc_role(),
-                    multicast::MulticastRole::ServerMulticast
-                )
-            } else {
-                false
-            };
-            if !self.streams.has_flushable() && !is_mc_server {
-                if let Some((packet_number, stream_id, offset, len)) =
-                    path.recovery.get_unacked_stream_frame_for_probing(epoch)
-                {
-                    if let Some(stream) = self.streams.get_mut(stream_id) {
-                        let was_flushable = stream.is_flushable();
-                        stream.send.retransmit(offset, std::cmp::max(left, len));
-                        if (stream.is_flushable()) && !was_flushable {
-                            let urgency = stream.urgency;
-                            let incremental = stream.incremental;
-                            self.streams.push_flushable(
-                                stream_id,
-                                urgency,
-                                incremental,
-                            );
-                            println!("probing: retransmit content of packet {:?} proactively", packet_number);
-                        }
-                    }
-                }
-            }
-
             while let Some(stream_id) = self.streams.peek_flushable() {
                 let stream = match self.streams.get_mut(stream_id) {
                     // Avoid sending frames for streams that were already stopped.
@@ -5403,7 +5370,26 @@ impl Connection {
 
                 // If there is enough room for the stream to finish, we spare
                 // potential room for the MC_ASYM frame.
-                if mc_used_auth_packet == McAuthType::StreamAsym {
+                // This is only done if multicast with asymmetric signature and
+                // either:
+                // * This is the multicast source sending the stream, or
+                // * This is the unicast server retransmitting the last STREAM
+                //   frame of this stream.
+                // This last point is verified if `stream.mc_get_asym_sign()` is
+                // not `None`.
+                let mut rmc_retr_asym = false;
+                if let Some(multicast) = self.multicast.as_ref() {
+                    if matches!(
+                        multicast.get_mc_role(),
+                        multicast::MulticastRole::ServerUnicast(_)
+                    ) && stream.mc_get_asym_sign().is_some()
+                    {
+                        rmc_retr_asym = true;
+                    }
+                }
+
+                if mc_used_auth_packet == McAuthType::StreamAsym || rmc_retr_asym
+                {
                     if let Some(remaining) = stream.send.total_remaining() {
                         if remaining as usize <= max_len {
                             max_len -= 64 +
@@ -5455,22 +5441,36 @@ impl Connection {
                 // Write the MC_ASYM frame authenticating this stream if it is
                 // complete.
                 let mut mc_tmp = [0u8; 1500];
-                if mc_used_auth_packet == McAuthType::StreamAsym && fin {
-                    let mut stream_to_auth =
-                        stream.send.hash_stream(&mut mc_tmp)?;
-                    //  let mut stream_to_auth = stream.send.hash.to_vec();
-                    // If the stream is no longer flushable, remove it from the
-                    // queue
-                    if !stream.is_flushable() {
-                        self.streams.remove_flushable();
-                    }
-                    stream_to_auth.extend_from_slice(&[0u8; 64]);
-                    let stream_len = stream_to_auth.len() - 64;
-                    self.mc_sign_asym(&mut stream_to_auth, stream_len)?;
-
-                    let frame = frame::Frame::McAsym {
-                        signature: stream_to_auth[stream_len..].to_vec(),
+                if (mc_used_auth_packet == McAuthType::StreamAsym ||
+                    rmc_retr_asym) &&
+                    fin
+                {
+                    let signature = if rmc_retr_asym {
+                        let sign = stream
+                            .mc_get_asym_sign()
+                            .ok_or(Error::Multicast(
+                                MulticastError::McInvalidSign,
+                            ))?
+                            .to_vec();
+                        if !stream.is_flushable() {
+                            self.streams.remove_flushable();
+                        }
+                        sign
+                    } else {
+                        let mut stream_to_auth =
+                            stream.send.hash_stream(&mut mc_tmp)?;
+                        //  let mut stream_to_auth = stream.send.hash.to_vec();
+                        // If the stream is no longer flushable, remove it from
+                        // the queue.
+                        if !stream.is_flushable() {
+                            self.streams.remove_flushable();
+                        }
+                        stream_to_auth.extend_from_slice(&[0u8; 64]);
+                        let stream_len = stream_to_auth.len() - 64;
+                        self.mc_sign_asym(&mut stream_to_auth, stream_len)?;
+                        stream_to_auth[stream_len..].to_vec()
                     };
+                    let frame = frame::Frame::McAsym { signature };
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
                         in_flight = true;
@@ -5493,65 +5493,6 @@ impl Connection {
 
         // Alternate trying to send DATAGRAMs next time.
         self.emit_dgram = !dgram_emitted;
-
-        // Add a multicast MC_ASYM frame if this is a multicast data path using
-        // the [`MCAuthType::StreamAsym`] authentication method and if a STREAM
-        // frame with `fin=true` is in the packet. The asymmetric
-        // signature is computed by hashing the whole stream data of a stream
-        // where the STREAM frame for this stream has `fin=true` in this
-        // packet. This is done individually for each stream which is finishing in
-        // this packet. if mc_used_auth_packet == McAuthType::StreamAsym {
-        //     let mut mc_hash = [0u8; 32 + 64];
-        //     let mut at_least_one_auth_frame = false;
-
-        //     // Iter over all frames and hash them.
-        //     // Could be improved by hasing directly when we put it to wire.
-        //     for frame in frames.iter() {
-        //         let mut mc_tmp = [0u8; 1500];
-        //         let mut mc_b = octets::OctetsMut::with_slice(&mut mc_tmp);
-        //         mc_b.put_bytes(&mc_hash[..32])?;
-        //         match frame {
-        //             frame::Frame::StreamHeader {
-        //                 stream_id,
-        //                 offset: _,
-        //                 length: _,
-        //                 fin,
-        //             } => {
-        //                 // Copy and slice all the stream data if the stream is
-        //                 // finished.
-        //                 if *fin {
-        //                     let stream = self.streams.get(*stream_id);
-        //                     if let Some(stream) = stream {
-        //                         stream.send.hash_stream(&mut mc_tmp);
-        //                         at_least_one_auth_frame = true;
-        //                     }
-        //                 }
-        //             },
-        //             _ => {
-        //                 unreachable!();
-        //                 let written = frame.to_bytes(&mut mc_b)?;
-        //                 let d = digest(&SHA256, &mc_b.as_ref()[..written]);
-        //                 mc_hash[..32].copy_from_slice(d.as_ref());
-        //                 at_least_one_auth_frame = true;
-        //             },
-        //         }
-        //     }
-
-        //     if at_least_one_auth_frame {
-        //         // Add back the room for the MC_ASYM frame.
-        //         left += 64 + 1 + octets::varint_len(MC_ASYM_CODE);
-        //         self.mc_sign_asym(&mut mc_hash, 32)?;
-
-        //         let frame = frame::Frame::McAsym {
-        //             signature: mc_hash[32..].to_vec(),
-        //         };
-        //         if push_frame_to_pkt!(b, frames, frame, left) {
-        //             in_flight = true;
-        //         } else {
-        //             error!("could not send the MC_ASYM frame!");
-        //         }
-        //     }
-        // }
 
         // If no other ack-eliciting frame is sent, include a PING frame
         // - if PTO probe needed; OR
@@ -5643,7 +5584,7 @@ impl Connection {
         > = SmallVec::with_capacity(frames.len());
 
         for frame in &mut frames {
-            println!("{} tx frm {:?}", self.trace_id, frame);
+            trace!("{} tx frm {:?}", self.trace_id, frame);
 
             qlog_with_type!(QLOG_PACKET_TX, self.qlog, _q, {
                 qlog_frames.push(frame.to_qlog());
@@ -8889,7 +8830,7 @@ impl Connection {
             },
 
             frame::Frame::McAsym { signature } => {
-                debug!("Receive an MC_ASYM frame: {:?}", signature);
+                debug!("Receive an MC_ASYM frame on space id {:?}: {:?}", recv_path_id, signature);
 
                 if let Some(multicast) = self.multicast.as_mut() {
                     if let Some(stream_id) = multicast.pop_new_mc_stream_fin() {
@@ -9280,7 +9221,6 @@ impl Connection {
                                 nb_repair_opt,
                             )?;
                             multicast.mc_need_ack = true;
-                            println!("After setting it on server for {:?}, it is: {:?}", self.multicast.as_ref().unwrap().get_self_client_id(), ranges);
                         } else {
                             return Err(Error::Multicast(
                                 multicast::MulticastError::McPath,

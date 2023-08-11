@@ -5049,7 +5049,7 @@ mod tests {
         let pkt_type = crate::packet::Type::Short;
         assert_eq!(
             s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-            Ok(71),
+            Ok(39),
         );
 
         let sent = s

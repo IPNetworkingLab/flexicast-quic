@@ -674,6 +674,17 @@ pub struct Stream {
     /// authenticated with
     /// [`crate::multicast::authentication::McAuthType::StreamAsym`].
     pub mc_asym_verified: bool,
+
+    /// The asymmetric signature of the stream.
+    /// This variable has meaning only if the stream is received in a multicast
+    /// path authenticated with
+    /// [`crate::multicast::authentication::McAuthType::StreamAsym`].
+    ///
+    /// If this value is not `None` for a unicast server, it means that the last
+    /// STREAM frame for this stream has been lost for the client on the
+    /// multicast path. The unicast server retransmits this frame alongside the
+    /// MC_ASYM frame to let the client authenticate it.
+    pub mc_asym_sign: Option<Vec<u8>>,
 }
 
 impl Stream {
@@ -691,6 +702,7 @@ impl Stream {
             urgency: DEFAULT_URGENCY,
             incremental: true,
             mc_asym_verified: false,
+            mc_asym_sign: None,
         }
     }
 
@@ -1745,8 +1757,13 @@ impl McStream for SendBuf {
         }
         let mut stream_data =
             Vec::with_capacity(self.fin_off.unwrap() as usize + 64);
+
+        let mut offset = 0;
         for range_buf in self.data.iter() {
-            stream_data.extend_from_slice(&range_buf.data);
+            if offset == range_buf.off {
+                stream_data.extend_from_slice(&range_buf.data);
+                offset += range_buf.data.len() as u64;
+            }
         }
         // let digest = ring::digest::digest(&ring::digest::SHA256, &stream_data);
         // buf[..32].copy_from_slice(digest.as_ref());
@@ -1811,6 +1828,22 @@ impl SendBuf {
         self.retransmit(offset, written);
 
         Ok(written)
+    }
+}
+
+impl Stream {
+    /// Sets a per-stream asymmetric signature of the stream.
+    /// RMC-TODO: only allow this method for the unicast server if reliable
+    /// multicast is used.
+    pub fn mc_set_asym_sign(&mut self, sign: &[u8]) {
+        self.mc_asym_sign = Some(sign.to_vec());
+    }
+
+    /// Gets the per-stream asymmetric signature of the stream.
+    /// RMC-TODO: only allow this method for the unicast server if reliable
+    /// multicast is used.
+    pub fn mc_get_asym_sign(&self) -> Option<&[u8]> {
+        self.mc_asym_sign.as_deref()
     }
 }
 

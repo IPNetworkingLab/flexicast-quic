@@ -628,7 +628,6 @@ impl MulticastAttributes {
             return false;
         }
         if self.mc_key_up_to_date {
-            println!("Key is up to date now");
             return false;
         }
         if let MulticastRole::ServerUnicast(status) = self.mc_role {

@@ -2,6 +2,7 @@ use networkcoding::source_symbol_metadata_to_u64;
 
 use crate::frame;
 use crate::multicast::reliable::ReliableMulticastConnection;
+use crate::multicast::MulticastError;
 use crate::packet::Epoch;
 use crate::ranges;
 use crate::stream::StreamMap;
@@ -161,71 +162,102 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
             // At this point, we know that the client did not receive the packet.
             // Maybe it recovered it with FEC.
-            // FIXME-RMC-TODO: assume that the SourceSymbolHeader always preceeds
+            // FIXME-RMC-TODO: assumes that the SourceSymbolHeader always preceeds
             // the STREAM frame.
+            // FIXME-RMC-TODO: assumes that a StreamHeader always preceeds the
+            // McAsym frame.
             let mut protected = false;
+            let mut protected_stream_id = None;
             for frame in &packet.frames {
-                if let frame::Frame::SourceSymbolHeader {
-                    metadata,
-                    recovered: _,
-                } = frame
-                {
-                    let mdu64 = source_symbol_metadata_to_u64(*metadata);
-                    for r in reco_ss.iter() {
-                        let lowest_recovered_in_block = r.start;
-                        let largest_recovered_in_block = r.end - 1;
-                        if mdu64 >= lowest_recovered_in_block &&
-                            mdu64 <= largest_recovered_in_block
-                        {
-                            // Packet has been recovered through FEC.
+                match frame {
+                    frame::Frame::SourceSymbolHeader {
+                        metadata,
+                        recovered: _,
+                    } => {
+                        let mdu64 = source_symbol_metadata_to_u64(*metadata);
+                        for r in reco_ss.iter() {
+                            let lowest_recovered_in_block = r.start;
+                            let largest_recovered_in_block = r.end - 1;
+                            if mdu64 >= lowest_recovered_in_block &&
+                                mdu64 <= largest_recovered_in_block
+                            {
+                                // Packet has been recovered through FEC.
+                                continue 'per_packet;
+                            }
+                        }
+                        protected = true;
+                    },
+                    frame::Frame::StreamHeader {
+                        stream_id,
+                        offset,
+                        length,
+                        fin,
+                    } => {
+                        if !protected {
                             continue 'per_packet;
                         }
-                    }
-                    protected = true;
-                }
 
-                // FIXME-RMC-TODO: assume that stream frames in sent packets have
-                // increasing offsets.
-                if let frame::Frame::StreamHeader {
-                    stream_id,
-                    offset,
-                    length,
-                    fin,
-                } = frame
-                {
-                    if !protected {
-                        continue 'per_packet;
-                    }
+                        // This STREAM frame was lost. Retransmit in a (new)
+                        // stream on unicast path.
+                        let stream = uc.get_or_create_stream(*stream_id, true)?;
+                        let was_flushable = stream.is_flushable();
+                        let local_stream = local_streams
+                            .get_mut(*stream_id)
+                            .ok_or(Error::InvalidStreamState(*stream_id))?;
 
-                    // This STREAM frame was lost. Retransmit in a (new) stream on
-                    // unicast path.
-                    let stream = uc.get_or_create_stream(*stream_id, true)?;
-                    let local_stream = local_streams
-                        .get_mut(*stream_id)
-                        .ok_or(Error::InvalidStreamState(*stream_id))?;
+                        // We "ack" the recovery mechanism by asking to retransmit
+                        // the specified data... Since we
+                        // call "send" on the data that is
+                        // retransmitted, we assume that the call
+                        // to "retransmit" wil be cancelled out.
+                        local_stream.send.retransmit(*offset, *length);
 
-                    // We "ack" the recovery mechanism by asking to retransmit the
-                    // specified data... Since we call "send"
-                    // on the data that is retransmitted, we assume that the call
-                    // to "retransmit" wil be cancelled out.
-                    local_stream.send.retransmit(*offset, *length);
+                        // ...and we get the data. This is not optimized (2
+                        // copies) but requires the fewest
+                        // changes.
+                        let mut buf = vec![0u8; *length];
+                        local_stream.send.emit(&mut buf)?;
 
-                    // ...and we get the data. This is not optimized (2 copies)
-                    // but requires the fewest changes.
-                    let mut buf = vec![0u8; *length];
-                    local_stream.send.emit(&mut buf)?;
+                        let written = stream.send.write_at_offset(
+                            &buf[..],
+                            *offset,
+                            *fin,
+                        )?;
+                        assert_eq!(written, *length);
 
-                    let written =
-                        stream.send.write_at_offset(&buf[..], *offset, *fin)?;
-                    assert_eq!(written, *length);
+                        // Mark the stream as flushable. We do not take into
+                        // account flow limits because the
+                        // data has already been sent once on
+                        // the multicast channel, and this data should be
+                        // considered as a retransmission
+                        // only.
+                        let urgency = stream.urgency;
+                        let incr = stream.incremental;
+                        if !was_flushable {
+                            uc.streams.push_flushable(*stream_id, urgency, incr);
+                        }
 
-                    // Mark the stream as flushable. We do not take into account
-                    // flow limits because the data has already been sent once on
-                    // the multicast channel, and this data should be considered
-                    // as a retransmission only.
-                    let urgency = stream.urgency;
-                    let incr = stream.incremental;
-                    uc.streams.push_flushable(*stream_id, urgency, incr);
+                        protected_stream_id = Some(*stream_id);
+                    },
+                    frame::Frame::McAsym { signature } => {
+                        // If such a frame is present, it means that multicast
+                        // uses per-stream asymmetric authentication, and that the
+                        // STREAM frame contained in this packet is the last frame
+                        // of this stream.
+                        //
+                        // Getting an MC_ASYM frame without the stream it
+                        // authenticates is an error.
+                        // RMC-TODO: maybe the StreamHeader frame follows this
+                        // frame?
+                        let stream_id = protected_stream_id.ok_or(
+                            Error::Multicast(MulticastError::McInvalidAuth),
+                        )?;
+
+                        let stream = uc.get_or_create_stream(stream_id, true)?;
+
+                        stream.mc_set_asym_sign(signature);
+                    },
+                    _ => (),
                 }
             }
         }
