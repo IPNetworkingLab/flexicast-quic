@@ -1946,9 +1946,7 @@ impl MulticastConnection for Connection {
 
                 // MC-TODO: 32 should not be hardcoded.
                 let authentication = stream
-                    .recv
-                    .authentication
-                    .as_ref()
+                    .mc_get_asym_sign()
                     .ok_or(Error::Multicast(MulticastError::McInvalidAuth))?;
                 let mut buf = vec![0u8; 32 + authentication.len()];
                 let mut data = stream.recv.hash_stream(&mut buf[..32])?;
@@ -5875,7 +5873,7 @@ mod tests {
         let readables: Vec<_> = client.readable().collect();
         assert_eq!(readables, vec![1]);
         let stream = client.streams.get(1).unwrap();
-        assert_eq!(stream.recv.authentication, None);
+        assert_eq!(stream.mc_get_asym_sign(), None);
         assert!(!stream.recv.is_fully_readable());
         assert!(!stream.mc_asym_verified);
 
@@ -5893,7 +5891,7 @@ mod tests {
         let stream = client.streams.get(1).unwrap();
 
         // Stream is complete for authentication.
-        assert!(stream.recv.authentication.is_some());
+        assert!(stream.mc_get_asym_sign().is_some());
         assert!(stream.recv.is_fully_readable());
         assert!(!stream.mc_asym_verified);
 
@@ -5909,14 +5907,12 @@ mod tests {
         let readables: Vec<_> = client.readable().collect();
         assert_eq!(readables, vec![5]);
         let stream = client.streams.get_mut(5).unwrap();
-        assert!(stream.recv.authentication.is_some());
+        assert!(stream.mc_get_asym_sign().is_some());
         assert!(stream.recv.is_fully_readable());
         assert!(!stream.mc_asym_verified);
 
         stream
-            .recv
-            .authentication
-            .as_mut()
+            .mc_get_mut_asym_sign()
             .map(|auth| auth[3] = auth[3].wrapping_add(10));
         assert_eq!(
             client.mc_stream_recv(5, &mut buf),

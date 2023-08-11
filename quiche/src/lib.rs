@@ -8835,7 +8835,7 @@ impl Connection {
                 if let Some(multicast) = self.multicast.as_mut() {
                     if let Some(stream_id) = multicast.pop_new_mc_stream_fin() {
                         if let Some(stream) = self.streams.get_mut(stream_id) {
-                            stream.recv.authentication = Some(signature);
+                            stream.mc_set_move_asym_sign(signature);
                         } else {
                             return Err(Error::InvalidStreamState(stream_id));
                         }

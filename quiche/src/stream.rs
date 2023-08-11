@@ -676,14 +676,18 @@ pub struct Stream {
     pub mc_asym_verified: bool,
 
     /// The asymmetric signature of the stream.
-    /// This variable has meaning only if the stream is received in a multicast
-    /// path authenticated with
+    /// This variable has meaning only if the stream is sent/received on a
+    /// multicast path authenticated with
     /// [`crate::multicast::authentication::McAuthType::StreamAsym`].
     ///
-    /// If this value is not `None` for a unicast server, it means that the last
-    /// STREAM frame for this stream has been lost for the client on the
-    /// multicast path. The unicast server retransmits this frame alongside the
-    /// MC_ASYM frame to let the client authenticate it.
+    /// For a unicast (but multicast-capable) server, ff this value is not
+    /// `None`, it means that the last STREAM frame for this stream has been
+    /// lost for the client on the multicast path. The unicast server
+    /// retransmits this frame alongside the MC_ASYM frame to let the client
+    /// authenticate it.
+    /// For a multicast client, it indicates whether the received
+    /// stream buffer is authenticated, while the stream is not authenticated
+    /// yet by the signature.
     pub mc_asym_sign: Option<Vec<u8>>,
 }
 
@@ -829,12 +833,6 @@ pub struct RecvBuf {
 
     /// Whether incoming data is validated but not buffered.
     drain: bool,
-
-    /// Whether the received stream buffer is authenticated.
-    /// This variable has a meaning only if multicast is enabled and
-    /// [`crate::multicast::authentication::McAuthType::StreamAsym`] method is
-    /// used, while the stream is not authenticated yet by the signature.
-    pub authentication: Option<Vec<u8>>,
 }
 
 impl RecvBuf {
@@ -1839,11 +1837,25 @@ impl Stream {
         self.mc_asym_sign = Some(sign.to_vec());
     }
 
+    /// Sets a per-stream asymmetric signature of the stream.
+    /// Moves the signature to avoid a copy.
+    /// RMC-TODO: only allow this method for the unicast server if reliable
+    /// multicast is used.
+    pub fn mc_set_move_asym_sign(&mut self, sign: Vec<u8>) {
+        self.mc_asym_sign = Some(sign);
+    }
+
     /// Gets the per-stream asymmetric signature of the stream.
     /// RMC-TODO: only allow this method for the unicast server if reliable
     /// multicast is used.
     pub fn mc_get_asym_sign(&self) -> Option<&[u8]> {
         self.mc_asym_sign.as_deref()
+    }
+
+    #[cfg(test)]
+    /// Returns a mutable reference to the asymmetric signature of the stream.
+    pub fn mc_get_mut_asym_sign(&mut self) -> Option<&mut [u8]> {
+        self.mc_asym_sign.as_deref_mut()
     }
 }
 
