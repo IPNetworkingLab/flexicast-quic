@@ -6275,6 +6275,67 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_mc_unordered_streams() {
+        let use_auth = McAuthType::StreamAsym;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_unordered_streams.txt",
+            use_auth,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+        let signature_len = 0;
+
+        assert!(mc_pipe
+            .source_send_single_stream(true, None, signature_len, 100 * 4 + 1)
+            .is_ok());
+        assert!(mc_pipe
+            .source_send_single_stream(true, None, signature_len, 30 * 4 + 1)
+            .is_ok());
+        assert!(mc_pipe
+            .source_send_single_stream(true, None, signature_len, 1000 * 4 + 1)
+            .is_ok());
+
+        let mut readables: Vec<u64> =
+            mc_pipe.unicast_pipes[0].0.client.readable().collect();
+        readables.sort();
+        assert_eq!(readables, vec![30 * 4 + 1, 100 * 4 + 1, 1000 * 4 + 1]);
+
+        let now = time::Instant::now();
+        let expired_timer = now +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            ); // Margin
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
+        assert_eq!(res, Ok((Some(4), Some(2)).into()));
+
+        assert!(mc_pipe
+            .source_send_single_stream(true, None, signature_len, 10 * 4 + 1)
+            .is_ok());
+        assert!(mc_pipe
+            .source_send_single_stream(true, None, signature_len, 0 * 4 + 1)
+            .is_ok());
+        assert!(mc_pipe
+            .source_send_single_stream(true, None, signature_len, 10_000 * 4 + 1)
+            .is_ok());
+
+        let mut readables: Vec<u64> =
+            mc_pipe.unicast_pipes[0].0.client.readable().collect();
+        readables.sort();
+        assert_eq!(readables, vec![0 * 4 + 1, 10 * 4 + 1, 10_000 * 4 + 1]);
+
+        let now = time::Instant::now();
+        let expired_timer = now +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data * 2 + 100,
+            ); // Margin
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
+        assert_eq!(res, Ok((Some(7), Some(5)).into()));
+    }
 }
 
 pub mod authentication;
