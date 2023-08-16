@@ -40,7 +40,9 @@ pub trait MulticastRecovery {
     ///
     /// For the server, exactly returns all expired stream IDs based on the
     /// maximum expired packet number and the sent packets.
-    fn mc_get_sent_exp_stream_ids(&self, pn: u64, space_id: SpaceId) -> ExpiredStream;
+    fn mc_get_sent_exp_stream_ids(
+        &self, pn: u64, space_id: SpaceId,
+    ) -> ExpiredStream;
 }
 
 impl MulticastRecovery for crate::recovery::Recovery {
@@ -87,8 +89,10 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     None => first,
                 };
 
-                // Retrieve the list of expired streams based on the last expired packet number.
-                expired_streams = self.mc_get_sent_exp_stream_ids(last.pkt_num.1, space_id);
+                // Retrieve the list of expired streams based on the last expired
+                // packet number.
+                expired_streams =
+                    self.mc_get_sent_exp_stream_ids(last.pkt_num.1, space_id);
 
                 // MC-TODO: be sure that we ack multicast data.
                 acked.insert((first.pkt_num.1)..(last.pkt_num.1 + 1));
@@ -134,7 +138,9 @@ impl MulticastRecovery for crate::recovery::Recovery {
         self.reset();
     }
 
-    fn mc_get_sent_exp_stream_ids(&self, pn: u64, space_id: SpaceId) -> ExpiredStream {
+    fn mc_get_sent_exp_stream_ids(
+        &self, pn: u64, space_id: SpaceId,
+    ) -> ExpiredStream {
         self.sent[Epoch::Application]
             .iter()
             .take_while(|p| p.pkt_num.1 <= pn)

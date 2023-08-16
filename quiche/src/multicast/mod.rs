@@ -396,7 +396,8 @@ pub struct MulticastAttributes {
     /// when the client receives an MC_EXPIRE frame from the multicast source.
     mc_pn_stream_id: BTreeMap<u64, u64>,
 
-    /// I need this variable because when receiving a frame, we do not have access anymore to the packet numer...
+    /// I need this variable because when receiving a frame, we do not have
+    /// access anymore to the packet numer...
     pub(crate) mc_last_recv_pn: u64,
 }
 
@@ -1512,8 +1513,11 @@ impl MulticastConnection for Connection {
             pkt_num_space.recv_pkt_need_ack.remove_until(exp_pn);
             debug!("Remove packets until {} for space id {}", exp_pn, space_id);
 
-            expired_streams =
-                self.multicast.as_mut().unwrap().mc_get_recv_expired_stream_ids(exp_pn)?;
+            expired_streams = self
+                .multicast
+                .as_mut()
+                .unwrap()
+                .mc_get_recv_expired_stream_ids(exp_pn)?;
             debug!(
                 "Expired streams on the client based on pn={:?}: {:?}",
                 exp_pn, expired_streams
@@ -1551,8 +1555,9 @@ impl MulticastConnection for Connection {
                 };
             }
         }
-        
-        // Remove from the inner structure the expired packet number - stream ID mapping.
+
+        // Remove from the inner structure the expired packet number - stream ID
+        // mapping.
         if !self.is_server {
             if let Some(exp_pn) = expired_pkt.pn {
                 multicast.mc_rm_recv_expired_pns(exp_pn)?;
