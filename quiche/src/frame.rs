@@ -242,7 +242,6 @@ pub enum Frame {
         channel_id: Vec<u8>,
         expiration_type: u8,
         pkt_num: Option<u64>,
-        stream_id: Option<u64>,
         fec_metadata: Option<u64>,
     },
 
@@ -482,11 +481,6 @@ impl Frame {
                 } else {
                     None
                 };
-                let stream_id = if expiration_type & 2 > 0 {
-                    Some(b.get_varint()?)
-                } else {
-                    None
-                };
                 let fec_metadata = if expiration_type & 4 > 0 {
                     Some(b.get_varint()?)
                 } else {
@@ -497,7 +491,6 @@ impl Frame {
                     channel_id,
                     expiration_type,
                     pkt_num,
-                    stream_id,
                     fec_metadata,
                 }
             },
@@ -924,7 +917,6 @@ impl Frame {
                 channel_id,
                 expiration_type,
                 pkt_num,
-                stream_id,
                 fec_metadata,
             } => {
                 debug!("Going to encode the MC_EXPIRE frame");
@@ -934,9 +926,6 @@ impl Frame {
                 b.put_u8(*expiration_type)?;
                 if let Some(pkt_num) = pkt_num {
                     b.put_varint(*pkt_num)?;
-                }
-                if let Some(stream_id) = stream_id {
-                    b.put_varint(*stream_id)?;
                 }
                 if let Some(fec_metadata) = fec_metadata {
                     b.put_varint(*fec_metadata)?;
@@ -1326,12 +1315,9 @@ impl Frame {
                 channel_id,
                 expiration_type: _,
                 pkt_num,
-                stream_id,
                 fec_metadata,
             } => {
                 let pkt_num_len = pkt_num.map(octets::varint_len).unwrap_or(0);
-                let stream_id_len =
-                    stream_id.map(octets::varint_len).unwrap_or(0);
                 let fec_metadata_len =
                     fec_metadata.map(octets::varint_len).unwrap_or(0);
                 let frame_type_size = octets::varint_len(MC_EXPIRE_CODE);
@@ -1339,7 +1325,6 @@ impl Frame {
                 1 + // channel_id len
                 channel_id.len() +
                 pkt_num_len +
-                stream_id_len +
                 fec_metadata_len
             },
 
@@ -2006,10 +1991,9 @@ impl std::fmt::Debug for Frame {
                 channel_id,
                 expiration_type,
                 pkt_num,
-                stream_id,
                 fec_metadata,
             } => {
-                write!(f, "MC_EXPIRE channel ID={:?} expiration type: {:?} pkt_num: {:?} stream_id: {:?} fec_metadata: {:?}", channel_id, expiration_type, pkt_num, stream_id, fec_metadata)?;
+                write!(f, "MC_EXPIRE channel ID={:?} expiration type: {:?} pkt_num: {:?} fec_metadata: {:?}", channel_id, expiration_type, pkt_num, fec_metadata)?;
             },
 
             Frame::McAuth {
@@ -3817,7 +3801,6 @@ mod tests {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             expiration_type: 7,
             pkt_num: Some(5678),
-            stream_id: Some(1234),
             fec_metadata: Some(91011),
         };
 
@@ -3826,7 +3809,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 19);
+        assert_eq!(wire_len, 17);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

@@ -2988,6 +2988,13 @@ impl Connection {
             self.got_peer_conn_id = true;
         }
 
+        if let Some(multicast) = self.multicast.as_mut() {
+            let mc_space_id = multicast.get_mc_space_id();
+            if mc_space_id.is_some() && mc_space_id.unwrap() == recv_pid {
+                multicast.mc_last_recv_pn = pn;
+            }
+        }
+
         // To avoid sending an ACK in response to an ACK-only packet, we need
         // to keep track of whether this packet contains any frame other than
         // ACK and PADDING.
@@ -4896,8 +4903,8 @@ impl Connection {
                             multicast::MulticastError::McAnnounce,
                         ))?;
                     let first_pn =
-                        if let Some((Some(pn), ..)) = multicast.mc_last_expired {
-                            pn
+                        if let Some(exp_pkt) = multicast.mc_last_expired {
+                            exp_pkt.pn.unwrap_or(1)
                         } else {
                             1
                         };
@@ -4920,21 +4927,15 @@ impl Connection {
 
             // Create MC_EXPIRE frame.
             if let Some(multicast) = self.multicast.as_mut() {
-                if let (
-                    true,
-                    Some((exp_pn_opt, exp_sid_opt, exp_fec_metadata_opt)),
-                ) = (
+                if let (true, Some(exp_pkt)) = (
                     multicast.mc_last_expired_needs_notif,
                     multicast.mc_last_expired,
                 ) {
                     let mut expiration_type = 0;
-                    if exp_pn_opt.is_some() {
+                    if exp_pkt.pn.is_some() {
                         expiration_type += 1;
                     }
-                    if exp_sid_opt.is_some() {
-                        expiration_type += 2;
-                    }
-                    if exp_fec_metadata_opt.is_some() {
+                    if exp_pkt.ssid.is_some() {
                         expiration_type += 4;
                     }
                     let mc_announce_data = multicast
@@ -4946,11 +4947,9 @@ impl Connection {
                     let frame = frame::Frame::McExpire {
                         channel_id: mc_announce_data.channel_id.clone(),
                         expiration_type,
-                        pkt_num: exp_pn_opt,
-                        stream_id: exp_sid_opt,
-                        fec_metadata: exp_fec_metadata_opt,
+                        pkt_num: exp_pkt.pn,
+                        fec_metadata: exp_pkt.ssid,
                     };
-                    // MC-TODO: expired FEC metadata
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
                         multicast.mc_last_expired_needs_notif = false;
@@ -8476,6 +8475,19 @@ impl Connection {
                         multicast.push_new_mc_stream_fin(stream_id);
                     }
                 }
+
+                // If this STREAM frame was received on the multicast path, add
+                // it to the packet number - stream ID mapping.
+                if let Some(multicast) = self.multicast.as_mut() {
+                    if let Some(space_id) = multicast.get_mc_space_id() {
+                        if space_id == recv_path_id {
+                            multicast.mc_add_recv_pn_sid(
+                                multicast.mc_last_recv_pn,
+                                stream_id,
+                            )?;
+                        }
+                    }
+                }
             },
 
             frame::Frame::StreamHeader { .. } => unreachable!(),
@@ -8676,17 +8688,19 @@ impl Connection {
 
                         // Add the first packet number of interest for the new
                         // path if possible.
-                        if let Some((Some(first_pn), ..)) =
+                        if let Some(exp_pkt) =
                             self.multicast.as_ref().unwrap().mc_last_expired
                         {
-                            self.pkt_num_spaces
-                                .spaces
-                                .get_mut_or_create(
-                                    packet::Epoch::Application,
-                                    pid,
-                                )
-                                .recv_pkt_need_ack
-                                .insert(first_pn..first_pn + 1);
+                            if let Some(exp_pn) = exp_pkt.pn {
+                                self.pkt_num_spaces
+                                    .spaces
+                                    .get_mut_or_create(
+                                        packet::Epoch::Application,
+                                        pid,
+                                    )
+                                    .recv_pkt_need_ack
+                                    .insert(exp_pn..exp_pn + 1);
+                            }
                         }
 
                         // // Find the multicast path that received a response.
@@ -8830,7 +8844,10 @@ impl Connection {
             },
 
             frame::Frame::McAsym { signature } => {
-                debug!("Receive an MC_ASYM frame on space id {:?}: {:?}", recv_path_id, signature);
+                debug!(
+                    "Receive an MC_ASYM frame on space id {:?}: {:?}",
+                    recv_path_id, signature
+                );
 
                 if let Some(multicast) = self.multicast.as_mut() {
                     if let Some(stream_id) = multicast.pop_new_mc_stream_fin() {
@@ -9150,8 +9167,10 @@ impl Connection {
                             .insert(first_pn..first_pn + 1);
                     } else {
                         // ... and if the path does not exist, store for later.
-                        multicast.mc_last_expired =
-                            Some((Some(first_pn), None, None));
+                        multicast.mc_last_expired = Some(multicast::ExpiredPkt {
+                            pn: Some(first_pn),
+                            ..Default::default()
+                        });
                     }
                 } else {
                     return Err(Error::Multicast(
@@ -9164,10 +9183,9 @@ impl Connection {
                 channel_id,
                 expiration_type: _,
                 pkt_num,
-                stream_id,
                 fec_metadata,
             } => {
-                debug!("Received an MC_EXPIRE frame! channel ID: {:?}, pkt num: {:?}, stream ID: {:?} fec metadata: {:?}", channel_id, pkt_num, stream_id, fec_metadata);
+                debug!("Received an MC_EXPIRE frame! channel ID: {:?}, pkt num: {:?}, fec metadata: {:?}", channel_id, pkt_num, fec_metadata);
                 if self.is_server {
                     return Err(Error::Multicast(
                         multicast::MulticastError::McInvalidRole(
@@ -9179,12 +9197,17 @@ impl Connection {
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     if let Some(space_id) = multicast.get_mc_space_id() {
                         let now = time::Instant::now();
+                        println!(
+                            "Before client doing mc expire: {:?} and {:?}",
+                            pkt_num, fec_metadata
+                        );
                         self.mc_expire(
                             epoch,
                             space_id as u64,
-                            Some(&(pkt_num, stream_id, fec_metadata)),
+                            (pkt_num, fec_metadata).into(),
                             now,
                         )?;
+                        println!("After client mc expire");
                     } else {
                         return Err(Error::Multicast(
                             multicast::MulticastError::McPath,

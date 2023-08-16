@@ -803,11 +803,10 @@ mod tests {
             // Multicast source expires and directly sends notificication to the
             // clients, before the unicast servers can retransmit the lost stream
             // frames.
-            let (exp_pn, exp_streams, exp_fec) =
+            let exp_pkt =
                 mc_pipe.mc_channel.channel.on_mc_timeout(expired).unwrap();
-            assert_eq!(exp_pn, Some(9 + sign_len as u64 / 64));
-            assert_eq!(exp_streams, Some(1)); // The client will ignore this.
-            assert_eq!(exp_fec, Some(7 + sign_len as u64 / 64));
+            assert_eq!(exp_pkt.pn, Some(9 + sign_len as u64 / 64));
+            assert_eq!(exp_pkt.ssid, Some(7 + sign_len as u64 / 64));
 
             // The unicast server sends the retransmissions.
             assert_eq!(
@@ -897,15 +896,14 @@ mod tests {
             // Multicast source expires and directly sends notificication to the
             // clients, before the unicast servers can retransmit the lost stream
             // frames.
-            let (exp_pn, exp_streams, exp_fec) =
+            let exp_pkt =
                 mc_pipe.mc_channel.channel.on_mc_timeout(expired).unwrap();
-            assert_eq!(exp_streams, Some(1));
             if auth_method == McAuthType::AsymSign {
-                assert_eq!(exp_pn, Some(16));
-                assert_eq!(exp_fec, Some(14));
+                assert_eq!(exp_pkt.pn, Some(16));
+                assert_eq!(exp_pkt.ssid, Some(14));
             } else {
-                assert_eq!(exp_pn, Some(15));
-                assert_eq!(exp_fec, Some(13));
+                assert_eq!(exp_pkt.pn, Some(15));
+                assert_eq!(exp_pkt.ssid, Some(13));
             }
 
             // The unicast server sends the retransmissions.

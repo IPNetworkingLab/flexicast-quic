@@ -2,6 +2,8 @@ use networkcoding::source_symbol_metadata_to_u64;
 
 use crate::frame;
 use crate::multicast::reliable::ReliableMulticastConnection;
+use crate::multicast::ExpiredPkt;
+use crate::multicast::ExpiredStream;
 use crate::multicast::MulticastError;
 use crate::packet::Epoch;
 use crate::ranges;
@@ -21,23 +23,31 @@ use super::SpaceId;
 /// the multicast extension of QUIC.
 pub trait MulticastRecovery {
     /// Removes multicast data that passes above a defined time threshold.
+    ///
+    /// Returns the maximum packet number and the FEC Source Symbol ID expired.
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
-    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)>;
+    ) -> Result<(ExpiredPkt, ExpiredStream)>;
 
     /// Returns the next expiring event.
     fn mc_next_timeout(&self, ttl_data: std::time::Duration) -> Option<Instant>;
 
     /// Sets the multicast maximum congestion window size.
     fn set_mc_max_cwnd(&mut self, cwnd: usize);
+
+    /// Returns the stream IDs that are expired.
+    ///
+    /// For the server, exactly returns all expired stream IDs based on the
+    /// maximum expired packet number and the sent packets.
+    fn mc_get_sent_exp_stream_ids(&self, pn: u64, space_id: SpaceId) -> ExpiredStream;
 }
 
 impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
-    ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
+    ) -> Result<(ExpiredPkt, ExpiredStream)> {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
@@ -46,16 +56,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
             })
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
-        // Get the last stream ID which is impacted by the timeout.
-        let exp2 = expired_sent.clone();
-        let stream_ids = exp2.flat_map(|p| {
-            p.frames.as_ref().iter().filter_map(|f| match f {
-                crate::frame::Frame::StreamHeader { stream_id, .. } =>
-                    Some(*stream_id),
-                _ => None,
-            })
-        });
-        let stream_id_removed = stream_ids.max();
+        let mut expired_streams = ExpiredStream::new();
 
         // Get the highest expired FEC metadata.
         let exp3 = expired_sent.clone();
@@ -66,12 +67,18 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 _ => None,
             })
         });
-        let fec_metadata_removed: Option<u64> = fec_medatadas.max();
+        let expired_ssid: Option<u64> = fec_medatadas.max();
 
         // Take the first and last sent from the iterator.
         // We will make a range for all of them.
         match expired_sent.next() {
-            None => Ok((None, None, None)),
+            None => Ok((
+                ExpiredPkt {
+                    pn: None,
+                    ssid: None,
+                },
+                expired_streams,
+            )),
             Some(first) => {
                 // Create a dummy ack to remove the expired data.
                 let mut acked = ranges::RangeSet::default();
@@ -79,9 +86,13 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     Some(l) => l,
                     None => first,
                 };
+
+                // Retrieve the list of expired streams based on the last expired packet number.
+                expired_streams = self.mc_get_sent_exp_stream_ids(last.pkt_num.1, space_id);
+
                 // MC-TODO: be sure that we ack multicast data.
                 acked.insert((first.pkt_num.1)..(last.pkt_num.1 + 1));
-                let pkt_num_removed = last.pkt_num.1;
+                let expired_pn = Some(last.pkt_num.1);
 
                 self.on_ack_received(
                     space_id,
@@ -95,9 +106,11 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 )?;
 
                 Ok((
-                    Some(pkt_num_removed),
-                    stream_id_removed,
-                    fec_metadata_removed,
+                    ExpiredPkt {
+                        pn: expired_pn,
+                        ssid: expired_ssid,
+                    },
+                    expired_streams,
                 ))
             },
         }
@@ -119,6 +132,21 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn set_mc_max_cwnd(&mut self, cwnd: usize) {
         self.mc_cwnd = Some(cwnd);
         self.reset();
+    }
+
+    fn mc_get_sent_exp_stream_ids(&self, pn: u64, space_id: SpaceId) -> ExpiredStream {
+        self.sent[Epoch::Application]
+            .iter()
+            .take_while(|p| p.pkt_num.1 <= pn)
+            .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id)
+            .flat_map(|p| {
+                p.frames.as_ref().iter().filter_map(|f| match f {
+                    crate::frame::Frame::StreamHeader { stream_id, .. } =>
+                        Some(*stream_id),
+                    _ => None,
+                })
+            })
+            .collect()
     }
 }
 
@@ -469,7 +497,7 @@ mod tests {
             HandshakeStatus::default(),
             &mut Vec::new(),
         );
-        assert_eq!(res, Ok((Some(2), Some(9), Some(2))));
+        assert_eq!(res, Ok(((Some(2), Some(2)).into(), [9].into())));
 
         assert_eq!(r.sent[Epoch::Application].len(), 1);
         assert_eq!(r.bytes_in_flight, 1000);
