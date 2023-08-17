@@ -223,14 +223,8 @@ impl FileServer {
     }
 
     #[inline]
-    pub fn on_expiring(&mut self, exp_stream_id: u64) {
-        while self.stream_id <= exp_stream_id && self.active {
-            println!(
-                "Self stream id: {}, exp stream id: {}",
-                self.stream_id, exp_stream_id
-            );
-            self.gen_nxt_app_data();
-        }
+    pub fn on_expiring(&mut self) {
+        self.gen_nxt_app_data();
     }
 
     #[inline]

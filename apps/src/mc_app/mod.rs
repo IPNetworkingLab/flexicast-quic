@@ -239,10 +239,10 @@ impl AppDataServer {
     }
 
     #[inline]
-    pub fn on_expiring(&mut self, exp_stream_id: u64) {
+    pub fn on_expiring(&mut self) {
         match self {
             Self::Tixeo(_) => (),
-            Self::File(f) => f.on_expiring(exp_stream_id),
+            Self::File(f) => f.on_expiring(),
         }
     }
 

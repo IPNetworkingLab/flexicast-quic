@@ -44,9 +44,12 @@ use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
 use quiche::SendInfo;
+use quiche::multicast::reliable::ReliableMulticastConnection;
+use quiche::on_rmc_timeout_server;
 use quiche_apps::common::ClientIdMap;
 use quiche_apps::mc_app;
 use quiche_apps::sendto::*;
+use std::time;
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -182,6 +185,10 @@ struct Args {
     /// expiration window.
     #[clap(long = "max-fec-rs", value_parser, default_value = "5")]
     max_fec_rs: u32,
+
+    /// Use reliable multicast.
+    #[clap(long = "reliable")]
+    reliable_mc: bool,
 }
 
 fn main() {
@@ -316,6 +323,7 @@ fn main() {
             source_addr,
             &args.cert_path,
             Some(args.max_fec_rs),
+            args.reliable_mc,
         )
     } else {
         (None, None, None, None)
@@ -372,7 +380,7 @@ fn main() {
                 .flatten()
                 .min()
                 .copied()
-        } else if let Some(mc_channel) = mc_channel_opt.as_mut() {
+        } else if let Some(mc_channel) = mc_channel_opt.as_ref() {
             let mc_timeout = mc_channel.channel.mc_timeout(now);
             timeout = [timeout, mc_timeout].iter().flatten().min().copied()
         }
@@ -746,10 +754,15 @@ fn main() {
         // Handle time to live timeout of data of the multicast channel.
         let now = std::time::Instant::now();
         if let Some(mc_channel) = mc_channel_opt.as_mut() {
-            let (_, exp_stream_id_opt, _) =
+            // Before expiring the data, deleguate to unicast connections if reliable multicast is enabled.
+            if args.reliable_mc {
+                let clients_conn = clients.iter_mut().map(|c| &mut c.1.conn);
+                on_rmc_timeout_server!(&mut mc_channel.channel, clients_conn, now).unwrap();
+            }
+            let expired_pkt =
                 mc_channel.channel.on_mc_timeout(now).unwrap();
-            if let Some(exp_stream_id) = exp_stream_id_opt {
-                app_handler.on_expiring(exp_stream_id);
+            if expired_pkt.pn.is_some() {
+                app_handler.on_expiring();
             }
         }
 
@@ -1181,7 +1194,7 @@ fn validate_token<'a>(
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
     ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
-    source_addr: net::SocketAddr, cert_path: &str, max_fec_rs: Option<u32>,
+    source_addr: net::SocketAddr, cert_path: &str, max_fec_rs: Option<u32>, reliable_mc: bool,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,
@@ -1262,7 +1275,7 @@ fn get_multicast_channel(
         path_type: McPathType::Data,
         auth_type: authentication,
         is_ipv6: soft_mc,
-        full_reliability: false,
+        full_reliability: reliable_mc,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,
         udp_port: mc_port,

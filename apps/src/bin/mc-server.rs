@@ -700,10 +700,10 @@ fn main() {
         // Handle time to live timeout of data of the multicast channel.
         let now = std::time::Instant::now();
         if let Some(mc_channel) = mc_channel_opt.as_mut() {
-            let (_, exp_stream_id_opt, _) =
+            let expired_pkt =
                 mc_channel.channel.on_mc_timeout(now).unwrap();
-            if let Some(exp_stream_id) = exp_stream_id_opt {
-                app_handler.on_expiring(exp_stream_id);
+            if expired_pkt.pn.is_some() {
+                app_handler.on_expiring();
             }
         }
 

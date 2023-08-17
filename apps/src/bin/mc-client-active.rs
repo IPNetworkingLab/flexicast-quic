@@ -37,6 +37,7 @@ use quiche::multicast::McConfig;
 use quiche::multicast::MulticastClientStatus;
 use quiche::multicast::MulticastError;
 use quiche::multicast::MulticastRole;
+use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche_apps::mc_app;
 use ring::rand::*;
 
@@ -258,7 +259,7 @@ fn main() {
 
     'main_loop: loop {
         let now = std::time::Instant::now();
-        let timers = [conn.timeout(), conn.mc_timeout(now)];
+        let timers = [conn.timeout(), conn.mc_timeout(now), conn.rmc_timeout(now)];
         let timeout = timers.iter().flatten().min().copied();
         debug!("Timeout: {:?}", timeout);
         poll.poll(&mut events, timeout).unwrap();
@@ -279,6 +280,7 @@ fn main() {
                 );
 
                 let now = std::time::Instant::now();
+                conn.on_rmc_timeout(now).unwrap();
                 if conn.on_mc_timeout(now) ==
                     Err(quiche::Error::Multicast(
                         multicast::MulticastError::McInvalidRole(
