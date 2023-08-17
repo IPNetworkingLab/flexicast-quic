@@ -20,9 +20,7 @@ use super::MulticastRole;
 macro_rules! on_rmc_timeout_server {
     ( $mc:expr, $ucs:expr, $now:expr ) => {
         if $mc.mc_timeout($now) == Some(time::Duration::ZERO) {
-            $ucs.iter_mut()
-                .map(|uc| $mc.rmc_deleguate_streams(uc, $now))
-                .collect()
+            $ucs.map(|uc| $mc.rmc_deleguate_streams(uc, $now)).collect()
         } else {
             Ok(())
         }
@@ -62,6 +60,11 @@ pub struct RMcServer {
 
     /// FEC metadata received by the client.
     recv_fec_mc: RangeSet,
+
+    /// Number of packets containing STREAM frames sent over the multicast path
+    /// that expired and must be retransmitted to the client over the unicast
+    /// path.
+    nb_lost_stream_mc_pkt: u64,
 }
 
 impl RMcServer {
@@ -73,6 +76,13 @@ impl RMcServer {
     /// Sets the FEC metadata received bu the client on the multicast channel.
     pub fn set_rmc_received_fec_metadata(&mut self, ranges: RangeSet) {
         self.recv_fec_mc = ranges;
+    }
+
+    /// Returns the number of packets containing STREAM frames sent over the
+    /// multicast path that expired and must be retransmitted to the client over
+    /// the unicast path.
+    pub fn get_nb_lost_stream_mc_pkt(&self) -> u64 {
+        self.nb_lost_stream_mc_pkt
     }
 }
 
@@ -90,7 +100,7 @@ pub enum ReliableMc {
 }
 
 impl ReliableMc {
-    /// Return the client inner structure.
+    /// Return a mutable reference to the client inner structure.
     pub fn client(&self) -> Option<&RMcClient> {
         if let Self::Client(c) = self {
             Some(c)
@@ -99,8 +109,26 @@ impl ReliableMc {
         }
     }
 
-    /// Return the server inner structure.
+    /// Return a mutable reference to the server inner structure.
     pub fn server(&self) -> Option<&RMcServer> {
+        if let Self::Server(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    /// Return a mutable reference to the client inner structure.
+    pub fn client_mut(&mut self) -> Option<&mut RMcClient> {
+        if let Self::Client(c) = self {
+            Some(c)
+        } else {
+            None
+        }
+    }
+
+    /// Return a mutable reference to the server inner structure.
+    pub fn server_mut(&mut self) -> Option<&mut RMcServer> {
         if let Self::Server(s) = self {
             Some(s)
         } else {
@@ -189,7 +217,7 @@ impl ReliableMulticastConnection for Connection {
 
         let mc_reliable = multicast.mc_reliable.as_ref()?;
 
-        if let ReliableMc::Client(ref rmc) = mc_reliable {
+        if let ReliableMc::Client(rmc) = mc_reliable {
             Some(rmc.rmc_next_time_ack?.duration_since(now))
         } else {
             None
@@ -294,13 +322,18 @@ impl ReliableMulticastConnection for Connection {
                 .ok_or(Error::Multicast(MulticastError::McPath))?;
             let path = self.paths.get_mut(space_id)?;
             let stream_map = &mut self.streams;
-            path.recovery.deleguate_stream(
+            let nb_lost_stream_frames = path.recovery.deleguate_stream(
                 uc,
                 now,
                 expiration_timer,
                 space_id as u32,
                 stream_map,
             )?;
+            if let Some(rmc) = uc.multicast.as_mut().unwrap().mc_reliable.as_mut()
+            {
+                rmc.server_mut().unwrap().nb_lost_stream_mc_pkt +=
+                    nb_lost_stream_frames;
+            }
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -348,9 +381,30 @@ impl MulticastAttributes {
         }
     }
 
-    /// Get the reliable multicast attributes.
-    pub fn rmc_get_attributes(&mut self) -> Option<&mut ReliableMc> {
+    /// Gets the reliable multicast attributes as a mutable reference.
+    pub fn rmc_get_mut(&mut self) -> Option<&mut ReliableMc> {
         self.mc_reliable.as_mut()
+    }
+
+    /// Gets the reliable multicast attributes as a reference.
+    pub fn rmc_get(&self) -> Option<&ReliableMc> {
+        self.mc_reliable.as_ref()
+    }
+
+    /// Gets the number of STREAM frames that this server-side unicast
+    /// connection retransmitted.
+    ///
+    /// Always `None` for the multicast source and the client.
+    /// `None` if reliable multicast is disabled.
+    pub fn rmc_get_server_nb_lost_stream(&self) -> Option<u64> {
+        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_)) ||
+            !self.mc_is_reliable()
+        {
+            return None;
+        }
+
+        self.rmc_get()
+            .map(|rmc| rmc.server().map(|s| s.get_nb_lost_stream_mc_pkt()))?
     }
 }
 
@@ -395,7 +449,7 @@ pub mod testing {
         ) -> Result<()> {
             let ucs = self.unicast_pipes.iter_mut().take_while(|_| true);
             let mc = &mut self.mc_channel.channel;
-            let mut ucs: Vec<_> = ucs.map(|c| &mut c.0.server).collect();
+            let ucs = ucs.map(|c| &mut c.0.server);
 
             on_rmc_timeout_server!(mc, ucs, expired)
         }
@@ -477,6 +531,7 @@ mod tests {
         let expected_rmc = ReliableMc::Server(RMcServer {
             recv_pn_mc: RangeSet::default(),
             recv_fec_mc: RangeSet::default(),
+            nb_lost_stream_mc_pkt: 0,
         });
         assert_eq!(rmc, Some(&expected_rmc));
 
@@ -619,38 +674,23 @@ mod tests {
 
             // Source sends four small streams. Second and last are not received
             // on the client.
-            assert!(
-                mc_pipe.source_send_single_stream(
-                    true,
-                    Some(&client_loss2),
-                    sign_len,
-                    1
-                ).is_ok()
-            );
-            assert!(
-                mc_pipe.source_send_single_stream(
-                    true,
-                    Some(&client_loss1),
-                    sign_len,
-                    5
-                ).is_ok()
-            );
-            assert!(
-                mc_pipe.source_send_single_stream(
-                    true,
-                    Some(&client_loss2),
-                    sign_len,
-                    9
-                ).is_ok()
-            );
-            assert!(
-                mc_pipe.source_send_single_stream(
+            assert!(mc_pipe
+                .source_send_single_stream(true, Some(&client_loss2), sign_len, 1)
+                .is_ok());
+            assert!(mc_pipe
+                .source_send_single_stream(true, Some(&client_loss1), sign_len, 5)
+                .is_ok());
+            assert!(mc_pipe
+                .source_send_single_stream(true, Some(&client_loss2), sign_len, 9)
+                .is_ok());
+            assert!(mc_pipe
+                .source_send_single_stream(
                     true,
                     Some(&client_loss1),
                     sign_len,
                     13
-                ).is_ok()
-            );
+                )
+                .is_ok());
 
             let expiration_timer = mc_pipe.mc_announce_data.ttl_data;
             let now = time::Instant::now();
@@ -720,6 +760,8 @@ mod tests {
                         Ok((300, true))
                     );
                 }
+
+                assert_eq!(pipe.0.server.multicast.as_ref().unwrap().rmc_get_server_nb_lost_stream(), Some(2));
             }
         }
     }
@@ -928,6 +970,9 @@ mod tests {
                     );
                     assert_eq!(data, out_buf[..data_len]);
                     assert_eq!(data2, out_buf[data_len..]);
+
+                    // Only test for StreamAsym for simplicity.
+                    assert_eq!(pipe.0.server.multicast.as_ref().unwrap().rmc_get_server_nb_lost_stream(), Some(7));
                 } else {
                     assert_eq!(
                         client.mc_stream_recv(1, &mut out_buf),

@@ -8922,7 +8922,7 @@ impl Connection {
                         // result, we do not need to keep track of the path on
                         // which the source symbol is sent.
                         if let Some(ReliableMc::Server(s)) =
-                            multicast.rmc_get_attributes()
+                            multicast.rmc_get_mut()
                         {
                             s.set_rmc_received_fec_metadata(ranges);
                             return Ok(());
@@ -8984,7 +8984,7 @@ impl Connection {
                         Some(space_identifier as usize)
                     {
                         if let Some(ReliableMc::Server(s)) =
-                            multicast.rmc_get_attributes()
+                            multicast.rmc_get_mut()
                         {
                             s.set_rmc_received_pn(ranges);
 

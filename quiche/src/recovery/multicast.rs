@@ -161,19 +161,23 @@ impl MulticastRecovery for crate::recovery::Recovery {
 /// the multicast extension of QUIC.
 pub trait ReliableMulticastRecovery {
     /// Deleguates the streams to the unicast connection.
+    ///
+    /// Returns the number of STREAM frames lost that will be retransmitted to
+    /// the client on the unicast path.
     fn deleguate_stream(
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
         space_id: u32, local_streams: &mut StreamMap,
-    ) -> Result<()>;
+    ) -> Result<u64>;
 }
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
     fn deleguate_stream(
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
         space_id: u32, local_streams: &mut StreamMap,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
+        let mut nb_lost_mc_stream_frames = 0;
         let expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
@@ -230,6 +234,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         if !protected {
                             continue 'per_packet;
                         }
+
+                        nb_lost_mc_stream_frames += 1;
 
                         // This STREAM frame was lost. Retransmit in a (new)
                         // stream on unicast path.
@@ -296,7 +302,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             }
         }
 
-        Ok(())
+        Ok(nb_lost_mc_stream_frames)
     }
 }
 
