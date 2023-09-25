@@ -2472,6 +2472,7 @@ mod delivery_rate;
 mod disabled_cc;
 mod hystart;
 pub mod multicast;
+mod mc_cubic;
 mod pacer;
 mod prr;
 mod reno;

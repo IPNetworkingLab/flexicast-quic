@@ -2869,8 +2869,8 @@ pub mod testing {
                 };
 
                 let res =
-                    pipe.client.mc_recv(&mut recv_buf[..written], recv_info);
-                assert_eq!(res, Ok(written - signature_len));
+                    pipe.client.mc_recv(&mut recv_buf[..written], recv_info)?;
+                assert_eq!(res, written - signature_len);
             }
 
             Ok(written)
@@ -6335,6 +6335,31 @@ mod tests {
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(7), Some(5)).into()));
+    }
+
+    #[test]
+    fn test_mc_no_retransmit_timer() {
+        let use_auth = McAuthType::StreamAsym;
+        let mut mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_dummy_understand.txt",
+            use_auth,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        mc_pipe.source_send_single_stream(true, None, 0, 1).unwrap();
+        
+        // The stream is sent to the clients.
+        assert_eq!(mc_pipe.source_send_single(None, 0), Err(Error::Done));
+        std::thread::sleep(time::Duration::from_millis(100));
+        let conn = &mut mc_pipe.mc_channel.channel;
+        conn.on_timeout();
+
+        // The server must not retransmit STREAM data on the multicast channel.
+        assert_eq!(mc_pipe.source_send_single(None, 0), Err(Error::Done));
     }
 }
 

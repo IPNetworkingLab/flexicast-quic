@@ -24,9 +24,7 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Reno Congestion Control
-//!
-//! Note that Slow Start can use HyStart++ when enabled.
+//! Disabled Congestion Control
 
 use std::time::Instant;
 

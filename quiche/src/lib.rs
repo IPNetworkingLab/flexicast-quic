@@ -7021,7 +7021,7 @@ impl Connection {
 
         let handshake_status = self.handshake_status();
 
-        for (_, p) in self.paths.iter_mut() {
+        for (path_id, p) in self.paths.iter_mut() {
             if let Some(timer) = p.closing_timer() {
                 if timer <= now {
                     trace!("{} path closing timeout expired", self.trace_id);
@@ -7034,6 +7034,14 @@ impl Connection {
                     p.on_closing_timeout();
                 }
             }
+            
+            // Disable loss detection timer for data sent on the multicast data path.
+            if let Some(multicast) = self.multicast.as_ref() {
+                if Some(path_id) == multicast.get_mc_space_id() {
+                    continue;
+                }
+            }
+
             if let Some(timer) = p.recovery.loss_detection_timer() {
                 if timer <= now {
                     trace!("{} loss detection timeout expired", self.trace_id);
