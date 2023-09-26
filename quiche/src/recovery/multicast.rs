@@ -43,6 +43,10 @@ pub trait MulticastRecovery {
     fn mc_get_sent_exp_stream_ids(
         &self, pn: u64, space_id: SpaceId,
     ) -> ExpiredStream;
+
+    /// Returns the time sent of the packet with packet number given as
+    /// argument.
+    fn mc_get_time_sen(&self, pn: u64) -> Option<Instant>;
 }
 
 impl MulticastRecovery for crate::recovery::Recovery {
@@ -98,6 +102,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 acked.insert((first.pkt_num.1)..(last.pkt_num.1 + 1));
                 let expired_pn = Some(last.pkt_num.1);
 
+                let cwnd_before = self.congestion_window;
+                
                 self.on_ack_received(
                     space_id,
                     &acked,
@@ -108,6 +114,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     "",
                     newly_acked,
                 )?;
+                
+                println!("RELIABLE MULTICAST. Expiration: increase window {} -> {}", cwnd_before, self.congestion_window);
 
                 Ok((
                     ExpiredPkt {
@@ -153,6 +161,13 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 })
             })
             .collect()
+    }
+
+    fn mc_get_time_sen(&self, pn: u64) -> Option<Instant> {
+        self.sent[Epoch::Application]
+            .iter()
+            .find(|pkt| pkt.pkt_num.1 == pn)
+            .map(|pkt| pkt.time_sent)
     }
 }
 

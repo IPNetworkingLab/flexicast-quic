@@ -11,6 +11,7 @@ use std::io::BufRead;
 use std::net::SocketAddr;
 use std::time;
 
+use crate::packet;
 use crate::packet::Epoch;
 use crate::rand::rand_bytes;
 use crate::ranges;
@@ -1149,7 +1150,9 @@ pub trait MulticastConnection {
     ///
     /// Returns an error if this method is called by another entity than the
     /// unicast server.
-    fn uc_to_mc_control(&mut self, mc_channel: &mut Connection) -> Result<()>;
+    fn uc_to_mc_control(
+        &mut self, mc_channel: &mut Connection, now: time::Instant,
+    ) -> Result<()>;
 
     /// Returns the multicast attributes.
     fn get_multicast_attributes(&self) -> Option<&MulticastAttributes>;
@@ -1492,6 +1495,9 @@ impl MulticastConnection for Connection {
         // Remove expired packets.
         if self.is_server {
             let p = self.paths.get_mut(space_id as usize)?;
+            p.recovery.mc_set_min_rtt(time::Duration::from_millis(
+                multicast.get_mc_announce_data_path().unwrap().ttl_data,
+            ));
             (expired_pkt, expired_streams) = p.recovery.mc_data_timeout(
                 space_id as u32,
                 now,
@@ -1766,7 +1772,9 @@ impl MulticastConnection for Connection {
         Ok(pid)
     }
 
-    fn uc_to_mc_control(&mut self, mc_channel: &mut Connection) -> Result<()> {
+    fn uc_to_mc_control(
+        &mut self, mc_channel: &mut Connection, now: time::Instant,
+    ) -> Result<()> {
         if let Some(multicast) = mc_channel.multicast.as_ref() {
             if !matches!(multicast.mc_role, MulticastRole::ServerMulticast) {
                 return Err(Error::Multicast(MulticastError::McInvalidRole(
@@ -1833,12 +1841,44 @@ impl MulticastConnection for Connection {
                         .mc_sent_repairs
                         .to_owned()
                     {
-                        fec_scheduler.recv_nack(
+                        let new_lost_pkts = fec_scheduler.recv_nack(
                             pn,
                             &nack_ranges,
                             sent_repairs,
                             nb_degree_opt,
                         );
+
+                        println!("Recv NACK, new_lost_pkts: {}", new_lost_pkts);
+
+                        if new_lost_pkts > 0 {
+                            // New loss events occured. Handle them as congestion
+                            // events.
+                            // Get the multicast path.
+                            let path = mc_channel
+                                .paths
+                                .get_mut(multicast.get_mc_space_id().unwrap())?;
+
+                            // Get the first packet indicated in this NACK.
+                            // RMC-TODO: ideally, we should only consider packet
+                            // numbers that were not taken into account before
+                            // that, not simply the first packet.
+                            let first_time_sent = path
+                                .recovery
+                                .mc_get_time_sen(nack_ranges.first().unwrap());
+                            println!("RELIABLE MULTICAST. Congestion event.");
+                            path.recovery.congestion_event(
+                                0,
+                                first_time_sent.unwrap(),
+                                packet::Epoch::Application,
+                                now,
+                            );
+
+                            // Force to have a minimum window, if set by the
+                            // application.
+                            // RMC-TODO: remove clients if they cannot support
+                            // this minimum congestion window.
+                            path.recovery.mc_set_min_cwnd();
+                        }
                     } else {
                         debug!("No sent repairs but received an MC_NACK");
                     }
@@ -2171,7 +2211,11 @@ impl MulticastChannelSource {
         authentication: authentication::McAuthType,
         auth_path_info: Option<McPathInfo>, mc_cwnd: Option<usize>,
     ) -> Result<Self> {
-        if !(config_client.cc_algorithm == CongestionControlAlgorithm::DISABLED &&
+        if mc_cwnd.is_some() {
+            config_client.cc_algorithm = CongestionControlAlgorithm::CUBIC;
+            config_server.cc_algorithm = CongestionControlAlgorithm::CUBIC;
+        } else if !(config_client.cc_algorithm ==
+            CongestionControlAlgorithm::DISABLED &&
             config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED)
         {
             return Err(Error::CongestionControl);
@@ -2282,7 +2326,9 @@ impl MulticastChannelSource {
 
             // Set the congestion window of the multicast source for the auth
             // path.
-            if mc_cwnd.is_some() {
+            if let Some(cwnd) = mc_cwnd {
+                mc_path_server.recovery.set_mc_max_cwnd(cwnd);
+            } else {
                 mc_path_server.recovery.set_mc_max_cwnd(std::usize::MAX - 1);
             }
             mc_path_server.recovery.reset();
@@ -2615,10 +2661,10 @@ pub mod testing {
 
             // Change the config to set the maximum number of bytes that can be
             // sent if the congestion window is fixed.
-            if let Some(cwnd) = max_cwnd {
-                server_config.set_initial_max_data(cwnd as u64);
-                client_config.set_initial_max_data(cwnd as u64);
-            }
+            // if let Some(cwnd) = max_cwnd {
+            //     server_config.set_initial_max_data(cwnd as u64);
+            //     client_config.set_initial_max_data(cwnd as u64);
+            // }
 
             // Create a new announce data if the channel uses symetric
             // authentication.
@@ -2747,7 +2793,10 @@ pub mod testing {
 
                     // Server computes the client ID.
                     pipe.server
-                        .uc_to_mc_control(&mut mc_channel.channel)
+                        .uc_to_mc_control(
+                            &mut mc_channel.channel,
+                            time::Instant::now(),
+                        )
                         .unwrap();
 
                     // The server gives the master key.
@@ -2943,10 +2992,12 @@ pub mod testing {
 
         /// The unicast server sends multicast feedback control from the client
         /// to the multicast source.
-        pub fn server_control_to_mc_source(&mut self) -> Result<()> {
+        pub fn server_control_to_mc_source(
+            &mut self, now: time::Instant,
+        ) -> Result<()> {
             let mc_channel = &mut self.mc_channel.channel;
             for (pipe, ..) in self.unicast_pipes.iter_mut() {
-                pipe.server.uc_to_mc_control(mc_channel)?;
+                pipe.server.uc_to_mc_control(mc_channel, now)?;
             }
 
             Ok(())
@@ -4218,7 +4269,10 @@ mod tests {
         assert_eq!(nack_on_source, Some(&(expected_ranges.clone(), 6)));
 
         // The unicast server forwards information to the multicast source.
-        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
 
         // The server generates FEC repair packets and forwards them to the
         // client.
@@ -4368,7 +4422,10 @@ mod tests {
         // MC-TODO: verify that both servers have the correct nack ranges.
 
         // Communication to unicast servers.
-        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
 
         // The server generates FEC repair packets and forwards them to the
         // client. Only two repair symbols are needed.
@@ -4607,7 +4664,10 @@ mod tests {
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         // Communication to unicast servers.
-        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
 
         // The server generates FEC a single repair packet because the client lost
         // the first frame of the stream. Recall that the previous packets have
@@ -4786,7 +4846,10 @@ mod tests {
             mc_pipe.source_send_single(None, signature_len),
             Err(Error::Done)
         );
-        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
 
         // The server generates FEC a single repair packet because the client lost
         // the first frame of the stream. Recall that the previous packets have
@@ -5281,7 +5344,10 @@ mod tests {
                 .unwrap()
                 .mc_client_left_need_sync
         );
-        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
         let pipe = &mut mc_pipe.unicast_pipes[0].0;
         let open_streams = pipe
             .server
@@ -5362,7 +5428,10 @@ mod tests {
             Ok(MulticastClientStatus::Leaving(false))
         );
         assert_eq!(mc_pipe.unicast_pipes[2].0.advance(), Ok(()));
-        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
         if let Some(McClientId::MulticastServer(map)) = mc_pipe
             .mc_channel
             .channel
@@ -6115,7 +6184,10 @@ mod tests {
 
         // Client did not receive the first source symbol.
         assert_eq!(mc_pipe.clients_send(), Ok(()));
-        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
 
         // The source sends a repair symbol.
         assert_eq!(mc_pipe.source_send_single(None, 0), Ok(1335));
@@ -6153,7 +6225,10 @@ mod tests {
 
         // Client did not receive the source symbol.
         assert_eq!(mc_pipe.clients_send(), Ok(()));
-        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
 
         // The source sends a repair symbol.
         assert_eq!(
@@ -6184,7 +6259,10 @@ mod tests {
         assert_eq!(nack_ranges, &(expected_nack_ranges, 6));
 
         assert_eq!(mc_pipe.clients_send(), Ok(()));
-        assert_eq!(mc_pipe.server_control_to_mc_source(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
         assert_eq!(
             mc_pipe.source_send_single(Some(&clients_losing_packets), 0),
             Ok(1335)
@@ -6351,7 +6429,7 @@ mod tests {
         .unwrap();
 
         mc_pipe.source_send_single_stream(true, None, 0, 1).unwrap();
-        
+
         // The stream is sent to the clients.
         assert_eq!(mc_pipe.source_send_single(None, 0), Err(Error::Done));
         std::thread::sleep(time::Duration::from_millis(100));
@@ -6360,6 +6438,108 @@ mod tests {
 
         // The server must not retransmit STREAM data on the multicast channel.
         assert_eq!(mc_pipe.source_send_single(None, 0), Err(Error::Done));
+    }
+
+    #[test]
+    fn test_mc_cc() {
+        let use_auth = McAuthType::StreamAsym;
+        let mut mc_pipe = MulticastPipe::new(
+            2,
+            "/tmp/test_mc_cc",
+            use_auth,
+            true,
+            true,
+            Some(10),
+        )
+        .unwrap();
+
+        // Initial congestion window of the multicast source.
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 13_500);
+
+        let stream = vec![0u8; 13_500];
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
+            Ok(13_500)
+        );
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+
+        let now = time::Instant::now();
+        let expired_timer = now +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            ); // Margin
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
+        assert_eq!(res, Ok((Some(12), Some(10)).into()));
+
+        // Increase the window because no negative feedback upon timeout.
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 25650);
+
+        // Both clients lose a packet (a different one). The first time, the
+        // congestion window is decreased. The second time, it is not.
+        let mut client_loss_1 = RangeSet::default();
+        client_loss_1.insert(0..1);
+        let mut client_loss_2 = RangeSet::default();
+        client_loss_2.insert(1..2);
+        assert!(mc_pipe
+            .source_send_single_stream(true, Some(&client_loss_1), 0, 5)
+            .is_ok());
+        assert!(mc_pipe
+            .source_send_single_stream(true, Some(&client_loss_2), 0, 9)
+            .is_ok());
+
+        // First client detects the loss.
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
+
+        // The source adapts by decrasing its congestion window.
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 13500);
+
+        // A new stream is sent. The second client now detects the loss.
+        assert!(mc_pipe.source_send_single_stream(true, None, 0, 13).is_ok());
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
+
+        // The source does not further decreases its congestion window since a
+        // loss has already been detected from the first client.
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 13500);
     }
 }
 

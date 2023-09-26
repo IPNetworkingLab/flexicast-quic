@@ -208,6 +208,7 @@ fn on_packets_acked(
 fn on_packet_acked(
     r: &mut Recovery, packet: &Acked, epoch: packet::Epoch, now: Instant,
 ) {
+    println!("Start of function CUBIC");
     let in_congestion_recovery = r.in_congestion_recovery(packet.time_sent);
 
     r.bytes_in_flight = r.bytes_in_flight.saturating_sub(packet.size);
@@ -224,6 +225,8 @@ fn on_packet_acked(
     }
 
     if (r.app_limited && !r.real_time) || (r.real_time && (r.bytes_in_flight.saturating_mul(3) / 2).saturating_add(packet.size) < r.congestion_window) {
+        println!("Ici pour multicast");
+        println!("{} {} {}", r.app_limited, r.real_time, (r.bytes_in_flight.saturating_mul(3) / 2).saturating_add(packet.size) < r.congestion_window);
         return;
     }
 
@@ -248,6 +251,8 @@ fn on_packet_acked(
             }
         }
     }
+
+    println!("Congestion window before: {}", r.congestion_window);
 
     if r.congestion_window < r.ssthresh {
         // In Slow slart, bytes_acked_sl is used for counting
@@ -345,6 +350,8 @@ fn on_packet_acked(
             r.cubic_state.cwnd_inc -= r.max_datagram_size;
         }
     }
+
+    println!("Congestion window after: {}", r.congestion_window);
 }
 
 fn congestion_event(

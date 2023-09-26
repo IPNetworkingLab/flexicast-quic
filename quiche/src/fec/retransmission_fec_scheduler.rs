@@ -50,10 +50,18 @@ impl RetransmissionFecScheduler {
         self.n_repair_to_send = 0;
     }
 
+    /// Receives a negative acknowledgment (NACK) from the client through the
+    /// unicast channel (and using the unicast server). Based on the feedback of
+    /// the client, computes the number of FEC repair symbols to generate. The
+    /// source may potentially already need to generate some symbols, and the
+    /// maximum value between the current value and the new value computed from
+    /// the feedback is kept. Returns the additional number of repair symbols to
+    /// generate following this call (may be 0 if no additional repair symbol
+    /// must be generated).
     pub fn recv_nack(
         &mut self, pn: u64, ranges: &RangeSet, mut repairs: RangeSet,
         nb_degree: Option<u64>,
-    ) {
+    ) -> u64 {
         debug!("RECV NACK: {} {:?} {:?}", pn, ranges, repairs);
         // Total number of repair asked.
         let nb_required = ranges.nb_elements(); // MC-TODO: number of ranges or of values?
@@ -68,20 +76,23 @@ impl RetransmissionFecScheduler {
 
         debug!("After filtering. Useful repairs {:?} and number to send: {} while current max is {}", repairs, to_send_local, self.n_repair_to_send);
 
-        if let Some(degree) = nb_degree {
+        let n_repair_to_send = if let Some(degree) = nb_degree {
             let degree_after_already_sent =
                 degree.saturating_sub(sent_repairs_not_received as u64);
             debug!(
                 "Use degree instead. Current to send {}. degree {} ({} after repairs) and to send local {}",
                 self.n_repair_to_send, degree, degree_after_already_sent, to_send_local,
             );
-            self.n_repair_to_send = self
-                .n_repair_to_send
-                .max(degree_after_already_sent.min(to_send_local));
+            degree_after_already_sent.min(to_send_local)
         } else {
-            self.n_repair_to_send = self.n_repair_to_send.max(to_send_local);
             debug!("Set n_repair_to_send: {}", self.n_repair_to_send);
-        }
+            to_send_local
+        };
+
+        let additional = n_repair_to_send.saturating_sub(self.n_repair_to_send);
+        self.n_repair_to_send = self.n_repair_to_send.max(n_repair_to_send);
+
+        additional
     }
 }
 

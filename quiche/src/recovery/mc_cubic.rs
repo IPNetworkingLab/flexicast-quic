@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use super::Recovery;
 
 impl Recovery {
@@ -19,5 +21,10 @@ impl Recovery {
         if let Some(min_cwnd) = self.mc_cwnd {
             self.congestion_window = self.congestion_window.min(min_cwnd);
         }
+    }
+
+    /// Sets the minimum RTT to a defined value.
+    pub fn mc_set_min_rtt(&mut self, min_rtt: Duration) {
+        self.min_rtt = min_rtt;
     }
 }
