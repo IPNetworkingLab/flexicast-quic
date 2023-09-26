@@ -62,7 +62,7 @@ impl RetransmissionFecScheduler {
         &mut self, pn: u64, ranges: &RangeSet, mut repairs: RangeSet,
         nb_degree: Option<u64>,
     ) -> u64 {
-        debug!("RECV NACK: {} {:?} {:?}", pn, ranges, repairs);
+        println!("RECV NACK: {} {:?} {:?}", pn, ranges, repairs);
         // Total number of repair asked.
         let nb_required = ranges.nb_elements(); // MC-TODO: number of ranges or of values?
 
@@ -74,20 +74,22 @@ impl RetransmissionFecScheduler {
             nb_required.saturating_sub(sent_repairs_not_received) as u64;
         // let to_send_local = to_send_local.min(5);
 
-        debug!("After filtering. Useful repairs {:?} and number to send: {} while current max is {}", repairs, to_send_local, self.n_repair_to_send);
+        println!("After filtering. Useful repairs {:?} and number to send: {} while current max is {}", repairs, to_send_local, self.n_repair_to_send);
 
         let n_repair_to_send = if let Some(degree) = nb_degree {
             let degree_after_already_sent =
                 degree.saturating_sub(sent_repairs_not_received as u64);
-            debug!(
+                println!(
                 "Use degree instead. Current to send {}. degree {} ({} after repairs) and to send local {}",
                 self.n_repair_to_send, degree, degree_after_already_sent, to_send_local,
             );
             degree_after_already_sent.min(to_send_local)
         } else {
-            debug!("Set n_repair_to_send: {}", self.n_repair_to_send);
+            println!("Set n_repair_to_send: {}", self.n_repair_to_send);
             to_send_local
         };
+
+        println!("Current: {} and new: {}", self.n_repair_to_send, n_repair_to_send);
 
         let additional = n_repair_to_send.saturating_sub(self.n_repair_to_send);
         self.n_repair_to_send = self.n_repair_to_send.max(n_repair_to_send);

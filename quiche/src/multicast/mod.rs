@@ -1796,6 +1796,7 @@ impl MulticastConnection for Connection {
 
             // MC_NACK ranges.
             let nb_degree_opt = multicast.mc_nack_ranges.1;
+            println!("Recv nack ranges from unicast: {:?}", multicast.mc_nack_ranges);
             if let Some((mut nack_ranges, pn)) =
                 multicast.mc_nack_ranges.0.to_owned()
             {
@@ -1806,9 +1807,12 @@ impl MulticastConnection for Connection {
                     mc_channel.multicast.as_ref().unwrap().mc_last_expired
                 {
                     if let Some(pn) = exp_pkt.pn {
-                        nack_ranges.remove_until(pn + 1);
+                        println!("Expired is: {}", pn);
+                        nack_ranges.remove_until(pn);
                     }
                 }
+
+                println!("Nack ranges after first filter: {:?}", nack_ranges);
 
                 // Filter from the nack ranges packets that are not mapped to
                 // source symbols.
@@ -1830,6 +1834,8 @@ impl MulticastConnection for Connection {
                     }
                     nack_ranges = new_nack;
                 }
+
+                println!("Nack ranges after second filter: {:?}", nack_ranges);
 
                 // The multicast source updates its FEC scheduler with the
                 // received losses.
@@ -6443,13 +6449,15 @@ mod tests {
     #[test]
     fn test_mc_cc() {
         let use_auth = McAuthType::StreamAsym;
+        let max_wnd = 20;
+        let max_datagram_size = 1350;
         let mut mc_pipe = MulticastPipe::new(
             2,
             "/tmp/test_mc_cc",
             use_auth,
             true,
             true,
-            Some(10),
+            Some(max_wnd),
         )
         .unwrap();
 
@@ -6462,12 +6470,12 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 13_500);
+        assert_eq!(cwnd, max_wnd * max_datagram_size);
 
-        let stream = vec![0u8; 13_500];
+        let stream = vec![0u8; max_wnd * max_datagram_size];
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(13_500)
+            Ok(max_wnd * max_datagram_size)
         );
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
@@ -6488,7 +6496,7 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 25650);
+        assert_eq!(cwnd, max_wnd * max_datagram_size * 2);
 
         // Both clients lose a packet (a different one). The first time, the
         // congestion window is decreased. The second time, it is not.
@@ -6519,7 +6527,7 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 13500);
+        assert_eq!(cwnd, max_wnd * max_datagram_size);
 
         // A new stream is sent. The second client now detects the loss.
         assert!(mc_pipe.source_send_single_stream(true, None, 0, 13).is_ok());
@@ -6539,7 +6547,7 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 13500);
+        assert_eq!(cwnd, max_wnd * max_datagram_size);
     }
 }
 
