@@ -103,6 +103,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 let expired_pn = Some(last.pkt_num.1);
 
                 let cwnd_before = self.congestion_window;
+
+                println!("Before on_ack_received");
                 
                 self.on_ack_received(
                     space_id,

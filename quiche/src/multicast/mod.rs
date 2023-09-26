@@ -1796,7 +1796,10 @@ impl MulticastConnection for Connection {
 
             // MC_NACK ranges.
             let nb_degree_opt = multicast.mc_nack_ranges.1;
-            println!("Recv nack ranges from unicast: {:?}", multicast.mc_nack_ranges);
+            println!(
+                "Recv nack ranges from unicast: {:?}",
+                multicast.mc_nack_ranges
+            );
             if let Some((mut nack_ranges, pn)) =
                 multicast.mc_nack_ranges.0.to_owned()
             {
@@ -1883,6 +1886,7 @@ impl MulticastConnection for Connection {
                             // application.
                             // RMC-TODO: remove clients if they cannot support
                             // this minimum congestion window.
+                            println!("SHOULD SET THE MIN CWND");
                             path.recovery.mc_set_min_cwnd();
                         }
                     } else {
@@ -6449,7 +6453,7 @@ mod tests {
     #[test]
     fn test_mc_cc() {
         let use_auth = McAuthType::StreamAsym;
-        let max_wnd = 20;
+        let max_wnd = 15;
         let max_datagram_size = 1350;
         let mut mc_pipe = MulticastPipe::new(
             2,
@@ -6470,12 +6474,12 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, max_wnd * max_datagram_size);
+        assert_eq!(cwnd, 10 * max_datagram_size);
 
-        let stream = vec![0u8; max_wnd * max_datagram_size];
+        let stream = vec![0u8; 40 * max_datagram_size];
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(max_wnd * max_datagram_size)
+            Ok(40 * max_datagram_size)
         );
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
@@ -6496,7 +6500,27 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, max_wnd * max_datagram_size * 2);
+        assert_eq!(cwnd, 10 * max_datagram_size * 2 - max_datagram_size);
+
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+
+        let expired_timer = expired_timer +
+            time::Duration::from_millis(
+                mc_pipe.mc_announce_data.ttl_data + 100,
+            ); // Margin
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
+        assert_eq!(res, Ok((Some(12), Some(10)).into()));
+
+        // Increase the window because no negative feedback upon timeout.
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 10 * max_datagram_size * 4 - max_datagram_size);
 
         // Both clients lose a packet (a different one). The first time, the
         // congestion window is decreased. The second time, it is not.
@@ -6527,10 +6551,36 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, max_wnd * max_datagram_size);
+        assert_eq!(cwnd, 20250);
 
         // A new stream is sent. The second client now detects the loss.
         assert!(mc_pipe.source_send_single_stream(true, None, 0, 13).is_ok());
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+        assert_eq!(
+            mc_pipe.server_control_to_mc_source(time::Instant::now()),
+            Ok(())
+        );
+
+        // The source does not further decreases its congestion window since a
+        // loss has already been detected by the first client.
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 20250);
+
+        // The second client now sees another lost packet. It influences the
+        // congestion window, which stays at a minimum value decided by the
+        // application.
+        assert!(mc_pipe
+            .source_send_single_stream(true, Some(&client_loss_2), 0, 17)
+            .is_ok());
+        assert!(mc_pipe.source_send_single_stream(true, None, 0, 21).is_ok());
+
         assert_eq!(mc_pipe.clients_send(), Ok(()));
         assert_eq!(
             mc_pipe.server_control_to_mc_source(time::Instant::now()),
