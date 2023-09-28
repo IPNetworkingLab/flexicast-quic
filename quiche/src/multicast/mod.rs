@@ -1496,7 +1496,10 @@ impl MulticastConnection for Connection {
         if self.is_server {
             let p = self.paths.get_mut(space_id as usize)?;
             p.recovery.mc_set_min_rtt(time::Duration::from_millis(
-                multicast.get_mc_announce_data_path().unwrap().expiration_timer,
+                multicast
+                    .get_mc_announce_data_path()
+                    .unwrap()
+                    .expiration_timer,
             ));
             (expired_pkt, expired_streams) = p.recovery.mc_data_timeout(
                 space_id as u32,
@@ -1608,7 +1611,8 @@ impl MulticastConnection for Connection {
             return None;
         }
         let timeout = if self.is_server {
-            multicast.mc_last_recv_time? + time::Duration::from_millis(expiration_timer)
+            multicast.mc_last_recv_time? +
+                time::Duration::from_millis(expiration_timer)
         } else {
             multicast.mc_last_recv_time? +
                 time::Duration::from_millis(expiration_timer * 3)
@@ -2027,7 +2031,10 @@ impl MulticastConnection for Connection {
                     if let Ok(path) = self.paths.get(space_id) {
                         let cwin_available = path.recovery.cwnd_available();
                         self.max_tx_data += self.tx_data;
-                        print!("tx cap before: {} and available cwin: {}...", self.tx_cap, cwin_available);
+                        print!(
+                            "tx cap before: {} and available cwin: {}...",
+                            self.tx_cap, cwin_available
+                        );
                         self.tx_cap = cmp::min(
                             cwin_available,
                             (self.max_tx_data - self.tx_data)
@@ -3792,10 +3799,11 @@ mod tests {
 
     #[test]
     /// Tests the process of MC_EXPIRE from the server to the client.
-    /// The server sends an MC_EXPIRE when the data expires with the `expiration_timer`
-    /// value of the multicast attributes. Also tests that the multicast source
-    /// regularly sends MC_EXPIRE containing empty data if no new data is sent
-    /// to the client, to ensure that the multicast channel does not timeout.
+    /// The server sends an MC_EXPIRE when the data expires with the
+    /// `expiration_timer` value of the multicast attributes. Also tests
+    /// that the multicast source regularly sends MC_EXPIRE containing empty
+    /// data if no new data is sent to the client, to ensure that the
+    /// multicast channel does not timeout.
     fn test_on_mc_timeout() {
         let use_auth = McAuthType::None;
         let mut mc_pipe = MulticastPipe::new(
@@ -3953,8 +3961,9 @@ mod tests {
             .as_ref()
             .unwrap()
             .mc_last_recv_time;
-        expired_timer +=
-            time::Duration::from_millis(mc_pipe.mc_announce_data.expiration_timer + 100);
+        expired_timer += time::Duration::from_millis(
+            mc_pipe.mc_announce_data.expiration_timer + 100,
+        );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(11), None).into()));
         assert_eq!(
@@ -3992,8 +4001,9 @@ mod tests {
             .as_ref()
             .unwrap()
             .mc_last_recv_time;
-        expired_timer +=
-            time::Duration::from_millis(mc_pipe.mc_announce_data.expiration_timer + 100);
+        expired_timer += time::Duration::from_millis(
+            mc_pipe.mc_announce_data.expiration_timer + 100,
+        );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(12), None).into()));
         assert_eq!(
@@ -6308,8 +6318,7 @@ mod tests {
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
             Ok(10 * max_datagram_size * 2)
         ); // 27,000 because of the two paths.
-        let mut i = 0;
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) { i += 1; }
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
         let now = time::Instant::now();
         let expired_timer = now +
@@ -6329,22 +6338,13 @@ mod tests {
             .recovery
             .cwnd();
         assert_eq!(cwnd, 20 * max_datagram_size - max_datagram_size);
-        let cwnd = mc_pipe
-            .mc_channel
-            .channel
-            .paths
-            .get(1)
-            .unwrap()
-            .recovery
-            .cwnd_available();
 
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(10001, &stream, true),
             Ok(19 * max_datagram_size)
         );
 
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {
-        }
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
         if mc_pipe.source_send_single(None, 0) != Err(Error::Done) {
             assert!(false);

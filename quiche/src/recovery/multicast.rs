@@ -31,7 +31,9 @@ pub trait MulticastRecovery {
     ) -> Result<(ExpiredPkt, ExpiredStream)>;
 
     /// Returns the next expiring event.
-    fn mc_next_timeout(&self, expiration_timer: std::time::Duration) -> Option<Instant>;
+    fn mc_next_timeout(
+        &self, expiration_timer: std::time::Duration,
+    ) -> Option<Instant>;
 
     /// Sets the multicast maximum congestion window size.
     fn set_mc_max_cwnd(&mut self, cwnd: usize);
@@ -102,8 +104,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 acked.insert((first.pkt_num.1)..(last.pkt_num.1 + 1));
                 let expired_pn = Some(last.pkt_num.1);
 
-                let cwnd_before = self.congestion_window;
-                
                 self.on_ack_received(
                     space_id,
                     &acked,
@@ -126,7 +126,9 @@ impl MulticastRecovery for crate::recovery::Recovery {
         }
     }
 
-    fn mc_next_timeout(&self, expiration_timer: std::time::Duration) -> Option<Instant> {
+    fn mc_next_timeout(
+        &self, expiration_timer: std::time::Duration,
+    ) -> Option<Instant> {
         // MC-TODO: be sure that `front()` is correct and not `back`.
 
         let a = self.sent[Epoch::Application].back()?.time_sent;

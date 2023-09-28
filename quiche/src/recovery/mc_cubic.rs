@@ -19,9 +19,9 @@ impl Recovery {
     /// this value, this function does nothing.
     pub fn mc_set_min_cwnd(&mut self) {
         if let Some(min_cwnd) = self.mc_cwnd {
-            let before = self.congestion_window;
-            self.congestion_window = self.congestion_window.max(min_cwnd * self.max_datagram_size);
-            let after = self.congestion_window;
+            self.congestion_window = self
+                .congestion_window
+                .max(min_cwnd * self.max_datagram_size);
         }
     }
 
