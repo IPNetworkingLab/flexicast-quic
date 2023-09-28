@@ -117,7 +117,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     newly_acked,
                 )?;
                 
-                println!("RELIABLE MULTICAST. Expiration: increase window {} -> {}", cwnd_before, self.congestion_window);
+                println!("RELIABLE MULTICAST. Expiration: increase window {} -> {} and available is {}", cwnd_before, self.congestion_window, self.cwnd_available());
 
                 Ok((
                     ExpiredPkt {

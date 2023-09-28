@@ -1509,6 +1509,7 @@ impl MulticastConnection for Connection {
                 &mut self.newly_acked,
             )?;
             self.blocked_limit = None;
+            self.update_tx_cap();
             debug!(
                 "Expired streams on the server based on pn={:?}: {:?}",
                 expired_pkt.pn, expired_streams
@@ -2039,12 +2040,14 @@ impl MulticastConnection for Connection {
                     if let Ok(path) = self.paths.get(space_id) {
                         let cwin_available = path.recovery.cwnd_available();
                         self.max_tx_data += self.tx_data;
+                        print!("tx cap before: {} and available cwin: {}...", self.tx_cap, cwin_available);
                         self.tx_cap = cmp::min(
                             cwin_available,
                             (self.max_tx_data - self.tx_data)
                                 .try_into()
                                 .unwrap_or(usize::MAX),
                         );
+                        println!("tx cap after: {}...", self.tx_cap);
                     }
                 }
             }
@@ -6477,11 +6480,14 @@ mod tests {
         assert_eq!(cwnd, 10 * max_datagram_size);
 
         let stream = vec![0u8; 40 * max_datagram_size];
+        println!("et ? {}", mc_pipe.mc_channel.channel.tx_cap);
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(40 * max_datagram_size)
-        );
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+            Ok(10 * max_datagram_size * 2)
+        ); // 27,000 because of the two paths.
+        let mut i = 0;
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) { i += 1; }
+        println!("Sent {} packets", i);
 
         let now = time::Instant::now();
         let expired_timer = now +
@@ -6500,16 +6506,36 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 10 * max_datagram_size * 2 - max_datagram_size);
+        assert_eq!(cwnd, 20 * max_datagram_size - max_datagram_size);
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd_available();
+        println!("Available cwnd: {}", cwnd);
 
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(10001, &stream, true),
+            Ok(19 * max_datagram_size)
+        );
+
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {
+            println!("Send a packet");
+        }
+
+        if mc_pipe.source_send_single(None, 0) != Err(Error::Done) {
+            assert!(false);
+        }
 
         let expired_timer = expired_timer +
             time::Duration::from_millis(
                 mc_pipe.mc_announce_data.ttl_data + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
-        assert_eq!(res, Ok((Some(12), Some(10)).into()));
+        assert_eq!(res, Ok((Some(32), Some(30)).into()));
 
         // Increase the window because no negative feedback upon timeout.
         let cwnd = mc_pipe
@@ -6520,7 +6546,7 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 10 * max_datagram_size * 4 - max_datagram_size);
+        assert_eq!(cwnd, 40_157);
 
         // Both clients lose a packet (a different one). The first time, the
         // congestion window is decreased. The second time, it is not.
@@ -6551,7 +6577,7 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 20250);
+        assert_eq!(cwnd, 28_109);
 
         // A new stream is sent. The second client now detects the loss.
         assert!(mc_pipe.source_send_single_stream(true, None, 0, 13).is_ok());
@@ -6571,7 +6597,7 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 20250);
+        assert_eq!(cwnd, 28_109);
 
         // The second client now sees another lost packet. It influences the
         // congestion window, which stays at a minimum value decided by the

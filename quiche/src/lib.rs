@@ -3983,6 +3983,7 @@ impl Connection {
         let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
 
         let mut left = b.cap();
+        println!("Left: {}", left);
 
         let path = self.paths.get_mut(send_pid)?;
 
@@ -6035,6 +6036,7 @@ impl Connection {
         }
 
         let cap = self.tx_cap;
+        println!("Cap is {}", cap);
 
         // Get existing stream or create a new one.
         let stream = self.get_or_create_stream(stream_id, true)?;
@@ -7034,8 +7036,9 @@ impl Connection {
                     p.on_closing_timeout();
                 }
             }
-            
-            // Disable loss detection timer for data sent on the multicast data path.
+
+            // Disable loss detection timer for data sent on the multicast data
+            // path.
             if let Some(multicast) = self.multicast.as_ref() {
                 if Some(path_id) == multicast.get_mc_space_id() {
                     continue;
@@ -9372,12 +9375,20 @@ impl Connection {
             .map(|(_, p)| p.recovery.cwnd_available())
             .filter(|cwnd| *cwnd != std::usize::MAX)
             .fold(0, |s: usize, v: usize| s.saturating_add(v));
+        print!(
+            "Available cwin: {} and other: {}... ",
+            cwin_available,
+            (self.max_tx_data - self.tx_data)
+                .try_into()
+                .unwrap_or(usize::MAX)
+        );
         self.tx_cap = cmp::min(
             cwin_available,
             (self.max_tx_data - self.tx_data)
                 .try_into()
                 .unwrap_or(usize::MAX),
         );
+        println!("So cap is {}", self.tx_cap);
     }
 
     fn delivery_rate_check_if_app_limited(&self, path_id: usize) -> bool {
@@ -9516,6 +9527,7 @@ impl Connection {
             {
                 path.recovery.reset();
                 self.update_tx_cap();
+                println!("After multicast set path: {}", self.tx_cap);
             }
         }
 
