@@ -246,7 +246,7 @@ impl ReliableMulticastConnection for Connection {
     ) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             let expiration_timer =
-                multicast.get_mc_announce_data_path().unwrap().ttl_data;
+                multicast.get_mc_announce_data_path().unwrap().expiration_timer;
 
             if let Some(ReliableMc::Client(rmc)) = multicast.mc_reliable.as_mut()
             {
@@ -316,7 +316,7 @@ impl ReliableMulticastConnection for Connection {
             let expiration_timer = mc_s
                 .get_mc_announce_data_path()
                 .ok_or(Error::Multicast(MulticastError::McAnnounce))?
-                .ttl_data;
+                .expiration_timer;
             let space_id = mc_s
                 .get_mc_space_id()
                 .ok_or(Error::Multicast(MulticastError::McPath))?;
@@ -501,7 +501,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let expiration_timer = mc_pipe.mc_announce_data.ttl_data;
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
 
         assert!(mc_pipe
             .mc_channel
@@ -692,7 +692,7 @@ mod tests {
                 )
                 .is_ok());
 
-            let expiration_timer = mc_pipe.mc_announce_data.ttl_data;
+            let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
             let now = time::Instant::now();
             let expired = now
                 .checked_add(time::Duration::from_millis(expiration_timer + 100))
@@ -835,7 +835,7 @@ mod tests {
             assert_eq!(mc_pipe.clients_send(), Ok(()));
 
             // Multicast source deleguates streams.
-            let expiration_timer = mc_pipe.mc_announce_data.ttl_data;
+            let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
             let now = time::Instant::now();
             let expired = now
                 .checked_add(time::Duration::from_millis(expiration_timer + 100))
@@ -926,7 +926,7 @@ mod tests {
             assert_eq!(mc_pipe.clients_send(), Ok(()));
 
             // Multicast source deleguates streams.
-            let expiration_timer = mc_pipe.mc_announce_data.ttl_data;
+            let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
             let now = time::Instant::now();
             let expired = now
                 .checked_add(time::Duration::from_millis(

@@ -4823,7 +4823,7 @@ impl Connection {
                     source_ip: mc_announce_data.source_ip,
                     group_ip: mc_announce_data.group_ip,
                     udp_port: mc_announce_data.udp_port,
-                    ttl_data: mc_announce_data.ttl_data,
+                    expiration_timer: mc_announce_data.expiration_timer,
                     public_key: if let Some(key) =
                         mc_announce_data.public_key.as_ref()
                     {
@@ -9087,7 +9087,7 @@ impl Connection {
                 source_ip,
                 group_ip,
                 udp_port,
-                ttl_data,
+                expiration_timer,
                 public_key,
             } => {
                 debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, path_type, auth_type, is_ipv6, source_ip, group_ip, udp_port);
@@ -9110,7 +9110,7 @@ impl Connection {
                     } else {
                         Some(public_key)
                     },
-                    ttl_data,
+                    expiration_timer,
                     is_processed: true,
                 };
 

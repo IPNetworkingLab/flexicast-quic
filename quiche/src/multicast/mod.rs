@@ -997,7 +997,7 @@ pub struct McAnnounceData {
 
     /// Time-to-live (ms) of multicast packets.
     /// After this time, the packets SHOULD NOT be retransmitted.
-    pub ttl_data: u64,
+    pub expiration_timer: u64,
 
     /// Path type.
     pub path_type: McPathType,
@@ -1496,7 +1496,7 @@ impl MulticastConnection for Connection {
         if self.is_server {
             let p = self.paths.get_mut(space_id as usize)?;
             p.recovery.mc_set_min_rtt(time::Duration::from_millis(
-                multicast.get_mc_announce_data_path().unwrap().ttl_data,
+                multicast.get_mc_announce_data_path().unwrap().expiration_timer,
             ));
             (expired_pkt, expired_streams) = p.recovery.mc_data_timeout(
                 space_id as u32,
@@ -1504,7 +1504,7 @@ impl MulticastConnection for Connection {
                 multicast
                     .get_mc_announce_data_path()
                     .ok_or(Error::Multicast(MulticastError::McAnnounce))?
-                    .ttl_data,
+                    .expiration_timer,
                 hs_status,
                 &mut self.newly_acked,
             )?;
@@ -1592,11 +1592,11 @@ impl MulticastConnection for Connection {
     fn mc_timeout(&self, now: time::Instant) -> Option<time::Duration> {
         // MC-TODO: maybe the timeout should be using timers of all paths?
 
-        let ttl_data = self
+        let expiration_timer = self
             .multicast
             .as_ref()?
             .get_mc_announce_data_path()?
-            .ttl_data;
+            .expiration_timer;
 
         // MC-TODO: should use mc_role instead of server.
         let multicast = self.multicast.as_ref()?;
@@ -1608,10 +1608,10 @@ impl MulticastConnection for Connection {
             return None;
         }
         let timeout = if self.is_server {
-            multicast.mc_last_recv_time? + time::Duration::from_millis(ttl_data)
+            multicast.mc_last_recv_time? + time::Duration::from_millis(expiration_timer)
         } else {
             multicast.mc_last_recv_time? +
-                time::Duration::from_millis(ttl_data * 3)
+                time::Duration::from_millis(expiration_timer * 3)
         };
         if timeout <= now {
             Some(time::Duration::ZERO)
@@ -3132,7 +3132,7 @@ pub mod testing {
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
             udp_port: 7676,
             public_key: None,
-            ttl_data: 1_000_000,
+            expiration_timer: 1_000_000,
             is_processed: false,
             auth_type: McAuthType::None,
             full_reliability: false,
@@ -3806,7 +3806,7 @@ mod tests {
 
     #[test]
     /// Tests the process of MC_EXPIRE from the server to the client.
-    /// The server sends an MC_EXPIRE when the data expires with the `ttl_data`
+    /// The server sends an MC_EXPIRE when the data expires with the `expiration_timer`
     /// value of the multicast attributes. Also tests that the multicast source
     /// regularly sends MC_EXPIRE containing empty data if no new data is sent
     /// to the client, to ensure that the multicast channel does not timeout.
@@ -3863,7 +3863,7 @@ mod tests {
         let now = time::Instant::now();
         let expired_timer = now +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(5), None).into()));
@@ -3928,7 +3928,7 @@ mod tests {
         // packets from the sending queue.
         let mut expired_timer = expired_timer +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(10), None).into()));
@@ -3968,7 +3968,7 @@ mod tests {
             .unwrap()
             .mc_last_recv_time;
         expired_timer +=
-            time::Duration::from_millis(mc_pipe.mc_announce_data.ttl_data + 100);
+            time::Duration::from_millis(mc_pipe.mc_announce_data.expiration_timer + 100);
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(11), None).into()));
         assert_eq!(
@@ -4007,7 +4007,7 @@ mod tests {
             .unwrap()
             .mc_last_recv_time;
         expired_timer +=
-            time::Duration::from_millis(mc_pipe.mc_announce_data.ttl_data + 100);
+            time::Duration::from_millis(mc_pipe.mc_announce_data.expiration_timer + 100);
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(12), None).into()));
         assert_eq!(
@@ -4123,7 +4123,7 @@ mod tests {
         let timer = time::Instant::now();
         let timer = timer +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.expiration_timer + 100,
             );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
         assert_eq!(res, Ok((Some(6), None).into()));
@@ -4503,7 +4503,7 @@ mod tests {
         let now = time::Instant::now();
         let expired_timer = now +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data * 3 + 100,
+                mc_pipe.mc_announce_data.expiration_timer * 3 + 100,
             ); // Margin
 
         assert_eq!(
@@ -4609,7 +4609,7 @@ mod tests {
         let timer = time::Instant::now();
         let timer = timer +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.expiration_timer + 100,
             );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
         assert_eq!(res, Ok((Some(5), Some(3)).into()));
@@ -4782,7 +4782,7 @@ mod tests {
         let timer = time::Instant::now();
         let timer = timer +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.expiration_timer + 100,
             );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
         assert_eq!(res, Ok((Some(5), Some(3)).into()));
@@ -5080,7 +5080,7 @@ mod tests {
         let timer = time::Instant::now();
         let timer = timer +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.expiration_timer + 100,
             );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
         assert_eq!(res, Ok((Some(2), Some(0)).into()));
@@ -5315,7 +5315,7 @@ mod tests {
         let now = time::Instant::now();
         let expired_timer = now +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data * 3 + 100,
+                mc_pipe.mc_announce_data.expiration_timer * 3 + 100,
             ); // Margin
 
         let pipe = &mut mc_pipe.unicast_pipes[0].0;
@@ -6237,7 +6237,7 @@ mod tests {
         let now = time::Instant::now();
         let expired_timer = now +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(4), Some(2)).into()));
@@ -6260,7 +6260,7 @@ mod tests {
         let now = time::Instant::now();
         let expired_timer = now +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data * 2 + 100,
+                mc_pipe.mc_announce_data.expiration_timer * 2 + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(7), Some(5)).into()));
@@ -6330,7 +6330,7 @@ mod tests {
         let now = time::Instant::now();
         let expired_timer = now +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(12), Some(10)).into()));
@@ -6370,7 +6370,7 @@ mod tests {
 
         let expired_timer = expired_timer +
             time::Duration::from_millis(
-                mc_pipe.mc_announce_data.ttl_data + 100,
+                mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(32), Some(30)).into()));

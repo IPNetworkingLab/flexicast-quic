@@ -219,7 +219,7 @@ pub enum Frame {
         source_ip: [u8; 4],
         group_ip: [u8; 4],
         udp_port: u16,
-        ttl_data: u64, // In ms
+        expiration_timer: u64, // In ms
         public_key: Vec<u8>,
     },
 
@@ -427,7 +427,7 @@ impl Frame {
                     .try_into()
                     .map_err(|_| Error::BufferTooShort)?;
                 let udp_port = b.get_u16()?;
-                let ttl_data = b.get_u64()?;
+                let expiration_timer = b.get_u64()?;
                 let key_len = b.get_varint()? as usize;
                 let public_key = b
                     .get_bytes(key_len)?
@@ -444,7 +444,7 @@ impl Frame {
                     source_ip,
                     group_ip,
                     udp_port,
-                    ttl_data,
+                    expiration_timer,
                     public_key,
                 }
             },
@@ -863,7 +863,7 @@ impl Frame {
                 source_ip,
                 group_ip,
                 udp_port,
-                ttl_data,
+                expiration_timer,
                 public_key,
             } => {
                 debug!("Going to encode the MC_ANNOUNCE frame");
@@ -878,7 +878,7 @@ impl Frame {
                 b.put_bytes(source_ip)?;
                 b.put_bytes(group_ip)?;
                 b.put_u16(*udp_port)?;
-                b.put_u64(*ttl_data)?;
+                b.put_u64(*expiration_timer)?;
                 b.put_varint(public_key.len() as u64)?;
                 b.put_bytes(public_key)?;
                 debug!("After putting the frame: {}", b.off());
@@ -1255,7 +1255,7 @@ impl Frame {
                 source_ip: _,
                 group_ip: _,
                 udp_port: _,
-                ttl_data: _,
+                expiration_timer: _,
                 public_key,
             } => {
                 let public_key_len_size =
@@ -1272,7 +1272,7 @@ impl Frame {
                 4 + // source_ip
                 4 + // group_ip
                 2 + // udp_port
-                8 + // ttl_data
+                8 + // expiration_timer
                 public_key_len_size +
                 public_key.len()
             },
@@ -1956,10 +1956,10 @@ impl std::fmt::Debug for Frame {
                 source_ip,
                 group_ip,
                 udp_port,
-                ttl_data,
+                expiration_timer,
                 public_key: _,
             } => {
-                write!(f, "MC_ANNOUNCE channel ID={:?}, path_type={} auth_type={} is_ipv6={}, full_reliability={} source_ip={:?}, group_ip={:?}, udp_port={}, ttl_data={}", channel_id, path_type, auth_type, is_ipv6, full_reliability, source_ip, group_ip, udp_port, ttl_data)?;
+                write!(f, "MC_ANNOUNCE channel ID={:?}, path_type={} auth_type={} is_ipv6={}, full_reliability={} source_ip={:?}, group_ip={:?}, udp_port={}, expiration_timer={}", channel_id, path_type, auth_type, is_ipv6, full_reliability, source_ip, group_ip, udp_port, expiration_timer)?;
             },
 
             Frame::McState {
@@ -3666,7 +3666,7 @@ mod tests {
             source_ip: [127, 0, 0, 1],
             group_ip: [239, 239, 239, 35],
             udp_port: 8889,
-            ttl_data: 350,
+            expiration_timer: 350,
             public_key: vec![64, 33, 53, 127],
         };
 

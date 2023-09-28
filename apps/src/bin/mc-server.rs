@@ -128,7 +128,7 @@ struct Args {
 
     /// Time-to-live of video frames [ms].
     #[clap(long, value_parser, default_value = "600")]
-    ttl_data: u64,
+    expiration_timer: u64,
 
     /// Close the multicast channel and stop the server when the video
     /// transmission is completed.
@@ -285,7 +285,7 @@ fn main() {
     // Multicast channel and sockets.
     let mc_cwnd = if let Some(rate) = args.pacing {
         let rate = rate as f64;
-        let ttl = args.ttl_data as f64 / 1000f64; // In seconds
+        let ttl = args.expiration_timer as f64 / 1000f64; // In seconds
         Some((rate * ttl * 1.25).round() as usize)
     } else {
         None
@@ -302,7 +302,7 @@ fn main() {
         get_multicast_channel(
             &args.mc_keylog_file,
             authentication,
-            args.ttl_data,
+            args.expiration_timer,
             &rng,
             args.soft_mc,
             mc_cwnd,
@@ -316,8 +316,8 @@ fn main() {
 
     if let (Some(mc_channel), Some(rate)) = (mc_channel_opt.as_mut(), args.pacing)
     {
-        // let cwnd = rate * args.ttl_data;
-        let cwnd = ((rate * args.ttl_data) as f64 / 1000f64).round() as u64;
+        // let cwnd = rate * args.expiration_timer;
+        let cwnd = ((rate * args.expiration_timer) as f64 / 1000f64).round() as u64;
         mc_channel.channel.mc_set_constant_pacing(cwnd).unwrap();
         debug!(
             "Set the multicast channel pacing to {} and cwnd {}",
@@ -1120,7 +1120,7 @@ fn validate_token<'a>(
 #[allow(clippy::too_many_arguments)]
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
-    ttl_data: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
+    expiration_timer: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
     source_addr: net::SocketAddr, cert_path: &str, max_fec_rs: Option<u32>,
 ) -> (
     Option<mio::net::UdpSocket>,
@@ -1212,7 +1212,7 @@ fn get_multicast_channel(
             .unwrap()
             .get_mc_pub_key()
             .map(|i| i.to_vec()),
-        ttl_data,
+        expiration_timer,
         is_processed: false,
     };
 
@@ -1233,7 +1233,7 @@ fn get_multicast_channel(
             group_ip: mc_addr_bytes,
             udp_port: mc_port + 1,
             public_key: None,
-            ttl_data,
+            expiration_timer,
             is_processed: false,
         };
 
