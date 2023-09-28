@@ -70,7 +70,6 @@ impl FileServer {
         to_quic_filename: &str, to_wire_filename: &str, chunk_size: usize,
         sleep_delay: u64,
     ) -> Result<Self, std::io::Error> {
-        println!("Filepath: {:?}", filename);
         let chunks: Vec<_> = if let Some(filepath) = filename {
             std::fs::read(filepath)?
                 .chunks(chunk_size)

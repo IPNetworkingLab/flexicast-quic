@@ -2031,10 +2031,6 @@ impl MulticastConnection for Connection {
                     if let Ok(path) = self.paths.get(space_id) {
                         let cwin_available = path.recovery.cwnd_available();
                         self.max_tx_data += self.tx_data;
-                        print!(
-                            "tx cap before: {} and available cwin: {}...",
-                            self.tx_cap, cwin_available
-                        );
                         self.tx_cap = cmp::min(
                             cwin_available,
                             (self.max_tx_data - self.tx_data)

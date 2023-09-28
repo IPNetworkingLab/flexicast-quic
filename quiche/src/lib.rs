@@ -3983,7 +3983,6 @@ impl Connection {
         let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
 
         let mut left = b.cap();
-        println!("Left: {}", left);
 
         let path = self.paths.get_mut(send_pid)?;
 
@@ -6036,7 +6035,6 @@ impl Connection {
         }
 
         let cap = self.tx_cap;
-        println!("Cap is {}", cap);
 
         // Get existing stream or create a new one.
         let stream = self.get_or_create_stream(stream_id, true)?;
@@ -9370,13 +9368,6 @@ impl Connection {
             .map(|(_, p)| p.recovery.cwnd_available())
             .filter(|cwnd| *cwnd != std::usize::MAX)
             .fold(0, |s: usize, v: usize| s.saturating_add(v));
-        print!(
-            "Available cwin: {} and other: {}... ",
-            cwin_available,
-            (self.max_tx_data - self.tx_data)
-                .try_into()
-                .unwrap_or(usize::MAX)
-        );
         self.tx_cap = cmp::min(
             cwin_available,
             (self.max_tx_data - self.tx_data)

@@ -104,6 +104,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 acked.insert((first.pkt_num.1)..(last.pkt_num.1 + 1));
                 let expired_pn = Some(last.pkt_num.1);
 
+                let cwnd = self.congestion_window;
+
                 self.on_ack_received(
                     space_id,
                     &acked,
@@ -114,6 +116,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     "",
                     newly_acked,
                 )?;
+
+                println!("Congestion window {} -> {}", cwnd, self.congestion_window);
 
                 Ok((
                     ExpiredPkt {

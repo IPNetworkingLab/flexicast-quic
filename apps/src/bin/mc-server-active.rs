@@ -47,6 +47,7 @@ use quiche::SendInfo;
 use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::on_rmc_timeout_server;
 use quiche_apps::common::ClientIdMap;
+use quiche_apps::common::make_qlog_writer;
 use quiche_apps::mc_app;
 use quiche_apps::sendto::*;
 use std::time;
@@ -171,7 +172,7 @@ struct Args {
     /// Set the pacing of the multicast channel in Mbps. Disabled by default.
     /// Only used for the multicast channel.
     #[clap(long = "pacing")]
-    pacing: Option<u64>,
+    pacing: Option<f64>,
 
     /// Chunk size of packets if `file` application is used.
     #[clap(long = "chunk-size", value_parser, default_value = "1100")]
@@ -298,9 +299,8 @@ fn main() {
 
     // Multicast channel and sockets.
     let mc_cwnd = if let Some(rate) = args.pacing {
-        let rate = rate as f64;
-        let ttl = args.expiration_timer as f64 / 1000f64; // In seconds
-        Some((rate * ttl * 1.25).round() as usize)
+        let et = args.expiration_timer as f64 / 1000f64; // In seconds
+        Some((rate * et * 1_000_000f64).round() as usize)
     } else {
         None
     };
@@ -332,12 +332,29 @@ fn main() {
     if let (Some(mc_channel), Some(rate)) = (mc_channel_opt.as_mut(), args.pacing)
     {
         // let cwnd = rate * args.expiration_timer;
-        let cwnd = ((rate * args.expiration_timer) as f64 / 1000f64).round() as u64;
+        let cwnd = ((rate * args.expiration_timer as f64 * 1_000_000f64) / 1000f64).round() as u64;
         mc_channel.channel.mc_set_constant_pacing(cwnd).unwrap();
         debug!(
             "Set the multicast channel pacing to {} and cwnd {}",
             rate, cwnd
         );
+    }
+
+    if let Some(mc_channel) = mc_channel_opt.as_mut() {
+        // Only bother with qlog if the user specified it.
+        #[cfg(feature = "qlog")]
+        {
+            if let Some(dir) = std::env::var_os("QLOGDIR") {
+                let id = format!("MCS");
+                let writer = make_qlog_writer(&dir, "server", &id);
+
+                mc_channel.channel.set_qlog(
+                    std::boxed::Box::new(writer),
+                    "quiche-server qlog".to_string(),
+                    format!("{} id={}", "quiche-server qlog", id),
+                );
+            }
+        }
     }
 
     debug!("AFTER MULTICAST CHANNEL SETUP");
@@ -1074,7 +1091,7 @@ fn main() {
                     if let Some(mc_channel) = mc_channel_opt.as_mut() {
                         client
                             .conn
-                            .uc_to_mc_control(&mut mc_channel.channel)
+                            .uc_to_mc_control(&mut mc_channel.channel, time::Instant::now())
                             .unwrap();
                     }
                 }
@@ -1367,7 +1384,11 @@ pub fn get_test_mc_config(
     config.set_fec_scheduler_algorithm(
         quiche::FECSchedulerAlgorithm::RetransmissionFec,
     );
-    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
+    if let Some(cwin) = mc_cwnd {
+        config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
+    } else {
+        config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
+    }
     config.set_fec_symbol_size(1280 - 64); // MC-TODO: make dynamic with auth.
     config.set_fec_window_size(2000);
     config

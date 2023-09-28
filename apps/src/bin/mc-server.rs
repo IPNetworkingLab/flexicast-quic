@@ -32,6 +32,7 @@ use std::io;
 use std::net;
 use std::path::Path;
 use std::rc::Rc;
+use std::time;
 
 use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
@@ -317,7 +318,7 @@ fn main() {
     if let (Some(mc_channel), Some(rate)) = (mc_channel_opt.as_mut(), args.pacing)
     {
         // let cwnd = rate * args.expiration_timer;
-        let cwnd = ((rate * args.expiration_timer) as f64 / 1000f64).round() as u64;
+        let cwnd = ((rate * args.expiration_timer * 1_000_000) as f64 / 1000f64).round() as u64;
         mc_channel.channel.mc_set_constant_pacing(cwnd).unwrap();
         debug!(
             "Set the multicast channel pacing to {} and cwnd {}",
@@ -1001,7 +1002,7 @@ fn main() {
                     if let Some(mc_channel) = mc_channel_opt.as_mut() {
                         client
                             .conn
-                            .uc_to_mc_control(&mut mc_channel.channel)
+                            .uc_to_mc_control(&mut mc_channel.channel, time::Instant::now())
                             .unwrap();
                     }
                 }
