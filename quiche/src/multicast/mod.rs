@@ -1797,10 +1797,6 @@ impl MulticastConnection for Connection {
 
             // MC_NACK ranges.
             let nb_degree_opt = multicast.mc_nack_ranges.1;
-            println!(
-                "Recv nack ranges from unicast: {:?}",
-                multicast.mc_nack_ranges
-            );
             if let Some((mut nack_ranges, pn)) =
                 multicast.mc_nack_ranges.0.to_owned()
             {
@@ -1811,12 +1807,9 @@ impl MulticastConnection for Connection {
                     mc_channel.multicast.as_ref().unwrap().mc_last_expired
                 {
                     if let Some(pn) = exp_pkt.pn {
-                        println!("Expired is: {}", pn);
                         nack_ranges.remove_until(pn);
                     }
                 }
-
-                println!("Nack ranges after first filter: {:?}", nack_ranges);
 
                 // Filter from the nack ranges packets that are not mapped to
                 // source symbols.
@@ -1839,8 +1832,6 @@ impl MulticastConnection for Connection {
                     nack_ranges = new_nack;
                 }
 
-                println!("Nack ranges after second filter: {:?}", nack_ranges);
-
                 // The multicast source updates its FEC scheduler with the
                 // received losses.
                 if let Some(fec_scheduler) = mc_channel.fec_scheduler.as_mut() {
@@ -1858,8 +1849,6 @@ impl MulticastConnection for Connection {
                             nb_degree_opt,
                         );
 
-                        println!("Recv NACK, new_lost_pkts: {}", new_lost_pkts);
-
                         if new_lost_pkts > 0 {
                             // New loss events occured. Handle them as congestion
                             // events.
@@ -1875,7 +1864,6 @@ impl MulticastConnection for Connection {
                             let first_time_sent = path
                                 .recovery
                                 .mc_get_time_sen(nack_ranges.first().unwrap());
-                            println!("RELIABLE MULTICAST. Congestion event.");
                             path.recovery.congestion_event(
                                 0,
                                 first_time_sent.unwrap(),
@@ -1887,7 +1875,6 @@ impl MulticastConnection for Connection {
                             // application.
                             // RMC-TODO: remove clients if they cannot support
                             // this minimum congestion window.
-                            println!("SHOULD SET THE MIN CWND");
                             path.recovery.mc_set_min_cwnd();
                         }
                     } else {
@@ -2047,7 +2034,6 @@ impl MulticastConnection for Connection {
                                 .try_into()
                                 .unwrap_or(usize::MAX),
                         );
-                        println!("tx cap after: {}...", self.tx_cap);
                     }
                 }
             }
@@ -6318,14 +6304,12 @@ mod tests {
         assert_eq!(cwnd, 10 * max_datagram_size);
 
         let stream = vec![0u8; 40 * max_datagram_size];
-        println!("et ? {}", mc_pipe.mc_channel.channel.tx_cap);
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
             Ok(10 * max_datagram_size * 2)
         ); // 27,000 because of the two paths.
         let mut i = 0;
         while let Ok(_) = mc_pipe.source_send_single(None, 0) { i += 1; }
-        println!("Sent {} packets", i);
 
         let now = time::Instant::now();
         let expired_timer = now +
@@ -6353,7 +6337,6 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd_available();
-        println!("Available cwnd: {}", cwnd);
 
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(10001, &stream, true),
@@ -6361,7 +6344,6 @@ mod tests {
         );
 
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {
-            println!("Send a packet");
         }
 
         if mc_pipe.source_send_single(None, 0) != Err(Error::Done) {

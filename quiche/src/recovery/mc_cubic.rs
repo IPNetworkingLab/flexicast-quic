@@ -22,7 +22,6 @@ impl Recovery {
             let before = self.congestion_window;
             self.congestion_window = self.congestion_window.max(min_cwnd * self.max_datagram_size);
             let after = self.congestion_window;
-            println!("AFTER MIN UPDATE: {} -> {} because {} * {} = {}", before, after, min_cwnd, self.max_datagram_size, min_cwnd * self.max_datagram_size);
         }
     }
 

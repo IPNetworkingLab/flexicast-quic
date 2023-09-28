@@ -103,8 +103,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 let expired_pn = Some(last.pkt_num.1);
 
                 let cwnd_before = self.congestion_window;
-
-                println!("Before on_ack_received");
                 
                 self.on_ack_received(
                     space_id,
@@ -116,8 +114,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     "",
                     newly_acked,
                 )?;
-                
-                println!("RELIABLE MULTICAST. Expiration: increase window {} -> {} and available is {}", cwnd_before, self.congestion_window, self.cwnd_available());
 
                 Ok((
                     ExpiredPkt {

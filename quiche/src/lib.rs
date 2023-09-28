@@ -9208,17 +9208,12 @@ impl Connection {
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     if let Some(space_id) = multicast.get_mc_space_id() {
                         let now = time::Instant::now();
-                        println!(
-                            "Before client doing mc expire: {:?} and {:?}",
-                            pkt_num, fec_metadata
-                        );
                         self.mc_expire(
                             epoch,
                             space_id as u64,
                             (pkt_num, fec_metadata).into(),
                             now,
                         )?;
-                        println!("After client mc expire");
                     } else {
                         return Err(Error::Multicast(
                             multicast::MulticastError::McPath,
@@ -9388,7 +9383,6 @@ impl Connection {
                 .try_into()
                 .unwrap_or(usize::MAX),
         );
-        println!("So cap is {}", self.tx_cap);
     }
 
     fn delivery_rate_check_if_app_limited(&self, path_id: usize) -> bool {
@@ -9527,7 +9521,6 @@ impl Connection {
             {
                 path.recovery.reset();
                 self.update_tx_cap();
-                println!("After multicast set path: {}", self.tx_cap);
             }
         }
 
