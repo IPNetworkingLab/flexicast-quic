@@ -106,8 +106,9 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 let cwnd = self.congestion_window;
 
-                if let (Some((lost, recv)), Some(_)) = (pns_client, self.mc_cwnd) {
-                    println!("Use reliable for mc data timeout! use values: {:?} and {:?}", recv, lost);
+                if let (Some((lost, recv)), Some(_)) = (pns_client, self.mc_cwnd)
+                {
+                    info!("Use reliable for mc data timeout! use values: {:?} and {:?}", recv, lost);
                     // First ack only received packets.
                     if recv.len() > 0 {
                         self.on_ack_received(
@@ -131,7 +132,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
                             ttl,
                             Epoch::Application,
                             handshake_status,
-                            now,
+                            now + Duration::from_millis(ttl),
                             "",
                             newly_acked,
                         )?;
@@ -151,7 +152,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 self.mc_set_min_cwnd();
 
-                println!(
+                info!(
                     "Congestion window {} -> {}",
                     cwnd, self.congestion_window
                 );
@@ -244,6 +245,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
         'per_packet: for packet in expired_sent {
+            lost_pn.insert(packet.pkt_num.1..packet.pkt_num.1 + 1);
             // First check if the packet has been received by the client.
             for r in recv_pn.iter() {
                 let lowest_recovered_in_block = r.start;
@@ -261,7 +263,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             // the STREAM frame.
             // FIXME-RMC-TODO: assumes that a StreamHeader always preceeds the
             // McAsym frame.
-            lost_pn.insert(packet.pkt_num.1..packet.pkt_num.1 + 1);
             let mut protected = false;
             let mut protected_stream_id = None;
             for frame in &packet.frames {
@@ -642,5 +643,283 @@ mod tests {
         r.detect_lost_packets(Epoch::Application, now, "");
 
         assert_eq!(r.sent[Epoch::Application].len(), 0);
+    }
+
+    #[test]
+    fn test_mc_recovery_ack_pos_then_neg() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::CUBIC);
+
+        let mut r = Recovery::new(&cfg);
+
+        let now = Instant::now();
+
+        assert_eq!(r.sent[Epoch::Application].len(), 0);
+        assert_eq!(r.congestion_window, 12_000);
+
+        // Send 12 packets.
+        for i in 0..12 {
+            let p = Sent {
+                pkt_num: SpacedPktNum(0, i),
+                frames: smallvec![
+                    get_test_stream_header(1 + i * 4),
+                    get_test_source_symbol_header(0),
+                ],
+                time_sent: now + Duration::from_millis(10 * i),
+                time_acked: None,
+                time_lost: None,
+                size: 1000,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                has_data: false,
+                retransmitted_for_probing: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+            assert_eq!(r.sent[Epoch::Application].len(), i as usize + 1);
+            assert_eq!(r.bytes_in_flight, 1000 * (i as usize + 1));
+
+        }
+        
+        let mut acked = RangeSet::default();
+        acked.insert(0..12);
+
+        assert_eq!(
+            r.on_ack_received(
+                0,
+                &acked,
+                25,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+                &mut Vec::new()
+            ),
+            Ok((0, 0))
+        );
+
+        assert_eq!(r.congestion_window, 24_000);
+        assert_eq!(r.sent[Epoch::Application].len(), 0);
+
+        // Second round.
+        // Send 24 packets.
+        for i in 12..36 {
+            let p = Sent {
+                pkt_num: SpacedPktNum(0, i),
+                frames: smallvec![
+                    get_test_stream_header(1 + i * 4),
+                    get_test_source_symbol_header(0),
+                ],
+                time_sent: now + Duration::from_millis(10 * i),
+                time_acked: None,
+                time_lost: None,
+                size: 1000,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                has_data: false,
+                retransmitted_for_probing: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+            assert_eq!(r.sent[Epoch::Application].len(), i as usize + 1 - 12);
+            assert_eq!(r.bytes_in_flight, 1000 * (i as usize + 1) - 12_000);
+
+        }
+        
+        let mut acked = RangeSet::default();
+        acked.insert(12..36);
+
+        assert_eq!(
+            r.on_ack_received(
+                0,
+                &acked,
+                25,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+                &mut Vec::new()
+            ),
+            Ok((0, 0))
+        );
+
+        assert_eq!(r.congestion_window, 48_000);
+        assert_eq!(r.sent[Epoch::Application].len(), 0);
+
+        // Now lost packets.
+        // Send 48 packets.
+        for i in 36..84 {
+            let p = Sent {
+                pkt_num: SpacedPktNum(0, i),
+                frames: smallvec![
+                    get_test_stream_header(1 + i * 4),
+                    get_test_source_symbol_header(0),
+                ],
+                time_sent: now + Duration::from_millis(10 * i),
+                time_acked: None,
+                time_lost: None,
+                size: 1000,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                has_data: false,
+                retransmitted_for_probing: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+            assert_eq!(r.sent[Epoch::Application].len(), i as usize + 1 - 36);
+            assert_eq!(r.bytes_in_flight, 1000 * (i as usize + 1) - 36_000);
+
+        }
+
+        assert_eq!(r.sent[Epoch::Application].len(), 48);
+        
+        let mut acked = RangeSet::default();
+        acked.insert(36..40);
+        acked.insert(70..75);
+        acked.insert(81..83);
+        let mut lost = RangeSet::default();
+        // lost.insert(40..70);
+        // lost.insert(75..81);
+        lost.insert(44..84);
+
+        assert_eq!(
+            r.on_ack_received(
+                0,
+                &acked,
+                25,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+                &mut Vec::new()
+            ),
+            Ok((35, 35_000)) // Why does this value change when increasing the number of received packets at the max?
+        );
+
+        assert_eq!(r.congestion_window, 33_600);
+        // 48 sent packets, but the 4 first are ack "in order".
+        assert_eq!(r.sent[Epoch::Application].len(), 44);
+
+        let exp = now + Duration::from_millis(500);
+        assert_eq!(
+            r.on_ack_received(
+                0,
+                &lost,
+                25,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                exp,
+                "",
+                &mut Vec::new()
+            ),
+            Ok((0, 0))
+        );
+
+        assert_eq!(r.congestion_window, 33_600);
+        assert_eq!(r.sent[Epoch::Application].len(), 0);
+        assert_eq!(r.bytes_in_flight, 0);
+
+        // Some more losses but where the losses do occur at the end.
+        // The congestion controller increases its window.
+        // Send 34 packets.
+        for i in 100..134 {
+            let p = Sent {
+                pkt_num: SpacedPktNum(0, i),
+                frames: smallvec![
+                    get_test_stream_header(1 + i * 4),
+                    get_test_source_symbol_header(0),
+                ],
+                time_sent: now + Duration::from_millis(10 * i),
+                time_acked: None,
+                time_lost: None,
+                size: 1000,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                has_data: false,
+                retransmitted_for_probing: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+            assert_eq!(r.sent[Epoch::Application].len(), i as usize + 1 - 100);
+            assert_eq!(r.bytes_in_flight, 1000 * (i as usize + 1 - 100));
+        }
+        
+        let mut acked = RangeSet::default();
+        acked.insert(100..120);
+        let mut lost = RangeSet::default();
+        lost.insert(120..134);
+        let exp = now + Duration::from_millis(500);
+
+        assert_eq!(
+            r.on_ack_received(
+                0,
+                &acked,
+                25,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+                &mut Vec::new()
+            ),
+            Ok((0, 0))
+        );
+
+        assert_eq!(r.congestion_window, 33_600);
+
+        assert_eq!(
+            r.on_ack_received(
+                0,
+                &lost,
+                25,
+                Epoch::Application,
+                HandshakeStatus::default(),
+                exp,
+                "",
+                &mut Vec::new()
+            ),
+            Ok((0, 0))
+        );
+
+        assert_eq!(r.congestion_window, 37_200);
     }
 }

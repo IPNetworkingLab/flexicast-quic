@@ -1298,9 +1298,7 @@ impl MulticastConnection for Connection {
                     }
                 },
                 MulticastRole::ServerMulticast => {
-                    println!("ICI");
                     if multicast.mc_reliable.is_none() {
-                        println!("Add here");
                         multicast.mc_reliable = Some(ReliableMc::McSource(RMcSource::default()));
                     }
                 },
@@ -1513,7 +1511,6 @@ impl MulticastConnection for Connection {
                 .flatten()
                 .map(|rmc| rmc.max_rangeset.to_owned())
                 .flatten();
-            println!("Does the server have a rmc: {:?}", self.get_multicast_attributes().unwrap().rmc_get());
             let p = self.paths.get_mut(space_id as usize)?;
             p.recovery.mc_set_min_rtt(time::Duration::from_millis(
                 multicast

@@ -3,6 +3,7 @@
 use super::MulticastAttributes;
 use super::MulticastConnection;
 use super::MulticastError;
+use crate::multicast::MissingRangeSet;
 use crate::ranges::RangeSet;
 use crate::recovery::multicast::ReliableMulticastRecovery;
 use crate::Connection;
@@ -352,7 +353,6 @@ impl ReliableMulticastConnection for Connection {
                 .ok_or(Error::Multicast(MulticastError::McPath))?;
             let path = self.paths.get_mut(space_id)?;
             let stream_map = &mut self.streams;
-            println!("Before");
             let (nb_lost_stream_frames, (lost_pn, recv_pn)) = path.recovery.deleguate_stream(
                 uc,
                 now,
@@ -360,15 +360,14 @@ impl ReliableMulticastConnection for Connection {
                 space_id as u32,
                 stream_map,
             )?;
-            println!("After");
             if let Some(rmc) = uc.multicast.as_mut().unwrap().mc_reliable.as_mut() {
                 rmc.server_mut().unwrap().nb_lost_stream_mc_pkt +=
                     nb_lost_stream_frames;
             }
 
             if let Some(rmc) = mc_s.rmc_get_mut().map(|rmc| rmc.source_mut()).flatten() {
-                if let Some((lost, _)) = &rmc.max_rangeset {
-                    if lost.len() < lost_pn.len() {
+                if let Some((_, recv)) = &rmc.max_rangeset {
+                    if recv.nb_elements() > recv_pn.nb_elements() {
                         rmc.max_rangeset = Some((lost_pn, recv_pn));
                     }
                 } else {
