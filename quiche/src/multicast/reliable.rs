@@ -86,6 +86,13 @@ impl RMcServer {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Default)]
+/// Reliable multicast extension for the multicast source.
+pub struct RMcSource {
+    /// Maximum rangeset of lost frames for a client.
+    pub(crate) max_rangeset: Option<(RangeSet, RangeSet)>,
+}
+
 /// Reliable multicast attributes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReliableMc {
@@ -97,6 +104,9 @@ pub enum ReliableMc {
     /// Used to store the positive acks sent by the client about the multicast
     /// channel.
     Server(RMcServer),
+
+    /// Multicast source specific reliable multicast.
+    McSource(RMcSource),
 }
 
 impl ReliableMc {
@@ -118,6 +128,15 @@ impl ReliableMc {
         }
     }
 
+    /// Return a reference to the source inner structure.
+    pub fn source(&self) -> Option<&RMcSource> {
+        if let Self::McSource(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
     /// Return a mutable reference to the client inner structure.
     pub fn client_mut(&mut self) -> Option<&mut RMcClient> {
         if let Self::Client(c) = self {
@@ -130,6 +149,15 @@ impl ReliableMc {
     /// Return a mutable reference to the server inner structure.
     pub fn server_mut(&mut self) -> Option<&mut RMcServer> {
         if let Self::Server(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    /// Return a mutable reference to the source inner structure.
+    pub fn source_mut(&mut self) -> Option<&mut RMcSource> {
+        if let Self::McSource(s) = self {
             Some(s)
         } else {
             None
@@ -245,8 +273,10 @@ impl ReliableMulticastConnection for Connection {
         &mut self, now: time::Instant, random: &SystemRandom,
     ) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
-            let expiration_timer =
-                multicast.get_mc_announce_data_path().unwrap().expiration_timer;
+            let expiration_timer = multicast
+                .get_mc_announce_data_path()
+                .unwrap()
+                .expiration_timer;
 
             if let Some(ReliableMc::Client(rmc)) = multicast.mc_reliable.as_mut()
             {
@@ -299,7 +329,7 @@ impl ReliableMulticastConnection for Connection {
         &mut self, uc: &mut Connection, now: time::Instant,
     ) -> Result<()> {
         if let (Some(mc_s), Some(mc_u)) =
-            (self.multicast.as_ref(), uc.get_multicast_attributes())
+            (self.multicast.as_mut(), uc.get_multicast_attributes())
         {
             if mc_s.get_mc_role() != MulticastRole::ServerMulticast {
                 return Err(Error::Multicast(MulticastError::McInvalidRole(
@@ -322,17 +352,28 @@ impl ReliableMulticastConnection for Connection {
                 .ok_or(Error::Multicast(MulticastError::McPath))?;
             let path = self.paths.get_mut(space_id)?;
             let stream_map = &mut self.streams;
-            let nb_lost_stream_frames = path.recovery.deleguate_stream(
+            println!("Before");
+            let (nb_lost_stream_frames, (lost_pn, recv_pn)) = path.recovery.deleguate_stream(
                 uc,
                 now,
                 expiration_timer,
                 space_id as u32,
                 stream_map,
             )?;
-            if let Some(rmc) = uc.multicast.as_mut().unwrap().mc_reliable.as_mut()
-            {
+            println!("After");
+            if let Some(rmc) = uc.multicast.as_mut().unwrap().mc_reliable.as_mut() {
                 rmc.server_mut().unwrap().nb_lost_stream_mc_pkt +=
                     nb_lost_stream_frames;
+            }
+
+            if let Some(rmc) = mc_s.rmc_get_mut().map(|rmc| rmc.source_mut()).flatten() {
+                if let Some((lost, _)) = &rmc.max_rangeset {
+                    if lost.len() < lost_pn.len() {
+                        rmc.max_rangeset = Some((lost_pn, recv_pn));
+                    }
+                } else {
+                    rmc.max_rangeset = Some((lost_pn, recv_pn));
+                }
             }
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
@@ -761,7 +802,15 @@ mod tests {
                     );
                 }
 
-                assert_eq!(pipe.0.server.multicast.as_ref().unwrap().rmc_get_server_nb_lost_stream(), Some(2));
+                assert_eq!(
+                    pipe.0
+                        .server
+                        .multicast
+                        .as_ref()
+                        .unwrap()
+                        .rmc_get_server_nb_lost_stream(),
+                    Some(2)
+                );
             }
         }
     }
@@ -972,7 +1021,15 @@ mod tests {
                     assert_eq!(data2, out_buf[data_len..]);
 
                     // Only test for StreamAsym for simplicity.
-                    assert_eq!(pipe.0.server.multicast.as_ref().unwrap().rmc_get_server_nb_lost_stream(), Some(7));
+                    assert_eq!(
+                        pipe.0
+                            .server
+                            .multicast
+                            .as_ref()
+                            .unwrap()
+                            .rmc_get_server_nb_lost_stream(),
+                        Some(7)
+                    );
                 } else {
                     assert_eq!(
                         client.mc_stream_recv(1, &mut out_buf),
@@ -982,5 +1039,100 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_rmc_cc() {
+        let max_datagram_size = 1350;
+        let auth_method = McAuthType::StreamAsym;
+        let mc_cwnd = 15;
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            4,
+            "/tmp/test_rmc_cc.txt",
+            auth_method,
+            true,
+            true,
+            Some(mc_cwnd),
+        )
+        .unwrap();
+
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 10 * max_datagram_size);
+
+        let stream = vec![0u8; 40 * max_datagram_size];
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
+            Ok(10 * max_datagram_size * 2)
+        ); // 27,000 because of the two paths.
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+
+        let random = SystemRandom::new();
+        let now = time::Instant::now();
+        assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        // Multicast source deleguates streams.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let now = time::Instant::now();
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(12), Some(10)).into()));
+
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 19 * max_datagram_size);
+
+        // Now a client does not receive any packet.
+        let stream = vec![0u8; 40 * max_datagram_size];
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
+            Ok(25650) // Why so little? -> because there is still buffered stream.
+        ); // 27,000 because of the two paths.
+        let mut loss_1 = RangeSet::default();
+        loss_1.insert(1..2);
+        let mut i = 0;
+        while let Ok(_) = mc_pipe.source_send_single(if i > 18 { None } else { Some(&loss_1) }, 0) { i += 1; }
+
+        let now = expired;
+        assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        // Multicast source deleguates streams.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(32), Some(30)).into()));
+
+        // Source decreases its congestion window to the minimum multicast value.
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, mc_cwnd * max_datagram_size);
     }
 }

@@ -7,6 +7,7 @@ use crate::multicast::ExpiredStream;
 use crate::multicast::MulticastError;
 use crate::packet::Epoch;
 use crate::ranges;
+use crate::ranges::RangeSet;
 use crate::stream::StreamMap;
 use crate::Connection;
 use crate::Error;
@@ -28,6 +29,7 @@ pub trait MulticastRecovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
+        pns_client: Option<(RangeSet, RangeSet)>,
     ) -> Result<(ExpiredPkt, ExpiredStream)>;
 
     /// Returns the next expiring event.
@@ -55,6 +57,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
+        pns_client: Option<(RangeSet, RangeSet)>,
     ) -> Result<(ExpiredPkt, ExpiredStream)> {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
@@ -76,9 +79,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
             })
         });
         let expired_ssid: Option<u64> = fec_medatadas.max();
-
-        // Take the first and last sent from the iterator.
-        // We will make a range for all of them.
         match expired_sent.next() {
             None => Ok((
                 ExpiredPkt {
@@ -95,8 +95,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     None => first,
                 };
 
-                // Retrieve the list of expired streams based on the last expired
-                // packet number.
+                // Retrieve the list of expired streams based on the last
+                // expired packet number.
                 expired_streams =
                     self.mc_get_sent_exp_stream_ids(last.pkt_num.1, space_id);
 
@@ -106,18 +106,55 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 let cwnd = self.congestion_window;
 
-                self.on_ack_received(
-                    space_id,
-                    &acked,
-                    ttl,
-                    Epoch::Application,
-                    handshake_status,
-                    now,
-                    "",
-                    newly_acked,
-                )?;
+                if let (Some((lost, recv)), Some(_)) = (pns_client, self.mc_cwnd) {
+                    println!("Use reliable for mc data timeout! use values: {:?} and {:?}", recv, lost);
+                    // First ack only received packets.
+                    if recv.len() > 0 {
+                        self.on_ack_received(
+                            space_id,
+                            &recv,
+                            ttl,
+                            Epoch::Application,
+                            handshake_status,
+                            now,
+                            "",
+                            newly_acked,
+                        )?;
+                    }
 
-                println!("Congestion window {} -> {}", cwnd, self.congestion_window);
+                    // Then only lost packets to remove them from the sending
+                    // window.
+                    if lost.len() > 0 {
+                        self.on_ack_received(
+                            space_id,
+                            &lost,
+                            ttl,
+                            Epoch::Application,
+                            handshake_status,
+                            now,
+                            "",
+                            newly_acked,
+                        )?;
+                    }
+                } else {
+                    self.on_ack_received(
+                        space_id,
+                        &acked,
+                        ttl,
+                        Epoch::Application,
+                        handshake_status,
+                        now,
+                        "",
+                        newly_acked,
+                    )?;
+                }
+
+                self.mc_set_min_cwnd();
+
+                println!(
+                    "Congestion window {} -> {}",
+                    cwnd, self.congestion_window
+                );
 
                 Ok((
                     ExpiredPkt {
@@ -186,15 +223,16 @@ pub trait ReliableMulticastRecovery {
     fn deleguate_stream(
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
         space_id: u32, local_streams: &mut StreamMap,
-    ) -> Result<u64>;
+    ) -> Result<(u64, (RangeSet, RangeSet))>;
 }
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
     fn deleguate_stream(
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
         space_id: u32, local_streams: &mut StreamMap,
-    ) -> Result<u64> {
+    ) -> Result<(u64, (RangeSet, RangeSet))> {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
+        let mut lost_pn = RangeSet::default();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
         let mut nb_lost_mc_stream_frames = 0;
         let expired_sent = self.sent[Epoch::Application]
@@ -223,6 +261,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             // the STREAM frame.
             // FIXME-RMC-TODO: assumes that a StreamHeader always preceeds the
             // McAsym frame.
+            lost_pn.insert(packet.pkt_num.1..packet.pkt_num.1 + 1);
             let mut protected = false;
             let mut protected_stream_id = None;
             for frame in &packet.frames {
@@ -321,7 +360,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             }
         }
 
-        Ok(nb_lost_mc_stream_frames)
+        Ok((nb_lost_mc_stream_frames, (lost_pn, recv_pn)))
     }
 }
 
@@ -527,6 +566,7 @@ mod tests {
             data_expiration_val,
             HandshakeStatus::default(),
             &mut Vec::new(),
+            None,
         );
         assert_eq!(res, Ok(((Some(2), Some(2)).into(), [9].into())));
 

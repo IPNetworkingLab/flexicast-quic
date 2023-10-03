@@ -497,7 +497,7 @@ mod tests {
             assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
 
             // Multicast source sends the authentication packet.
-            assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(145));
+            assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(136));
 
             // The clients verify the authentication of the multicast data packets
             // with the received tags.

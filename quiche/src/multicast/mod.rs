@@ -11,6 +11,7 @@ use std::io::BufRead;
 use std::net::SocketAddr;
 use std::time;
 
+use crate::multicast::reliable::RMcSource;
 use crate::packet;
 use crate::packet::Epoch;
 use crate::rand::rand_bytes;
@@ -1284,17 +1285,27 @@ impl MulticastConnection for Connection {
         }
 
         if let Some(multicast) = self.multicast.as_mut() {
-            if let MulticastRole::Client(_) = multicast.mc_role {
-                if let Some(key_vec) = mc_announce_data.public_key.as_ref() {
-                    // Client generates the public key from the received vector.
-                    multicast.mc_public_key =
-                        Some(signature::UnparsedPublicKey::new(
-                            &signature::ED25519,
-                            key_vec.to_owned(),
-                        ));
-                }
-            }
             multicast.mc_announce_data.push(mc_announce_data.clone());
+            match multicast.mc_role {
+                MulticastRole::Client(_) => {
+                    if let Some(key_vec) = mc_announce_data.public_key.as_ref() {
+                        // Client generates the public key from the received vector.
+                        multicast.mc_public_key =
+                            Some(signature::UnparsedPublicKey::new(
+                                &signature::ED25519,
+                                key_vec.to_owned(),
+                            ));
+                    }
+                },
+                MulticastRole::ServerMulticast => {
+                    println!("ICI");
+                    if multicast.mc_reliable.is_none() {
+                        println!("Add here");
+                        multicast.mc_reliable = Some(ReliableMc::McSource(RMcSource::default()));
+                    }
+                },
+                _ => (),
+            }
         } else {
             // Multicast structure does not exist yet.
             // The client considers the MC_ANNOUNCE as processed because it
@@ -1494,6 +1505,15 @@ impl MulticastConnection for Connection {
 
         // Remove expired packets.
         if self.is_server {
+            let pns_client = self
+                .get_multicast_attributes()
+                .unwrap()
+                .rmc_get()
+                .map(|rmc| rmc.source())
+                .flatten()
+                .map(|rmc| rmc.max_rangeset.to_owned())
+                .flatten();
+            println!("Does the server have a rmc: {:?}", self.get_multicast_attributes().unwrap().rmc_get());
             let p = self.paths.get_mut(space_id as usize)?;
             p.recovery.mc_set_min_rtt(time::Duration::from_millis(
                 multicast
@@ -1510,7 +1530,11 @@ impl MulticastConnection for Connection {
                     .expiration_timer,
                 hs_status,
                 &mut self.newly_acked,
+                pns_client,
             )?;
+            if let Some(rmc) = self.multicast.as_mut().unwrap().rmc_get_mut().map(|rmc| rmc.source_mut()).flatten() {
+                rmc.max_rangeset = None;
+            }
             self.blocked_limit = None;
             self.update_tx_cap();
             debug!(
@@ -1656,7 +1680,7 @@ impl MulticastConnection for Connection {
                             ExpiredPkt::default(),
                             now,
                         );
-                        if let Ok((exp_pkt, _)) = res {
+                        let res = if let Ok((exp_pkt, _)) = res {
                             self.multicast
                                 .as_mut()
                                 .unwrap()
@@ -1689,8 +1713,15 @@ impl MulticastConnection for Connection {
                             }
                             info!("Call on_mc_timeout on server done ok");
 
-                            return Ok(exp_pkt);
-                        }
+                            Ok(exp_pkt)
+                        } else {
+                            Ok(ExpiredPkt::default())
+                        };
+
+                        // Server updates its congestion window based on the
+                        // multicast
+
+                        return res;
                     }
                 } else if multicast.mc_leave_on_timeout {
                     debug!("Will leave the multicast channel");
@@ -2691,6 +2722,8 @@ pub mod testing {
                 max_cwnd,
             )
             .unwrap();
+
+            mc_channel.channel.mc_set_mc_announce_data(&mc_announce_data)?;
 
             // Copy the channel ID derived from the multicast channel.
             mc_announce_data.channel_id =
@@ -3878,7 +3911,7 @@ mod tests {
         );
 
         // The multicast source sends an MC_EXPIRE to the client.
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(55));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(46));
 
         // The stream is also closed on the client now.
         assert!(mc_pipe.unicast_pipes[0].0.client.stream_finished(1));
@@ -3943,7 +3976,7 @@ mod tests {
         );
 
         // The multicast source sends an MC_EXPIRE to the client.
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(55));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(46));
 
         // The stream is also closed on the client now.
         assert!(mc_pipe.unicast_pipes[0].0.client.stream_finished(3));
@@ -3972,7 +4005,7 @@ mod tests {
                 .mc_last_expired,
             Some((Some(11), None).into())
         );
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(55));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(46));
         let client_last_received_now = mc_pipe.unicast_pipes[0]
             .0
             .client
@@ -4012,7 +4045,7 @@ mod tests {
                 .mc_last_expired,
             Some((Some(12), None).into())
         );
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(55));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(46));
         let client_last_received_now = mc_pipe.unicast_pipes[0]
             .0
             .client
@@ -4132,7 +4165,7 @@ mod tests {
         // URMC-TODO: check that the stream 9 is closed.
 
         // Multicast source sends an MC_EXPIRE to the client.
-        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(55));
+        assert_eq!(mc_pipe.source_send_single(None, signature_len), Ok(46));
 
         // Sixth stream is received.
         assert_eq!(
@@ -4620,7 +4653,7 @@ mod tests {
         // Multicast source sends an MC_EXPIRE to the client.
         assert_eq!(
             mc_pipe.source_send_single(None, signature_len),
-            Ok(56 + signature_len)
+            Ok(47 + signature_len)
         );
 
         // The client has no missing packet.
@@ -4794,7 +4827,7 @@ mod tests {
         assert_eq!(
             mc_pipe
                 .source_send_single(Some(&clients_losing_packets), signature_len),
-            Ok(56 + signature_len)
+            Ok(47 + signature_len)
         );
 
         // The client still has two lost packets.
@@ -5091,7 +5124,7 @@ mod tests {
         // Multicast source sends an MC_EXPIRE to the client.
         assert_eq!(
             mc_pipe.source_send_single(None, signature_len),
-            Ok(56 + signature_len)
+            Ok(47 + signature_len)
         );
 
         // Send new stream.
@@ -5661,7 +5694,7 @@ mod tests {
         assert!(mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
 
         // Multicast source sends the authentication packets to the clients.
-        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(148));
+        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(130));
 
         // Multicast source must not send any authentication packet because
         // everything as been sent.
