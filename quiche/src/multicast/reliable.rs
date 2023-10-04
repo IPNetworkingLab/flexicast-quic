@@ -229,6 +229,10 @@ pub trait ReliableMulticastConnection {
     /// Returns the [`crate::ranges::RangeSet`] of FEC recovered source symbols
     /// received by the client.
     fn rmc_get_rec_ss(&self) -> Result<&RangeSet>;
+
+    /// Resets the set of packet numbers/source symbols received by the client
+    /// on the multicast path.
+    fn rmc_reset_recv_pn_ss(&mut self);
 }
 
 impl ReliableMulticastConnection for Connection {
@@ -353,19 +357,30 @@ impl ReliableMulticastConnection for Connection {
                 .ok_or(Error::Multicast(MulticastError::McPath))?;
             let path = self.paths.get_mut(space_id)?;
             let stream_map = &mut self.streams;
-            let (nb_lost_stream_frames, (lost_pn, recv_pn)) = path.recovery.deleguate_stream(
-                uc,
-                now,
-                expiration_timer,
-                space_id as u32,
-                stream_map,
-            )?;
-            if let Some(rmc) = uc.multicast.as_mut().unwrap().mc_reliable.as_mut() {
+            let (nb_lost_stream_frames, (mut lost_pn, mut recv_pn)) =
+                path.recovery.deleguate_stream(
+                    uc,
+                    now,
+                    expiration_timer,
+                    space_id as u32,
+                    stream_map,
+                )?;
+            if let Some(rmc) = uc.multicast.as_mut().unwrap().mc_reliable.as_mut()
+            {
                 rmc.server_mut().unwrap().nb_lost_stream_mc_pkt +=
                     nb_lost_stream_frames;
             }
 
-            if let Some(rmc) = mc_s.rmc_get_mut().map(|rmc| rmc.source_mut()).flatten() {
+            // Remove already expired feedback from the `recv_pn` value.
+            if let Some(exp) = mc_s.mc_last_expired {
+                if let Some(exp_pn) = exp.pn {
+                    recv_pn.remove_until(exp_pn);
+                    lost_pn.remove_until(exp_pn);
+                }
+            }
+
+            if let Some(rmc) = mc_s.rmc_get_mut().and_then(|rmc| rmc.source_mut())
+            {
                 if let Some((_, recv)) = &rmc.max_rangeset {
                     if recv.nb_elements() > recv_pn.nb_elements() {
                         rmc.max_rangeset = Some((lost_pn, recv_pn));
@@ -402,6 +417,15 @@ impl ReliableMulticastConnection for Connection {
             }
         } else {
             Err(Error::Multicast(MulticastError::McDisabled))
+        }
+    }
+
+    fn rmc_reset_recv_pn_ss(&mut self) {
+        if let Some(multicast) = self.multicast.as_mut() {
+            if let Some(ReliableMc::Server(s)) = multicast.mc_reliable.as_mut() {
+                s.recv_pn_mc = RangeSet::default();
+                s.recv_fec_mc = RangeSet::default();
+            }
         }
     }
 }
@@ -1102,15 +1126,123 @@ mod tests {
         let stream = vec![0u8; 40 * max_datagram_size];
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(25650) // Why so little? -> because there is still buffered stream.
+            Ok(25650) /* Why so little? -> because there is still buffered
+                       * stream. */
         ); // 27,000 because of the two paths.
         let mut loss_1 = RangeSet::default();
         loss_1.insert(1..2);
         let mut i = 0;
-        while let Ok(_) = mc_pipe.source_send_single(if i > 18 { None } else { Some(&loss_1) }, 0) { i += 1; }
+        while let Ok(_) = mc_pipe
+            .source_send_single(if i > 18 { None } else { Some(&loss_1) }, 0)
+        {
+            i += 1;
+        }
 
         let now = expired;
         assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        // Multicast source deleguates streams.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(32), Some(30)).into()));
+
+        // Source decreases its congestion window to the minimum multicast value.
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, mc_cwnd * max_datagram_size);
+    }
+
+    #[test]
+    /// Same test as before, but now a packet flight is not received at all on
+    /// the clients. As a result, no positive ACK is sent to the source, which
+    /// must decrease its congestion window in response.
+    fn test_rmc_cc_empty_ack() {
+        let max_datagram_size = 1350;
+        let auth_method = McAuthType::StreamAsym;
+        let mc_cwnd = 15;
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            4,
+            "/tmp/test_rmc_cc_no_ack.txt",
+            auth_method,
+            true,
+            true,
+            Some(mc_cwnd),
+        )
+        .unwrap();
+
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 10 * max_datagram_size);
+
+        let stream = vec![0u8; 40 * max_datagram_size];
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
+            Ok(10 * max_datagram_size * 2)
+        ); // 27,000 because of the two paths.
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+
+        let random = SystemRandom::new();
+        let now = time::Instant::now();
+        assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        // Multicast source deleguates streams.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let now = time::Instant::now();
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(12), Some(10)).into()));
+
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, 19 * max_datagram_size);
+
+        // All clients have congested links and do not receive any message.
+        let stream = vec![0u8; 40 * max_datagram_size];
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
+            Ok(25650) /* Why so little? -> because there is still buffered
+                       * stream. */
+        ); // 27,000 because of the two paths.
+        let mut loss = RangeSet::default();
+        loss.insert(0..4);
+        while let Ok(_) = mc_pipe.source_send_single(Some(&loss), 0) {}
+
+        let now = expired;
+        assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
+        // The ACKs are empty because clients did not receive any new packet.
+        for pipe in mc_pipe.unicast_pipes.iter().map(|(p, ..)| p) {
+            assert_eq!(pipe.client.rmc_should_send_positive_ack(), Ok(true));
+            assert_eq!(pipe.client.rmc_should_send_source_symbol_ack(), Ok(true));
+        }
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         // Multicast source deleguates streams.

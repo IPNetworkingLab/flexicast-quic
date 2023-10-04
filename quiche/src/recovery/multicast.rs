@@ -121,6 +121,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
                             "",
                             newly_acked,
                         )?;
+                    } else {
+                        self.mark_all_inflight_as_lost(now, "");
                     }
 
                     // Then only lost packets to remove them from the sending
@@ -152,10 +154,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 self.mc_set_min_cwnd();
 
-                info!(
-                    "Congestion window {} -> {}",
-                    cwnd, self.congestion_window
-                );
+                info!("Congestion window {} -> {}", cwnd, self.congestion_window);
 
                 Ok((
                     ExpiredPkt {
@@ -235,6 +234,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let mut lost_pn = RangeSet::default();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
+
         let mut nb_lost_mc_stream_frames = 0;
         let expired_sent = self.sent[Epoch::Application]
             .iter()
@@ -361,6 +361,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             }
         }
 
+        uc.rmc_reset_recv_pn_ss();
         Ok((nb_lost_mc_stream_frames, (lost_pn, recv_pn)))
     }
 }
@@ -688,9 +689,8 @@ mod tests {
             );
             assert_eq!(r.sent[Epoch::Application].len(), i as usize + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i as usize + 1));
-
         }
-        
+
         let mut acked = RangeSet::default();
         acked.insert(0..12);
 
@@ -743,9 +743,8 @@ mod tests {
             );
             assert_eq!(r.sent[Epoch::Application].len(), i as usize + 1 - 12);
             assert_eq!(r.bytes_in_flight, 1000 * (i as usize + 1) - 12_000);
-
         }
-        
+
         let mut acked = RangeSet::default();
         acked.insert(12..36);
 
@@ -798,11 +797,10 @@ mod tests {
             );
             assert_eq!(r.sent[Epoch::Application].len(), i as usize + 1 - 36);
             assert_eq!(r.bytes_in_flight, 1000 * (i as usize + 1) - 36_000);
-
         }
 
         assert_eq!(r.sent[Epoch::Application].len(), 48);
-        
+
         let mut acked = RangeSet::default();
         acked.insert(36..40);
         acked.insert(70..75);
@@ -823,7 +821,8 @@ mod tests {
                 "",
                 &mut Vec::new()
             ),
-            Ok((35, 35_000)) // Why does this value change when increasing the number of received packets at the max?
+            Ok((35, 35_000)) /* Why does this value change when increasing the
+                              * number of received packets at the max? */
         );
 
         assert_eq!(r.congestion_window, 33_600);
@@ -883,7 +882,7 @@ mod tests {
             assert_eq!(r.sent[Epoch::Application].len(), i as usize + 1 - 100);
             assert_eq!(r.bytes_in_flight, 1000 * (i as usize + 1 - 100));
         }
-        
+
         let mut acked = RangeSet::default();
         acked.insert(100..120);
         let mut lost = RangeSet::default();

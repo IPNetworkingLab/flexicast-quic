@@ -8995,6 +8995,7 @@ impl Connection {
                         if let Some(ReliableMc::Server(s)) =
                             multicast.rmc_get_mut()
                         {
+                            println!("Recv ranges from the client: {:?}", ranges);
                             s.set_rmc_received_pn(ranges);
 
                             // Do not process the ACKMP as a normal one.

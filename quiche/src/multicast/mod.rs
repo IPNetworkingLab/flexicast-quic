@@ -1507,10 +1507,8 @@ impl MulticastConnection for Connection {
                 .get_multicast_attributes()
                 .unwrap()
                 .rmc_get()
-                .map(|rmc| rmc.source())
-                .flatten()
-                .map(|rmc| rmc.max_rangeset.to_owned())
-                .flatten();
+                .and_then(|rmc| rmc.source())
+                .and_then(|rmc| rmc.max_rangeset.to_owned());
             let p = self.paths.get_mut(space_id as usize)?;
             p.recovery.mc_set_min_rtt(time::Duration::from_millis(
                 multicast
@@ -1529,7 +1527,7 @@ impl MulticastConnection for Connection {
                 &mut self.newly_acked,
                 pns_client,
             )?;
-            if let Some(rmc) = self.multicast.as_mut().unwrap().rmc_get_mut().map(|rmc| rmc.source_mut()).flatten() {
+            if let Some(rmc) = self.multicast.as_mut().unwrap().rmc_get_mut().and_then(|rmc| rmc.source_mut()) {
                 rmc.max_rangeset = None;
             }
             self.blocked_limit = None;
