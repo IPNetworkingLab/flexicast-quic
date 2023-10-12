@@ -242,8 +242,8 @@ impl ReliableMulticastConnection for Connection {
         // No timeout for client not in the group/transient leaving.
         if matches!(
             multicast.mc_role,
-            MulticastRole::Client(MulticastClientStatus::AwareUnjoined) |
-                MulticastRole::Client(MulticastClientStatus::Leaving(_))
+            MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+                | MulticastRole::Client(MulticastClientStatus::Leaving(_))
         ) {
             return None;
         }
@@ -288,8 +288,8 @@ impl ReliableMulticastConnection for Connection {
                 let mut random_v = [0u8; 4];
                 random.fill(&mut random_v).ok();
                 let additional_timer = i32::from_be_bytes(random_v) as i128;
-                let et_with_random = expiration_timer as i128 +
-                    (additional_timer % ((expiration_timer / 10) as i128));
+                let et_with_random = expiration_timer as i128
+                    + (additional_timer % ((expiration_timer / 10) as i128));
                 rmc.rmc_next_time_ack = now.checked_add(
                     time::Duration::from_millis(et_with_random as u64),
                 );
@@ -461,8 +461,8 @@ impl MulticastAttributes {
     /// Always `None` for the multicast source and the client.
     /// `None` if reliable multicast is disabled.
     pub fn rmc_get_server_nb_lost_stream(&self) -> Option<u64> {
-        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_)) ||
-            !self.mc_is_reliable()
+        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_))
+            || !self.mc_is_reliable()
         {
             return None;
         }
@@ -483,6 +483,7 @@ pub mod testing {
     pub fn get_test_rmc_announce_data() -> McAnnounceData {
         let mut mc_announce_data = get_test_mc_announce_data();
         mc_announce_data.full_reliability = true;
+        mc_announce_data.expiration_timer = 500;
 
         mc_announce_data
     }
@@ -553,6 +554,7 @@ mod tests {
     use crate::ranges::RangeSet;
     use ring::rand::SystemRandom;
     use std::time;
+    use std::time::Duration;
 
     #[test]
     fn test_rmc_next_timeout() {
@@ -1172,6 +1174,7 @@ mod tests {
         let max_datagram_size = 1350;
         let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
+        let mut buf = [0u8; 15000];
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
             4,
             "/tmp/test_rmc_cc_no_ack.txt",
@@ -1234,7 +1237,17 @@ mod tests {
         ); // 27,000 because of the two paths.
         let mut loss = RangeSet::default();
         loss.insert(0..4);
-        while let Ok(_) = mc_pipe.source_send_single(Some(&loss), 0) {}
+        loop {
+            match mc_pipe.source_send_single(Some(&loss), 0) {
+                Err(Error::Done) => {
+                    break;
+                },
+                Ok(v) => (),
+                Err(e) => panic!("ERROR: {:?}", e),
+            }
+        }
+
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
 
         let now = expired;
         assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
@@ -1245,12 +1258,16 @@ mod tests {
         }
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
+
         // Multicast source deleguates streams.
         let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
         let expired = now
-            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .checked_add(time::Duration::from_millis(expiration_timer + 1000))
             .unwrap();
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert_eq!(res, Ok((Some(32), Some(30)).into()));
@@ -1265,5 +1282,157 @@ mod tests {
             .recovery
             .cwnd();
         assert_eq!(cwnd, mc_cwnd * max_datagram_size);
+    }
+
+    #[test]
+    fn test_rmc_no_retransmit_on_mc_source() {
+        let max_datagram_size = 1350;
+        let auth_method = McAuthType::StreamAsym;
+        let mut buf = [0u8; 15000];
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_rmc_no_retransmit_on_mc_source.txt",
+            auth_method,
+            true,
+            true,
+            Some(10_000),
+        )
+        .unwrap();
+
+        let stream = vec![0u8; 40 * max_datagram_size];
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
+            Ok(10 * max_datagram_size * 2)
+        ); // 27,000 because of the two paths.
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+
+        // Multicast source deleguates streams without feedback from the clients.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let now = time::Instant::now();
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(12), Some(10)).into()));
+
+        // Now able to send the remaining of the stream.
+        for _ in 0..12 {
+            assert!(mc_pipe.source_send_single(None, 0).is_ok());
+        }
+
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
+    }
+
+    #[test]
+    fn test_rmc_not_all_expired() {
+        let max_datagram_size = 1350;
+        let auth_method = McAuthType::StreamAsym;
+        let mut buf = [0u8; 15000];
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_rmc_not_all_expired.txt",
+            auth_method,
+            true,
+            true,
+            Some(10_000),
+        )
+        .unwrap();
+
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+
+        let stream = vec![0u8; 40 * max_datagram_size];
+        assert_eq!(
+            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
+            Ok(10 * max_datagram_size * 2)
+        ); // 27,000 because of the two paths.
+
+        // Send first packets.
+        for _ in 0..6 {
+            mc_pipe.source_send_single(None, 0).unwrap();
+        }
+
+        // Wait (e.g., some kind of weird pacing).
+        let now = time::Instant::now();
+        std::thread::sleep(Duration::from_millis(expiration_timer - 100));
+
+        for _ in 0..5 {
+            mc_pipe.source_send_single(None, 0).unwrap();
+        }
+
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
+
+        // Multicast source deleguates streams without feedback from the clients.
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(7), Some(5)).into()));
+
+        // Now able to send the remaining of the stream.
+        for _ in 0..12 {
+            assert!(mc_pipe.source_send_single(None, 0).is_ok());
+        }
+
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
+    }
+
+    #[test]
+    fn test_rmc_not_all_expired_multiple_small() {
+        let auth_method = McAuthType::StreamAsym;
+        let mut buf = [0u8; 15000];
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_rmc_not_all_expired_multiple_small.txt",
+            auth_method,
+            true,
+            true,
+            Some(10_000),
+        )
+        .unwrap();
+
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+
+        // First send 3 streams that will be expired.
+        for i in 0..3 {
+            mc_pipe.source_send_single_stream(true, None, 0, 1 + i * 4).unwrap();
+        }
+
+        // Wait (e.g., some kind of weird pacing).
+        let now = time::Instant::now();
+        std::thread::sleep(Duration::from_millis(expiration_timer - 100));
+
+        mc_pipe.source_send_single_stream(true, None, 0, 1 + 3 * 4).unwrap();
+
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
+
+        // Multicast source deleguates streams without feedback from the clients.
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(4), Some(2)).into()));
+
+        assert!(!mc_pipe.mc_channel.channel.mc_no_stream_active());
+
+        // Multicast source deleguates streams without feedback from the clients.
+        let now = expired;
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(5), Some(3)).into()));
     }
 }

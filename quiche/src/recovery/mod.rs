@@ -1270,13 +1270,12 @@ impl Recovery {
         &mut self, lost_bytes: usize, time_sent: Instant, epoch: packet::Epoch,
         now: Instant,
     ) {
-        let cwnd_before = self.congestion_window;
+        let _cwnd_before = self.congestion_window;
         if !self.in_congestion_recovery(time_sent) {
             (self.cc_ops.checkpoint)(self);
         }
 
         (self.cc_ops.congestion_event)(self, lost_bytes, time_sent, epoch, now);
-        info!("\t Congestion window {} -> {}", cwnd_before, self.congestion_window);
     }
 
     fn collapse_cwnd(&mut self) {

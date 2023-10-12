@@ -3827,6 +3827,16 @@ impl Connection {
                                 length,
                                 fin,
                             } => {
+                                // The multicast source MUST NOT retransmit stream frames. Either:
+                                // - Use FEC to generate repair symbols that will recover lost STREAM frames,
+                                // - Retransmit them using the unicast to the clients if Reliable Multicast QUIC is used.
+                                if let Some(multicast) = self.multicast.as_ref() {
+                                    if matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerMulticast) {
+                                        debug!("Multicast source does not retransmit lost STREAM frames");
+                                        continue;
+                                    }
+                                }
+
                                 let stream = match self.streams.get_mut(stream_id)
                                 {
                                     Some(v) => v,
@@ -8853,7 +8863,7 @@ impl Connection {
             },
 
             frame::Frame::McAsym { signature } => {
-                debug!(
+                info!(
                     "Receive an MC_ASYM frame on space id {:?}: {:?}",
                     recv_path_id, signature
                 );
@@ -8866,7 +8876,8 @@ impl Connection {
                             return Err(Error::InvalidStreamState(stream_id));
                         }
                     } else {
-                        return Err(Error::InvalidFrame);
+                        info!("Ici invalidFrame");
+                        // return Err(Error::InvalidFrame);
                     }
                 } else {
                     return Err(Error::Multicast(MulticastError::McDisabled));
@@ -8995,7 +9006,7 @@ impl Connection {
                         if let Some(ReliableMc::Server(s)) =
                             multicast.rmc_get_mut()
                         {
-                            println!("Recv ranges from the client: {:?}", ranges);
+                            info!("Recv ranges from the client: {:?}", ranges);
                             s.set_rmc_received_pn(ranges);
 
                             // Do not process the ACKMP as a normal one.

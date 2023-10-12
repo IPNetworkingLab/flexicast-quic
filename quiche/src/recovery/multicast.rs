@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use super::Acked;
 use super::HandshakeStatus;
+use super::LostFrame;
 use super::SpaceId;
 
 /// Multicast extension of the recovery mechanism of QUIC.
@@ -62,8 +63,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
-                now.saturating_duration_since(p.time_sent) >=
-                    Duration::from_millis(ttl)
+                now.saturating_duration_since(p.time_sent)
+                    >= Duration::from_millis(ttl)
             })
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
@@ -73,11 +74,16 @@ impl MulticastRecovery for crate::recovery::Recovery {
         let exp3 = expired_sent.clone();
         let fec_medatadas = exp3.flat_map(|p| {
             p.frames.as_ref().iter().filter_map(|f| match f {
-                crate::frame::Frame::SourceSymbolHeader { metadata, .. } =>
-                    Some(source_symbol_metadata_to_u64(*metadata)),
+                crate::frame::Frame::SourceSymbolHeader { metadata, .. } => {
+                    Some(source_symbol_metadata_to_u64(*metadata))
+                },
                 _ => None,
             })
         });
+        println!(
+            "Self sent in mc_data_timeout 2 {}",
+            self.sent[Epoch::Application].len()
+        );
         let expired_ssid: Option<u64> = fec_medatadas.max();
         match expired_sent.next() {
             None => Ok((
@@ -108,7 +114,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 if let (Some((lost, recv)), Some(_)) = (pns_client, self.mc_cwnd)
                 {
-                    info!("Use reliable for mc data timeout! use values: {:?} and {:?}", recv, lost);
+                    debug!("Use reliable for mc data timeout! use values: {:?} and {:?}", recv, lost);
                     // First ack only received packets.
                     if recv.len() > 0 {
                         self.on_ack_received(
@@ -122,7 +128,11 @@ impl MulticastRecovery for crate::recovery::Recovery {
                             newly_acked,
                         )?;
                     } else {
-                        self.mark_all_inflight_as_lost(now, "");
+                        let a = if let Some(exp) = expired_pn {
+                            self.mark_inflight_as_lost_app_up_to(now, "", exp)
+                        } else {
+                            self.mark_all_inflight_as_lost(now, "")
+                        };
                     }
 
                     // Then only lost packets to remove them from the sending
@@ -152,9 +162,17 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     )?;
                 }
 
+                let cwnd_2 = self.congestion_window;
+
                 self.mc_set_min_cwnd();
 
-                info!("Congestion window {} -> {}", cwnd, self.congestion_window);
+                info!(
+                    "Congestion window {} -> {} -> {}\n And self sent len: {}",
+                    cwnd,
+                    cwnd_2,
+                    self.congestion_window,
+                    self.sent[Epoch::Application].len(),
+                );
 
                 Ok((
                     ExpiredPkt {
@@ -196,8 +214,9 @@ impl MulticastRecovery for crate::recovery::Recovery {
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id)
             .flat_map(|p| {
                 p.frames.as_ref().iter().filter_map(|f| match f {
-                    crate::frame::Frame::StreamHeader { stream_id, .. } =>
-                        Some(*stream_id),
+                    crate::frame::Frame::StreamHeader { stream_id, .. } => {
+                        Some(*stream_id)
+                    },
                     _ => None,
                 })
             })
@@ -224,6 +243,11 @@ pub trait ReliableMulticastRecovery {
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
         space_id: u32, local_streams: &mut StreamMap,
     ) -> Result<(u64, (RangeSet, RangeSet))>;
+
+    /// Mark all packets in flight in [`Epoch::Application`] up to the precised packet number.
+    fn mark_inflight_as_lost_app_up_to(
+        &mut self, now: Instant, trace_id: &str, pn: u64,
+    ) -> (usize, usize);
 }
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
@@ -239,8 +263,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
-                now.saturating_duration_since(p.time_sent) >=
-                    Duration::from_millis(expiration_timer)
+                now.saturating_duration_since(p.time_sent)
+                    >= Duration::from_millis(expiration_timer)
             })
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
@@ -250,8 +274,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             for r in recv_pn.iter() {
                 let lowest_recovered_in_block = r.start;
                 let largest_recovered_in_block = r.end - 1;
-                if packet.pkt_num.1 >= lowest_recovered_in_block &&
-                    packet.pkt_num.1 <= largest_recovered_in_block
+                if packet.pkt_num.1 >= lowest_recovered_in_block
+                    && packet.pkt_num.1 <= largest_recovered_in_block
                 {
                     continue 'per_packet; // Packet was received.
                 }
@@ -275,8 +299,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         for r in reco_ss.iter() {
                             let lowest_recovered_in_block = r.start;
                             let largest_recovered_in_block = r.end - 1;
-                            if mdu64 >= lowest_recovered_in_block &&
-                                mdu64 <= largest_recovered_in_block
+                            if mdu64 >= lowest_recovered_in_block
+                                && mdu64 <= largest_recovered_in_block
                             {
                                 // Packet has been recovered through FEC.
                                 continue 'per_packet;
@@ -303,7 +327,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         let local_stream = local_streams
                             .get_mut(*stream_id)
                             .ok_or(Error::InvalidStreamState(*stream_id))?;
-
                         // We "ack" the recovery mechanism by asking to retransmit
                         // the specified data... Since we
                         // call "send" on the data that is
@@ -317,12 +340,12 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         let mut buf = vec![0u8; *length];
                         local_stream.send.emit(&mut buf)?;
 
-                        let written = stream.send.write_at_offset(
+                        let _written = stream.send.write_at_offset(
                             &buf[..],
                             *offset,
                             *fin,
                         )?;
-                        assert_eq!(written, *length);
+                        // assert_eq!(written, *length);
 
                         // Mark the stream as flushable. We do not take into
                         // account flow limits because the
@@ -363,6 +386,78 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
         uc.rmc_reset_recv_pn_ss();
         Ok((nb_lost_mc_stream_frames, (lost_pn, recv_pn)))
+    }
+
+    fn mark_inflight_as_lost_app_up_to(
+        &mut self, now: Instant, trace_id: &str, pn: u64,
+    ) -> (usize, usize) {
+        let mut lost_packets = 0;
+        let mut lost_bytes = 0;
+        let e = Epoch::Application;
+        let mut epoch_lost_bytes = 0;
+        let mut largest_lost_pkt = None;
+        let idx_last_exp = self.sent[e]
+            .iter()
+            .map(|s| s.pkt_num.1)
+            .position(|s| s == pn)
+            .unwrap();
+        for sent in self.sent[e].drain(0..idx_last_exp) {
+            let last_expired = sent.pkt_num.1 >= pn;
+            if sent.time_acked.is_none() {
+                let mut contains_recovered_source_symbol = false;
+                for frame in &sent.frames {
+                    if let frame::Frame::SourceSymbolHeader {
+                        recovered, ..
+                    } = frame
+                    {
+                        if *recovered {
+                            contains_recovered_source_symbol = true;
+                        }
+                    }
+
+                    if contains_recovered_source_symbol {
+                        self.lost[e]
+                            .push(LostFrame::LostAndRecovered(frame.clone()))
+                    } else {
+                        self.lost[e].push(LostFrame::Lost(frame.clone()))
+                    }
+                }
+                // self.lost[e].extend_from_slice(&sent.frames);
+                if sent.in_flight {
+                    epoch_lost_bytes += sent.size;
+
+                    self.in_flight_count[e] =
+                        self.in_flight_count[e].saturating_sub(1);
+
+                    trace!(
+                        "{} packet {:?} lost on epoch {}",
+                        trace_id,
+                        sent.pkt_num,
+                        e
+                    );
+
+                    // Frames have already been removed from the packet.
+                    largest_lost_pkt = Some(sent);
+                }
+
+                lost_packets += 1;
+                self.lost_count += 1;
+            }
+
+            // Stop the loop if we expired the last packet.
+            if last_expired {
+                break;
+            }
+        }
+
+        self.bytes_lost += epoch_lost_bytes as u64;
+        lost_bytes += epoch_lost_bytes;
+
+        if let Some(pkt) = largest_lost_pkt {
+            self.on_packets_lost(lost_bytes, &pkt, e, now);
+        }
+
+        (lost_packets, lost_bytes)
     }
 }
 

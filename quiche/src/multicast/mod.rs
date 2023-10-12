@@ -1564,7 +1564,7 @@ impl MulticastConnection for Connection {
                 if let Some(stream) = stream_opt {
                     if self.is_server &&
                         (multicast.mc_is_reliable() &&
-                            stream.send.is_complete() ||
+                            stream.send.is_fin() ||
                             !multicast.mc_is_reliable())
                     {
                         // Only reset the sending stream if:
@@ -1580,6 +1580,9 @@ impl MulticastConnection for Connection {
                         stream.recv.reset(0, final_size)?;
                         let local = stream.local;
                         self.streams.collect(exp_stream_id, local);
+                    } else if self.is_server && multicast.mc_is_reliable() {
+                        // Need to reset the stream to the correct offset to avoid double retransmission.
+                        stream.send.reset_at(stream.send.off_back())?;
                     }
                 };
             }
@@ -1645,7 +1648,6 @@ impl MulticastConnection for Connection {
 
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredPkt> {
         // Some data has expired.
-        info!("Call on_mc_timeout on server done");
         if let Some(time::Duration::ZERO) = self.mc_timeout(now) {
             if let Some(multicast) = self.multicast.as_mut() {
                 if self.is_server {
@@ -1706,7 +1708,6 @@ impl MulticastConnection for Connection {
                                     debug!("Repairs after: {:?}", mc_repairs);
                                 }
                             }
-                            info!("Call on_mc_timeout on server done ok");
 
                             Ok(exp_pkt)
                         } else {
@@ -1726,7 +1727,6 @@ impl MulticastConnection for Connection {
                 }
             }
         }
-        debug!("Call on_mc_timeout on server done ok 2");
         Ok(ExpiredPkt::default())
     }
 
