@@ -54,6 +54,12 @@ pub trait MulticastRecovery {
     fn mc_get_time_sen(&self, pn: u64) -> Option<Instant>;
 }
 
+impl crate::recovery::Recovery {
+    pub fn dump_sent(&self, s: &str) {
+        info!("{}: {:?}", s, self.sent[Epoch::Application].iter().map(|s| s.pkt_num.1).collect::<Vec<_>>());
+    }
+}
+
 impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
@@ -67,6 +73,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     >= Duration::from_millis(ttl)
             })
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
+
+        self.dump_sent("All elements at the beginning of MC_DATA_TIMEOUT");
 
         let mut expired_streams = ExpiredStream::new();
 
@@ -112,9 +120,13 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 let cwnd = self.congestion_window;
 
-                if let (Some((lost, recv)), Some(_)) = (pns_client, self.mc_cwnd)
+                if let (Some((lost, mut recv)), Some(_)) = (pns_client, self.mc_cwnd)
                 {
-                    debug!("Use reliable for mc data timeout! use values: {:?} and {:?}", recv, lost);
+                    if let Some(exp) = expired_pn {
+                        debug!("Remove from recv: {:?} packets after {}", recv, exp);
+                        recv.remove_after(exp);
+                    }
+                    debug!("Use reliable for mc data timeout! use values: {:?} and {:?}. Newly acked len: {:?}", recv, lost, newly_acked.len());
                     // First ack only received packets.
                     if recv.len() > 0 {
                         self.on_ack_received(
@@ -128,11 +140,11 @@ impl MulticastRecovery for crate::recovery::Recovery {
                             newly_acked,
                         )?;
                     } else {
-                        let a = if let Some(exp) = expired_pn {
-                            self.mark_inflight_as_lost_app_up_to(now, "", exp)
+                        if let Some(exp) = expired_pn {
+                            self.mark_inflight_as_lost_app_up_to(now, "", exp);
                         } else {
-                            self.mark_all_inflight_as_lost(now, "")
-                        };
+                            self.mark_all_inflight_as_lost(now, "");
+                        }
                     }
 
                     // Then only lost packets to remove them from the sending
@@ -173,6 +185,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     self.congestion_window,
                     self.sent[Epoch::Application].len(),
                 );
+
+                self.dump_sent("All elements at the end of MC_DATA_TIMEOUT");
 
                 Ok((
                     ExpiredPkt {
@@ -267,9 +281,16 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                     >= Duration::from_millis(expiration_timer)
             })
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
+            
+        let mut max_exp_pn: Option<u64> = None;
+        let mut max_exp_ss: Option<u64> = None;
 
         'per_packet: for packet in expired_sent {
-            lost_pn.insert(packet.pkt_num.1..packet.pkt_num.1 + 1);
+            max_exp_pn = if let Some(c) = max_exp_pn {
+                Some(c.max(packet.pkt_num.1))
+            } else {
+                Some(packet.pkt_num.1)
+            };
             // First check if the packet has been received by the client.
             for r in recv_pn.iter() {
                 let lowest_recovered_in_block = r.start;
@@ -280,6 +301,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                     continue 'per_packet; // Packet was received.
                 }
             }
+            lost_pn.insert(packet.pkt_num.1..packet.pkt_num.1 + 1);
 
             // At this point, we know that the client did not receive the packet.
             // Maybe it recovered it with FEC.
@@ -296,6 +318,11 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         recovered: _,
                     } => {
                         let mdu64 = source_symbol_metadata_to_u64(*metadata);
+                        max_exp_ss = if let Some(c) = max_exp_ss {
+                            Some(c.max(mdu64))
+                        } else {
+                            Some(mdu64)
+                        };
                         for r in reco_ss.iter() {
                             let lowest_recovered_in_block = r.start;
                             let largest_recovered_in_block = r.end - 1;
@@ -322,11 +349,14 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
                         // This STREAM frame was lost. Retransmit in a (new)
                         // stream on unicast path.
+                        debug!("Before getting the stream");
                         let stream = uc.get_or_create_stream(*stream_id, true)?;
+                        debug!("After getting the stream. Before getting local stream. The ID is {} from pn={}", *stream_id, packet.pkt_num.1);
                         let was_flushable = stream.is_flushable();
                         let local_stream = local_streams
                             .get_mut(*stream_id)
                             .ok_or(Error::InvalidStreamState(*stream_id))?;
+                        debug!("After getting local stream");
                         // We "ack" the recovery mechanism by asking to retransmit
                         // the specified data... Since we
                         // call "send" on the data that is
@@ -384,7 +414,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             }
         }
 
-        uc.rmc_reset_recv_pn_ss();
+        uc.rmc_reset_recv_pn_ss(max_exp_pn, max_exp_ss);
         Ok((nb_lost_mc_stream_frames, (lost_pn, recv_pn)))
     }
 

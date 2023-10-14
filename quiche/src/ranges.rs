@@ -105,6 +105,23 @@ impl RangeSet {
         }
     }
 
+    pub fn remove_after(&mut self, smallest: u64) {
+        let ranges: Vec<Range<u64>> = self
+            .inner
+            .range((Bound::Unbounded::<u64>, Bound::Unbounded))
+            .map(|(&s, &e)| (s..e))
+            .collect();
+
+        for r in ranges {
+            if r.start > smallest + 1 {
+                self.inner.remove(&r.start);
+            } else if r.end > smallest {
+                self.inner.remove(&r.start);
+                self.insert(r.start..smallest + 1);
+            }
+        }
+    }
+
     pub fn push_item(&mut self, item: u64) {
         self.insert(item..item + 1);
     }
@@ -607,5 +624,27 @@ mod tests {
         r.insert(4..17);
         assert_eq!(r.first(), Some(4));
         assert_eq!(r.last(), Some(19));
+    }
+
+    #[test]
+    fn remove_after() {
+        let mut r = RangeSet::default();
+
+        r.insert(1..5);
+        r.insert(9..12);
+        r.insert(7..10);
+        r.insert(33..555);
+
+        r.remove_after(11);
+        let mut total = r.flatten().collect::<Vec<_>>();
+        total.sort();
+        assert_eq!(total, vec![1, 2, 3, 4, 7, 8, 9, 10, 11]);
+
+        let mut r = RangeSet::default();
+        r.insert(5..15);
+        r.remove_after(11);
+        let mut total = r.flatten().collect::<Vec<_>>();
+        total.sort();
+        assert_eq!(total, (5..12).collect::<Vec<_>>());
     }
 }

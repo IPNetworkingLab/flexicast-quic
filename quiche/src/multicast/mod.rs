@@ -1611,6 +1611,7 @@ impl MulticastConnection for Connection {
                 );
             }
         }
+        self.paths.get(1).unwrap().recovery.dump_sent("At the end of mc_expire");
         Ok((expired_pkt, expired_streams))
     }
 
@@ -2021,6 +2022,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
+        println!("Stream len {} because {:?}", self.streams.len(), self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
         self.multicast.is_some() && self.streams.len() == 0
     }
 

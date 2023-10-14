@@ -71,12 +71,16 @@ pub struct RMcServer {
 impl RMcServer {
     /// Sets the packet number received by the client on the multicast channel.
     pub fn set_rmc_received_pn(&mut self, ranges: RangeSet) {
-        self.recv_pn_mc = ranges;
+        for range in ranges.iter() {
+            self.recv_pn_mc.insert(range);
+        }
     }
 
     /// Sets the FEC metadata received bu the client on the multicast channel.
     pub fn set_rmc_received_fec_metadata(&mut self, ranges: RangeSet) {
-        self.recv_fec_mc = ranges;
+        for range in ranges.iter() {
+            self.recv_fec_mc.insert(range);
+        }
     }
 
     /// Returns the number of packets containing STREAM frames sent over the
@@ -232,7 +236,7 @@ pub trait ReliableMulticastConnection {
 
     /// Resets the set of packet numbers/source symbols received by the client
     /// on the multicast path.
-    fn rmc_reset_recv_pn_ss(&mut self);
+    fn rmc_reset_recv_pn_ss(&mut self, exp_pn: Option<u64>, exp_ss: Option<u64>);
 }
 
 impl ReliableMulticastConnection for Connection {
@@ -268,6 +272,7 @@ impl ReliableMulticastConnection for Connection {
                 {
                     rmc.set_rmc_client_send_ack(true);
                     rmc.set_rmc_client_send_ssa(true);
+                    rmc.rmc_next_time_ack = None; // Reset the next time ack.
                 }
             }
         }
@@ -285,10 +290,14 @@ impl ReliableMulticastConnection for Connection {
 
             if let Some(ReliableMc::Client(rmc)) = multicast.mc_reliable.as_mut()
             {
+                // Next time ack already set.
+                if rmc.rmc_next_time_ack.is_some() {
+                    return Ok(());
+                }
                 let mut random_v = [0u8; 4];
                 random.fill(&mut random_v).ok();
                 let additional_timer = i32::from_be_bytes(random_v) as i128;
-                let et_with_random = expiration_timer as i128
+                let et_with_random = expiration_timer as i128 / 2
                     + (additional_timer % ((expiration_timer / 10) as i128));
                 rmc.rmc_next_time_ack = now.checked_add(
                     time::Duration::from_millis(et_with_random as u64),
@@ -420,11 +429,24 @@ impl ReliableMulticastConnection for Connection {
         }
     }
 
-    fn rmc_reset_recv_pn_ss(&mut self) {
+    fn rmc_reset_recv_pn_ss(&mut self, exp_pn: Option<u64>, exp_ss: Option<u64>) {
         if let Some(multicast) = self.multicast.as_mut() {
             if let Some(ReliableMc::Server(s)) = multicast.mc_reliable.as_mut() {
-                s.recv_pn_mc = RangeSet::default();
-                s.recv_fec_mc = RangeSet::default();
+                // s.recv_pn_mc = RangeSet::default();
+                // s.recv_fec_mc = RangeSet::default();
+
+                // Instead of resetting the ranges, we remove the expired values.
+                if let Some(exp) = exp_pn {
+                    s.recv_pn_mc.remove_until(exp);
+                } else {
+                    s.recv_pn_mc = RangeSet::default();
+                }
+
+                if let Some(exp) = exp_ss {
+                    s.recv_fec_mc.remove_until(exp);
+                } else {
+                    s.recv_fec_mc = RangeSet::default();
+                }
             }
         }
     }
@@ -629,12 +651,12 @@ mod tests {
             let next_timeout = rmc_client.rmc_next_time_ack.unwrap();
             let expected_lowest = now
                 .checked_add(time::Duration::from_millis(
-                    (expiration_timer as f64 * 0.9) as u64,
+                    (expiration_timer as f64 * 0.9 * 0.5) as u64,
                 ))
                 .unwrap();
             let expected_highest = now
                 .checked_add(time::Duration::from_millis(
-                    (expiration_timer as f64 * 1.1) as u64,
+                    (expiration_timer as f64 * 1.1 * 0.5) as u64,
                 ))
                 .unwrap();
             assert!(next_timeout >= expected_lowest);
@@ -1151,6 +1173,13 @@ mod tests {
             .unwrap();
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
 
+        // let max_rangeset = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap().rmc_get().and_then(|a| a.source()).unwrap().max_rangeset.as_ref();
+        // let mut expected_recv = RangeSet::default();
+        // let mut expected_lost = RangeSet::default();
+        // expected_recv.insert(5..10);
+        // expected_lost.insert(11..12);
+        // assert_eq!(max_rangeset, Some(&(expected_recv, expected_lost)));
+
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert_eq!(res, Ok((Some(32), Some(30)).into()));
 
@@ -1242,7 +1271,7 @@ mod tests {
                 Err(Error::Done) => {
                     break;
                 },
-                Ok(v) => (),
+                Ok(_) => (),
                 Err(e) => panic!("ERROR: {:?}", e),
             }
         }
@@ -1402,14 +1431,18 @@ mod tests {
 
         // First send 3 streams that will be expired.
         for i in 0..3 {
-            mc_pipe.source_send_single_stream(true, None, 0, 1 + i * 4).unwrap();
+            mc_pipe
+                .source_send_single_stream(true, None, 0, 1 + i * 4)
+                .unwrap();
         }
 
         // Wait (e.g., some kind of weird pacing).
         let now = time::Instant::now();
         std::thread::sleep(Duration::from_millis(expiration_timer - 100));
 
-        mc_pipe.source_send_single_stream(true, None, 0, 1 + 3 * 4).unwrap();
+        mc_pipe
+            .source_send_single_stream(true, None, 0, 1 + 3 * 4)
+            .unwrap();
 
         assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
 
@@ -1434,5 +1467,7 @@ mod tests {
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert_eq!(res, Ok((Some(5), Some(3)).into()));
+
+        assert!(mc_pipe.mc_channel.channel.mc_no_stream_active());
     }
 }

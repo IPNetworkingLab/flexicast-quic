@@ -299,11 +299,14 @@ fn main() {
 
     // Multicast channel and sockets.
     let mc_cwnd = if let Some(rate) = args.pacing {
-        let et = args.expiration_timer as f64 / 1000f64; // In seconds
-        Some((rate * et * 1_000_000f64).round() as usize)
+        // let et = args.expiration_timer as f64 / 1000f64; // In seconds
+        // Some((rate * et * 1_000_000f64).round() as usize)
+        Some(rate as usize)
     } else {
         None
     };
+
+    println!("MC CWND: {:?}", mc_cwnd);
     let (
         mut mc_socket_opt,
         mut mc_channel_opt,
@@ -385,7 +388,7 @@ fn main() {
         }
 
         if let Some(app_timeout) = app_handler.next_timeout() {
-            debug!("Application timeout: {:?}", app_timeout);
+            // debug!("Application timeout: {:?}", app_timeout);
             timeout =
                 [timeout, Some(app_timeout)].iter().flatten().min().copied();
         }
@@ -402,7 +405,7 @@ fn main() {
             timeout = [timeout, mc_timeout].iter().flatten().min().copied()
         }
 
-        debug!("Next timeout in {:?}", timeout);
+        // debug!("Next timeout in {:?}", timeout);
         poll.poll(&mut events, timeout).unwrap();
 
         // Read incoming UDP packets from the socket and feed them to quiche,
@@ -794,6 +797,7 @@ fn main() {
             pacing_timeout = None;
             let app_data_to_send = if app_handler.should_send_app_data() {
                 let (stream_id, app_data) = app_handler.get_app_data();
+                // info!("App data: {} and length {}", stream_id, app_data.len());
 
                 let to_send = if let Some(mc_channel) = mc_channel_opt.as_mut() {
                     // Either once if multicast is enabled...
@@ -805,6 +809,8 @@ fn main() {
                         Err(quiche::Error::Done) => None,
                         Err(e) => panic!("Other error: {:?}", e),
                     };
+
+                    // info!("Written stream: {:?}", written);
 
                     if args.soft_wait {
                         // Also send to clients that are not yet in the channel and
@@ -867,10 +873,6 @@ fn main() {
                     app_handler.stream_written(data.as_ref().len());
                     true
                 };
-                info!(
-                    "Sent application frame in stream {}. Must send: {}. Can go next: {}",
-                    stream_id, to_send, can_go_to_next
-                );
 
                 // Get next video values.
                 if can_go_to_next {
@@ -892,7 +894,7 @@ fn main() {
                         match mc_channel.mc_send(&mut out) {
                             Ok(v) => v,
                             Err(quiche::Error::Done) => {
-                                debug!("Multicast done writing");
+                                // debug!("Multicast done writing");
                                 break;
                             },
                             Err(e) => {
@@ -1040,12 +1042,14 @@ fn main() {
             for client in clients.values_mut() {
                 if app_handler.app_has_finished() && client.conn.is_established()
                 {
+                    info!("CAN TRY TO CLOSE THE APP");
                     let can_close =
                         if let Some(mc_channel) = mc_channel_opt.as_ref() {
                             mc_channel.channel.mc_no_stream_active()
                         } else {
                             client.stream_buf.is_empty()
                         };
+                    info!("END can close? {}", can_close);
                     if can_close {
                         let res = client.conn.close(true, 1, &[0, 1]);
                         info!(
@@ -1103,7 +1107,7 @@ fn main() {
             // timestamp.
             if app_data_to_send && can_go_to_next {
                 let after = std::time::Instant::now();
-                info!("On sent to wire: {:?}", after.duration_since(before));
+                // info!("On sent to wire: {:?}", after.duration_since(before));
                 app_handler.on_sent_to_wire();
             }
         }
@@ -1363,11 +1367,7 @@ pub fn get_test_mc_config(
     // config.set_max_idle_timeout(0);
     config.set_max_recv_udp_payload_size(1350);
     config.set_max_send_udp_payload_size(1350);
-    if let Some(cwnd) = mc_cwnd {
-        config.set_initial_max_data(cwnd as u64);
-    } else {
-        config.set_initial_max_data(10_000_000);
-    }
+    config.set_initial_max_data(10_000_000);
     config.set_initial_max_stream_data_bidi_local(1_000_000);
     config.set_initial_max_stream_data_bidi_remote(1_000_000);
     config.set_initial_max_stream_data_uni(1_000_000);
@@ -1384,7 +1384,7 @@ pub fn get_test_mc_config(
     config.set_fec_scheduler_algorithm(
         quiche::FECSchedulerAlgorithm::RetransmissionFec,
     );
-    if let Some(cwin) = mc_cwnd {
+    if mc_cwnd.is_some() {
         config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
     } else {
         config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);

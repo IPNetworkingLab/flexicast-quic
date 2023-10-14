@@ -144,6 +144,9 @@ fn main() {
     times_join_leave.push(std::time::SystemTime::now());
     let mut recv_packets = Vec::with_capacity(10000);
 
+    // Whether reliable multicast (RMC) is used.
+    let mut is_mc_reliable = false;
+
     // In a multicast communication where symmetric tags is used as authentication
     // mechanism, the client application is responsible of buffering
     // non-authenticated (na) packets as long as they desire (i.e., until an
@@ -259,6 +262,9 @@ fn main() {
 
     'main_loop: loop {
         let now = std::time::Instant::now();
+        if is_mc_reliable {
+            conn.rmc_set_next_timeout(now, &random).unwrap();
+        }
         let timers = [conn.timeout(), conn.mc_timeout(now), conn.rmc_timeout(now)];
         let timeout = timers.iter().flatten().min().copied();
         debug!("Timeout: {:?}", timeout);
@@ -576,6 +582,8 @@ fn main() {
                 let multicast = conn.get_multicast_attributes().unwrap();
                 let mc_announce_data =
                     multicast.get_mc_announce_data_path().unwrap().to_owned();
+                
+                is_mc_reliable = mc_announce_data.full_reliability;
 
                 // Add the new connection ID for the announce data.
                 if !added_mc_cid {

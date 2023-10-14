@@ -208,6 +208,7 @@ fn on_packets_acked(
 fn on_packet_acked(
     r: &mut Recovery, packet: &Acked, epoch: packet::Epoch, now: Instant,
 ) {
+    debug!("On packet acked from CUBIC");
     let in_congestion_recovery = r.in_congestion_recovery(packet.time_sent);
 
     r.bytes_in_flight = r.bytes_in_flight.saturating_sub(packet.size);
@@ -219,11 +220,13 @@ fn on_packet_acked(
             r.ssthresh,
             r.max_datagram_size,
         );
+        debug!("In congestion recovery");
 
         return;
     }
 
     if (r.app_limited && !r.real_time) || (r.real_time && (r.bytes_in_flight.saturating_mul(3) / 2).saturating_add(packet.size) < r.congestion_window) {
+        debug!("Not app limited");
         return;
     }
 
