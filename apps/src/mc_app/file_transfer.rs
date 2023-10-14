@@ -108,10 +108,10 @@ impl FileServer {
         if self.start.is_some() && self.is_active() {
             if let Some(last) = self.last_sent {
                 let now = time::Instant::now();
-                debug!(
-                    "Last sent is {:?}, sleep delay: {:?}, now: {:?}",
-                    last, self.sleep_delay, now
-                );
+                // debug!(
+                //     "Last sent is {:?}, sleep delay: {:?}, now: {:?}",
+                //     last, self.sleep_delay, now
+                // );
                 if last + self.sleep_delay <= now {
                     Some(time::Duration::ZERO)
                 } else {
@@ -136,7 +136,7 @@ impl FileServer {
     }
 
     pub fn get_app_data(&self) -> (u64, Vec<u8>) {
-        debug!("Must send data at offset {}", self.stream_written);
+        // debug!("Must send data at offset {}", self.stream_written);
         (
             self.stream_id,
             self.chunks[self.sent_chunks][self.stream_written..].to_vec(),
@@ -144,7 +144,14 @@ impl FileServer {
     }
 
     pub fn gen_nxt_app_data(&mut self) {
-        debug!("Gen next app");
+        if !self.active {
+            return;
+        }
+        if self.stream_written < self.chunks[self.sent_chunks].len() {
+            debug!("Unfinished stream");
+            return;
+        }
+        // debug!("Gen next app");
         self.last_sent = Some(time::Instant::now());
         self.sent_chunks += 1;
         if self.sent_chunks >= self.chunks.len() {
@@ -208,7 +215,7 @@ impl FileServer {
     #[inline]
     pub fn should_send_app_data(&self) -> bool {
         let now = time::Instant::now();
-        self.is_active() &&
+        self.is_active() && self.chunks.len() > self.sent_chunks &&
         if let Some(last) = self.last_sent {
                 now.duration_since(last) >= self.sleep_delay
         } else {
