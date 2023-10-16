@@ -252,6 +252,11 @@ fn on_packet_acked(
         }
     }
 
+    debug!("CUBIC state: {:?} and {:?}", r.min_rtt, r.smoothed_rtt);
+    r.min_rtt = Duration::from_millis(200);
+    r.smoothed_rtt = Some(Duration::from_millis(200));
+    r.latest_rtt = Duration::from_millis(200);
+
     if r.congestion_window < r.ssthresh {
         // In Slow slart, bytes_acked_sl is used for counting
         // acknowledged bytes.

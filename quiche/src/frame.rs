@@ -67,6 +67,20 @@ pub struct EcnCounts {
     ecn_ce_count: u64,
 }
 
+impl EcnCounts {
+    pub fn new(ect0: u64, ect1: u64, ecn_ce: u64) -> Self {
+        Self {
+            ect0_count: ect0,
+            ect1_count: ect1,
+            ecn_ce_count: ecn_ce,
+        }
+    }
+
+    pub fn get_ect0(&self) -> u64 {
+        self.ect0_count
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum Frame {
     Padding {

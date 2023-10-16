@@ -1313,7 +1313,9 @@ impl MulticastConnection for Connection {
                             ));
                     }
                 },
-                MulticastRole::ServerMulticast if mc_announce_data.full_reliability => {
+                MulticastRole::ServerMulticast
+                    if mc_announce_data.full_reliability =>
+                {
                     if multicast.mc_reliable.is_none() {
                         multicast.mc_reliable =
                             Some(ReliableMc::McSource(RMcSource::default()));
@@ -2041,6 +2043,9 @@ impl MulticastConnection for Connection {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
 
+        // Multicast source notifies the unicast server with the packets sent on the multicast channel. This is used for the unicast server to compute the congestion window.
+        mc_channel.mc_notify_sent_packets(self, now);
+
         Ok(())
     }
 
@@ -2165,6 +2170,30 @@ impl MulticastConnection for Connection {
     }
 }
 
+impl Connection {
+    /// The multicast source notifies the unicast server of the packets sent.
+    pub fn mc_notify_sent_packets(
+        &mut self, uc: &mut Connection, now: time::Instant,
+    ) {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(mc_space_id) = multicast.get_mc_space_id() {
+                let mc_path = self.paths.get(mc_space_id);
+                let uc_path = uc.paths.get_mut(mc_space_id);
+                if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
+                    mc_path.recovery.copy_sent(
+                        &mut uc_path.recovery,
+                        mc_space_id as u32,
+                        Epoch::Application,
+                        now,
+                        self.handshake_status(),
+                        &self.trace_id,
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Extension of a RangeSet to support missing ranges.
 pub trait MissingRangeSet {
     /// Returns a RangeSet containing the numbers missing in the RangeSet.
@@ -2284,8 +2313,8 @@ impl MulticastChannelSource {
         auth_path_info: Option<McPathInfo>, mc_cwnd: Option<usize>,
     ) -> Result<Self> {
         if mc_cwnd.is_some() {
-            config_client.cc_algorithm = CongestionControlAlgorithm::CUBIC;
-            config_server.cc_algorithm = CongestionControlAlgorithm::CUBIC;
+            config_client.cc_algorithm = CongestionControlAlgorithm::Reno;
+            config_server.cc_algorithm = CongestionControlAlgorithm::Reno;
         } else if !(config_client.cc_algorithm
             == CongestionControlAlgorithm::DISABLED
             && config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED)
@@ -6528,3 +6557,4 @@ use self::authentication::McSymSign;
 use self::reliable::RMcClient;
 use self::reliable::RMcServer;
 use self::reliable::ReliableMc;
+use super::recovery::multicast::ReliableMulticastRecovery;

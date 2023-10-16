@@ -3206,6 +3206,7 @@ impl Connection {
                     frame::Frame::ACKMP {
                         space_identifier,
                         ranges,
+                        ecn_counts,
                         ..
                     } => {
                         // Stop acknowledging packets less than or equal to the
@@ -3223,6 +3224,41 @@ impl Connection {
                                         .remove_until(largest_acked)
                                 })
                                 .ok();
+                        }
+
+                        if let Some(multicast) = self.multicast.as_mut() {
+                            if !multicast.get_mc_space_id().is_some_and(|s| s as u64 == space_identifier) {
+                                continue;
+                            }
+                            let nb_repair_needed = ecn_counts.map(|e| e.get_ect0()).unwrap_or(0);
+                            let last_pn = ranges.last().unwrap();
+                            if matches!(
+                                multicast.get_mc_role(),
+                                multicast::MulticastRole::ServerUnicast(_)
+                            ) {
+                                let nb_repair_opt = if nb_repair_needed == 0 {
+                                    None
+                                } else {
+                                    Some(nb_repair_needed)
+                                };
+                                if multicast.get_mc_space_id().is_some() {
+                                    multicast.set_mc_nack_ranges(
+                                        Some((&ranges.get_missing(), last_pn)),
+                                        nb_repair_opt,
+                                    )?;
+                                    multicast.mc_need_ack = true;
+                                } else {
+                                    return Err(Error::Multicast(
+                                        multicast::MulticastError::McPath,
+                                    ));
+                                }
+                            } else {
+                                return Err(Error::Multicast(
+                                    multicast::MulticastError::McInvalidRole(
+                                        multicast.get_mc_role(),
+                                    ),
+                                ));
+                            }
                         }
                     },
 
@@ -3243,7 +3279,7 @@ impl Connection {
                         }
                     },
 
-                    frame::Frame::McAnnounce { channel_id, .. } =>
+                    frame::Frame::McAnnounce { channel_id, .. } => {
                         if let Some(multicast) = self.multicast.as_mut() {
                             if let Some(mc_announce_data) = multicast
                                 .get_mut_mc_announce_data_by_cid(&channel_id)
@@ -3257,13 +3293,14 @@ impl Connection {
                                     )?;
                                 }
                             }
-                        },
+                        }
+                    },
 
                     frame::Frame::McState {
                         channel_id: _,
                         action,
                         action_data,
-                    } =>
+                    } => {
                         if let Some(multicast) = self.multicast.as_mut() {
                             debug!("Receive ack for McState: {:?}, {:?} and current role is {:?}", multicast::MulticastClientAction::try_from(action), action_data, multicast.get_mc_role());
                             multicast.set_mc_state_in_flight(false);
@@ -3295,7 +3332,8 @@ impl Connection {
                             // return Err(Error::Multicast(
                             //     multicast::MulticastError::McDisabled,
                             // ));
-                        },
+                        }
+                    },
 
                     frame::Frame::McKey { .. } => {
                         if let Some(multicast) = self.multicast.as_mut() {
@@ -3827,11 +3865,17 @@ impl Connection {
                                 length,
                                 fin,
                             } => {
-                                // The multicast source MUST NOT retransmit stream frames. Either:
-                                // - Use FEC to generate repair symbols that will recover lost STREAM frames,
-                                // - Retransmit them using the unicast to the clients if Reliable Multicast QUIC is used.
+                                // The multicast source MUST NOT retransmit stream
+                                // frames. Either:
+                                // - Use FEC to generate repair symbols that will
+                                //   recover lost STREAM frames,
+                                // - Retransmit them using the unicast to the
+                                //   clients if Reliable Multicast QUIC is used.
                                 if let Some(multicast) = self.multicast.as_ref() {
-                                    if matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerMulticast) {
+                                    if matches!(
+                                        multicast.get_mc_role(),
+                                        multicast::MulticastRole::ServerMulticast
+                                    ) {
                                         debug!("Multicast source does not retransmit lost STREAM frames");
                                         continue;
                                     }
@@ -4224,7 +4268,7 @@ impl Connection {
         // Create MC_NACK frame if needed.
         // MC_NACK frames are only sent on active multicast path.
         // MC-TODO.
-        if self.multicast.is_some() && !self.is_server {
+        if self.multicast.is_some() && !self.is_server && false {
             if let Some(mc_space_id) =
                 self.multicast.as_ref().unwrap().get_mc_space_id()
             {
@@ -4284,6 +4328,15 @@ impl Connection {
                 }
             }
         }
+        let mc_active_path_id = self
+            .multicast
+            .as_ref()
+            .map(|mc| mc.get_mc_space_id())
+            .flatten();
+        let mc_nack_range = mc_active_path_id
+            .map(|space_id| self.mc_nack_range(epoch, space_id as u64))
+            .flatten();
+        let mc_should_send_nack = !self.is_server && mc_nack_range.is_some();
         let path = self.paths.get_mut(send_pid)?;
 
         // Create ACK_MP frames if needed.
@@ -4321,7 +4374,7 @@ impl Connection {
                         wrote_ack_mp = true;
                     }
                 }
-                if wrote_ack_mp {
+                if wrote_ack_mp || mc_should_send_nack {
                     for space_id in self
                         .pkt_num_spaces
                         .spaces
@@ -4339,7 +4392,9 @@ impl Connection {
                         if let Some(multicast) = self.multicast.as_ref() {
                             if let Some(mc_space_id) = multicast.get_mc_space_id()
                             {
-                                if space_id == mc_space_id as u64 {
+                                if space_id == mc_space_id as u64 &&
+                                    !mc_should_send_nack
+                                {
                                     continue;
                                 }
                             }
@@ -4363,7 +4418,11 @@ impl Connection {
                             .spaces
                             .get_mut(epoch, space_id)?;
                         if pns.recv_pkt_need_ack.len() > 0 &&
-                            (pns.ack_elicited || ack_elicit_required)
+                            (pns.ack_elicited ||
+                                ack_elicit_required ||
+                                mc_should_send_nack &&
+                                    Some(space_id as usize) ==
+                                        mc_active_path_id)
                         {
                             let ack_delay = pns.largest_rx_pkt_time.elapsed();
 
@@ -4372,14 +4431,39 @@ impl Connection {
                                     self.local_transport_params.ack_delay_exponent
                                         as u32,
                                 );
+                            let ecn_counts = if mc_should_send_nack {
+                                let nb_degree_needed_opt: Option<u64> =
+                                    self.fec_decoder.nb_missing_degrees();
+                                let max_pn =
+                                    self.multicast.as_ref().unwrap().mc_max_pn;
+                                if let Some(nb_degree_needed) =
+                                    nb_degree_needed_opt
+                                {
+                                    self.multicast
+                                        .as_mut()
+                                        .unwrap()
+                                        .set_mc_nack_ranges(
+                                            Some((
+                                                mc_nack_range.as_ref().unwrap(),
+                                                max_pn,
+                                            )),
+                                            Some(nb_degree_needed),
+                                        )?;
+                                    Some(EcnCounts::new(nb_degree_needed, 0, 0))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
 
                             let frame = frame::Frame::ACKMP {
                                 space_identifier: space_id,
                                 ack_delay,
                                 ranges: pns.recv_pkt_need_ack.clone(),
-                                ecn_counts: None, /* sending ECN is not
-                                                   * supported at
-                                                   * this time */
+                                ecn_counts, /* sending ECN is not
+                                             * supported at
+                                             * this time */
                             };
 
                             if push_frame_to_pkt!(b, frames, frame, left) {
@@ -4408,7 +4492,9 @@ impl Connection {
                 // packets received on the multicast path.
                 // As a result, no ACKMP frame has been added for data received
                 // on the multicast path.
-                if let Ok(true) = self.rmc_should_send_positive_ack() {
+                if let (Ok(true), false) =
+                    (self.rmc_should_send_positive_ack(), mc_should_send_nack)
+                {
                     // This is a client using reliable multicast that needs to
                     // send a positive ACK packet for data received on the
                     // multicast path.
@@ -4693,7 +4779,10 @@ impl Connection {
                     error_code,
                 };
 
-                error!("Client creates a STOP_SENDING frame for stream id={}", stream_id);
+                error!(
+                    "Client creates a STOP_SENDING frame for stream id={}",
+                    stream_id
+                );
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     self.streams.mark_stopped(stream_id, false, 0);
@@ -5346,9 +5435,15 @@ impl Connection {
                     // flushed on the wire when a STOP_SENDING frame is received.
                     Some(v) if !v.send.is_stopped() => v,
                     _ => {
-                        debug!("Removing flushable here for stream id={}", stream_id);
+                        debug!(
+                            "Removing flushable here for stream id={}",
+                            stream_id
+                        );
                         let res = self.streams.get_mut(stream_id);
-                        debug!("So the state is the following. Is None={}.", res.is_none());
+                        debug!(
+                            "So the state is the following. Is None={}.",
+                            res.is_none()
+                        );
                         self.streams.remove_flushable();
                         continue;
                     },
@@ -7089,11 +7184,12 @@ impl Connection {
         // If the active path failed, try to find a new candidate.
         if self.paths.get_active_path_id().is_err() {
             match self.paths.find_candidate_path() {
-                Some(pid) =>
+                Some(pid) => {
                     if self.set_active_path(pid, now).is_err() {
                         // The connection cannot continue.
                         self.closed = true;
-                    },
+                    }
+                },
 
                 // The connection cannot continue.
                 None => self.closed = true,
@@ -8587,15 +8683,17 @@ impl Connection {
 
             frame::Frame::StreamDataBlocked { .. } => (),
 
-            frame::Frame::StreamsBlockedBidi { limit } =>
+            frame::Frame::StreamsBlockedBidi { limit } => {
                 if limit > MAX_STREAM_ID {
                     return Err(Error::InvalidFrame);
-                },
+                }
+            },
 
-            frame::Frame::StreamsBlockedUni { limit } =>
+            frame::Frame::StreamsBlockedUni { limit } => {
                 if limit > MAX_STREAM_ID {
                     return Err(Error::InvalidFrame);
-                },
+                }
+            },
 
             frame::Frame::NewConnectionId {
                 seq_num,
@@ -9284,6 +9382,8 @@ impl Connection {
                         multicast::MulticastError::McDisabled,
                     ));
                 }
+
+                panic!("Should not receive an MC_NACK frame");
             },
         };
         Ok(())
@@ -15521,7 +15621,7 @@ mod tests {
             let mut frame_iter = frames.iter();
 
             assert_eq!(frame_iter.next().unwrap(), &frame::Frame::Datagram {
-                data: out.into(),
+                data: out.into()
             });
             assert_eq!(frame_iter.next(), None);
 
@@ -15555,7 +15655,7 @@ mod tests {
             let mut frame_iter = frames.iter();
 
             assert_eq!(frame_iter.next().unwrap(), &frame::Frame::Datagram {
-                data: out.into(),
+                data: out.into()
             });
             assert_eq!(frame_iter.next(), None);
 
@@ -18710,6 +18810,8 @@ mod tests {
     }
 }
 
+use crate::frame::EcnCounts;
+use crate::multicast::MissingRangeSet;
 use crate::multicast::authentication::McAuthType;
 use crate::multicast::authentication::McAuthentication;
 use crate::multicast::reliable::ReliableMc;

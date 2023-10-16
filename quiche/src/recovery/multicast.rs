@@ -12,12 +12,14 @@ use crate::stream::StreamMap;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
+use std::time;
 use std::time::Duration;
 use std::time::Instant;
 
 use super::Acked;
 use super::HandshakeStatus;
 use super::LostFrame;
+use super::Recovery;
 use super::SpaceId;
 
 /// Multicast extension of the recovery mechanism of QUIC.
@@ -245,9 +247,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 p.frames.as_ref().iter().filter_map(|f| match f {
                     crate::frame::Frame::StreamHeader {
                         stream_id, fin, ..
-                    } if !only_complete || *fin => {
-                        Some(*stream_id)
-                    },
+                    } if !only_complete || *fin => Some(*stream_id),
                     _ => None,
                 })
             })
@@ -279,6 +279,13 @@ pub trait ReliableMulticastRecovery {
     fn mark_inflight_as_lost_app_up_to(
         &mut self, now: Instant, trace_id: &str, pn: u64,
     ) -> (usize, usize);
+
+    /// Transfers to the unicast servers the frames sent on the multicast channel.
+    /// This is used to allow each unicast server to compute its congestion window using the data sent by the multicast source.
+    fn copy_sent(
+        &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
+        now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
+    );
 }
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
@@ -505,6 +512,26 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         }
 
         (lost_packets, lost_bytes)
+    }
+
+    fn copy_sent(
+        &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
+        now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
+    ) {
+        let max_pn = uc.sent[Epoch::Application].back().map(|s| s.pkt_num.1).unwrap_or(0);
+        let sent_pkts = self.sent[epoch]
+            .iter()
+            .filter(|s| s.pkt_num.0 == space_id as u32 && s.pkt_num.1 >= max_pn);
+        // uc.sent[epoch].extend(sent_pkts.map(|s| s.clone()));
+        for pkt in sent_pkts {
+            uc.on_packet_sent(
+                pkt.clone(),
+                epoch,
+                handshake_status,
+                now,
+                trace_id,
+            );
+        }
     }
 }
 
