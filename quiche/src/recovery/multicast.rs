@@ -27,10 +27,11 @@ pub trait MulticastRecovery {
     /// Removes multicast data that passes above a defined time threshold.
     ///
     /// Returns the maximum packet number and the FEC Source Symbol ID expired.
+    #[allow(clippy::too_many_arguments)]
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
-        pns_client: Option<(RangeSet, RangeSet)>,
+        pns_client: Option<(RangeSet, RangeSet)>, only_complete_streams: bool,
     ) -> Result<(ExpiredPkt, ExpiredStream)>;
 
     /// Returns the next expiring event.
@@ -46,7 +47,7 @@ pub trait MulticastRecovery {
     /// For the server, exactly returns all expired stream IDs based on the
     /// maximum expired packet number and the sent packets.
     fn mc_get_sent_exp_stream_ids(
-        &self, pn: u64, space_id: SpaceId,
+        &self, pn: u64, space_id: SpaceId, only_complete: bool,
     ) -> ExpiredStream;
 
     /// Returns the time sent of the packet with packet number given as
@@ -56,7 +57,14 @@ pub trait MulticastRecovery {
 
 impl crate::recovery::Recovery {
     pub fn dump_sent(&self, s: &str) {
-        info!("{}: {:?}", s, self.sent[Epoch::Application].iter().map(|s| s.pkt_num.1).collect::<Vec<_>>());
+        info!(
+            "{}: {:?}",
+            s,
+            self.sent[Epoch::Application]
+                .iter()
+                .map(|s| s.pkt_num.1)
+                .collect::<Vec<_>>()
+        );
     }
 }
 
@@ -64,7 +72,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
-        pns_client: Option<(RangeSet, RangeSet)>,
+        pns_client: Option<(RangeSet, RangeSet)>, only_complete_streams: bool,
     ) -> Result<(ExpiredPkt, ExpiredStream)> {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
@@ -111,8 +119,11 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 // Retrieve the list of expired streams based on the last
                 // expired packet number.
-                expired_streams =
-                    self.mc_get_sent_exp_stream_ids(last.pkt_num.1, space_id);
+                expired_streams = self.mc_get_sent_exp_stream_ids(
+                    last.pkt_num.1,
+                    space_id,
+                    only_complete_streams,
+                );
 
                 // MC-TODO: be sure that we ack multicast data.
                 acked.insert((first.pkt_num.1)..(last.pkt_num.1 + 1));
@@ -120,10 +131,14 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 let cwnd = self.congestion_window;
 
-                if let (Some((lost, mut recv)), Some(_)) = (pns_client, self.mc_cwnd)
+                if let (Some((lost, mut recv)), Some(_)) =
+                    (pns_client, self.mc_cwnd)
                 {
                     if let Some(exp) = expired_pn {
-                        debug!("Remove from recv: {:?} packets after {}", recv, exp);
+                        debug!(
+                            "Remove from recv: {:?} packets after {}",
+                            recv, exp
+                        );
                         recv.remove_after(exp);
                     }
                     debug!("Use reliable for mc data timeout! use values: {:?} and {:?}. Newly acked len: {:?}", recv, lost, newly_acked.len());
@@ -139,12 +154,10 @@ impl MulticastRecovery for crate::recovery::Recovery {
                             "",
                             newly_acked,
                         )?;
+                    } else if let Some(exp) = expired_pn {
+                        self.mark_inflight_as_lost_app_up_to(now, "", exp);
                     } else {
-                        if let Some(exp) = expired_pn {
-                            self.mark_inflight_as_lost_app_up_to(now, "", exp);
-                        } else {
-                            self.mark_all_inflight_as_lost(now, "");
-                        }
+                        self.mark_all_inflight_as_lost(now, "");
                     }
 
                     // Then only lost packets to remove them from the sending
@@ -187,6 +200,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 );
 
                 self.dump_sent("All elements at the end of MC_DATA_TIMEOUT");
+                debug!("And here are the expired streams: {:?}", expired_streams);
 
                 Ok((
                     ExpiredPkt {
@@ -220,15 +234,18 @@ impl MulticastRecovery for crate::recovery::Recovery {
     }
 
     fn mc_get_sent_exp_stream_ids(
-        &self, pn: u64, space_id: SpaceId,
+        &self, pn: u64, space_id: SpaceId, only_complete: bool,
     ) -> ExpiredStream {
+        println!("Only complete: {}", only_complete);
         self.sent[Epoch::Application]
             .iter()
             .take_while(|p| p.pkt_num.1 <= pn)
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id)
             .flat_map(|p| {
                 p.frames.as_ref().iter().filter_map(|f| match f {
-                    crate::frame::Frame::StreamHeader { stream_id, .. } => {
+                    crate::frame::Frame::StreamHeader {
+                        stream_id, fin, ..
+                    } if !only_complete || *fin => {
                         Some(*stream_id)
                     },
                     _ => None,
@@ -281,7 +298,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                     >= Duration::from_millis(expiration_timer)
             })
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
-            
+
         let mut max_exp_pn: Option<u64> = None;
         let mut max_exp_ss: Option<u64> = None;
 
@@ -694,6 +711,7 @@ mod tests {
             HandshakeStatus::default(),
             &mut Vec::new(),
             None,
+            false,
         );
         assert_eq!(res, Ok(((Some(2), Some(2)).into(), [9].into())));
 
@@ -1045,5 +1063,166 @@ mod tests {
         );
 
         assert_eq!(r.congestion_window, 37_200);
+    }
+
+    #[test]
+    fn test_mc_data_timeout_only_complete_streams() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::DISABLED);
+
+        let mut r = Recovery::new(&cfg);
+
+        let mut now = Instant::now();
+        let data_expiration_val = 100;
+        let data_expiration = Duration::from_millis(data_expiration_val);
+
+        assert_eq!(r.sent[Epoch::Application].len(), 0);
+
+        // Start by sending a few packets separated by 10ms each.
+        let p = Sent {
+            pkt_num: SpacedPktNum(0, 0),
+            frames: smallvec![
+                get_test_stream_header(1),
+                get_test_source_symbol_header(0)
+            ],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: 1000,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            retransmitted_for_probing: false,
+        };
+
+        r.on_packet_sent(
+            p,
+            Epoch::Application,
+            HandshakeStatus::default(),
+            now,
+            "",
+        );
+        assert_eq!(r.sent[Epoch::Application].len(), 1);
+        assert_eq!(r.bytes_in_flight, 1000);
+
+        let p = Sent {
+            pkt_num: SpacedPktNum(0, 1),
+            frames: smallvec![
+                Frame::StreamHeader {
+                    stream_id: 5,
+                    offset: 0,
+                    length: 100,
+                    fin: false,
+                },
+                get_test_source_symbol_header(1)
+            ],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: 1000,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            retransmitted_for_probing: false,
+        };
+
+        r.on_packet_sent(
+            p,
+            Epoch::Application,
+            HandshakeStatus::default(),
+            now,
+            "",
+        );
+        assert_eq!(r.sent[Epoch::Application].len(), 2);
+        assert_eq!(r.bytes_in_flight, 2000);
+
+        let p = Sent {
+            pkt_num: SpacedPktNum(0, 2),
+            frames: smallvec![
+                get_test_stream_header(9),
+                get_test_source_symbol_header(2)
+            ],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: 1000,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            retransmitted_for_probing: false,
+        };
+
+        r.on_packet_sent(
+            p,
+            Epoch::Application,
+            HandshakeStatus::default(),
+            now,
+            "",
+        );
+        assert_eq!(r.sent[Epoch::Application].len(), 3);
+        assert_eq!(r.bytes_in_flight, 3000);
+
+        now += Duration::from_millis(10);
+
+        let p = Sent {
+            pkt_num: SpacedPktNum(0, 3),
+            frames: smallvec![
+                get_test_stream_header(13),
+                get_test_source_symbol_header(3)
+            ],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: 1000,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            retransmitted_for_probing: false,
+        };
+
+        r.on_packet_sent(
+            p,
+            Epoch::Application,
+            HandshakeStatus::default(),
+            now,
+            "",
+        );
+        assert_eq!(r.sent[Epoch::Application].len(), 4);
+        assert_eq!(r.bytes_in_flight, 4000);
+
+        // Wait until the third packet contains expired data, but not the fourth.
+        now += data_expiration - Duration::from_millis(10);
+
+        // Filter the expired data.
+        // Expect to have packet with packet number 2 timeout.
+        let res = r.mc_data_timeout(
+            0,
+            now,
+            data_expiration_val,
+            HandshakeStatus::default(),
+            &mut Vec::new(),
+            None,
+            true,
+        );
+        assert_eq!(res, Ok(((Some(2), Some(2)).into(), [1, 9].into())));
+
+        assert_eq!(r.sent[Epoch::Application].len(), 1);
+        assert_eq!(r.bytes_in_flight, 1000);
     }
 }

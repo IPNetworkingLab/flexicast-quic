@@ -476,15 +476,17 @@ impl MulticastAttributes {
         let (is_server, current_status) = match self.mc_role {
             MulticastRole::Client(status) => (false, status),
             MulticastRole::ServerUnicast(status) => (true, status),
-            _ =>
+            _ => {
                 return Err(Error::Multicast(MulticastError::McInvalidRole(
                     self.mc_role,
-                ))),
+                )))
+            },
         };
 
         let new_status = match (current_status, action) {
-            (MulticastClientStatus::Unaware, MulticastClientAction::Notify) =>
-                MulticastClientStatus::AwareUnjoined,
+            (MulticastClientStatus::Unaware, MulticastClientAction::Notify) => {
+                MulticastClientStatus::AwareUnjoined
+            },
             (
                 MulticastClientStatus::AwareUnjoined,
                 MulticastClientAction::Join,
@@ -494,9 +496,11 @@ impl MulticastAttributes {
                 MulticastClientAction::Join,
             ) if is_server => MulticastClientStatus::JoinedNoKey,
             (MulticastClientStatus::Unaware, MulticastClientAction::Join)
-                if is_server &&
-                    self.get_mc_announce_data_path().unwrap().is_processed =>
-                MulticastClientStatus::JoinedNoKey,
+                if is_server
+                    && self.get_mc_announce_data_path().unwrap().is_processed =>
+            {
+                MulticastClientStatus::JoinedNoKey
+            },
             (
                 MulticastClientStatus::WaitingToJoin,
                 MulticastClientAction::Join,
@@ -508,8 +512,9 @@ impl MulticastAttributes {
             (
                 MulticastClientStatus::WaitingToJoin,
                 MulticastClientAction::DecryptionKey,
-            ) if is_server && self.mc_key_up_to_date =>
-                MulticastClientStatus::JoinedAndKey,
+            ) if is_server && self.mc_key_up_to_date => {
+                MulticastClientStatus::JoinedAndKey
+            },
             (
                 MulticastClientStatus::WaitingToJoin,
                 MulticastClientAction::DecryptionKey,
@@ -517,7 +522,7 @@ impl MulticastAttributes {
             (
                 MulticastClientStatus::ListenMcPath(_),
                 MulticastClientAction::Leave,
-            ) =>
+            ) => {
                 if let Some(leaving_from) = action_data {
                     if leaving_from == LEAVE_FROM_CLIENT {
                         if is_server {
@@ -544,7 +549,8 @@ impl MulticastAttributes {
                     return Err(Error::Multicast(
                         MulticastError::McInvalidAction,
                     ));
-                },
+                }
+            },
             (
                 MulticastClientStatus::Leaving(false),
                 MulticastClientAction::Leave,
@@ -554,8 +560,8 @@ impl MulticastAttributes {
                 MulticastClientAction::Leave,
             ) => MulticastClientStatus::AwareUnjoined,
             (
-                MulticastClientStatus::JoinedAndKey |
-                MulticastClientStatus::JoinedNoKey,
+                MulticastClientStatus::JoinedAndKey
+                | MulticastClientStatus::JoinedNoKey,
                 MulticastClientAction::McPath,
             ) if action_data.is_some() && is_server => {
                 self.mc_space_id = Some(action_data.unwrap() as usize);
@@ -596,8 +602,9 @@ impl MulticastAttributes {
 
         self.mc_role = match self.mc_role {
             MulticastRole::Client(_) => MulticastRole::Client(new_status),
-            MulticastRole::ServerUnicast(_) =>
-                MulticastRole::ServerUnicast(new_status),
+            MulticastRole::ServerUnicast(_) => {
+                MulticastRole::ServerUnicast(new_status)
+            },
             other => other,
         };
 
@@ -617,7 +624,9 @@ impl MulticastAttributes {
                 MulticastClientStatus::WaitingToJoin => true,
                 MulticastClientStatus::JoinedAndKey
                     if self.mc_space_id.is_some() =>
-                    true,
+                {
+                    true
+                },
                 MulticastClientStatus::Leaving(false) => true,
                 _ => false,
             },
@@ -642,11 +651,13 @@ impl MulticastAttributes {
         }
         if let MulticastRole::ServerUnicast(status) = self.mc_role {
             match status {
-                MulticastClientStatus::JoinedAndKey |
-                MulticastClientStatus::ListenMcPath(_) => true,
+                MulticastClientStatus::JoinedAndKey
+                | MulticastClientStatus::ListenMcPath(_) => true,
                 MulticastClientStatus::JoinedNoKey
                     if self.mc_client_id.is_some() =>
-                    true,
+                {
+                    true
+                },
                 _ => false,
             }
         } else {
@@ -667,11 +678,12 @@ impl MulticastAttributes {
     /// Get the channel decryption key secret.
     pub fn get_decryption_key_secret(&self) -> Result<&[u8]> {
         match self.mc_role {
-            MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey) =>
+            MulticastRole::ServerUnicast(MulticastClientStatus::JoinedNoKey) => {
                 Ok(self
                     .mc_channel_key
                     .as_ref()
-                    .ok_or(Error::Multicast(MulticastError::McInvalidSymKey))?),
+                    .ok_or(Error::Multicast(MulticastError::McInvalidSymKey))?)
+            },
             _ => Err(Error::Multicast(MulticastError::McInvalidRole(
                 self.mc_role,
             ))),
@@ -681,8 +693,8 @@ impl MulticastAttributes {
     /// Sets the channel decryption key secret.
     pub fn set_decryption_key_secret(&mut self, key: Vec<u8>) -> Result<()> {
         match self.mc_role {
-            MulticastRole::Client(MulticastClientStatus::JoinedNoKey) |
-            MulticastRole::Client(MulticastClientStatus::WaitingToJoin) => {
+            MulticastRole::Client(MulticastClientStatus::JoinedNoKey)
+            | MulticastRole::Client(MulticastClientStatus::WaitingToJoin) => {
                 let aead_open = Open::from_secret(Algorithm::AES128_GCM, &key)?;
                 self.mc_crypto_open = Some(aead_open);
                 let aead_seal = Seal::from_secret(Algorithm::AES128_GCM, &key)?;
@@ -725,12 +737,14 @@ impl MulticastAttributes {
     pub fn get_mc_authentication_method(&self) -> McAuthType {
         match self.mc_auth_type {
             McAuthType::AsymSign | McAuthType::StreamAsym
-                if self.mc_role == MulticastRole::ServerMulticast &&
-                    self.mc_private_key.is_some() =>
-                self.mc_auth_type,
+                if self.mc_role == MulticastRole::ServerMulticast
+                    && self.mc_private_key.is_some() =>
+            {
+                self.mc_auth_type
+            },
             McAuthType::AsymSign => {
-                if matches!(self.mc_role, MulticastRole::Client(_)) &&
-                    self.mc_public_key.is_some()
+                if matches!(self.mc_role, MulticastRole::Client(_))
+                    && self.mc_public_key.is_some()
                 {
                     self.mc_auth_type
                 } else {
@@ -746,7 +760,9 @@ impl MulticastAttributes {
                     })
                     .last()
                     .is_some() =>
-                McAuthType::SymSign,
+            {
+                McAuthType::SymSign
+            },
             _ => McAuthType::None,
         }
     }
@@ -825,8 +841,8 @@ impl MulticastAttributes {
     /// Whether the multicast source must send authentication packets with
     /// symetric signature.
     pub fn should_send_mc_auth_packets(&self) -> bool {
-        if self.mc_role == MulticastRole::ServerMulticast &&
-            self.mc_auth_type == McAuthType::SymSign
+        if self.mc_role == MulticastRole::ServerMulticast
+            && self.mc_auth_type == McAuthType::SymSign
         {
             if let McSymSign::McSource(v) = &self.mc_sym_signs {
                 return !v.is_empty();
@@ -1206,8 +1222,8 @@ impl MulticastConnection for Connection {
             return None;
         }
 
-        if !(self.local_transport_params.multicast_server_params &&
-            self.peer_transport_params.multicast_client_params.is_some())
+        if !(self.local_transport_params.multicast_server_params
+            && self.peer_transport_params.multicast_client_params.is_some())
         {
             return None;
         }
@@ -1217,17 +1233,17 @@ impl MulticastConnection for Connection {
                 .mc_announce_data
                 .iter()
                 .position(|mc_data| !mc_data.is_processed);
-            if idx.is_some() &&
-                (multicast.mc_role ==
-                    MulticastRole::ServerUnicast(
+            if idx.is_some()
+                && (multicast.mc_role
+                    == MulticastRole::ServerUnicast(
                         MulticastClientStatus::Unaware,
-                    ) ||
-                    multicast
+                    )
+                    || multicast
                         .mc_announce_data
                         .get(idx.unwrap())
                         .unwrap()
-                        .path_type ==
-                        McPathType::Authentication)
+                        .path_type
+                        == McPathType::Authentication)
             {
                 idx
             } else {
@@ -1297,9 +1313,10 @@ impl MulticastConnection for Connection {
                             ));
                     }
                 },
-                MulticastRole::ServerMulticast => {
+                MulticastRole::ServerMulticast if mc_announce_data.full_reliability => {
                     if multicast.mc_reliable.is_none() {
-                        multicast.mc_reliable = Some(ReliableMc::McSource(RMcSource::default()));
+                        multicast.mc_reliable =
+                            Some(ReliableMc::McSource(RMcSource::default()));
                     }
                 },
                 _ => (),
@@ -1345,12 +1362,12 @@ impl MulticastConnection for Connection {
         {
             // Only allow for asymetric authentication if we have a key in the
             // MC_ANNOUNCE.
-            if matches!(multicast.mc_role, MulticastRole::Client(_)) &&
-                matches!(
+            if matches!(multicast.mc_role, MulticastRole::Client(_))
+                && matches!(
                     mc_announce_data.auth_type,
                     McAuthType::AsymSign | McAuthType::StreamAsym
-                ) &&
-                multicast.mc_public_key.is_none()
+                )
+                && multicast.mc_public_key.is_none()
             {
                 return Err(Error::Multicast(MulticastError::McInvalidAuth));
             }
@@ -1364,19 +1381,20 @@ impl MulticastConnection for Connection {
         if let Some(multicast) = self.multicast.as_ref() {
             if let Some(mc_auth_space_id) = multicast.mc_auth_space_id {
                 // Do not send other information on the authentication path.
-                return mc_auth_space_id == send_pid &&
-                    multicast.should_send_mc_auth_packets();
+                return mc_auth_space_id == send_pid
+                    && multicast.should_send_mc_auth_packets();
             }
 
-            return self.mc_should_send_mc_announce().is_some() ||
-                multicast.should_send_mc_state() ||
-                multicast.should_send_mc_key() ||
-                self.mc_nack_range(
-                    Epoch::Application,
-                    multicast.mc_space_id.unwrap_or(0) as u64,
-                )
-                .is_some() ||
-                multicast.mc_last_expired_needs_notif;
+            return self.mc_should_send_mc_announce().is_some()
+                || multicast.should_send_mc_state()
+                || multicast.should_send_mc_key()
+                || self
+                    .mc_nack_range(
+                        Epoch::Application,
+                        multicast.mc_space_id.unwrap_or(0) as u64,
+                    )
+                    .is_some()
+                || multicast.mc_last_expired_needs_notif;
         }
         false
     }
@@ -1387,12 +1405,14 @@ impl MulticastConnection for Connection {
         let multicast = match self.multicast.as_mut() {
             None => return Err(Error::Multicast(MulticastError::McDisabled)),
             Some(multicast) => match multicast.mc_role {
-                MulticastRole::Client(MulticastClientStatus::AwareUnjoined) =>
-                    multicast,
-                _ =>
+                MulticastRole::Client(MulticastClientStatus::AwareUnjoined) => {
+                    multicast
+                },
+                _ => {
                     return Err(Error::Multicast(MulticastError::McInvalidRole(
                         multicast.mc_role,
-                    ))),
+                    )))
+                },
             },
         };
         multicast.mc_leave_on_timeout = leave_on_timeout;
@@ -1403,15 +1423,17 @@ impl MulticastConnection for Connection {
         let multicast = match self.multicast.as_mut() {
             None => return Err(Error::Multicast(MulticastError::McDisabled)),
             Some(multicast) => match multicast.mc_role {
-                MulticastRole::Client(MulticastClientStatus::ListenMcPath(_)) =>
-                    multicast,
+                MulticastRole::Client(MulticastClientStatus::ListenMcPath(_)) => {
+                    multicast
+                },
                 MulticastRole::ServerUnicast(
                     MulticastClientStatus::ListenMcPath(_),
                 ) => multicast,
-                _ =>
+                _ => {
                     return Err(Error::Multicast(MulticastError::McInvalidRole(
                         multicast.mc_role,
-                    ))),
+                    )))
+                },
             },
         };
         let leaving_action_from = if self.is_server {
@@ -1484,9 +1506,9 @@ impl MulticastConnection for Connection {
         let multicast = if let Some(multicast) = self.multicast.as_ref() {
             if !matches!(
                 multicast.mc_role,
-                MulticastRole::Client(MulticastClientStatus::ListenMcPath(true)) |
-                    MulticastRole::Client(MulticastClientStatus::JoinedAndKey) |
-                    MulticastRole::ServerMulticast,
+                MulticastRole::Client(MulticastClientStatus::ListenMcPath(true))
+                    | MulticastRole::Client(MulticastClientStatus::JoinedAndKey)
+                    | MulticastRole::ServerMulticast,
             ) {
                 return Err(Error::Multicast(MulticastError::McInvalidRole(
                     multicast.mc_role,
@@ -1516,6 +1538,12 @@ impl MulticastConnection for Connection {
                     .unwrap()
                     .expiration_timer,
             ));
+            let use_complete_streams = self
+                .multicast
+                .as_ref()
+                .and_then(|m| m.rmc_get())
+                .and_then(|r| r.source())
+                .is_some();
             (expired_pkt, expired_streams) = p.recovery.mc_data_timeout(
                 space_id as u32,
                 now,
@@ -1526,8 +1554,15 @@ impl MulticastConnection for Connection {
                 hs_status,
                 &mut self.newly_acked,
                 pns_client,
+                use_complete_streams,
             )?;
-            if let Some(rmc) = self.multicast.as_mut().unwrap().rmc_get_mut().and_then(|rmc| rmc.source_mut()) {
+            if let Some(rmc) = self
+                .multicast
+                .as_mut()
+                .unwrap()
+                .rmc_get_mut()
+                .and_then(|rmc| rmc.source_mut())
+            {
                 rmc.max_rangeset = None;
             }
             self.blocked_limit = None;
@@ -1562,10 +1597,9 @@ impl MulticastConnection for Connection {
             for &exp_stream_id in expired_streams.iter() {
                 let stream_opt = self.streams.get_mut(exp_stream_id);
                 if let Some(stream) = stream_opt {
-                    if self.is_server &&
-                        (multicast.mc_is_reliable() &&
-                            stream.send.is_fin() ||
-                            !multicast.mc_is_reliable())
+                    if self.is_server
+                        && (multicast.mc_is_reliable() && stream.send.is_fin()
+                            || !multicast.mc_is_reliable())
                     {
                         // Only reset the sending stream if:
                         // * Non-reliable multicast,
@@ -1611,7 +1645,11 @@ impl MulticastConnection for Connection {
                 );
             }
         }
-        self.paths.get(1).unwrap().recovery.dump_sent("At the end of mc_expire");
+        self.paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .dump_sent("At the end of mc_expire");
         Ok((expired_pkt, expired_streams))
     }
 
@@ -1628,17 +1666,17 @@ impl MulticastConnection for Connection {
         let multicast = self.multicast.as_ref()?;
         if matches!(
             multicast.mc_role,
-            MulticastRole::Client(MulticastClientStatus::AwareUnjoined) |
-                MulticastRole::Client(MulticastClientStatus::Leaving(_))
+            MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+                | MulticastRole::Client(MulticastClientStatus::Leaving(_))
         ) {
             return None;
         }
         let timeout = if self.is_server {
-            multicast.mc_last_recv_time? +
-                time::Duration::from_millis(expiration_timer)
+            multicast.mc_last_recv_time?
+                + time::Duration::from_millis(expiration_timer)
         } else {
-            multicast.mc_last_recv_time? +
-                time::Duration::from_millis(expiration_timer * 3)
+            multicast.mc_last_recv_time?
+                + time::Duration::from_millis(expiration_timer * 3)
         };
         if timeout <= now {
             Some(time::Duration::ZERO)
@@ -2022,7 +2060,11 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
-        println!("Stream len {} because {:?}", self.streams.len(), self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        println!(
+            "Stream len {} because {:?}",
+            self.streams.len(),
+            self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>()
+        );
         self.multicast.is_some() && self.streams.len() == 0
     }
 
@@ -2244,9 +2286,9 @@ impl MulticastChannelSource {
         if mc_cwnd.is_some() {
             config_client.cc_algorithm = CongestionControlAlgorithm::CUBIC;
             config_server.cc_algorithm = CongestionControlAlgorithm::CUBIC;
-        } else if !(config_client.cc_algorithm ==
-            CongestionControlAlgorithm::DISABLED &&
-            config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED)
+        } else if !(config_client.cc_algorithm
+            == CongestionControlAlgorithm::DISABLED
+            && config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED)
         {
             return Err(Error::CongestionControl);
         }
@@ -2279,8 +2321,9 @@ impl MulticastChannelSource {
             MulticastChannelSource::get_exporter_secret(keylog_filename)?;
 
         let signature_eddsa = match authentication {
-            McAuthType::AsymSign | McAuthType::StreamAsym =>
-                Some(MulticastChannelSource::compute_asymetric_signature_keys()?),
+            McAuthType::AsymSign | McAuthType::StreamAsym => {
+                Some(MulticastChannelSource::compute_asymetric_signature_keys()?)
+            },
             _ => None,
         };
 
@@ -2720,7 +2763,9 @@ pub mod testing {
             )
             .unwrap();
 
-            mc_channel.channel.mc_set_mc_announce_data(&mc_announce_data)?;
+            mc_channel
+                .channel
+                .mc_set_mc_announce_data(&mc_announce_data)?;
 
             // Copy the channel ID derived from the multicast channel.
             mc_announce_data.channel_id =
@@ -3746,9 +3791,10 @@ mod tests {
         r.insert(36..40);
 
         let missing = r.get_missing();
-        assert_eq!(&missing.flatten().collect::<Vec<u64>>(), &[
-            7, 8, 12, 13, 14, 21, 34, 35
-        ]);
+        assert_eq!(
+            &missing.flatten().collect::<Vec<u64>>(),
+            &[7, 8, 12, 13, 14, 21, 34, 35]
+        );
     }
 
     #[test]
@@ -3881,8 +3927,8 @@ mod tests {
         // The expiration timeout is exceeded. Closes the stream and removes the
         // packets from the sending queue.
         let now = time::Instant::now();
-        let expired_timer = now +
-            time::Duration::from_millis(
+        let expired_timer = now
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
@@ -3946,8 +3992,8 @@ mod tests {
 
         // The expiration timeout is exceeded. Closes the stream and removes the
         // packets from the sending queue.
-        let mut expired_timer = expired_timer +
-            time::Duration::from_millis(
+        let mut expired_timer = expired_timer
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
@@ -4015,8 +4061,8 @@ mod tests {
         assert!(
             client_last_received_now
                 .unwrap()
-                .duration_since(client_last_received.unwrap()) >
-                time::Duration::ZERO
+                .duration_since(client_last_received.unwrap())
+                > time::Duration::ZERO
         );
 
         // Repeat the same thing...
@@ -4055,8 +4101,8 @@ mod tests {
         assert!(
             client_last_received_now
                 .unwrap()
-                .duration_since(client_last_received.unwrap()) >
-                time::Duration::ZERO
+                .duration_since(client_last_received.unwrap())
+                > time::Duration::ZERO
         );
     }
 
@@ -4143,8 +4189,8 @@ mod tests {
         assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
 
         let timer = time::Instant::now();
-        let timer = timer +
-            time::Duration::from_millis(
+        let timer = timer
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer + 100,
             );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
@@ -4523,8 +4569,8 @@ mod tests {
         // Timeout on the server. It removes the sent repair symbols from its
         // window.
         let now = time::Instant::now();
-        let expired_timer = now +
-            time::Duration::from_millis(
+        let expired_timer = now
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer * 3 + 100,
             ); // Margin
 
@@ -4629,8 +4675,8 @@ mod tests {
 
         // Timeout of the four streams.
         let timer = time::Instant::now();
-        let timer = timer +
-            time::Duration::from_millis(
+        let timer = timer
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer + 100,
             );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
@@ -4802,8 +4848,8 @@ mod tests {
 
         // Timeout of the three streams.
         let timer = time::Instant::now();
-        let timer = timer +
-            time::Duration::from_millis(
+        let timer = timer
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer + 100,
             );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
@@ -5100,8 +5146,8 @@ mod tests {
 
         // Expiration of the stream.
         let timer = time::Instant::now();
-        let timer = timer +
-            time::Duration::from_millis(
+        let timer = timer
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer + 100,
             );
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(timer);
@@ -5335,8 +5381,8 @@ mod tests {
         // Timeout on the client: they leave the multicast channel because no data
         // has been received for too long.
         let now = time::Instant::now();
-        let expired_timer = now +
-            time::Duration::from_millis(
+        let expired_timer = now
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer * 3 + 100,
             ); // Margin
 
@@ -6257,8 +6303,8 @@ mod tests {
         assert_eq!(readables, vec![30 * 4 + 1, 100 * 4 + 1, 1000 * 4 + 1]);
 
         let now = time::Instant::now();
-        let expired_timer = now +
-            time::Duration::from_millis(
+        let expired_timer = now
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
@@ -6280,8 +6326,8 @@ mod tests {
         assert_eq!(readables, vec![0 * 4 + 1, 10 * 4 + 1, 10_000 * 4 + 1]);
 
         let now = time::Instant::now();
-        let expired_timer = now +
-            time::Duration::from_millis(
+        let expired_timer = now
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer * 2 + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
@@ -6347,8 +6393,8 @@ mod tests {
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
         let now = time::Instant::now();
-        let expired_timer = now +
-            time::Duration::from_millis(
+        let expired_timer = now
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
@@ -6376,8 +6422,8 @@ mod tests {
             assert!(false);
         }
 
-        let expired_timer = expired_timer +
-            time::Duration::from_millis(
+        let expired_timer = expired_timer
+            + time::Duration::from_millis(
                 mc_pipe.mc_announce_data.expiration_timer + 100,
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);

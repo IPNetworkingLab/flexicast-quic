@@ -4693,6 +4693,8 @@ impl Connection {
                     error_code,
                 };
 
+                error!("Client creates a STOP_SENDING frame for stream id={}", stream_id);
+
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     self.streams.mark_stopped(stream_id, false, 0);
 
@@ -5336,6 +5338,7 @@ impl Connection {
             !sent_mc_auth
         {
             while let Some(stream_id) = self.streams.peek_flushable() {
+                debug!("Get first flushable stream: {}", stream_id);
                 let stream = match self.streams.get_mut(stream_id) {
                     // Avoid sending frames for streams that were already stopped.
                     //
@@ -5343,6 +5346,9 @@ impl Connection {
                     // flushed on the wire when a STOP_SENDING frame is received.
                     Some(v) if !v.send.is_stopped() => v,
                     _ => {
+                        debug!("Removing flushable here for stream id={}", stream_id);
+                        let res = self.streams.get_mut(stream_id);
+                        debug!("So the state is the following. Is None={}.", res.is_none());
                         self.streams.remove_flushable();
                         continue;
                     },
@@ -8343,6 +8349,7 @@ impl Connection {
                 stream_id,
                 error_code,
             } => {
+                error!("Recv a STOP_SENDING frame");
                 // STOP_SENDING on a receive-only stream is a fatal error.
                 if !stream::is_local(stream_id, self.is_server) &&
                     !stream::is_bidi(stream_id)

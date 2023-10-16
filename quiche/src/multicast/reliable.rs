@@ -651,12 +651,12 @@ mod tests {
             let next_timeout = rmc_client.rmc_next_time_ack.unwrap();
             let expected_lowest = now
                 .checked_add(time::Duration::from_millis(
-                    (expiration_timer as f64 * 0.9 * 0.5) as u64,
+                    (expiration_timer as f64 * 0.75 * 0.5) as u64,
                 ))
                 .unwrap();
             let expected_highest = now
                 .checked_add(time::Duration::from_millis(
-                    (expiration_timer as f64 * 1.1 * 0.5) as u64,
+                    (expiration_timer as f64 * 1.25 * 0.5) as u64,
                 ))
                 .unwrap();
             assert!(next_timeout >= expected_lowest);
