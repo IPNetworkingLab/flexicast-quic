@@ -25,6 +25,11 @@ impl Recovery {
         }
     }
 
+    /// Forces the congestion window to a specific value.
+    pub fn mc_force_cwin(&mut self, cwin: usize) {
+        self.congestion_window = cwin;
+    }
+
     /// Sets the minimum RTT to a defined value.
     pub fn mc_set_min_rtt(&mut self, min_rtt: Duration) {
         self.min_rtt = min_rtt;

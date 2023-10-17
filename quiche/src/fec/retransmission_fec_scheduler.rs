@@ -35,7 +35,7 @@ impl RetransmissionFecScheduler {
     }
 
     pub fn acked_repair_symbol(&mut self) {
-        self.n_repair_in_flight -= 1;
+        self.n_repair_in_flight = self.n_repair_in_flight.saturating_sub(1);
     }
 
     pub fn sent_source_symbol(&mut self) {}

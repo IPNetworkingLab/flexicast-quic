@@ -2046,6 +2046,9 @@ impl MulticastConnection for Connection {
         // Multicast source notifies the unicast server with the packets sent on the multicast channel. This is used for the unicast server to compute the congestion window.
         mc_channel.mc_notify_sent_packets(self, now);
 
+        // Force multicast congestion window.
+        mc_channel.mc_set_cwin(self);
+
         Ok(())
     }
 
@@ -2172,7 +2175,7 @@ impl MulticastConnection for Connection {
 
 impl Connection {
     /// The multicast source notifies the unicast server of the packets sent.
-    pub fn mc_notify_sent_packets(
+    fn mc_notify_sent_packets(
         &mut self, uc: &mut Connection, now: time::Instant,
     ) {
         if let Some(multicast) = self.multicast.as_ref() {
@@ -2188,6 +2191,21 @@ impl Connection {
                         self.handshake_status(),
                         &self.trace_id,
                     );
+                }
+            }
+        }
+    }
+
+    /// Sets the congestion window of the multicast source based on the congestion window of the unicast connection.
+    fn mc_set_cwin(&mut self, uc: &Connection) {
+        // Get paths.
+        if let Some(multicast) = self.multicast.as_mut() {
+            if let Some(mc_space_id) = multicast.get_mc_space_id() {
+                let mc_path = self.paths.get_mut(mc_space_id);
+                let uc_path = uc.paths.get(mc_space_id);
+                if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
+                    mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd());
+                    mc_path.recovery.mc_set_min_cwnd();
                 }
             }
         }
@@ -2313,8 +2331,8 @@ impl MulticastChannelSource {
         auth_path_info: Option<McPathInfo>, mc_cwnd: Option<usize>,
     ) -> Result<Self> {
         if mc_cwnd.is_some() {
-            config_client.cc_algorithm = CongestionControlAlgorithm::Reno;
-            config_server.cc_algorithm = CongestionControlAlgorithm::Reno;
+            config_client.cc_algorithm = CongestionControlAlgorithm::DISABLED;
+            config_server.cc_algorithm = CongestionControlAlgorithm::DISABLED;
         } else if !(config_client.cc_algorithm
             == CongestionControlAlgorithm::DISABLED
             && config_server.cc_algorithm == CongestionControlAlgorithm::DISABLED)
@@ -4771,6 +4789,7 @@ mod tests {
         assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
 
         // The client sends an MC_NACK to the server.
+        println!("Client should generate some ACKMP frame with the missing range");
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         // Communication to unicast servers.
@@ -4778,6 +4797,8 @@ mod tests {
             mc_pipe.server_control_to_mc_source(time::Instant::now()),
             Ok(())
         );
+
+        println!("It does not work from here");
 
         // The server generates FEC a single repair packet because the client lost
         // the first frame of the stream. Recall that the previous packets have
@@ -6129,7 +6150,7 @@ mod tests {
             Ok(348)
         );
         assert_eq!(mc_pipe.source_send_single_stream(true, None, 0, 5), Ok(348));
-
+        
         // Client did not receive the first source symbol.
         assert_eq!(mc_pipe.clients_send(), Ok(()));
         assert_eq!(
@@ -6170,7 +6191,6 @@ mod tests {
                 .nb_missing_degrees(),
             Some(1)
         );
-
         // Client did not receive the source symbol.
         assert_eq!(mc_pipe.clients_send(), Ok(()));
         assert_eq!(
@@ -6205,7 +6225,6 @@ mod tests {
         expected_nack_ranges.insert(2..3);
         expected_nack_ranges.insert(5..6);
         assert_eq!(nack_ranges, &(expected_nack_ranges, 6));
-
         assert_eq!(mc_pipe.clients_send(), Ok(()));
         assert_eq!(
             mc_pipe.server_control_to_mc_source(time::Instant::now()),

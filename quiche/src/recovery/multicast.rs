@@ -74,13 +74,13 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
         handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
-        pns_client: Option<(RangeSet, RangeSet)>, only_complete_streams: bool,
+        _pns_client: Option<(RangeSet, RangeSet)>, only_complete_streams: bool,
     ) -> Result<(ExpiredPkt, ExpiredStream)> {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
-                now.saturating_duration_since(p.time_sent)
-                    >= Duration::from_millis(ttl)
+                now.saturating_duration_since(p.time_sent) >=
+                    Duration::from_millis(ttl)
             })
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
@@ -92,9 +92,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
         let exp3 = expired_sent.clone();
         let fec_medatadas = exp3.flat_map(|p| {
             p.frames.as_ref().iter().filter_map(|f| match f {
-                crate::frame::Frame::SourceSymbolHeader { metadata, .. } => {
-                    Some(source_symbol_metadata_to_u64(*metadata))
-                },
+                crate::frame::Frame::SourceSymbolHeader { metadata, .. } =>
+                    Some(source_symbol_metadata_to_u64(*metadata)),
                 _ => None,
             })
         });
@@ -132,62 +131,16 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 let expired_pn = Some(last.pkt_num.1);
 
                 let cwnd = self.congestion_window;
-
-                if let (Some((lost, mut recv)), Some(_)) =
-                    (pns_client, self.mc_cwnd)
-                {
-                    if let Some(exp) = expired_pn {
-                        debug!(
-                            "Remove from recv: {:?} packets after {}",
-                            recv, exp
-                        );
-                        recv.remove_after(exp);
-                    }
-                    debug!("Use reliable for mc data timeout! use values: {:?} and {:?}. Newly acked len: {:?}", recv, lost, newly_acked.len());
-                    // First ack only received packets.
-                    if recv.len() > 0 {
-                        self.on_ack_received(
-                            space_id,
-                            &recv,
-                            ttl,
-                            Epoch::Application,
-                            handshake_status,
-                            now,
-                            "",
-                            newly_acked,
-                        )?;
-                    } else if let Some(exp) = expired_pn {
-                        self.mark_inflight_as_lost_app_up_to(now, "", exp);
-                    } else {
-                        self.mark_all_inflight_as_lost(now, "");
-                    }
-
-                    // Then only lost packets to remove them from the sending
-                    // window.
-                    if lost.len() > 0 {
-                        self.on_ack_received(
-                            space_id,
-                            &lost,
-                            ttl,
-                            Epoch::Application,
-                            handshake_status,
-                            now + Duration::from_millis(ttl),
-                            "",
-                            newly_acked,
-                        )?;
-                    }
-                } else {
-                    self.on_ack_received(
-                        space_id,
-                        &acked,
-                        ttl,
-                        Epoch::Application,
-                        handshake_status,
-                        now,
-                        "",
-                        newly_acked,
-                    )?;
-                }
+                self.on_ack_received(
+                    space_id,
+                    &acked,
+                    ttl,
+                    Epoch::Application,
+                    handshake_status,
+                    now,
+                    "",
+                    newly_acked,
+                )?;
 
                 let cwnd_2 = self.congestion_window;
 
@@ -275,13 +228,15 @@ pub trait ReliableMulticastRecovery {
         space_id: u32, local_streams: &mut StreamMap,
     ) -> Result<(u64, (RangeSet, RangeSet))>;
 
-    /// Mark all packets in flight in [`Epoch::Application`] up to the precised packet number.
+    /// Mark all packets in flight in [`Epoch::Application`] up to the precised
+    /// packet number.
     fn mark_inflight_as_lost_app_up_to(
         &mut self, now: Instant, trace_id: &str, pn: u64,
     ) -> (usize, usize);
 
-    /// Transfers to the unicast servers the frames sent on the multicast channel.
-    /// This is used to allow each unicast server to compute its congestion window using the data sent by the multicast source.
+    /// Transfers to the unicast servers the frames sent on the multicast
+    /// channel. This is used to allow each unicast server to compute its
+    /// congestion window using the data sent by the multicast source.
     fn copy_sent(
         &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
         now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
@@ -301,8 +256,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
-                now.saturating_duration_since(p.time_sent)
-                    >= Duration::from_millis(expiration_timer)
+                now.saturating_duration_since(p.time_sent) >=
+                    Duration::from_millis(expiration_timer)
             })
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
@@ -319,8 +274,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             for r in recv_pn.iter() {
                 let lowest_recovered_in_block = r.start;
                 let largest_recovered_in_block = r.end - 1;
-                if packet.pkt_num.1 >= lowest_recovered_in_block
-                    && packet.pkt_num.1 <= largest_recovered_in_block
+                if packet.pkt_num.1 >= lowest_recovered_in_block &&
+                    packet.pkt_num.1 <= largest_recovered_in_block
                 {
                     continue 'per_packet; // Packet was received.
                 }
@@ -350,8 +305,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         for r in reco_ss.iter() {
                             let lowest_recovered_in_block = r.start;
                             let largest_recovered_in_block = r.end - 1;
-                            if mdu64 >= lowest_recovered_in_block
-                                && mdu64 <= largest_recovered_in_block
+                            if mdu64 >= lowest_recovered_in_block &&
+                                mdu64 <= largest_recovered_in_block
                             {
                                 // Packet has been recovered through FEC.
                                 continue 'per_packet;
@@ -518,7 +473,10 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
         now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
     ) {
-        let max_pn = uc.sent[Epoch::Application].back().map(|s| s.pkt_num.1).unwrap_or(0);
+        let max_pn = uc.sent[Epoch::Application]
+            .back()
+            .map(|s| s.pkt_num.1)
+            .unwrap_or(0);
         let sent_pkts = self.sent[epoch]
             .iter()
             .filter(|s| s.pkt_num.0 == space_id as u32 && s.pkt_num.1 >= max_pn);

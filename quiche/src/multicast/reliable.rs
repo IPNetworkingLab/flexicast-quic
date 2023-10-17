@@ -1331,7 +1331,7 @@ mod tests {
         let stream = vec![0u8; 40 * max_datagram_size];
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(10 * max_datagram_size * 2)
+            Ok(54_000)
         ); // 27,000 because of the two paths.
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
@@ -1346,10 +1346,10 @@ mod tests {
         assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(12), Some(10)).into()));
+        assert_eq!(res, Ok((Some(9), Some(7)).into()));
 
         // Now able to send the remaining of the stream.
-        for _ in 0..12 {
+        for _ in 0..36 {
             assert!(mc_pipe.source_send_single(None, 0).is_ok());
         }
 
@@ -1376,11 +1376,11 @@ mod tests {
         let stream = vec![0u8; 40 * max_datagram_size];
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(10 * max_datagram_size * 2)
+            Ok(54_000)
         ); // 27,000 because of the two paths.
 
         // Send first packets.
-        for _ in 0..6 {
+        for _ in 0..5 {
             mc_pipe.source_send_single(None, 0).unwrap();
         }
 
@@ -1388,7 +1388,7 @@ mod tests {
         let now = time::Instant::now();
         std::thread::sleep(Duration::from_millis(expiration_timer - 100));
 
-        for _ in 0..5 {
+        for _ in 0..3 {
             mc_pipe.source_send_single(None, 0).unwrap();
         }
 
@@ -1403,10 +1403,10 @@ mod tests {
         assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(7), Some(5)).into()));
+        assert_eq!(res, Ok((Some(6), Some(4)).into()));
 
         // Now able to send the remaining of the stream.
-        for _ in 0..12 {
+        for _ in 0..36 {
             assert!(mc_pipe.source_send_single(None, 0).is_ok());
         }
 

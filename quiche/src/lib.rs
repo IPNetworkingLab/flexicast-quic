@@ -3206,7 +3206,6 @@ impl Connection {
                     frame::Frame::ACKMP {
                         space_identifier,
                         ranges,
-                        ecn_counts,
                         ..
                     } => {
                         // Stop acknowledging packets less than or equal to the
@@ -3224,41 +3223,6 @@ impl Connection {
                                         .remove_until(largest_acked)
                                 })
                                 .ok();
-                        }
-
-                        if let Some(multicast) = self.multicast.as_mut() {
-                            if !multicast.get_mc_space_id().is_some_and(|s| s as u64 == space_identifier) {
-                                continue;
-                            }
-                            let nb_repair_needed = ecn_counts.map(|e| e.get_ect0()).unwrap_or(0);
-                            let last_pn = ranges.last().unwrap();
-                            if matches!(
-                                multicast.get_mc_role(),
-                                multicast::MulticastRole::ServerUnicast(_)
-                            ) {
-                                let nb_repair_opt = if nb_repair_needed == 0 {
-                                    None
-                                } else {
-                                    Some(nb_repair_needed)
-                                };
-                                if multicast.get_mc_space_id().is_some() {
-                                    multicast.set_mc_nack_ranges(
-                                        Some((&ranges.get_missing(), last_pn)),
-                                        nb_repair_opt,
-                                    )?;
-                                    multicast.mc_need_ack = true;
-                                } else {
-                                    return Err(Error::Multicast(
-                                        multicast::MulticastError::McPath,
-                                    ));
-                                }
-                            } else {
-                                return Err(Error::Multicast(
-                                    multicast::MulticastError::McInvalidRole(
-                                        multicast.get_mc_role(),
-                                    ),
-                                ));
-                            }
                         }
                     },
 
@@ -4390,14 +4354,6 @@ impl Connection {
                         // received on the multicast path.
                         // MC-TODO: need to test this condition.
                         if let Some(multicast) = self.multicast.as_ref() {
-                            if let Some(mc_space_id) = multicast.get_mc_space_id()
-                            {
-                                if space_id == mc_space_id as u64 &&
-                                    !mc_should_send_nack
-                                {
-                                    continue;
-                                }
-                            }
                             if let Some(mc_auth_space_id) =
                                 multicast.get_mc_auth_space_id()
                             {
@@ -4434,6 +4390,7 @@ impl Connection {
                             let ecn_counts = if mc_should_send_nack {
                                 let nb_degree_needed_opt: Option<u64> =
                                     self.fec_decoder.nb_missing_degrees();
+                                println!("Mais ne nb degree={:?}", nb_degree_needed_opt);
                                 let max_pn =
                                     self.multicast.as_ref().unwrap().mc_max_pn;
                                 if let Some(nb_degree_needed) =
@@ -4451,11 +4408,12 @@ impl Connection {
                                         )?;
                                     Some(EcnCounts::new(nb_degree_needed, 0, 0))
                                 } else {
-                                    None
+                                    continue; // Does not generate ACKMP if no missing symbol for FEC.
                                 }
                             } else {
                                 None
                             };
+                            println!("Send ack mp with multicast from client with ranges: {:?} and ECN={:?}", pns.recv_pkt_need_ack, ecn_counts);
 
                             let frame = frame::Frame::ACKMP {
                                 space_identifier: space_id,
@@ -9068,6 +9026,7 @@ impl Connection {
                 space_identifier,
                 ranges,
                 ack_delay,
+                ecn_counts,
                 ..
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
@@ -9112,10 +9071,33 @@ impl Connection {
                             multicast.rmc_get_mut()
                         {
                             info!("Recv ranges from the client: {:?}", ranges);
-                            s.set_rmc_received_pn(ranges);
+                            s.set_rmc_received_pn(ranges.clone());
+                        }
+                    }
 
-                            // Do not process the ACKMP as a normal one.
-                            return Ok(());
+                    if multicast.get_mc_space_id().is_some_and(|s| s as u64 == space_identifier) {
+                        let nb_repair_needed = ecn_counts.map(|e| e.get_ect0()).unwrap_or(0);
+                        let last_pn = ranges.last().unwrap();
+                        if matches!(
+                            multicast.get_mc_role(),
+                            multicast::MulticastRole::ServerUnicast(_)
+                        ) {
+                            let nb_repair_opt = if nb_repair_needed == 0 {
+                                None
+                            } else {
+                                Some(nb_repair_needed)
+                            };
+                            if multicast.get_mc_space_id().is_some() {
+                                multicast.set_mc_nack_ranges(
+                                    Some((&ranges.get_missing(), last_pn)),
+                                    nb_repair_opt,
+                                )?;
+                                multicast.mc_need_ack = true;
+                            } else {
+                                return Err(Error::Multicast(
+                                    multicast::MulticastError::McPath,
+                                ));
+                            }
                         }
                     }
                 }
