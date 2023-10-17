@@ -2047,6 +2047,7 @@ impl MulticastConnection for Connection {
         mc_channel.mc_notify_sent_packets(self, now);
 
         // Force multicast congestion window.
+        info!("Set the cwin");
         mc_channel.mc_set_cwin(self);
 
         Ok(())
@@ -2178,10 +2179,12 @@ impl Connection {
     fn mc_notify_sent_packets(
         &mut self, uc: &mut Connection, now: time::Instant,
     ) {
+        info!("Call mc_notify_sent_packets");
         if let Some(multicast) = self.multicast.as_ref() {
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
                 let mc_path = self.paths.get(mc_space_id);
                 let uc_path = uc.paths.get_mut(mc_space_id);
+                info!("Mais le uc path pour mc: {}", uc_path.is_ok());
                 if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
                     mc_path.recovery.copy_sent(
                         &mut uc_path.recovery,
@@ -2202,10 +2205,12 @@ impl Connection {
         if let Some(multicast) = self.multicast.as_mut() {
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
                 let mc_path = self.paths.get_mut(mc_space_id);
-                let uc_path = uc.paths.get(mc_space_id);
+                let uc_path = uc.paths.get(0);
                 if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
+                    let cwin = mc_path.recovery.cwnd();
                     mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd());
                     mc_path.recovery.mc_set_min_cwnd();
+                    info!("Set the congestion window from {} to {}", cwin, mc_path.recovery.cwnd());
                 }
             }
         }

@@ -1089,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rmc_cc() {
+    fn test_rmc_cc2() {
         let max_datagram_size = 1350;
         let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
@@ -1141,7 +1141,7 @@ mod tests {
                 .0
                 .server
                 .paths
-                .get(0)
+                .get(1)
                 .unwrap()
                 .recovery
                 .cwnd(),
@@ -1197,7 +1197,7 @@ mod tests {
                 .0
                 .server
                 .paths
-                .get(0)
+                .get(1)
                 .unwrap()
                 .recovery
                 .cwnd(),

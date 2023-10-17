@@ -226,9 +226,11 @@ fn on_packet_acked(
     }
 
     if (r.app_limited && !r.real_time) || (r.real_time && (r.bytes_in_flight.saturating_mul(3) / 2).saturating_add(packet.size) < r.congestion_window) {
-        debug!("Not app limited");
+        debug!("App limited: {}. bytes in flight: {}", r.app_limited, r.bytes_in_flight);
         return;
     }
+
+    debug!("Not app limited. Bytes in flight: {}", r.bytes_in_flight);
 
     // Detecting spurious congestion events.
     // <https://tools.ietf.org/id/draft-ietf-tcpm-rfc8312bis-00.html#section-4.9>

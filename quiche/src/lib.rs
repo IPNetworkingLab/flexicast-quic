@@ -4390,7 +4390,10 @@ impl Connection {
                             let ecn_counts = if mc_should_send_nack {
                                 let nb_degree_needed_opt: Option<u64> =
                                     self.fec_decoder.nb_missing_degrees();
-                                println!("Mais ne nb degree={:?}", nb_degree_needed_opt);
+                                println!(
+                                    "Mais ne nb degree={:?}",
+                                    nb_degree_needed_opt
+                                );
                                 let max_pn =
                                     self.multicast.as_ref().unwrap().mc_max_pn;
                                 if let Some(nb_degree_needed) =
@@ -4408,7 +4411,8 @@ impl Connection {
                                         )?;
                                     Some(EcnCounts::new(nb_degree_needed, 0, 0))
                                 } else {
-                                    continue; // Does not generate ACKMP if no missing symbol for FEC.
+                                    continue; // Does not generate ACKMP if no
+                                              // missing symbol for FEC.
                                 }
                             } else {
                                 None
@@ -5460,9 +5464,14 @@ impl Connection {
                 {
                     if let Some(remaining) = stream.send.total_remaining() {
                         if remaining as usize <= max_len {
-                            max_len -= 64 +
-                                1 +
-                                octets::varint_len(multicast::MC_ASYM_CODE);
+                            println!(
+                                "Remaining bytes: {} and max len={}",
+                                remaining, max_len
+                            );
+                            max_len = max_len.saturating_sub(
+                                64 + 1 +
+                                    octets::varint_len(multicast::MC_ASYM_CODE),
+                            );
                         }
                     }
                 }
@@ -5798,6 +5807,7 @@ impl Connection {
         if in_flight && is_app_limited {
             path.recovery.delivery_rate_update_app_limited(true);
         }
+        println!("AT THE END. IS APP LIMITED: {}", is_app_limited);
 
         let pkt_space = self.pkt_num_spaces.spaces.get_mut(epoch, space_id)?;
         pkt_space.next_pkt_num += 1;
@@ -8736,12 +8746,14 @@ impl Connection {
             },
 
             frame::Frame::PathChallenge { data } => {
+                println!("Server: {} receives path challenge", self.is_server);
                 self.paths
                     .get_mut(recv_path_id)?
                     .on_challenge_received(data);
             },
 
             frame::Frame::PathResponse { data } => {
+                println!("Server: {} receives path response", self.is_server);
                 // For soft-multicast, add the path information once the path has
                 // been accepted by the unicast server.
                 if self.multicast.is_some() &&
@@ -9075,8 +9087,12 @@ impl Connection {
                         }
                     }
 
-                    if multicast.get_mc_space_id().is_some_and(|s| s as u64 == space_identifier) {
-                        let nb_repair_needed = ecn_counts.map(|e| e.get_ect0()).unwrap_or(0);
+                    if multicast
+                        .get_mc_space_id()
+                        .is_some_and(|s| s as u64 == space_identifier)
+                    {
+                        let nb_repair_needed =
+                            ecn_counts.map(|e| e.get_ect0()).unwrap_or(0);
                         let last_pn = ranges.last().unwrap();
                         if matches!(
                             multicast.get_mc_role(),
@@ -9117,6 +9133,7 @@ impl Connection {
                         if is_app_limited {
                             p.recovery.delivery_rate_update_app_limited(true);
                         }
+                        info!("Call on_ack_received from ACKMP frame for space identifier {}", space_identifier);
                         let (lost_packets, lost_bytes) =
                             p.recovery.on_ack_received(
                                 space_identifier as u32,
@@ -18793,12 +18810,12 @@ mod tests {
 }
 
 use crate::frame::EcnCounts;
-use crate::multicast::MissingRangeSet;
 use crate::multicast::authentication::McAuthType;
 use crate::multicast::authentication::McAuthentication;
 use crate::multicast::reliable::ReliableMc;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::multicast::McPathType;
+use crate::multicast::MissingRangeSet;
 use crate::multicast::MulticastConnection;
 use crate::multicast::MulticastError;
 pub use crate::packet::ConnectionId;

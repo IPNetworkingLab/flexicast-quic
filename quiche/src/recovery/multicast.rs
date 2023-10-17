@@ -482,14 +482,19 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             .filter(|s| s.pkt_num.0 == space_id as u32 && s.pkt_num.1 >= max_pn);
         // uc.sent[epoch].extend(sent_pkts.map(|s| s.clone()));
         for pkt in sent_pkts {
+            println!("Add new packet to unicast: {:?}", pkt.pkt_num);
             uc.on_packet_sent(
                 pkt.clone(),
                 epoch,
                 handshake_status,
-                now,
+                pkt.time_sent,
                 trace_id,
             );
         }
+
+        // Update app limited state.
+        info!("Update uc app limited to {}. Now uc has {} bytes in flight", self.app_limited, uc.bytes_in_flight);
+        uc.update_app_limited(self.app_limited);
     }
 }
 
