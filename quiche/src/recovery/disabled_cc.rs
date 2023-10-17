@@ -49,14 +49,14 @@ pub static DISABLED_CC: CongestionControlOps = CongestionControlOps {
 
 pub fn on_init(r: &mut Recovery) {
     r.congestion_window = match r.mc_cwnd {
-        Some(v) => v,
+        Some(v) => v * r.max_datagram_size,
         None => std::usize::MAX - 1,
     };
 }
 
 pub fn reset(r: &mut Recovery) {
     r.congestion_window = match r.mc_cwnd {
-        Some(v) => v,
+        Some(v) => v * r.max_datagram_size,
         None => std::usize::MAX - 1,
     };
 }
@@ -92,7 +92,7 @@ fn on_packet_acked(
         r.bytes_acked_sl += packet.size;
 
         r.congestion_window = match r.mc_cwnd {
-            Some(v) => v,
+            Some(v) => v * r.max_datagram_size,
             None => std::usize::MAX - 1,
         };
 
@@ -107,7 +107,7 @@ fn on_packet_acked(
         if r.bytes_acked_ca >= r.congestion_window {
             r.bytes_acked_ca -= r.congestion_window;
             r.congestion_window = match r.mc_cwnd {
-                Some(v) => v,
+                Some(v) => v * r.max_datagram_size,
                 None => std::usize::MAX - 1,
             };
         }
@@ -119,14 +119,14 @@ fn congestion_event(
     _epoch: packet::Epoch, _now: Instant,
 ) {
     r.congestion_window = match r.mc_cwnd {
-        Some(v) => v,
+        Some(v) => v * r.max_datagram_size,
         None => std::usize::MAX - 1,
     };
 }
 
 pub fn collapse_cwnd(r: &mut Recovery) {
     r.congestion_window = match r.mc_cwnd {
-        Some(v) => v,
+        Some(v) => v * r.max_datagram_size,
         None => std::usize::MAX - 1,
     };
 }

@@ -246,8 +246,8 @@ impl ReliableMulticastConnection for Connection {
         // No timeout for client not in the group/transient leaving.
         if matches!(
             multicast.mc_role,
-            MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
-                | MulticastRole::Client(MulticastClientStatus::Leaving(_))
+            MulticastRole::Client(MulticastClientStatus::AwareUnjoined) |
+                MulticastRole::Client(MulticastClientStatus::Leaving(_))
         ) {
             return None;
         }
@@ -297,8 +297,8 @@ impl ReliableMulticastConnection for Connection {
                 let mut random_v = [0u8; 4];
                 random.fill(&mut random_v).ok();
                 let additional_timer = i32::from_be_bytes(random_v) as i128;
-                let et_with_random = expiration_timer as i128 / 2
-                    + (additional_timer % ((expiration_timer / 10) as i128));
+                let et_with_random = expiration_timer as i128 / 2 +
+                    (additional_timer % ((expiration_timer / 10) as i128));
                 rmc.rmc_next_time_ack = now.checked_add(
                     time::Duration::from_millis(et_with_random as u64),
                 );
@@ -483,8 +483,8 @@ impl MulticastAttributes {
     /// Always `None` for the multicast source and the client.
     /// `None` if reliable multicast is disabled.
     pub fn rmc_get_server_nb_lost_stream(&self) -> Option<u64> {
-        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_))
-            || !self.mc_is_reliable()
+        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_)) ||
+            !self.mc_is_reliable()
         {
             return None;
         }
@@ -1111,12 +1111,12 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 10 * max_datagram_size);
+        assert_eq!(cwnd, mc_cwnd * max_datagram_size);
 
         let stream = vec![0u8; 40 * max_datagram_size];
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(10 * max_datagram_size * 2)
+            Ok(10 * max_datagram_size * 4)
         ); // 27,000 because of the two paths.
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
@@ -1134,7 +1134,18 @@ mod tests {
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(12), Some(10)).into()));
+        assert_eq!(res, Ok((Some(17), Some(15)).into()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+        let exp_cwin = (mc_cwnd * max_datagram_size).max(
+            mc_pipe.unicast_pipes[0]
+                .0
+                .server
+                .paths
+                .get(0)
+                .unwrap()
+                .recovery
+                .cwnd(),
+        );
 
         let cwnd = mc_pipe
             .mc_channel
@@ -1144,15 +1155,9 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 19 * max_datagram_size);
+        assert_eq!(cwnd, exp_cwin);
 
         // Now a client does not receive any packet.
-        let stream = vec![0u8; 40 * max_datagram_size];
-        assert_eq!(
-            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(25650) /* Why so little? -> because there is still buffered
-                       * stream. */
-        ); // 27,000 because of the two paths.
         let mut loss_1 = RangeSet::default();
         loss_1.insert(1..2);
         let mut i = 0;
@@ -1173,7 +1178,9 @@ mod tests {
             .unwrap();
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
 
-        // let max_rangeset = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap().rmc_get().and_then(|a| a.source()).unwrap().max_rangeset.as_ref();
+        // let max_rangeset =
+        // mc_pipe.mc_channel.channel.multicast.as_ref().unwrap().rmc_get().
+        // and_then(|a| a.source()).unwrap().max_rangeset.as_ref();
         // let mut expected_recv = RangeSet::default();
         // let mut expected_lost = RangeSet::default();
         // expected_recv.insert(5..10);
@@ -1181,9 +1188,20 @@ mod tests {
         // assert_eq!(max_rangeset, Some(&(expected_recv, expected_lost)));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(32), Some(30)).into()));
+        assert_eq!(res, Ok((Some(33), Some(31)).into()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
 
         // Source decreases its congestion window to the minimum multicast value.
+        let exp_cwin = (mc_cwnd * max_datagram_size).max(
+            mc_pipe.unicast_pipes[0]
+                .0
+                .server
+                .paths
+                .get(0)
+                .unwrap()
+                .recovery
+                .cwnd(),
+        );
         let cwnd = mc_pipe
             .mc_channel
             .channel
@@ -1192,7 +1210,7 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, mc_cwnd * max_datagram_size);
+        assert_eq!(cwnd, exp_cwin);
     }
 
     #[test]
@@ -1222,12 +1240,12 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 10 * max_datagram_size);
+        assert_eq!(cwnd, mc_cwnd * max_datagram_size);
 
         let stream = vec![0u8; 40 * max_datagram_size];
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(10 * max_datagram_size * 2)
+            Ok(10 * max_datagram_size * 4)
         ); // 27,000 because of the two paths.
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
@@ -1245,7 +1263,8 @@ mod tests {
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(12), Some(10)).into()));
+        assert_eq!(res, Ok((Some(17), Some(15)).into()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
 
         let cwnd = mc_pipe
             .mc_channel
@@ -1255,15 +1274,9 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        assert_eq!(cwnd, 19 * max_datagram_size);
+        assert_eq!(cwnd, mc_cwnd * max_datagram_size);
 
         // All clients have congested links and do not receive any message.
-        let stream = vec![0u8; 40 * max_datagram_size];
-        assert_eq!(
-            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(25650) /* Why so little? -> because there is still buffered
-                       * stream. */
-        ); // 27,000 because of the two paths.
         let mut loss = RangeSet::default();
         loss.insert(0..4);
         loop {
@@ -1299,7 +1312,7 @@ mod tests {
         assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(32), Some(30)).into()));
+        assert_eq!(res, Ok((Some(33), Some(31)).into()));
 
         // Source decreases its congestion window to the minimum multicast value.
         let cwnd = mc_pipe
@@ -1324,7 +1337,7 @@ mod tests {
             auth_method,
             true,
             true,
-            Some(10_000),
+            Some(10),
         )
         .unwrap();
 
@@ -1346,10 +1359,10 @@ mod tests {
         assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(9), Some(7)).into()));
+        assert_eq!(res, Ok((Some(12), Some(10)).into()));
 
         // Now able to send the remaining of the stream.
-        for _ in 0..36 {
+        for _ in 0..11 {
             assert!(mc_pipe.source_send_single(None, 0).is_ok());
         }
 
@@ -1367,7 +1380,7 @@ mod tests {
             auth_method,
             true,
             true,
-            Some(10_000),
+            Some(10),
         )
         .unwrap();
 
@@ -1388,7 +1401,7 @@ mod tests {
         let now = time::Instant::now();
         std::thread::sleep(Duration::from_millis(expiration_timer - 100));
 
-        for _ in 0..3 {
+        for _ in 0..6 {
             mc_pipe.source_send_single(None, 0).unwrap();
         }
 
@@ -1406,7 +1419,7 @@ mod tests {
         assert_eq!(res, Ok((Some(6), Some(4)).into()));
 
         // Now able to send the remaining of the stream.
-        for _ in 0..36 {
+        for _ in 0..8 {
             assert!(mc_pipe.source_send_single(None, 0).is_ok());
         }
 

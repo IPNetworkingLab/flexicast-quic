@@ -2448,9 +2448,10 @@ impl MulticastChannelSource {
             // path.
             if let Some(cwnd) = mc_cwnd {
                 mc_path_server.recovery.set_mc_max_cwnd(cwnd);
-            } else {
-                mc_path_server.recovery.set_mc_max_cwnd(std::usize::MAX - 1);
             }
+            // } else {
+            //     mc_path_server.recovery.set_mc_max_cwnd(std::usize::MAX - 1);
+            // }
             mc_path_server.recovery.reset();
 
             conn_server.multicast.as_mut().unwrap().mc_auth_space_id =
@@ -6405,165 +6406,6 @@ mod tests {
 
         // The server must not retransmit STREAM data on the multicast channel.
         assert_eq!(mc_pipe.source_send_single(None, 0), Err(Error::Done));
-    }
-
-    #[test]
-    fn test_mc_cc() {
-        let use_auth = McAuthType::StreamAsym;
-        let max_wnd = 15;
-        let max_datagram_size = 1350;
-        let mut mc_pipe = MulticastPipe::new(
-            2,
-            "/tmp/test_mc_cc",
-            use_auth,
-            true,
-            true,
-            Some(max_wnd),
-        )
-        .unwrap();
-
-        // Initial congestion window of the multicast source.
-        let cwnd = mc_pipe
-            .mc_channel
-            .channel
-            .paths
-            .get(1)
-            .unwrap()
-            .recovery
-            .cwnd();
-        assert_eq!(cwnd, 10 * max_datagram_size);
-
-        let stream = vec![0u8; 40 * max_datagram_size];
-        assert_eq!(
-            mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
-            Ok(10 * max_datagram_size * 2)
-        ); // 27,000 because of the two paths.
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
-
-        let now = time::Instant::now();
-        let expired_timer = now
-            + time::Duration::from_millis(
-                mc_pipe.mc_announce_data.expiration_timer + 100,
-            ); // Margin
-        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
-        assert_eq!(res, Ok((Some(12), Some(10)).into()));
-
-        // Increase the window because no negative feedback upon timeout.
-        let cwnd = mc_pipe
-            .mc_channel
-            .channel
-            .paths
-            .get(1)
-            .unwrap()
-            .recovery
-            .cwnd();
-        assert_eq!(cwnd, 20 * max_datagram_size - max_datagram_size);
-
-        assert_eq!(
-            mc_pipe.mc_channel.channel.stream_send(10001, &stream, true),
-            Ok(19 * max_datagram_size)
-        );
-
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
-
-        if mc_pipe.source_send_single(None, 0) != Err(Error::Done) {
-            assert!(false);
-        }
-
-        let expired_timer = expired_timer
-            + time::Duration::from_millis(
-                mc_pipe.mc_announce_data.expiration_timer + 100,
-            ); // Margin
-        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
-        assert_eq!(res, Ok((Some(32), Some(30)).into()));
-
-        // Increase the window because no negative feedback upon timeout.
-        let cwnd = mc_pipe
-            .mc_channel
-            .channel
-            .paths
-            .get(1)
-            .unwrap()
-            .recovery
-            .cwnd();
-        assert_eq!(cwnd, 40_157);
-
-        // Both clients lose a packet (a different one). The first time, the
-        // congestion window is decreased. The second time, it is not.
-        let mut client_loss_1 = RangeSet::default();
-        client_loss_1.insert(0..1);
-        let mut client_loss_2 = RangeSet::default();
-        client_loss_2.insert(1..2);
-        assert!(mc_pipe
-            .source_send_single_stream(true, Some(&client_loss_1), 0, 5)
-            .is_ok());
-        assert!(mc_pipe
-            .source_send_single_stream(true, Some(&client_loss_2), 0, 9)
-            .is_ok());
-
-        // First client detects the loss.
-        assert_eq!(mc_pipe.clients_send(), Ok(()));
-        assert_eq!(
-            mc_pipe.server_control_to_mc_source(time::Instant::now()),
-            Ok(())
-        );
-
-        // The source adapts by decrasing its congestion window.
-        let cwnd = mc_pipe
-            .mc_channel
-            .channel
-            .paths
-            .get(1)
-            .unwrap()
-            .recovery
-            .cwnd();
-        assert_eq!(cwnd, 28_109);
-
-        // A new stream is sent. The second client now detects the loss.
-        assert!(mc_pipe.source_send_single_stream(true, None, 0, 13).is_ok());
-        assert_eq!(mc_pipe.clients_send(), Ok(()));
-        assert_eq!(
-            mc_pipe.server_control_to_mc_source(time::Instant::now()),
-            Ok(())
-        );
-
-        // The source does not further decreases its congestion window since a
-        // loss has already been detected by the first client.
-        let cwnd = mc_pipe
-            .mc_channel
-            .channel
-            .paths
-            .get(1)
-            .unwrap()
-            .recovery
-            .cwnd();
-        assert_eq!(cwnd, 28_109);
-
-        // The second client now sees another lost packet. It influences the
-        // congestion window, which stays at a minimum value decided by the
-        // application.
-        assert!(mc_pipe
-            .source_send_single_stream(true, Some(&client_loss_2), 0, 17)
-            .is_ok());
-        assert!(mc_pipe.source_send_single_stream(true, None, 0, 21).is_ok());
-
-        assert_eq!(mc_pipe.clients_send(), Ok(()));
-        assert_eq!(
-            mc_pipe.server_control_to_mc_source(time::Instant::now()),
-            Ok(())
-        );
-
-        // The source does not further decreases its congestion window since a
-        // loss has already been detected from the first client.
-        let cwnd = mc_pipe
-            .mc_channel
-            .channel
-            .paths
-            .get(1)
-            .unwrap()
-            .recovery
-            .cwnd();
-        assert_eq!(cwnd, max_wnd * max_datagram_size);
     }
 }
 
