@@ -1094,7 +1094,7 @@ mod tests {
         let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
-            4,
+            1,
             "/tmp/test_rmc_cc.txt",
             auth_method,
             true,
@@ -1113,15 +1113,18 @@ mod tests {
             .cwnd();
         assert_eq!(cwnd, mc_cwnd * max_datagram_size);
 
+        let initial_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
+
         let stream = vec![0u8; 40 * max_datagram_size];
         assert_eq!(
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
             Ok(10 * max_datagram_size * 4)
         ); // 27,000 because of the two paths.
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+        let now = time::Instant::now();
+        mc_pipe.server_control_to_mc_source(now);
 
         let random = SystemRandom::new();
-        let now = time::Instant::now();
         assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
@@ -1156,6 +1159,10 @@ mod tests {
             .recovery
             .cwnd();
         assert_eq!(cwnd, exp_cwin);
+        let new_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
+        println!("New: {:?} and initial: {:?}", new_cwin, initial_cwin);
+        assert!(new_cwin > initial_cwin);
+        assert!(false);
 
         // Now a client does not receive any packet.
         let mut loss_1 = RangeSet::default();

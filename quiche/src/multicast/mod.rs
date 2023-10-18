@@ -2205,7 +2205,7 @@ impl Connection {
         if let Some(multicast) = self.multicast.as_mut() {
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
                 let mc_path = self.paths.get_mut(mc_space_id);
-                let uc_path = uc.paths.get(0);
+                let uc_path = uc.paths.get(1);
                 if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
                     let cwin = mc_path.recovery.cwnd();
                     mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd());
