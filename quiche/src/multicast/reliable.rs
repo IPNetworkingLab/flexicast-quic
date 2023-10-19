@@ -568,6 +568,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::multicast::MulticastClientTp;
     use crate::multicast::reliable::RMcClient;
     use crate::multicast::reliable::RMcServer;
     use crate::multicast::reliable::ReliableMc;
@@ -1089,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rmc_cc2() {
+    fn test_rmc_cc() {
         let max_datagram_size = 1350;
         let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
@@ -1113,7 +1114,14 @@ mod tests {
             .cwnd();
         assert_eq!(cwnd, mc_cwnd * max_datagram_size);
 
-        let initial_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
+        let initial_cwin = mc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
 
         let stream = vec![0u8; 40 * max_datagram_size];
         assert_eq!(
@@ -1122,7 +1130,7 @@ mod tests {
         ); // 27,000 because of the two paths.
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
         let now = time::Instant::now();
-        mc_pipe.server_control_to_mc_source(now);
+        assert_eq!(mc_pipe.server_control_to_mc_source(now), Ok(()));
 
         let random = SystemRandom::new();
         assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
@@ -1159,7 +1167,14 @@ mod tests {
             .recovery
             .cwnd();
         assert_eq!(cwnd, exp_cwin);
-        let new_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
+        let new_cwin = mc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
         println!("New: {:?} and initial: {:?}", new_cwin, initial_cwin);
         assert!(new_cwin > initial_cwin);
         assert!(false);
@@ -1489,5 +1504,102 @@ mod tests {
         assert_eq!(res, Ok((Some(5), Some(3)).into()));
 
         assert!(mc_pipe.mc_channel.channel.mc_no_stream_active());
+    }
+
+    #[test]
+    /// The multicast channel starts without any client, i.e., the source sends
+    /// multiple MC_EXPIRE frames. These frames will not be received by a client
+    /// joingning the channel later. This test ensures that the previously not
+    /// received packets (i.e., the MC_EXPIRE) do not contribute negatively to
+    /// the congestion window state since they MUST NOT be considered as lost.
+    fn test_rmc_cc_with_mc_expire_before() {
+        let max_datagram_size = 1350;
+        let auth_method = McAuthType::StreamAsym;
+        let mc_cwnd = 15;
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_rmc_cc_with_mc_expire_before.txt",
+            auth_method,
+            true,
+            true,
+            Some(mc_cwnd),
+        )
+        .unwrap();
+
+        // The multicast source sends some MC_EXPIRE even though nobody is in
+        // the group. It has for effect that the packet number of the multicast
+        // path increases.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let initial = time::Instant::now();
+        let mut expired = initial
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+
+        let mut res = Ok((None, None).into());
+        for _ in 0..100 {
+            res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+            assert!(res.is_ok());
+            expired = expired.checked_add(time::Duration::from_millis(expiration_timer + 100)).unwrap();
+            mc_pipe.source_send_single(None, 0).unwrap();
+        }
+        assert_eq!(res, Ok((Some(100), None).into()));
+
+        // A new client joins the channel.
+        let mc_client_tp = MulticastClientTp::default();
+        let random = SystemRandom::new();
+        let mc_announce_data = &mc_pipe.mc_announce_data;
+        let mc_data_auth = None;
+        let new_client = MulticastPipe::setup_client(&mut mc_pipe.mc_channel, &mc_client_tp, mc_announce_data, mc_data_auth, auth_method, &random, true).unwrap();
+        mc_pipe.unicast_pipes.push(new_client);
+        let initial_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
+
+        // --------------------------------- //
+
+        // Now the server sends some interesting data.
+        let stream = vec![0u8; 40 * max_datagram_size];
+        assert!(
+            mc_pipe.mc_channel.channel.stream_send(1, &stream, true).is_ok(),
+        );
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+
+        assert_eq!(mc_pipe.client_rmc_timeout(expired, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+
+        // Multicast source deleguates streams.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let expired = expired
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(117), Some(15)).into()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+        let exp_cwin = (mc_cwnd * max_datagram_size).max(
+            mc_pipe.unicast_pipes[0]
+                .0
+                .server
+                .paths
+                .get(1)
+                .unwrap()
+                .recovery
+                .cwnd(),
+        );
+
+        let cwnd = mc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+        assert_eq!(cwnd, exp_cwin);
+        let new_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
+        println!("New: {:?} and initial: {:?}", new_cwin, initial_cwin);
+        assert!(new_cwin > initial_cwin);
     }
 }

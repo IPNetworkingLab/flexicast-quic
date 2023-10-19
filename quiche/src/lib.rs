@@ -8786,6 +8786,7 @@ impl Connection {
                             self.multicast.as_ref().unwrap().mc_last_expired
                         {
                             if let Some(exp_pn) = exp_pkt.pn {
+                                println!("ICI QUE CA FAIT DU CACA");
                                 self.pkt_num_spaces
                                     .spaces
                                     .get_mut_or_create(
@@ -9282,6 +9283,15 @@ impl Connection {
                     // case of loss.
                     if let Some(mc_space_id) = multicast.get_mc_space_id() {
                         // If the multicast path exists, do that directly...
+                        // self.pkt_num_spaces
+                        //     .spaces
+                        //     .get_mut_or_create(
+                        //         packet::Epoch::Application,
+                        //         mc_space_id as u64,
+                        //     )
+                        //     .recv_pkt_need_ack
+                        //     .insert(first_pn..first_pn + 1);
+                        println!("ICICICIICIICICICICICICICCICICICI");
                         self.pkt_num_spaces
                             .spaces
                             .get_mut_or_create(
@@ -9289,8 +9299,9 @@ impl Connection {
                                 mc_space_id as u64,
                             )
                             .recv_pkt_need_ack
-                            .insert(first_pn..first_pn + 1);
+                            .remove_until(first_pn + 1);
                     } else {
+                        println!("LALALLALALALALLAALLALLALALALALALAL");
                         // ... and if the path does not exist, store for later.
                         multicast.mc_last_expired = Some(multicast::ExpiredPkt {
                             pn: Some(first_pn),
