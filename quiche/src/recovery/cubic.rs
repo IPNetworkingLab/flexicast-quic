@@ -349,6 +349,8 @@ fn on_packet_acked(
             r.congestion_window += r.max_datagram_size;
             r.cubic_state.cwnd_inc -= r.max_datagram_size;
         }
+
+        println!("End of the on packet acked. Congestion window is now: {}", r.congestion_window);
     }
 }
 

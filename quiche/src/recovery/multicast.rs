@@ -1,6 +1,7 @@
 use networkcoding::source_symbol_metadata_to_u64;
 
 use crate::frame;
+use crate::frame::Frame;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::multicast::ExpiredPkt;
 use crate::multicast::ExpiredStream;
@@ -144,7 +145,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 let cwnd_2 = self.congestion_window;
 
-                self.mc_set_min_cwnd();
+                // self.mc_set_min_cwnd();
 
                 info!(
                     "Congestion window {} -> {} -> {}\n And self sent len: {}",
@@ -240,7 +241,8 @@ pub trait ReliableMulticastRecovery {
     fn copy_sent(
         &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
         now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
-    );
+        cur_max_pn: u64,
+    ) -> u64;
 }
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
@@ -472,16 +474,22 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
     fn copy_sent(
         &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
         now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
-    ) {
-        let max_pn = uc.sent[Epoch::Application]
+        cur_max_pn: u64,
+    ) -> u64 {
+        let new_max_pn = self.sent[Epoch::Application]
             .back()
             .map(|s| s.pkt_num.1)
             .unwrap_or(0);
         let sent_pkts = self.sent[epoch]
             .iter()
-            .filter(|s| s.pkt_num.0 == space_id as u32 && s.pkt_num.1 >= max_pn);
+            .filter(|s| s.pkt_num.0 == space_id as u32 && s.pkt_num.1 >= cur_max_pn);
         // uc.sent[epoch].extend(sent_pkts.map(|s| s.clone()));
+        let mut first = true;
         for pkt in sent_pkts {
+            if first && pkt.frames.first().is_some_and(|f| matches!(f, Frame::McExpire { .. })) {
+                continue;
+            }
+            first = false;
             println!("Add new packet to unicast: {:?}", pkt.pkt_num);
             uc.on_packet_sent(
                 pkt.clone(),
@@ -495,6 +503,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         // Update app limited state.
         info!("Update uc app limited to {}. Now uc has {} bytes in flight", self.app_limited, uc.bytes_in_flight);
         uc.update_app_limited(self.app_limited);
+
+        new_max_pn + 1
     }
 }
 

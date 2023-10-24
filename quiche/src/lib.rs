@@ -4967,10 +4967,12 @@ impl Connection {
                         ))?;
                     let first_pn =
                         if let Some(exp_pkt) = multicast.mc_last_expired {
+                            debug!("MCKEY: last expired: {:?}", exp_pkt);
                             exp_pkt.pn.unwrap_or(1)
                         } else {
+                            debug!("MCKEY: last expired does not exist");
                             1
-                        };
+                        } + 1;
 
                     let frame = frame::Frame::McKey {
                         channel_id: mc_announce_data.channel_id.clone(),

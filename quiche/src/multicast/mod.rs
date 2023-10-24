@@ -401,6 +401,9 @@ pub struct MulticastAttributes {
     /// I need this variable because when receiving a frame, we do not have
     /// access anymore to the packet numer...
     pub(crate) mc_last_recv_pn: u64,
+
+    /// Maximum packet number already given to the unicast connection.
+    cur_max_pn: u64,
 }
 
 impl MulticastAttributes {
@@ -970,6 +973,7 @@ impl Default for MulticastAttributes {
             mc_reliable: None,
             mc_pn_stream_id: BTreeMap::default(),
             mc_last_recv_pn: 0,
+            cur_max_pn: 0,
         }
     }
 }
@@ -1934,7 +1938,7 @@ impl MulticastConnection for Connection {
                             // application.
                             // RMC-TODO: remove clients if they cannot support
                             // this minimum congestion window.
-                            path.recovery.mc_set_min_cwnd();
+                            // path.recovery.mc_set_min_cwnd();
                         }
                     } else {
                         debug!("No sent repairs but received an MC_NACK");
@@ -2171,19 +2175,31 @@ impl Connection {
     ) {
         info!("Call mc_notify_sent_packets");
         if let Some(multicast) = self.multicast.as_ref() {
+            // This just delays the problem.
+            // if let Some(mc_uc) = uc.get_multicast_attributes() {
+            //     if !matches!(mc_uc.get_mc_role(), MulticastRole::ServerUnicast(MulticastClientStatus::ListenMcPath(_))) {
+            //         return;
+            //     }
+            // } else {
+            //     return;
+            // }
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
                 let mc_path = self.paths.get(mc_space_id);
                 let uc_path = uc.paths.get_mut(mc_space_id);
                 info!("Mais le uc path pour mc: {}", uc_path.is_ok());
                 if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
-                    mc_path.recovery.copy_sent(
+                    let new_max_pn = mc_path.recovery.copy_sent(
                         &mut uc_path.recovery,
                         mc_space_id as u32,
                         Epoch::Application,
                         now,
                         self.handshake_status(),
                         &self.trace_id,
+                        multicast.cur_max_pn,
                     );
+
+                    self.multicast.as_mut().unwrap().cur_max_pn = new_max_pn;
+                    uc.multicast.as_mut().unwrap().mc_last_expired = self.multicast.as_ref().unwrap().mc_last_expired;
                 }
             }
         }
