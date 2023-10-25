@@ -211,7 +211,7 @@ fn main() {
     config.set_initial_max_streams_uni(1_000_000);
     config.set_active_connection_id_limit(5);
     config.verify_peer(false);
-    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
     // config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
 
     if args.multicast {

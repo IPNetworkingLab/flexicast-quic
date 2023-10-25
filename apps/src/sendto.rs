@@ -35,7 +35,10 @@ pub fn detect_gso(socket: &mio::net::UdpSocket, segment_size: usize) -> bool {
     use nix::sys::socket::sockopt::UdpGsoSegment;
     use std::os::unix::io::AsRawFd;
 
-    setsockopt(socket.as_raw_fd(), UdpGsoSegment, &(segment_size as i32)).is_ok()
+    // mio::net::UdpSocket doesn't implement AsFd (yet?).
+    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(socket.as_raw_fd()) };
+
+    setsockopt(&fd, UdpGsoSegment, &(segment_size as i32)).is_ok()
 }
 
 /// For non-Linux, there is no GSO support.
@@ -68,6 +71,7 @@ fn send_to_gso_pacing(
     // Pacing option.
     let send_time = std_time_to_u64(&send_info.at);
     let cmsg_txtime = ControlMessage::TxTime(&send_time);
+
     match sendmsg(
         sockfd,
         &iov,
