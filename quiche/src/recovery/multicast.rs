@@ -98,10 +98,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 _ => None,
             })
         });
-        println!(
-            "Self sent in mc_data_timeout 2 {}",
-            self.sent[Epoch::Application].len()
-        );
         let expired_ssid: Option<u64> = fec_medatadas.max();
         match expired_sent.next() {
             None => Ok((
@@ -192,7 +188,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_get_sent_exp_stream_ids(
         &self, pn: u64, space_id: SpaceId, only_complete: bool,
     ) -> ExpiredStream {
-        println!("Only complete: {}", only_complete);
         self.sent[Epoch::Application]
             .iter()
             .take_while(|p| p.pkt_num.1 <= pn)
@@ -240,7 +235,7 @@ pub trait ReliableMulticastRecovery {
     /// congestion window using the data sent by the multicast source.
     fn copy_sent(
         &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
-        now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
+        handshake_status: HandshakeStatus, trace_id: &str,
         cur_max_pn: u64,
     ) -> u64;
 }
@@ -473,7 +468,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
     fn copy_sent(
         &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
-        now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
+        handshake_status: HandshakeStatus, trace_id: &str,
         cur_max_pn: u64,
     ) -> u64 {
         let new_max_pn = self.sent[Epoch::Application]

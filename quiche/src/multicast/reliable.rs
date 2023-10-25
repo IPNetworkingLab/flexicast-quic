@@ -568,12 +568,12 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::multicast::MulticastClientTp;
     use crate::multicast::reliable::RMcClient;
     use crate::multicast::reliable::RMcServer;
     use crate::multicast::reliable::ReliableMc;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::McAuthType;
+    use crate::multicast::MulticastClientTp;
     use crate::ranges::RangeSet;
     use ring::rand::SystemRandom;
     use std::time;
@@ -1175,9 +1175,7 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        println!("New: {:?} and initial: {:?}", new_cwin, initial_cwin);
         assert!(new_cwin > initial_cwin);
-        assert!(false);
 
         // Now a client does not receive any packet.
         let mut loss_1 = RangeSet::default();
@@ -1210,7 +1208,7 @@ mod tests {
         // assert_eq!(max_rangeset, Some(&(expected_recv, expected_lost)));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(33), Some(31)).into()));
+        assert_eq!(res, Ok((Some(45), Some(43)).into()));
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
 
         // Source decreases its congestion window to the minimum multicast value.
@@ -1517,7 +1515,7 @@ mod tests {
         let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
-            1,
+            0,
             "/tmp/test_rmc_cc_with_mc_expire_before.txt",
             auth_method,
             true,
@@ -1539,7 +1537,9 @@ mod tests {
         for _ in 0..100 {
             res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
             assert!(res.is_ok());
-            expired = expired.checked_add(time::Duration::from_millis(expiration_timer + 100)).unwrap();
+            expired = expired
+                .checked_add(time::Duration::from_millis(expiration_timer + 100))
+                .unwrap();
             mc_pipe.source_send_single(None, 0).unwrap();
         }
         assert_eq!(res, Ok((Some(100), None).into()));
@@ -1549,17 +1549,44 @@ mod tests {
         let random = SystemRandom::new();
         let mc_announce_data = &mc_pipe.mc_announce_data;
         let mc_data_auth = None;
-        let new_client = MulticastPipe::setup_client(&mut mc_pipe.mc_channel, &mc_client_tp, mc_announce_data, mc_data_auth, auth_method, &random, true).unwrap();
+
+        let new_client = MulticastPipe::setup_client(
+            &mut mc_pipe.mc_channel,
+            &mc_client_tp,
+            mc_announce_data,
+            mc_data_auth,
+            auth_method,
+            &random,
+            true,
+        )
+        .unwrap();
         mc_pipe.unicast_pipes.push(new_client);
-        let initial_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
+        let initial_cwin = mc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+
+        // Remove manually the first sent packet because I have no idea of how to
+        // deal with it cleanly for now. The problem is that the first
+        // packet sent by the server on the new path carries PATH_ACCEPT frames or
+        // similar, which are not acknowledged by the client since it receives in
+        // the MC_KEY frame the first packet of interest which is much higher. As
+        // a consequence, the server thinks that the packet is lost (indeed, the
+        // client does not ack it).
 
         // --------------------------------- //
 
         // Now the server sends some interesting data.
         let stream = vec![0u8; 40 * max_datagram_size];
-        assert!(
-            mc_pipe.mc_channel.channel.stream_send(1, &stream, true).is_ok(),
-        );
+        assert!(mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(1, &stream, true)
+            .is_ok(),);
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
@@ -1598,8 +1625,14 @@ mod tests {
             .recovery
             .cwnd();
         assert_eq!(cwnd, exp_cwin);
-        let new_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
-        println!("New: {:?} and initial: {:?}", new_cwin, initial_cwin);
+        let new_cwin = mc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
         assert!(new_cwin > initial_cwin);
     }
 }

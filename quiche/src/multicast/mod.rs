@@ -1542,7 +1542,6 @@ impl MulticastConnection for Connection {
                 pns_client,
                 use_complete_streams,
             )?;
-            println!("Expired pkt: {:?}", expired_pkt);
             if let Some(rmc) = self
                 .multicast
                 .as_mut()
@@ -1562,7 +1561,7 @@ impl MulticastConnection for Connection {
             let pkt_num_space =
                 self.pkt_num_spaces.spaces.get_mut(epoch, space_id)?;
             pkt_num_space.recv_pkt_need_ack.remove_until(exp_pn);
-            debug!("Remove packets until {} for space id {}", exp_pn, space_id);
+            println!("Remove packets until {} for space id {}", exp_pn, space_id);
 
             expired_streams = self
                 .multicast
@@ -1819,7 +1818,10 @@ impl MulticastConnection for Connection {
         // Add the first packet number of interest for the new path if possible.
         if let Some(exp_pkt) = self.multicast.as_ref().unwrap().mc_last_expired {
             if let Some(exp_pn) = exp_pkt.pn {
-                println!("ICI QUE JE COMMENCE LE CACA: {}", exp_pn);
+                println!("P1 before: {:?}", self.pkt_num_spaces
+                .spaces
+                .get_mut_or_create(Epoch::Application, pid)
+                .recv_pkt_need_ack);
                 self.pkt_num_spaces
                     .spaces
                     .get_mut_or_create(Epoch::Application, pid)
@@ -1830,6 +1832,10 @@ impl MulticastConnection for Connection {
                     .get_mut_or_create(Epoch::Application, pid)
                     .recv_pkt_need_ack
                     .insert(exp_pn + 1..exp_pn + 2);
+                println!("P1 after: {:?}", self.pkt_num_spaces
+                .spaces
+                .get_mut_or_create(Epoch::Application, pid)
+                .recv_pkt_need_ack);
             }
         }
 
@@ -1870,6 +1876,7 @@ impl MulticastConnection for Connection {
                     mc_channel.multicast.as_ref().unwrap().mc_last_expired
                 {
                     if let Some(pn) = exp_pkt.pn {
+                        println!("P2");
                         nack_ranges.remove_until(pn);
                     }
                 }
@@ -2038,7 +2045,7 @@ impl MulticastConnection for Connection {
         // Multicast source notifies the unicast server with the packets sent on
         // the multicast channel. This is used for the unicast server to compute
         // the congestion window.
-        mc_channel.mc_notify_sent_packets(self, now);
+        mc_channel.mc_notify_sent_packets(self);
 
         // Force multicast congestion window.
         info!("Set the cwin");
@@ -2063,11 +2070,6 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
-        println!(
-            "Stream len {} because {:?}",
-            self.streams.len(),
-            self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>()
-        );
         self.multicast.is_some() && self.streams.len() == 0
     }
 
@@ -2171,7 +2173,7 @@ impl MulticastConnection for Connection {
 impl Connection {
     /// The multicast source notifies the unicast server of the packets sent.
     fn mc_notify_sent_packets(
-        &mut self, uc: &mut Connection, now: time::Instant,
+        &mut self, uc: &mut Connection,
     ) {
         info!("Call mc_notify_sent_packets");
         if let Some(multicast) = self.multicast.as_ref() {
@@ -2192,7 +2194,6 @@ impl Connection {
                         &mut uc_path.recovery,
                         mc_space_id as u32,
                         Epoch::Application,
-                        now,
                         self.handshake_status(),
                         &self.trace_id,
                         multicast.cur_max_pn,
@@ -3252,6 +3253,7 @@ pub mod testing {
         config.set_fec_scheduler_algorithm(
             crate::fec::fec_scheduler::FECSchedulerAlgorithm::RetransmissionFec,
         );
+        config.set_cc_algorithm(CongestionControlAlgorithm::Reno);
         if auth == McAuthType::AsymSign {
             config.set_fec_symbol_size(1280 - 64);
         } else {
@@ -4814,9 +4816,6 @@ mod tests {
         assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
 
         // The client sends an MC_NACK to the server.
-        println!(
-            "Client should generate some ACKMP frame with the missing range"
-        );
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         // Communication to unicast servers.
@@ -4824,8 +4823,6 @@ mod tests {
             mc_pipe.server_control_to_mc_source(time::Instant::now()),
             Ok(())
         );
-
-        println!("It does not work from here");
 
         // The server generates FEC a single repair packet because the client lost
         // the first frame of the stream. Recall that the previous packets have

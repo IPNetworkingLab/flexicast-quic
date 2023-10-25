@@ -4332,6 +4332,12 @@ impl Connection {
                         ecn_counts: None, /* sending ECN is not supported at
                                            * this time */
                     };
+                    println!(
+                        "Is server={}. Push frame ACKMP with ranges: {:?} and space_id={}",
+                        self.is_server,
+                        pns.recv_pkt_need_ack.clone(),
+                        space_id,
+                    );
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
                         pns.ack_elicited = false;
@@ -4390,10 +4396,6 @@ impl Connection {
                             let ecn_counts = if mc_should_send_nack {
                                 let nb_degree_needed_opt: Option<u64> =
                                     self.fec_decoder.nb_missing_degrees();
-                                println!(
-                                    "Mais ne nb degree={:?}",
-                                    nb_degree_needed_opt
-                                );
                                 let max_pn =
                                     self.multicast.as_ref().unwrap().mc_max_pn;
                                 if let Some(nb_degree_needed) =
@@ -4417,7 +4419,6 @@ impl Connection {
                             } else {
                                 None
                             };
-                            println!("Send ack mp with multicast from client with ranges: {:?} and ECN={:?}", pns.recv_pkt_need_ack, ecn_counts);
 
                             let frame = frame::Frame::ACKMP {
                                 space_identifier: space_id,
@@ -4427,6 +4428,13 @@ impl Connection {
                                              * supported at
                                              * this time */
                             };
+
+                            println!(
+                                "Push frame ACKMP after with ranges: {:?}. Is server={} for space id={}",
+                                pns.recv_pkt_need_ack.clone(),
+                                self.is_server,
+                                space_id,
+                            );
 
                             if push_frame_to_pkt!(b, frames, frame, left) {
                                 // Continue advertising until we send the ACK_MP
@@ -4967,12 +4975,10 @@ impl Connection {
                         ))?;
                     let first_pn =
                         if let Some(exp_pkt) = multicast.mc_last_expired {
-                            debug!("MCKEY: last expired: {:?}", exp_pkt);
                             exp_pkt.pn.unwrap_or(1)
                         } else {
-                            debug!("MCKEY: last expired does not exist");
-                            1
-                        } + 1;
+                            0
+                        };
 
                     let frame = frame::Frame::McKey {
                         channel_id: mc_announce_data.channel_id.clone(),
@@ -5466,10 +5472,6 @@ impl Connection {
                 {
                     if let Some(remaining) = stream.send.total_remaining() {
                         if remaining as usize <= max_len {
-                            println!(
-                                "Remaining bytes: {} and max len={}",
-                                remaining, max_len
-                            );
                             max_len = max_len.saturating_sub(
                                 64 + 1 +
                                     octets::varint_len(multicast::MC_ASYM_CODE),
@@ -5809,7 +5811,6 @@ impl Connection {
         if in_flight && is_app_limited {
             path.recovery.delivery_rate_update_app_limited(true);
         }
-        println!("AT THE END. IS APP LIMITED: {}", is_app_limited);
 
         let pkt_space = self.pkt_num_spaces.spaces.get_mut(epoch, space_id)?;
         pkt_space.next_pkt_num += 1;
@@ -8748,14 +8749,12 @@ impl Connection {
             },
 
             frame::Frame::PathChallenge { data } => {
-                println!("Server: {} receives path challenge", self.is_server);
                 self.paths
                     .get_mut(recv_path_id)?
                     .on_challenge_received(data);
             },
 
             frame::Frame::PathResponse { data } => {
-                println!("Server: {} receives path response", self.is_server);
                 // For soft-multicast, add the path information once the path has
                 // been accepted by the unicast server.
                 if self.multicast.is_some() &&
@@ -8788,7 +8787,6 @@ impl Connection {
                             self.multicast.as_ref().unwrap().mc_last_expired
                         {
                             if let Some(exp_pn) = exp_pkt.pn {
-                                println!("ICI QUE CA FAIT DU CACA");
                                 self.pkt_num_spaces
                                     .spaces
                                     .get_mut_or_create(
@@ -9136,7 +9134,6 @@ impl Connection {
                         if is_app_limited {
                             p.recovery.delivery_rate_update_app_limited(true);
                         }
-                        info!("Call on_ack_received from ACKMP frame for space identifier {}", space_identifier);
                         let (lost_packets, lost_bytes) =
                             p.recovery.on_ack_received(
                                 space_identifier as u32,
@@ -9293,17 +9290,13 @@ impl Connection {
                         //     )
                         //     .recv_pkt_need_ack
                         //     .insert(first_pn..first_pn + 1);
-                        println!("ICICICIICIICICICICICICICCICICICI");
-                        self.pkt_num_spaces
-                            .spaces
-                            .get_mut_or_create(
-                                packet::Epoch::Application,
-                                mc_space_id as u64,
-                            )
-                            .recv_pkt_need_ack
-                            .remove_until(first_pn + 1);
+                        self.pkt_num_spaces.spaces.get_mut_or_create(
+                            packet::Epoch::Application,
+                            mc_space_id as u64,
+                        );
+                        // .recv_pkt_need_ack
+                        // .remove_until(first_pn + 1);
                     } else {
-                        println!("LALALLALALALALLAALLALLALALALALALAL");
                         // ... and if the path does not exist, store for later.
                         multicast.mc_last_expired = Some(multicast::ExpiredPkt {
                             pn: Some(first_pn),

@@ -555,16 +555,13 @@ impl Recovery {
                     .unwrap_or_else(|i| i)
             };
 
-            debug!("First unacked for {}: {} and largest_acked_in_block: {:?}", space_id, first_unacked, largest_acked_in_block);
-
             let unacked_iter = sent.range_mut(first_unacked..)
                 // Skip packets that follow the largest acked packet in the block.
-                .take_while(|p| {info!("Packet num of pkt: {:?}", p.pkt_num); p.pkt_num <= largest_acked_in_block})
+                .take_while(|p| p.pkt_num <= largest_acked_in_block)
                 // Skip packets that have already been acked or lost.
                 .filter(|p| p.time_acked.is_none());
 
             for unacked in unacked_iter {
-                debug!("So unacked {:?} is now acked (or should)", unacked.pkt_num);
                 unacked.time_acked = Some(now);
 
                 // Check if acked packet was already declared lost.
