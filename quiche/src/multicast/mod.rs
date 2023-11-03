@@ -1561,7 +1561,7 @@ impl MulticastConnection for Connection {
             let pkt_num_space =
                 self.pkt_num_spaces.spaces.get_mut(epoch, space_id)?;
             pkt_num_space.recv_pkt_need_ack.remove_until(exp_pn);
-            println!("Remove packets until {} for space id {}", exp_pn, space_id);
+            trace!("Remove packets until {} for space id {}", exp_pn, space_id);
 
             expired_streams = self
                 .multicast
@@ -1876,7 +1876,6 @@ impl MulticastConnection for Connection {
                     mc_channel.multicast.as_ref().unwrap().mc_last_expired
                 {
                     if let Some(pn) = exp_pkt.pn {
-                        println!("P2");
                         nack_ranges.remove_until(pn);
                     }
                 }
@@ -2048,7 +2047,6 @@ impl MulticastConnection for Connection {
         mc_channel.mc_notify_sent_packets(self);
 
         // Force multicast congestion window.
-        info!("Set the cwin");
         mc_channel.mc_set_cwin(self);
 
         Ok(())
@@ -2175,7 +2173,6 @@ impl Connection {
     fn mc_notify_sent_packets(
         &mut self, uc: &mut Connection,
     ) {
-        info!("Call mc_notify_sent_packets");
         if let Some(multicast) = self.multicast.as_ref() {
             // This just delays the problem.
             // if let Some(mc_uc) = uc.get_multicast_attributes() {
@@ -2187,20 +2184,26 @@ impl Connection {
             // }
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
                 let mc_path = self.paths.get(mc_space_id);
+                let uc_trace_id = uc.trace_id().to_string();
+                let cur_max_pn = if let Some(mc) = uc.multicast.as_ref() {
+                    mc.cur_max_pn
+                } else {
+                    return
+                };
                 let uc_path = uc.paths.get_mut(mc_space_id);
-                info!("Mais le uc path pour mc: {}", uc_path.is_ok());
                 if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
                     let new_max_pn = mc_path.recovery.copy_sent(
                         &mut uc_path.recovery,
                         mc_space_id as u32,
                         Epoch::Application,
                         self.handshake_status(),
-                        &self.trace_id,
-                        multicast.cur_max_pn,
+                        &uc_trace_id,
+                        cur_max_pn,
                     );
-
-                    self.multicast.as_mut().unwrap().cur_max_pn = new_max_pn;
-                    uc.multicast.as_mut().unwrap().mc_last_expired = self.multicast.as_ref().unwrap().mc_last_expired;
+                    let uc_mc = uc.multicast.as_mut().unwrap();
+                    uc_mc.cur_max_pn = new_max_pn;
+                    // self.multicast.as_mut().unwrap().cur_max_pn = new_max_pn;
+                    uc_mc.mc_last_expired = self.multicast.as_ref().unwrap().mc_last_expired;
                 }
             }
         }
@@ -2216,12 +2219,18 @@ impl Connection {
                 let uc_path = uc.paths.get(1);
                 if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
                     let cwin = mc_path.recovery.cwnd();
-                    mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd());
-                    mc_path.recovery.mc_set_min_cwnd();
-                    info!(
-                        "Set the congestion window from {} to {}",
+                    if uc_path.recovery.cwnd_available() == usize::MAX {
+                        return;
+                    }
+                    mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd_available());
+                    // mc_path.recovery.mc_set_min_cwnd();
+                    trace!(
+                        "{}: Set the congestion window from {} to {}. UC cwnd={} and available={}",
+                        uc.trace_id(),
                         cwin,
-                        mc_path.recovery.cwnd()
+                        mc_path.recovery.cwnd(),
+                        uc_path.recovery.cwnd(),
+                        uc_path.recovery.cwnd_available(),
                     );
                 }
             }
@@ -2298,6 +2307,13 @@ impl From<&MulticastClientTp> for Vec<u8> {
             if v.ipv6_channels_allowed { 1 } else { 0 },
             if v.ipv4_channels_allowed { 1 } else { 0 },
         ]
+    }
+}
+
+impl Connection {
+    pub fn see_streams(&self) {
+        debug!("This is the streams: {:?}", self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        debug!("And this is the list of I don't know: {:?}", self.streams.iter().map(|(_, s)| s.is_complete()).collect::<Vec<_>>());
     }
 }
 

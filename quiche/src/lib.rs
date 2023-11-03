@@ -3583,6 +3583,7 @@ impl Connection {
         &mut self, out: &mut [u8], from: Option<SocketAddr>,
         to: Option<SocketAddr>,
     ) -> Result<(usize, SendInfo)> {
+        debug!("{} start of send_on_path with to={:?}", self.trace_id(), to);
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -3757,6 +3758,7 @@ impl Connection {
         &mut self, out: &mut [u8], send_pid: usize, has_initial: bool,
         now: time::Instant,
     ) -> Result<(packet::Type, usize)> {
+        debug!("{}: Start of send_single", self.trace_id());
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -3803,7 +3805,17 @@ impl Connection {
         let multiple_application_data_pkt_num_spaces =
             self.use_path_pkt_num_space(epoch);
         // Process lost frames. There might be several paths having lost frames.
-        for (_, p) in self.paths.iter_mut() {
+        for (path_id, p) in self.paths.iter_mut() {
+            // Does not retransmit frames that were sent by the multicast source
+            // on the multicast path.
+            if self.multicast.as_ref().is_some_and(|m| {
+                matches!(
+                    m.get_mc_role(),
+                    multicast::MulticastRole::ServerUnicast(_)
+                ) && Some(path_id) == m.get_mc_space_id()
+            }) {
+                continue;
+            }
             for lost_frame in p.recovery.lost[epoch].drain(..) {
                 match lost_frame {
                     recovery::LostFrame::Lost(frame) => {
@@ -4123,6 +4135,9 @@ impl Connection {
         // Whether or not we should explicitly elicit an ACK via PING frame if we
         // implicitly elicit one otherwise.
         let ack_elicit_required = path.recovery.should_elicit_ack(epoch);
+        if ack_elicit_required {
+            debug!("Ack elicit required. Left={}", left);
+        }
 
         let header_offset = b.off();
 
@@ -4332,11 +4347,12 @@ impl Connection {
                         ecn_counts: None, /* sending ECN is not supported at
                                            * this time */
                     };
-                    println!(
-                        "Is server={}. Push frame ACKMP with ranges: {:?} and space_id={}",
+                    trace!(
+                        "Is server={}. Push frame ACKMP with ranges: {:?} and space_id={}. This is because {} or {} or {}",
                         self.is_server,
                         pns.recv_pkt_need_ack.clone(),
                         space_id,
+                        pns.recv_pkt_need_ack.len(), pns.ack_elicited, ack_elicit_required,
                     );
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
@@ -4429,7 +4445,7 @@ impl Connection {
                                              * this time */
                             };
 
-                            println!(
+                            trace!(
                                 "Push frame ACKMP after with ranges: {:?}. Is server={} for space id={}",
                                 pns.recv_pkt_need_ack.clone(),
                                 self.is_server,
@@ -4512,11 +4528,15 @@ impl Connection {
         let path = self.paths.get_mut(send_pid)?;
 
         // Limit output packet size by congestion window size.
+        let left_before = left;
         left = cmp::min(
             left,
             // Bytes consumed by ACK frames.
             cwnd_available.saturating_sub(left_before_packing_ack_frame - left),
         );
+        if ack_elicit_required {
+            debug!("After congestion application: {} -> {}", left_before, left);
+        }
 
         let mut challenge_data = None;
 
@@ -5580,12 +5600,16 @@ impl Connection {
         // - if we've sent too many non ack-eliciting packets without having
         // sent an ACK eliciting one; OR
         // - the application requested an ack-eliciting frame be sent.
+        if ack_elicit_required {
+            trace!("Before ping. Ack required: {}, ack_eliciting: {}, left: {}, is_closing:{}", ack_elicit_required, ack_eliciting, left, is_closing);
+        }
         if (ack_elicit_required || path.needs_ack_eliciting) &&
             !ack_eliciting &&
-            left >= 1 &&
+            // left >= 1 &&
             !is_closing
         {
             let frame = frame::Frame::Ping;
+            left += 1;
 
             if push_frame_to_pkt!(b, frames, frame, left) {
                 ack_eliciting = true;
@@ -5730,7 +5754,7 @@ impl Connection {
                     Some(source_symbol_metadata);
             }
         }
-
+        trace!("{} tx on space_id={}", self.trace_id, space_id);
         for frame in &mut frames {
             trace!("{} tx frm {:?}", self.trace_id, frame);
 
@@ -7127,7 +7151,7 @@ impl Connection {
 
             if let Some(timer) = p.recovery.loss_detection_timer() {
                 if timer <= now {
-                    trace!("{} loss detection timeout expired", self.trace_id);
+                    trace!("{} loss detection timeout expired for path id={}", self.trace_id, path_id);
 
                     let (lost_packets, lost_bytes) = p.on_loss_detection_timeout(
                         handshake_status,
@@ -9656,6 +9680,7 @@ impl Connection {
     fn get_send_path_id(
         &self, from: Option<SocketAddr>, to: Option<SocketAddr>,
     ) -> Result<usize> {
+        debug!("{}: Start of get_send_path_id", self.trace_id());
         // A probing packet must be sent, but only if the connection is fully
         // established.
         if self.is_established() {
@@ -9669,7 +9694,34 @@ impl Connection {
                 .map(|(pid, _)| pid);
 
             if let Some(pid) = probing.next() {
+                debug!("In probing");
                 return Ok(pid);
+            }
+        }
+
+        // If multicast is enabled, send packets on the client anywhere but on the
+        // multicast path.
+        // MC-TODO: this could be simplified if the client/unicast server does a
+        // [`send_on_path`] instead of [`send`].
+        if let Some(multicast) = self.multicast.as_ref() {
+            debug!("Multicast enabled at least!");
+            if matches!(
+                multicast.get_mc_role(),
+                multicast::MulticastRole::Client(_) |
+                    multicast::MulticastRole::ServerUnicast(_)
+            ) {
+                debug!("{}: Choose path, not the multicast space id", self.trace_id());
+                if let Some(mc_path) = multicast.get_mc_space_id() {
+                    debug!("{}: And mc path id={}", self.trace_id(), mc_path);
+                    return Ok(self
+                        .pkt_num_spaces
+                        .spaces
+                        .application_data_space_ids()
+                        .find(|&sid| sid != mc_path as u64)
+                        .ok_or(Error::Multicast(
+                            multicast::MulticastError::McPath,
+                        ))? as usize);
+                }
             }
         }
 
@@ -9696,35 +9748,13 @@ impl Connection {
                     .min_by_key(|(_, p)| p.recovery.rtt())
                     .map(|(pid, _)| pid)
                 {
+                    debug!("Using aggregate mode");
                     return Ok(pid);
                 }
                 if consider_standby || !self.paths.consider_standby_paths() {
                     break;
                 }
                 consider_standby = true;
-            }
-        }
-
-        // If multicast is enabled, send packets on the client anywhere but on the
-        // multicast path.
-        // MC-TODO: this could be simplified if the client/unicast server does a
-        // [`send_on_path`] instead of [`send`].
-        if let Some(multicast) = self.multicast.as_ref() {
-            if matches!(
-                multicast.get_mc_role(),
-                multicast::MulticastRole::Client(_) |
-                    multicast::MulticastRole::ServerUnicast(_)
-            ) {
-                if let Some(mc_path) = multicast.get_mc_space_id() {
-                    return Ok(self
-                        .pkt_num_spaces
-                        .spaces
-                        .application_data_space_ids()
-                        .find(|&sid| sid != mc_path as u64)
-                        .ok_or(Error::Multicast(
-                            multicast::MulticastError::McPath,
-                        ))? as usize);
-                }
             }
         }
 

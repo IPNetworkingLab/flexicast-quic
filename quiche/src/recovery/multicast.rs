@@ -485,7 +485,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                 continue;
             }
             first = false;
-            println!("Add new packet to unicast: {:?}", pkt.pkt_num);
+            trace!("{:?}: Add new packet to unicast: {:?}", trace_id, pkt.pkt_num);
             uc.on_packet_sent(
                 pkt.clone(),
                 epoch,
@@ -496,7 +496,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         }
 
         // Update app limited state.
-        info!("Update uc app limited to {}. Now uc has {} bytes in flight", self.app_limited, uc.bytes_in_flight);
+        trace!("{:?}: Update uc app limited to {}. Now uc has {} bytes in flight. The cur max pn={}", trace_id, self.app_limited, uc.bytes_in_flight, cur_max_pn);
         uc.update_app_limited(self.app_limited);
 
         new_max_pn + 1

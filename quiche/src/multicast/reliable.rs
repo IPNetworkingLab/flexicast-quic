@@ -1635,4 +1635,69 @@ mod tests {
             .cwnd();
         assert!(new_cwin > initial_cwin);
     }
+
+    #[test]
+    fn test_rmc_cc_multiple_clients() {
+        let max_datagram_size = 1350;
+        let auth_method = McAuthType::StreamAsym;
+        let mc_cwnd = 15;
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            0,
+            "/tmp/test_rmc_cc_multiple_clients.txt",
+            auth_method,
+            true,
+            true,
+            Some(mc_cwnd),
+        )
+        .unwrap();
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+
+        let init_cwnd = mc_pipe
+            .unicast_pipes
+            .iter()
+            .map(|(p, ..)| p.server.paths.get(1).unwrap().recovery.cwnd())
+            .min()
+            .unwrap();
+
+        let stream = vec![0u8; 40 * max_datagram_size];
+        assert!(mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(1, &stream, true)
+            .is_ok(),);
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+
+        let random = SystemRandom::new();
+        let now = time::Instant::now();
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+
+        assert_eq!(mc_pipe.client_rmc_timeout(expired, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+
+        // Multicast source deleguates streams.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let expired = expired
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(117), Some(15)).into()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+
+        let new_cwnd = mc_pipe
+            .unicast_pipes
+            .iter()
+            .map(|(p, ..)| p.server.paths.get(1).unwrap().recovery.cwnd())
+            .min()
+            .unwrap();
+
+        assert!(new_cwnd > init_cwnd);
+
+
+    }
 }

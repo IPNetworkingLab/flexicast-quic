@@ -776,6 +776,7 @@ impl Recovery {
         // HANDSHAKE_DONE and MAX_DATA / MAX_STREAM_DATA as well, in addition
         // to CRYPTO and STREAM, if the original packet carried them.
         for unacked in unacked_iter {
+            trace!("Lost sent packet: {:?}", unacked.pkt_num);
             let mut contains_recovered_source_symbol = false;
             for frame in &unacked.frames {
                 if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame
@@ -842,9 +843,10 @@ impl Recovery {
 
     pub fn cwnd_available(&self) -> usize {
         // Ignore cwnd when sending probe packets.
-        if self.loss_probes.iter().any(|&x| x > 0) {
-            return usize::MAX;
-        }
+        // if self.loss_probes.iter().any(|&x| x > 0) {
+        //     info!("HERE QUE C'EST NUL");
+        //     return usize::MAX;
+        // }
 
         // Open more space (snd_cnt) for PRR when allowed.
         self.congestion_window.saturating_sub(self.bytes_in_flight) +
