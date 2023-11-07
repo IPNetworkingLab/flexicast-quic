@@ -147,6 +147,8 @@ fn main() {
     // Whether reliable multicast (RMC) is used.
     let mut is_mc_reliable = false;
 
+    let mut pending_streams = HashMap::new();
+
     // In a multicast communication where symmetric tags is used as authentication
     // mechanism, the client application is responsible of buffering
     // non-authenticated (na) packets as long as they desire (i.e., until an
@@ -564,7 +566,6 @@ fn main() {
             ) && delay_join_leave.is_none()
             {
                 info!("Client leaves the multicast channel. Closing...");
-                break;
             }
         }
 
@@ -880,16 +881,20 @@ fn main() {
                 // Application only reads full video frame.
                 continue 'read_stream;
             }
-            let mut total = 0;
+            let mut total = pending_streams.remove(&s).unwrap_or(0);
 
             while let Ok((read, fin)) = conn.stream_recv(s, &mut buf[total..]) {
                 if !fin {
                     debug!("Not fin and read: {}", read);
                 }
                 total += read;
+                
+                debug!("Read {} data for stream {}", read, s);
                 if fin {
                     debug!("Add a new stream in the list of received: {} of length: {}.", s, total);
                     app_handler.on_stream_complete(&buf[..total], s);
+                } else {
+                    pending_streams.insert(s, total);
                 }
             }
         }

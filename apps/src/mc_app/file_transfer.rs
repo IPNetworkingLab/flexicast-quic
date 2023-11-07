@@ -87,7 +87,7 @@ impl FileServer {
             time_sent_to_wire: Vec::new(),
 
             sent_chunks: 0,
-            stream_id: 1,
+            stream_id: 3,
             stream_written: 0,
 
             active: !wait,

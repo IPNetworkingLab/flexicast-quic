@@ -285,7 +285,7 @@ fn main() {
         config.set_fec_window_size(2000);
         debug!("Set multicase true");
     }
-    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::Reno);
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
 
     let rng = SystemRandom::new();
     let conn_id_seed =
@@ -1070,8 +1070,8 @@ fn main() {
                     mc_channel.channel.mc_no_stream_active()
                 } else {
                     client.stream_buf.is_empty()
-                };
-                info!("END can close? {}", can_close);
+                } && (client.conn.get_multicast_attributes().is_none() || client.conn.mc_no_stream_active());
+                info!("END can close? {} because {} and {}. connection list of streams: {:?}", can_close, mc_channel_opt.as_ref().unwrap().channel.mc_no_stream_active(), client.conn.mc_no_stream_active(), client.conn.see_streams());
                 if can_close {
                     let res = client.conn.close(true, 1, &[0, 1]);
                     info!(
@@ -1084,7 +1084,6 @@ fn main() {
                 // Communication between the unicast session and the
                 // multicast channel.
                 if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                    info!("Communication between multicast and unicast 1");
                     client
                         .conn
                         .uc_to_mc_control(
@@ -1124,7 +1123,6 @@ fn main() {
                 // Communication between the unicast session and the
                 // multicast channel.
                 if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                    info!("Communication between multicast and unicast 2");
                     client
                         .conn
                         .uc_to_mc_control(
