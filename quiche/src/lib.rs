@@ -3144,11 +3144,13 @@ impl Connection {
                         length,
                         ..
                     } => {
+                        println!("PROCESS STREAM HEADER ACKED: {} {} {}", stream_id, offset, length);
                         let stream = match self.streams.get_mut(stream_id) {
                             Some(v) => v,
 
                             None => continue,
                         };
+                        println!("State available");
 
                         stream.send.ack_and_drop(offset, length);
 
@@ -3174,8 +3176,11 @@ impl Connection {
                         // readable. If it is readable, it will get collected when
                         // stream_recv() is used.
                         if stream.is_complete() && !stream.is_readable() {
+                            println!("Stream {} is collected", stream_id);
                             let local = stream.local;
                             self.streams.collect(stream_id, local);
+                        } else {
+                            println!("Stream complete: {} and readable: {}", stream.is_complete(), !stream.is_readable());
                         }
                     },
 

@@ -233,7 +233,7 @@ impl StreamMap {
             hash_map::Entry::Vacant(v) => {
                 // Stream has already been closed and garbage collected.
                 if self.collected.contains(&id) {
-                    debug!("SC: dup stream id");
+                    println!("SC: dup stream id: {}", id);
                     return Err(Error::Done);
                 }
 
@@ -321,6 +321,9 @@ impl StreamMap {
                         self.peer_opened_streams_uni = n;
                     },
                 };
+
+                // println!("When creating stream {}, is bidi={}", id,
+                // is_bidi(id));
 
                 let s = Stream::new(
                     max_rx_data,
@@ -739,6 +742,7 @@ impl Stream {
     /// side is complete, depending on whether the stream was created locally
     /// or not.
     pub fn is_complete(&self) -> bool {
+        println!("Mais pour mon stream... {} et {}", self.bidi, self.local);
         match (self.bidi, self.local) {
             // For bidirectional streams we need to check both receive and send
             // sides for completion.
@@ -1201,6 +1205,10 @@ pub struct SendBuf {
     /// [`crate::multicast::authentication::McAuthType::StreamAsym`] method is
     /// used, while the stream is not authenticated yet by the signature.
     pub hash: [u8; 32],
+
+    /// Used for multicast. Set the maximum offset that the unicast source will
+    /// transmit. After that, it can consider that the stream is complete.
+    rmc_max_offset: Option<u64>,
 }
 
 impl SendBuf {
@@ -1555,6 +1563,12 @@ impl SendBuf {
                 return true;
             }
         }
+        if let Some(rmc_fin_off) = self.rmc_max_offset {
+            if self.acked == (0..rmc_fin_off) {
+                return true;
+            }
+        }
+        println!("For my stream. self.fin_off={:?} and self.acked={:?} and self.rmc_max_offset={:?}", self.fin_off, self.acked, self.rmc_max_offset);
 
         false
     }
@@ -1795,6 +1809,8 @@ impl SendBuf {
     /// need to retransmit some parts of a stream that has started on the
     /// multicast path.
     pub fn reset_at(&mut self, off: u64) -> Result<()> {
+        let cur_off = self.off;
+        self.ack(cur_off, (off - cur_off) as usize);
         self.off = off;
         self.emit_off = off;
         Ok(())
@@ -1826,6 +1842,20 @@ impl SendBuf {
         self.retransmit(offset, written);
 
         Ok(written)
+    }
+
+    /// Used for multicast purpose. This `SendBuf` stream will not receive any
+    /// more data, even if the stream is not finished regarding the initial
+    /// version of QUIC. Returns an error if the value was already set
+    /// previously.
+    pub fn rmc_set_close_offset(&mut self) {
+        self.rmc_max_offset = Some(self.off);
+        debug!("Set the closing offset to {:?}", self.rmc_max_offset);
+    }
+
+    /// Sets the fin offset.
+    pub fn rmc_set_fin_off(&mut self, off: u64) {
+        self.fin_off = Some(off);
     }
 }
 
@@ -3855,5 +3885,34 @@ mod tests {
         assert_eq!(&buf[..], b"test1000+1");
         assert_eq!(send.emit(&mut buf), Ok((2, true)));
         assert_eq!(&buf[..2], b"xx");
+
+        send.ack(100, 5);
+        send.ack(500, 8);
+        send.ack(1000, 8);
+        send.ack(1008, 10);
+        send.ack(1100, 12);
+        assert!(send.is_complete());
+    }
+
+    #[test]
+    fn send_buf_partial_chunks_unifished() {
+        let mut send = SendBuf::new(std::u64::MAX);
+        let mut buf = [0u8; 10];
+
+        assert_eq!(send.write_at_offset(b"hello", 100, false), Ok(5));
+        assert_eq!(send.rmc_max_offset, None);
+        send.rmc_set_close_offset();
+        assert_eq!(send.rmc_max_offset, Some(105));
+        assert_eq!(send.write_at_offset(b", world!", 500, false), Ok(8));
+        send.rmc_set_close_offset();
+        assert_eq!(send.rmc_max_offset, Some(508));
+        assert_eq!(send.emit(&mut buf), Ok((5, false)));
+        assert_eq!(&buf[..5], b"hello");
+        assert_eq!(send.emit(&mut buf), Ok((8, false)));
+        assert_eq!(&buf[..8], b", world!");
+
+        send.ack(100, 5);
+        send.ack(500, 8);
+        assert!(send.is_complete());
     }
 }
