@@ -13,7 +13,6 @@ use crate::stream::StreamMap;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
-use std::time;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -247,6 +246,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let mut lost_pn = RangeSet::default();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
+        debug!("Start deleguate stream for client {:?}. recv_pn={:?}", uc.multicast.as_ref().map(|m| m.get_self_client_id()), recv_pn);
 
         let mut nb_lost_mc_stream_frames = 0;
         let expired_sent = self.sent[Epoch::Application]
@@ -261,6 +261,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let mut max_exp_ss: Option<u64> = None;
 
         'per_packet: for packet in expired_sent {
+            debug!("This is a packet that is expired now: {:?}", packet.pkt_num);
             max_exp_pn = if let Some(c) = max_exp_pn {
                 Some(c.max(packet.pkt_num.1))
             } else {
@@ -277,6 +278,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                 }
             }
             lost_pn.insert(packet.pkt_num.1..packet.pkt_num.1 + 1);
+            debug!("Packet was lost");
 
             // At this point, we know that the client did not receive the packet.
             // Maybe it recovered it with FEC.
@@ -284,7 +286,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             // the STREAM frame.
             // FIXME-RMC-TODO: assumes that a StreamHeader always preceeds the
             // McAsym frame.
-            let mut protected = false;
             let mut protected_stream_id = None;
             for frame in &packet.frames {
                 match frame {
@@ -308,7 +309,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                                 continue 'per_packet;
                             }
                         }
-                        protected = true;
                     },
                     frame::Frame::StreamHeader {
                         stream_id,
@@ -316,9 +316,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         length,
                         fin,
                     } => {
-                        if !protected {
-                            continue 'per_packet;
-                        }
 
                         nb_lost_mc_stream_frames += 1;
 
@@ -550,7 +547,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         }
 
         // Update app limited state.
-        trace!("{:?}: Update uc app limited to {}. Now uc has {} bytes in flight. The cur max pn={}", trace_id, self.app_limited, uc.bytes_in_flight, cur_max_pn);
+        // trace!("{:?}: Update uc app limited to {}. Now uc has {} bytes in flight. The cur max pn={}", trace_id, self.app_limited, uc.bytes_in_flight, cur_max_pn);
         uc.update_app_limited(self.app_limited);
 
         new_max_pn + 1

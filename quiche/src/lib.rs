@@ -3588,7 +3588,6 @@ impl Connection {
         &mut self, out: &mut [u8], from: Option<SocketAddr>,
         to: Option<SocketAddr>,
     ) -> Result<(usize, SendInfo)> {
-        debug!("{} start of send_on_path with to={:?}", self.trace_id(), to);
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -3763,7 +3762,6 @@ impl Connection {
         &mut self, out: &mut [u8], send_pid: usize, has_initial: bool,
         now: time::Instant,
     ) -> Result<(packet::Type, usize)> {
-        debug!("{}: Start of send_single", self.trace_id());
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -9685,7 +9683,6 @@ impl Connection {
     fn get_send_path_id(
         &self, from: Option<SocketAddr>, to: Option<SocketAddr>,
     ) -> Result<usize> {
-        debug!("{}: Start of get_send_path_id", self.trace_id());
         // A probing packet must be sent, but only if the connection is fully
         // established.
         if self.is_established() {
@@ -9709,15 +9706,12 @@ impl Connection {
         // MC-TODO: this could be simplified if the client/unicast server does a
         // [`send_on_path`] instead of [`send`].
         if let Some(multicast) = self.multicast.as_ref() {
-            debug!("Multicast enabled at least!");
             if matches!(
                 multicast.get_mc_role(),
                 multicast::MulticastRole::Client(_) |
                     multicast::MulticastRole::ServerUnicast(_)
             ) {
-                debug!("{}: Choose path, not the multicast space id", self.trace_id());
                 if let Some(mc_path) = multicast.get_mc_space_id() {
-                    debug!("{}: And mc path id={}", self.trace_id(), mc_path);
                     return Ok(self
                         .pkt_num_spaces
                         .spaces
