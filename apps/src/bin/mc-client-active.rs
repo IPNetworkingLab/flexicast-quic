@@ -47,6 +47,7 @@ use quiche::multicast::McPathType;
 use quiche::multicast::MulticastConnection;
 use quiche::ConnectionId;
 use std::io::Write;
+use quiche_apps::common::make_qlog_writer;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -240,6 +241,21 @@ fn main() {
     // Create a QUIC connection and initiate handshake.
     let mut conn =
         quiche::connect(None, &scid, local_addr, peer_addr, &mut config).unwrap();
+
+    // Only bother with qlog if the user specified it.
+    #[cfg(feature = "qlog")]
+    {
+        if let Some(dir) = std::env::var_os("QLOGDIR") {
+            let id = format!("Client-{}", args.local_ip.to_string());
+            let writer = make_qlog_writer(&dir, "client", &id);
+
+            conn.set_qlog(
+                std::boxed::Box::new(writer),
+                "quiche-client qlog".to_string(),
+                format!("{} id={}", "quiche-client qlog", id),
+            );
+        }
+    }
 
     info!(
         "connecting to {:} from {:} with scid {}",
@@ -873,7 +889,7 @@ fn main() {
         );
         'read_stream: for s in conn.readable() {
             if !conn.stream_complete(s) {
-                debug!("Stream {} is not complete", s);
+                // debug!("Stream {} is not complete", s);
                 continue 'read_stream;
             }
 

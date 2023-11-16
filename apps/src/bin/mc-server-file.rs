@@ -549,6 +549,7 @@ fn main() {
                 .unwrap();
 
                 let client_id = next_client_id;
+
                 let client = Client {
                     conn,
                     soft_mc_addr: net::SocketAddr::new(from.ip(), 8889),
@@ -610,7 +611,7 @@ fn main() {
                 #[cfg(feature = "qlog")]
                 {
                     if let Some(dir) = std::env::var_os("QLOGDIR") {
-                        let id = format!("server");
+                        let id = format!("server-{:?}", client_id);
                         let writer = make_qlog_writer(&dir, "server", &id);
 
                         client.conn.set_qlog(
@@ -1065,13 +1066,14 @@ fn main() {
         for client in clients.values_mut() {
             if app_handler.app_has_finished() && client.conn.is_established() {
                 info!("CAN TRY TO CLOSE THE APP");
-                let can_close = if let Some(mc_channel) = mc_channel_opt.as_ref()
-                {
-                    mc_channel.channel.mc_no_stream_active()
-                } else {
-                    client.stream_buf.is_empty()
-                } && (client.conn.get_multicast_attributes().is_none() || client.conn.mc_no_stream_active());
-                info!("END can close? {} because {} and {}. connection list of streams: {:?}", can_close, mc_channel_opt.as_ref().unwrap().channel.mc_no_stream_active(), client.conn.mc_no_stream_active(), client.conn.see_streams());
+                let can_close =
+                    if let Some(mc_channel) = mc_channel_opt.as_ref() {
+                        mc_channel.channel.mc_no_stream_active()
+                    } else {
+                        client.stream_buf.is_empty()
+                    } && (client.conn.get_multicast_attributes().is_none() ||
+                        client.conn.mc_no_stream_active());
+                info!("END can close? {} because {} and {}. connection list of streams: {:?}.\n and for multicast: {:?}", can_close, mc_channel_opt.as_ref().unwrap().channel.mc_no_stream_active(), client.conn.mc_no_stream_active(), client.conn.see_streams(), mc_channel_opt.as_ref().unwrap().channel.see_streams());
                 if can_close {
                     let res = client.conn.close(true, 1, &[0, 1]);
                     info!(
