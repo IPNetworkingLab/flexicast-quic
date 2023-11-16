@@ -255,6 +255,10 @@ pub enum TransportEventType {
     StreamStateUpdated,
 
     DataMoved,
+
+    FecRecovered,
+
+    McRetransmit,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -708,6 +712,22 @@ pub struct PacketBuffered {
 pub struct PacketsAcked {
     pub packet_number_space: Option<PacketNumberSpace>,
     pub packet_numbers: Option<Vec<u64>>,
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct FecRecovered {
+    pub ssid: u64,
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct McRetransmit {
+    pub stream_id: u64,
+    pub offset: u64,
+    pub len: usize,
+    pub fin: bool,
+    pub client_id: u64,
 }
 
 #[serde_with::skip_serializing_none]

@@ -1,3 +1,14 @@
+use qlog::events::quic::TransportEventType;
+#[cfg(feature = "qlog")]
+use qlog::events::EventData;
+#[cfg(feature = "qlog")]
+use qlog::events::EventImportance;
+#[cfg(feature = "qlog")]
+use qlog::events::EventType;
+#[cfg(feature = "qlog")]
+const QLOG_DATA_MV: EventType =
+    EventType::TransportEventType(TransportEventType::DataMoved);
+
 use networkcoding::source_symbol_metadata_to_u64;
 
 use crate::frame;
@@ -143,7 +154,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 // self.mc_set_min_cwnd();
 
                 info!(
-                    "Congestion window {} -> {} -> {}\n And self sent len: {}",
+                    "Congestion window {} -> {} -> {}. And self sent len: {}",
                     cwnd,
                     cwnd_2,
                     self.congestion_window,
@@ -366,6 +377,20 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         }
 
                         protected_stream_id = Some(*stream_id);
+                        if let Some(client_id) = uc.multicast.as_ref().map(|m| m.get_self_client_id().ok()).flatten() {
+                            qlog_with_type!(QLOG_DATA_MV, uc.qlog, q, {
+                                let ev_data_client =
+                                    EventData::McRetransmit(qlog::events::quic::McRetransmit {
+                                        stream_id: *stream_id,
+                                        offset: *offset,
+                                        len: *length,
+                                        fin: *fin,
+                                        client_id,
+                                    });
+                
+                                q.add_event_data_with_instant(ev_data_client, now).ok();
+                            });
+                        }
                     },
                     frame::Frame::McAsym { signature } => {
                         // If such a frame is present, it means that multicast
@@ -415,16 +440,16 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         // If the stream does not exist for the unicast server, it means
                         // that it did not have to retransmit frames to the client.
                         if let Some(uc_stream) = uc.streams.get_mut(*stream_id) {
-                            debug!(
-                                "Here setting close offset for stream {:?}",
-                                stream_id
-                            );
+                            // debug!(
+                            //     "Here setting close offset for stream {:?}",
+                            //     stream_id
+                            // );
                             uc_stream.send.rmc_set_close_offset();
                             uc_stream.send.rmc_set_fin_off(*offset + *length as u64);
 
                             // Maybe the stream is now complete.
                             if uc_stream.is_complete() && !uc_stream.is_readable() {
-                                println!("Unicast stream {} is collected after deleguate_stream", stream_id);
+                                // println!("Unicast stream {} is collected after deleguate_stream", stream_id);
                                 let local = uc_stream.local;
                                 uc.streams.collect(*stream_id, local);
                             }

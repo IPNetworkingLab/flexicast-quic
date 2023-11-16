@@ -742,7 +742,7 @@ impl Stream {
     /// side is complete, depending on whether the stream was created locally
     /// or not.
     pub fn is_complete(&self) -> bool {
-        println!("Mais pour mon stream... {} et {}", self.bidi, self.local);
+        // println!("Mais pour mon stream... {} et {}", self.bidi, self.local);
         match (self.bidi, self.local) {
             // For bidirectional streams we need to check both receive and send
             // sides for completion.
@@ -1568,7 +1568,7 @@ impl SendBuf {
                 return true;
             }
         }
-        println!("For my stream. self.fin_off={:?} and self.acked={:?} and self.rmc_max_offset={:?}", self.fin_off, self.acked, self.rmc_max_offset);
+        // println!("For my stream. self.fin_off={:?} and self.acked={:?} and self.rmc_max_offset={:?}", self.fin_off, self.acked, self.rmc_max_offset);
 
         false
     }
@@ -1850,7 +1850,7 @@ impl SendBuf {
     /// previously.
     pub fn rmc_set_close_offset(&mut self) {
         self.rmc_max_offset = Some(self.off);
-        debug!("Set the closing offset to {:?}", self.rmc_max_offset);
+        // debug!("Set the closing offset to {:?}", self.rmc_max_offset);
     }
 
     /// Sets the fin offset.
