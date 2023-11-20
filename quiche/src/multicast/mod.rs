@@ -2025,18 +2025,18 @@ impl MulticastConnection for Connection {
             // The unicast server must retransmit streams that are still valid
             // but that the client did not get from the multicast channel.
             let multicast = self.multicast.as_mut().unwrap();
-            if multicast.mc_client_left_need_sync {
-                debug!("NEED SYNC BECAUSE CLIENT LEAVES");
-                multicast.mc_client_left_need_sync = false;
+            // if multicast.mc_client_left_need_sync {
+            //     debug!("NEED SYNC BECAUSE CLIENT LEAVES");
+            //     multicast.mc_client_left_need_sync = false;
 
-                for (&stream_id, stream) in mc_channel.streams.iter() {
-                    let data_vec = stream.send.emit_poll();
-                    for data in &data_vec[..data_vec.len() - 1] {
-                        self.stream_send(stream_id, data, false)?;
-                    }
-                    self.stream_send(stream_id, data_vec.last().unwrap(), true)?;
-                }
-            }
+            //     for (&stream_id, stream) in mc_channel.streams.iter() {
+            //         let data_vec = stream.send.emit_poll();
+            //         for data in &data_vec[..data_vec.len() - 1] {
+            //             self.stream_send(stream_id, data, false)?;
+            //         }
+            //         self.stream_send(stream_id, data_vec.last().unwrap(), true)?;
+            //     }
+            // }
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -2047,7 +2047,10 @@ impl MulticastConnection for Connection {
         mc_channel.mc_notify_sent_packets(self);
 
         // Force multicast congestion window.
+        let cwnd = mc_channel.paths.get(1).unwrap().recovery.cwnd();
         mc_channel.mc_set_cwin(self);
+        let cwnd2 = mc_channel.paths.get(1).unwrap().recovery.cwnd();
+        debug!("After uc_to_mc_control congestion window for client {:?}: {} -> {}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), cwnd, cwnd2);
 
         Ok(())
     }
@@ -2223,6 +2226,7 @@ impl Connection {
                         return;
                     }
                     mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd_available());
+                    // mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd());
                     // mc_path.recovery.mc_set_min_cwnd();
                     trace!(
                         "{}: Set the congestion window from {} to {}. UC cwnd={} and available={}",

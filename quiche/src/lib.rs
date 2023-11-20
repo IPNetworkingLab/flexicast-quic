@@ -3144,13 +3144,11 @@ impl Connection {
                         length,
                         ..
                     } => {
-                        println!("PROCESS STREAM HEADER ACKED: {} {} {}", stream_id, offset, length);
                         let stream = match self.streams.get_mut(stream_id) {
                             Some(v) => v,
 
                             None => continue,
                         };
-                        println!("State available");
 
                         stream.send.ack_and_drop(offset, length);
 
@@ -3176,11 +3174,8 @@ impl Connection {
                         // readable. If it is readable, it will get collected when
                         // stream_recv() is used.
                         if stream.is_complete() && !stream.is_readable() {
-                            println!("Stream {} is collected", stream_id);
                             let local = stream.local;
                             self.streams.collect(stream_id, local);
-                        } else {
-                            println!("Stream complete: {} and readable: {}", stream.is_complete(), !stream.is_readable());
                         }
                     },
 
@@ -5226,7 +5221,10 @@ impl Connection {
             }
         }
 
-        if should_protect_packet && !prioritize_fec {
+        if should_protect_packet &&
+            !prioritize_fec &&
+            self.fec_encoder.n_protected_symbols() < 2000
+        {
             left = std::cmp::min(
                 left,
                 self.fec_encoder
@@ -7154,7 +7152,11 @@ impl Connection {
 
             if let Some(timer) = p.recovery.loss_detection_timer() {
                 if timer <= now {
-                    trace!("{} loss detection timeout expired for path id={}", self.trace_id, path_id);
+                    trace!(
+                        "{} loss detection timeout expired for path id={}",
+                        self.trace_id,
+                        path_id
+                    );
 
                     let (lost_packets, lost_bytes) = p.on_loss_detection_timeout(
                         handshake_status,
@@ -8915,6 +8917,20 @@ impl Connection {
                                     recv_path_id,
                                 )?;
                                 self.recovered_symbols_need_ack.push_item(mdu64);
+
+                                qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
+                                    let ev_data_client = EventData::FecRecovered(
+                                        qlog::events::quic::FecRecovered {
+                                            ssid: mdu64,
+                                        },
+                                    );
+
+                                    q.add_event_data_with_instant(
+                                        ev_data_client,
+                                        now,
+                                    )
+                                    .ok();
+                                });
                             }
                         },
                     }
@@ -9025,6 +9041,20 @@ impl Connection {
                                     recv_path_id,
                                 )?;
                                 self.recovered_symbols_need_ack.push_item(mdu64);
+
+                                qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
+                                    let ev_data_client = EventData::FecRecovered(
+                                        qlog::events::quic::FecRecovered {
+                                            ssid: mdu64,
+                                        },
+                                    );
+
+                                    q.add_event_data_with_instant(
+                                        ev_data_client,
+                                        now,
+                                    )
+                                    .ok();
+                                });
                             }
                         },
                     }
