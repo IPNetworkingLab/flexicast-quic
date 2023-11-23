@@ -67,7 +67,7 @@ foreign-types-shared = { version = "0.3.0", optional = true }
 qlog = { version = "0.9", path = "../qlog", optional = true }
 sfv = { version = "0.9", optional = true }
 smallvec = { version = "1.10", features = ["serde", "union"] }
-networkcoding = { git = "ssh://git@github.com/francoismichel/networkcoding.git", branch = "missing-degrees" }
+networkcoding = { git = "https://cloudlab:Ecdb8poZqfE83szx89s9@forge.uclouvain.be/inl/multicast-quic/fec/networkcoding.git", branch = "missing-degrees" }
 # networkcoding = { path = "/home/louisna/networkcoding" }
 
 [target."cfg(windows)".dependencies]
