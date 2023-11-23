@@ -190,6 +190,10 @@ struct Args {
     /// Use reliable multicast.
     #[clap(long = "reliable")]
     reliable_mc: bool,
+
+    /// Whether the multicast packet is proxied. In this case, the provided address will receive the multicast packet to transmit.
+    #[clap(long = "proxy")]
+    proxy_addr: Option<net::SocketAddr>,
 }
 
 fn main() {
@@ -552,7 +556,7 @@ fn main() {
 
                 let client = Client {
                     conn,
-                    soft_mc_addr: net::SocketAddr::new(from.ip(), 8889),
+                    soft_mc_addr: net::SocketAddr::new(from.ip(), 7943),
                     soft_mc_addr_auth: net::SocketAddr::new(from.ip(), 8890),
                     client_id,
                     active_client: false,
@@ -934,8 +938,14 @@ fn main() {
                 // client. The SocketAddr is created using
                 // the client unicast address and
                 // the multicast destination port.
-                send_info.to = mc_channel.mc_send_addr;
-                let err = if args.soft_mc {
+                if let Some(proxy_addr) = args.proxy_addr {
+                    send_info.to = proxy_addr;
+                    println!("Use proxy addr: {:?}", proxy_addr);
+                } else {
+                    send_info.to = mc_channel.mc_send_addr;
+                }
+                let err = if args.soft_mc && false {
+                    println!("Soft multicast used");
                     clients.values().try_for_each(|client| {
                         let send_info_uc = SendInfo {
                             from: send_info.from,
@@ -954,6 +964,7 @@ fn main() {
                     })
                 } else {
                     // Use pacing socket.
+                    println!("Use pacing socket to send multicat content. First few bytes: {:?}", &out[..10]);
                     send_to(
                         mc_socket,
                         &out[..write],
@@ -1065,7 +1076,7 @@ fn main() {
         // sent.
         for client in clients.values_mut() {
             if app_handler.app_has_finished() && client.conn.is_established() {
-                info!("CAN TRY TO CLOSE THE APP");
+                // info!("CAN TRY TO CLOSE THE APP");
                 let can_close =
                     if let Some(mc_channel) = mc_channel_opt.as_ref() {
                         mc_channel.channel.mc_no_stream_active()
@@ -1073,7 +1084,7 @@ fn main() {
                         client.stream_buf.is_empty()
                     } && (client.conn.get_multicast_attributes().is_none() ||
                         client.conn.mc_no_stream_active());
-                info!("END can close? {} because {} and {}. connection list of streams: {:?}.\n and for multicast: {:?}", can_close, mc_channel_opt.as_ref().unwrap().channel.mc_no_stream_active(), client.conn.mc_no_stream_active(), client.conn.see_streams(), mc_channel_opt.as_ref().unwrap().channel.see_streams());
+                // info!("END can close? {} because {} and {}. connection list of streams: {:?}.\n and for multicast: {:?}", can_close, mc_channel_opt.as_ref().unwrap().channel.mc_no_stream_active(), client.conn.mc_no_stream_active(), client.conn.see_streams(), mc_channel_opt.as_ref().unwrap().channel.see_streams());
                 if can_close {
                     let res = client.conn.close(true, 1, &[0, 1]);
                     info!(
@@ -1247,11 +1258,11 @@ fn get_multicast_channel(
     Option<McAnnounceData>, // Data.
     Option<McAnnounceData>, // Authentication.
 ) {
-    let mc_addr = "224.3.0.225:8889".parse().unwrap();
+    let mc_addr = "239.239.239.35:4433".parse().unwrap();
     // let mc_addr = "127.0.0.1:8889".parse().unwrap();
-    let mc_addr_bytes = [224, 3, 0, 225];
+    let mc_addr_bytes = [239, 239, 239, 35];
     // let mc_addr_bytes = [127, 0, 0, 1];
-    let mc_port = 8889;
+    let mc_port = 4433;
     // let source_addr = "127.0.0.1:4434".parse().unwrap();
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
     socket.set_multicast_ttl_v4(10).unwrap();
@@ -1287,7 +1298,7 @@ fn get_multicast_channel(
         rng.fill(&mut channel_id_auth).unwrap();
         let channel_id = quiche::ConnectionId::from_ref(&channel_id_auth);
 
-        let dummy_ip = std::net::Ipv4Addr::new(224, 3, 0, 225);
+        let dummy_ip = std::net::Ipv4Addr::new(239, 239, 230, 35);
         // let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
         let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
             dummy_ip,

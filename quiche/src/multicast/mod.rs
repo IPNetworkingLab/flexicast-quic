@@ -2050,7 +2050,7 @@ impl MulticastConnection for Connection {
         let cwnd = mc_channel.paths.get(1).unwrap().recovery.cwnd();
         mc_channel.mc_set_cwin(self);
         let cwnd2 = mc_channel.paths.get(1).unwrap().recovery.cwnd();
-        debug!("After uc_to_mc_control congestion window for client {:?}: {} -> {}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), cwnd, cwnd2);
+        // debug!("After uc_to_mc_control congestion window for client {:?}: {} -> {}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), cwnd, cwnd2);
 
         Ok(())
     }
@@ -2228,14 +2228,14 @@ impl Connection {
                     mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd_available());
                     // mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd());
                     // mc_path.recovery.mc_set_min_cwnd();
-                    trace!(
-                        "{}: Set the congestion window from {} to {}. UC cwnd={} and available={}",
-                        uc.trace_id(),
-                        cwin,
-                        mc_path.recovery.cwnd(),
-                        uc_path.recovery.cwnd(),
-                        uc_path.recovery.cwnd_available(),
-                    );
+                    // trace!(
+                    //     "{}: Set the congestion window from {} to {}. UC cwnd={} and available={}",
+                    //     uc.trace_id(),
+                    //     cwin,
+                    //     mc_path.recovery.cwnd(),
+                    //     uc_path.recovery.cwnd(),
+                    //     uc_path.recovery.cwnd_available(),
+                    // );
                 }
             }
         }
@@ -2317,8 +2317,8 @@ impl From<&MulticastClientTp> for Vec<u8> {
 impl Connection {
     /// Prints the list of streams that are still open.
     pub fn see_streams(&self) {
-        debug!("This is the streams for client id {:?}: {:?}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
-        debug!("And this is the list of I don't know: {:?}", self.streams.iter().map(|(_, s)| s.is_complete()).collect::<Vec<_>>());
+        // debug!("This is the streams for client id {:?}: {:?}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        // debug!("And this is the list of I don't know: {:?}", self.streams.iter().map(|(_, s)| s.is_complete()).collect::<Vec<_>>());
     }
 }
 
