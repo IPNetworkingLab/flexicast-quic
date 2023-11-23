@@ -74,10 +74,12 @@ fn on_packet_acked(
     r.bytes_in_flight = r.bytes_in_flight.saturating_sub(packet.size);
 
     if r.in_congestion_recovery(packet.time_sent) {
+        info!("RENO congestion recovery");
         return;
     }
 
     if r.app_limited {
+        info!("RENO app limited");
         return;
     }
 
@@ -105,6 +107,7 @@ fn on_packet_acked(
             r.congestion_window += r.max_datagram_size;
         }
     }
+    info!("RENO updated congestion window to {}", r.congestion_window);
 }
 
 fn congestion_event(

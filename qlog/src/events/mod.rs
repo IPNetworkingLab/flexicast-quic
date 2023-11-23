@@ -201,6 +201,10 @@ impl From<EventType> for EventImportance {
             ) => EventImportance::Extra,
             EventType::TransportEventType(TransportEventType::DataMoved) =>
                 EventImportance::Base,
+            EventType::TransportEventType(TransportEventType::FecRecovered) =>
+                EventImportance::Base,
+            EventType::TransportEventType(TransportEventType::McRetransmit) =>
+                EventImportance::Base,
 
             EventType::RecoveryEventType(RecoveryEventType::ParametersSet) =>
                 EventImportance::Base,
@@ -363,6 +367,10 @@ impl From<&EventData> for EventType {
                 EventType::TransportEventType(TransportEventType::PacketBuffered),
             EventData::PacketsAcked { .. } =>
                 EventType::TransportEventType(TransportEventType::PacketsAcked),
+            EventData::FecRecovered { .. } =>
+                EventType::TransportEventType(TransportEventType::FecRecovered),
+            EventData::McRetransmit { .. } =>
+                EventType::TransportEventType(TransportEventType::McRetransmit),
             EventData::StreamStateUpdated { .. } =>
                 EventType::TransportEventType(
                     TransportEventType::StreamStateUpdated,
@@ -519,6 +527,12 @@ pub enum EventData {
 
     #[serde(rename = "transport:version_information")]
     PacketsAcked(quic::PacketsAcked),
+
+    #[serde(rename = "transport:fec_recovered")]
+    FecRecovered(quic::FecRecovered),
+
+    #[serde(rename = "transport:mc_retransmit")]
+    McRetransmit(quic::McRetransmit),
 
     #[serde(rename = "transport:stream_state_updated")]
     StreamStateUpdated(quic::StreamStateUpdated),

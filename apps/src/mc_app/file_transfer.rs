@@ -87,7 +87,7 @@ impl FileServer {
             time_sent_to_wire: Vec::new(),
 
             sent_chunks: 0,
-            stream_id: 1,
+            stream_id: 3,
             stream_written: 0,
 
             active: !wait,
@@ -105,7 +105,7 @@ impl FileServer {
     }
 
     pub fn next_timeout(&self) -> Option<time::Duration> {
-        if self.start.is_some() && self.is_active() {
+        if self.start.is_some() && self.is_active() && !self.sleep_delay.is_zero() {
             if let Some(last) = self.last_sent {
                 let now = time::Instant::now();
                 // debug!(

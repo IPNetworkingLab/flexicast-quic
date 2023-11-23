@@ -1,6 +1,18 @@
+use qlog::events::quic::TransportEventType;
+#[cfg(feature = "qlog")]
+use qlog::events::EventData;
+#[cfg(feature = "qlog")]
+use qlog::events::EventImportance;
+#[cfg(feature = "qlog")]
+use qlog::events::EventType;
+#[cfg(feature = "qlog")]
+const QLOG_DATA_MV: EventType =
+    EventType::TransportEventType(TransportEventType::DataMoved);
+
 use networkcoding::source_symbol_metadata_to_u64;
 
 use crate::frame;
+use crate::frame::Frame;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::multicast::ExpiredPkt;
 use crate::multicast::ExpiredStream;
@@ -12,7 +24,6 @@ use crate::stream::StreamMap;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
-use std::time;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -97,10 +108,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
                 _ => None,
             })
         });
-        println!(
-            "Self sent in mc_data_timeout 2 {}",
-            self.sent[Epoch::Application].len()
-        );
         let expired_ssid: Option<u64> = fec_medatadas.max();
         match expired_sent.next() {
             None => Ok((
@@ -144,10 +151,10 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 let cwnd_2 = self.congestion_window;
 
-                self.mc_set_min_cwnd();
+                // self.mc_set_min_cwnd();
 
                 info!(
-                    "Congestion window {} -> {} -> {}\n And self sent len: {}",
+                    "Congestion window {} -> {} -> {}. And self sent len: {}",
                     cwnd,
                     cwnd_2,
                     self.congestion_window,
@@ -191,7 +198,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_get_sent_exp_stream_ids(
         &self, pn: u64, space_id: SpaceId, only_complete: bool,
     ) -> ExpiredStream {
-        println!("Only complete: {}", only_complete);
         self.sent[Epoch::Application]
             .iter()
             .take_while(|p| p.pkt_num.1 <= pn)
@@ -239,8 +245,8 @@ pub trait ReliableMulticastRecovery {
     /// congestion window using the data sent by the multicast source.
     fn copy_sent(
         &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
-        now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
-    );
+        handshake_status: HandshakeStatus, trace_id: &str, cur_max_pn: u64,
+    ) -> u64;
 }
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
@@ -251,6 +257,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let mut lost_pn = RangeSet::default();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
+        debug!("Start deleguate stream for client {:?}. recv_pn={:?}", uc.multicast.as_ref().map(|m| m.get_self_client_id()), recv_pn);
 
         let mut nb_lost_mc_stream_frames = 0;
         let expired_sent = self.sent[Epoch::Application]
@@ -265,6 +272,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let mut max_exp_ss: Option<u64> = None;
 
         'per_packet: for packet in expired_sent {
+            debug!("This is a packet that is expired now: {:?}", packet.pkt_num);
             max_exp_pn = if let Some(c) = max_exp_pn {
                 Some(c.max(packet.pkt_num.1))
             } else {
@@ -281,6 +289,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                 }
             }
             lost_pn.insert(packet.pkt_num.1..packet.pkt_num.1 + 1);
+            debug!("Packet was lost");
 
             // At this point, we know that the client did not receive the packet.
             // Maybe it recovered it with FEC.
@@ -288,7 +297,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             // the STREAM frame.
             // FIXME-RMC-TODO: assumes that a StreamHeader always preceeds the
             // McAsym frame.
-            let mut protected = false;
             let mut protected_stream_id = None;
             for frame in &packet.frames {
                 match frame {
@@ -312,7 +320,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                                 continue 'per_packet;
                             }
                         }
-                        protected = true;
                     },
                     frame::Frame::StreamHeader {
                         stream_id,
@@ -320,17 +327,18 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         length,
                         fin,
                     } => {
-                        if !protected {
-                            continue 'per_packet;
-                        }
 
                         nb_lost_mc_stream_frames += 1;
 
                         // This STREAM frame was lost. Retransmit in a (new)
                         // stream on unicast path.
-                        debug!("Before getting the stream");
-                        let stream = uc.get_or_create_stream(*stream_id, true)?;
-                        debug!("After getting the stream. Before getting local stream. The ID is {} from pn={}", *stream_id, packet.pkt_num.1);
+                        debug!(
+                            "Before getting the stream {} with pn={}",
+                            *stream_id, packet.pkt_num.1
+                        );
+                        let stream: &mut crate::stream::Stream =
+                            uc.get_or_create_stream(*stream_id, true)?;
+                        debug!("After getting the stream. Before getting local stream. The ID is {} from pn={}. Is the stream {} bidi={}", *stream_id, packet.pkt_num.1, *stream_id, stream.bidi);
                         let was_flushable = stream.is_flushable();
                         let local_stream = local_streams
                             .get_mut(*stream_id)
@@ -369,6 +377,20 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         }
 
                         protected_stream_id = Some(*stream_id);
+                        if let Some(client_id) = uc.multicast.as_ref().map(|m| m.get_self_client_id().ok()).flatten() {
+                            qlog_with_type!(QLOG_DATA_MV, uc.qlog, q, {
+                                let ev_data_client =
+                                    EventData::McRetransmit(qlog::events::quic::McRetransmit {
+                                        stream_id: *stream_id,
+                                        offset: *offset,
+                                        len: *length,
+                                        fin: *fin,
+                                        client_id,
+                                    });
+                
+                                q.add_event_data_with_instant(ev_data_client, now).ok();
+                            });
+                        }
                     },
                     frame::Frame::McAsym { signature } => {
                         // If such a frame is present, it means that multicast
@@ -389,6 +411,50 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         stream.mc_set_asym_sign(signature);
                     },
                     _ => (),
+                }
+            }
+        }
+
+        // Close existing streams on the unicast server if their are closed on the
+        // multicast source. RMC-TODO: not optimal because we go over the
+        // streams again. It should work by iterating over existing
+        // finished streams were all data has already been sent. Not sure though.
+        let expired_sent = self.sent[Epoch::Application]
+            .iter()
+            .take_while(|p| {
+                now.saturating_duration_since(p.time_sent) >=
+                    Duration::from_millis(expiration_timer)
+            })
+            .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
+
+        for pkt in expired_sent {
+            for frame in pkt.frames.iter() {
+                if let Frame::StreamHeader {
+                    stream_id,
+                    offset,
+                    length,
+                    fin,
+                } = frame
+                {
+                    if *fin {
+                        // If the stream does not exist for the unicast server, it means
+                        // that it did not have to retransmit frames to the client.
+                        if let Some(uc_stream) = uc.streams.get_mut(*stream_id) {
+                            // debug!(
+                            //     "Here setting close offset for stream {:?}",
+                            //     stream_id
+                            // );
+                            uc_stream.send.rmc_set_close_offset();
+                            uc_stream.send.rmc_set_fin_off(*offset + *length as u64);
+
+                            // Maybe the stream is now complete.
+                            if uc_stream.is_complete() && !uc_stream.is_readable() {
+                                // println!("Unicast stream {} is collected after deleguate_stream", stream_id);
+                                let local = uc_stream.local;
+                                uc.streams.collect(*stream_id, local);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -471,18 +537,31 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
     fn copy_sent(
         &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
-        now: time::Instant, handshake_status: HandshakeStatus, trace_id: &str,
-    ) {
-        let max_pn = uc.sent[Epoch::Application]
+        handshake_status: HandshakeStatus, trace_id: &str, cur_max_pn: u64,
+    ) -> u64 {
+        let new_max_pn = self.sent[Epoch::Application]
             .back()
             .map(|s| s.pkt_num.1)
             .unwrap_or(0);
-        let sent_pkts = self.sent[epoch]
-            .iter()
-            .filter(|s| s.pkt_num.0 == space_id as u32 && s.pkt_num.1 >= max_pn);
+        let sent_pkts = self.sent[epoch].iter().filter(|s| {
+            s.pkt_num.0 == space_id as u32 && s.pkt_num.1 >= cur_max_pn
+        });
         // uc.sent[epoch].extend(sent_pkts.map(|s| s.clone()));
+        let mut first = true;
         for pkt in sent_pkts {
-            println!("Add new packet to unicast: {:?}", pkt.pkt_num);
+            if first &&
+                pkt.frames
+                    .first()
+                    .is_some_and(|f| matches!(f, Frame::McExpire { .. }))
+            {
+                continue;
+            }
+            first = false;
+            trace!(
+                "{:?}: Add new packet to unicast: {:?}",
+                trace_id,
+                pkt.pkt_num
+            );
             uc.on_packet_sent(
                 pkt.clone(),
                 epoch,
@@ -493,8 +572,10 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         }
 
         // Update app limited state.
-        info!("Update uc app limited to {}. Now uc has {} bytes in flight", self.app_limited, uc.bytes_in_flight);
+        // trace!("{:?}: Update uc app limited to {}. Now uc has {} bytes in flight. The cur max pn={}", trace_id, self.app_limited, uc.bytes_in_flight, cur_max_pn);
         uc.update_app_limited(self.app_limited);
+
+        new_max_pn + 1
     }
 }
 

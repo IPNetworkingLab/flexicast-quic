@@ -3803,7 +3803,17 @@ impl Connection {
         let multiple_application_data_pkt_num_spaces =
             self.use_path_pkt_num_space(epoch);
         // Process lost frames. There might be several paths having lost frames.
-        for (_, p) in self.paths.iter_mut() {
+        for (path_id, p) in self.paths.iter_mut() {
+            // Does not retransmit frames that were sent by the multicast source
+            // on the multicast path.
+            if self.multicast.as_ref().is_some_and(|m| {
+                matches!(
+                    m.get_mc_role(),
+                    multicast::MulticastRole::ServerUnicast(_)
+                ) && Some(path_id) == m.get_mc_space_id()
+            }) {
+                continue;
+            }
             for lost_frame in p.recovery.lost[epoch].drain(..) {
                 match lost_frame {
                     recovery::LostFrame::Lost(frame) => {
@@ -4123,6 +4133,9 @@ impl Connection {
         // Whether or not we should explicitly elicit an ACK via PING frame if we
         // implicitly elicit one otherwise.
         let ack_elicit_required = path.recovery.should_elicit_ack(epoch);
+        if ack_elicit_required {
+            debug!("Ack elicit required. Left={}", left);
+        }
 
         let header_offset = b.off();
 
@@ -4332,6 +4345,13 @@ impl Connection {
                         ecn_counts: None, /* sending ECN is not supported at
                                            * this time */
                     };
+                    trace!(
+                        "Is server={}. Push frame ACKMP with ranges: {:?} and space_id={}. This is because {} or {} or {}",
+                        self.is_server,
+                        pns.recv_pkt_need_ack.clone(),
+                        space_id,
+                        pns.recv_pkt_need_ack.len(), pns.ack_elicited, ack_elicit_required,
+                    );
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
                         pns.ack_elicited = false;
@@ -4390,10 +4410,6 @@ impl Connection {
                             let ecn_counts = if mc_should_send_nack {
                                 let nb_degree_needed_opt: Option<u64> =
                                     self.fec_decoder.nb_missing_degrees();
-                                println!(
-                                    "Mais ne nb degree={:?}",
-                                    nb_degree_needed_opt
-                                );
                                 let max_pn =
                                     self.multicast.as_ref().unwrap().mc_max_pn;
                                 if let Some(nb_degree_needed) =
@@ -4417,7 +4433,6 @@ impl Connection {
                             } else {
                                 None
                             };
-                            println!("Send ack mp with multicast from client with ranges: {:?} and ECN={:?}", pns.recv_pkt_need_ack, ecn_counts);
 
                             let frame = frame::Frame::ACKMP {
                                 space_identifier: space_id,
@@ -4427,6 +4442,13 @@ impl Connection {
                                              * supported at
                                              * this time */
                             };
+
+                            trace!(
+                                "Push frame ACKMP after with ranges: {:?}. Is server={} for space id={}",
+                                pns.recv_pkt_need_ack.clone(),
+                                self.is_server,
+                                space_id,
+                            );
 
                             if push_frame_to_pkt!(b, frames, frame, left) {
                                 // Continue advertising until we send the ACK_MP
@@ -4504,11 +4526,15 @@ impl Connection {
         let path = self.paths.get_mut(send_pid)?;
 
         // Limit output packet size by congestion window size.
+        let left_before = left;
         left = cmp::min(
             left,
             // Bytes consumed by ACK frames.
             cwnd_available.saturating_sub(left_before_packing_ack_frame - left),
         );
+        if ack_elicit_required {
+            debug!("After congestion application: {} -> {}", left_before, left);
+        }
 
         let mut challenge_data = None;
 
@@ -4969,7 +4995,7 @@ impl Connection {
                         if let Some(exp_pkt) = multicast.mc_last_expired {
                             exp_pkt.pn.unwrap_or(1)
                         } else {
-                            1
+                            0
                         };
 
                     let frame = frame::Frame::McKey {
@@ -5195,7 +5221,10 @@ impl Connection {
             }
         }
 
-        if should_protect_packet && !prioritize_fec {
+        if should_protect_packet &&
+            !prioritize_fec &&
+            self.fec_encoder.n_protected_symbols() < 2000
+        {
             left = std::cmp::min(
                 left,
                 self.fec_encoder
@@ -5464,10 +5493,6 @@ impl Connection {
                 {
                     if let Some(remaining) = stream.send.total_remaining() {
                         if remaining as usize <= max_len {
-                            println!(
-                                "Remaining bytes: {} and max len={}",
-                                remaining, max_len
-                            );
                             max_len = max_len.saturating_sub(
                                 64 + 1 +
                                     octets::varint_len(multicast::MC_ASYM_CODE),
@@ -5576,12 +5601,16 @@ impl Connection {
         // - if we've sent too many non ack-eliciting packets without having
         // sent an ACK eliciting one; OR
         // - the application requested an ack-eliciting frame be sent.
+        if ack_elicit_required {
+            trace!("Before ping. Ack required: {}, ack_eliciting: {}, left: {}, is_closing:{}", ack_elicit_required, ack_eliciting, left, is_closing);
+        }
         if (ack_elicit_required || path.needs_ack_eliciting) &&
             !ack_eliciting &&
-            left >= 1 &&
+            // left >= 1 &&
             !is_closing
         {
             let frame = frame::Frame::Ping;
+            left += 1;
 
             if push_frame_to_pkt!(b, frames, frame, left) {
                 ack_eliciting = true;
@@ -5726,7 +5755,7 @@ impl Connection {
                     Some(source_symbol_metadata);
             }
         }
-
+        trace!("{} tx on space_id={}", self.trace_id, space_id);
         for frame in &mut frames {
             trace!("{} tx frm {:?}", self.trace_id, frame);
 
@@ -5807,7 +5836,6 @@ impl Connection {
         if in_flight && is_app_limited {
             path.recovery.delivery_rate_update_app_limited(true);
         }
-        println!("AT THE END. IS APP LIMITED: {}", is_app_limited);
 
         let pkt_space = self.pkt_num_spaces.spaces.get_mut(epoch, space_id)?;
         pkt_space.next_pkt_num += 1;
@@ -7124,7 +7152,11 @@ impl Connection {
 
             if let Some(timer) = p.recovery.loss_detection_timer() {
                 if timer <= now {
-                    trace!("{} loss detection timeout expired", self.trace_id);
+                    trace!(
+                        "{} loss detection timeout expired for path id={}",
+                        self.trace_id,
+                        path_id
+                    );
 
                     let (lost_packets, lost_bytes) = p.on_loss_detection_timeout(
                         handshake_status,
@@ -8746,14 +8778,12 @@ impl Connection {
             },
 
             frame::Frame::PathChallenge { data } => {
-                println!("Server: {} receives path challenge", self.is_server);
                 self.paths
                     .get_mut(recv_path_id)?
                     .on_challenge_received(data);
             },
 
             frame::Frame::PathResponse { data } => {
-                println!("Server: {} receives path response", self.is_server);
                 // For soft-multicast, add the path information once the path has
                 // been accepted by the unicast server.
                 if self.multicast.is_some() &&
@@ -8786,7 +8816,6 @@ impl Connection {
                             self.multicast.as_ref().unwrap().mc_last_expired
                         {
                             if let Some(exp_pn) = exp_pkt.pn {
-                                println!("ICI QUE CA FAIT DU CACA");
                                 self.pkt_num_spaces
                                     .spaces
                                     .get_mut_or_create(
@@ -8888,6 +8917,20 @@ impl Connection {
                                     recv_path_id,
                                 )?;
                                 self.recovered_symbols_need_ack.push_item(mdu64);
+
+                                qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
+                                    let ev_data_client = EventData::FecRecovered(
+                                        qlog::events::quic::FecRecovered {
+                                            ssid: mdu64,
+                                        },
+                                    );
+
+                                    q.add_event_data_with_instant(
+                                        ev_data_client,
+                                        now,
+                                    )
+                                    .ok();
+                                });
                             }
                         },
                     }
@@ -8998,6 +9041,20 @@ impl Connection {
                                     recv_path_id,
                                 )?;
                                 self.recovered_symbols_need_ack.push_item(mdu64);
+
+                                qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
+                                    let ev_data_client = EventData::FecRecovered(
+                                        qlog::events::quic::FecRecovered {
+                                            ssid: mdu64,
+                                        },
+                                    );
+
+                                    q.add_event_data_with_instant(
+                                        ev_data_client,
+                                        now,
+                                    )
+                                    .ok();
+                                });
                             }
                         },
                     }
@@ -9134,7 +9191,6 @@ impl Connection {
                         if is_app_limited {
                             p.recovery.delivery_rate_update_app_limited(true);
                         }
-                        info!("Call on_ack_received from ACKMP frame for space identifier {}", space_identifier);
                         let (lost_packets, lost_bytes) =
                             p.recovery.on_ack_received(
                                 space_identifier as u32,
@@ -9291,17 +9347,13 @@ impl Connection {
                         //     )
                         //     .recv_pkt_need_ack
                         //     .insert(first_pn..first_pn + 1);
-                        println!("ICICICIICIICICICICICICICCICICICI");
-                        self.pkt_num_spaces
-                            .spaces
-                            .get_mut_or_create(
-                                packet::Epoch::Application,
-                                mc_space_id as u64,
-                            )
-                            .recv_pkt_need_ack
-                            .remove_until(first_pn + 1);
+                        self.pkt_num_spaces.spaces.get_mut_or_create(
+                            packet::Epoch::Application,
+                            mc_space_id as u64,
+                        );
+                        // .recv_pkt_need_ack
+                        // .remove_until(first_pn + 1);
                     } else {
-                        println!("LALALLALALALALLAALLALLALALALALALAL");
                         // ... and if the path does not exist, store for later.
                         multicast.mc_last_expired = Some(multicast::ExpiredPkt {
                             pn: Some(first_pn),
@@ -9674,7 +9726,31 @@ impl Connection {
                 .map(|(pid, _)| pid);
 
             if let Some(pid) = probing.next() {
+                debug!("In probing");
                 return Ok(pid);
+            }
+        }
+
+        // If multicast is enabled, send packets on the client anywhere but on the
+        // multicast path.
+        // MC-TODO: this could be simplified if the client/unicast server does a
+        // [`send_on_path`] instead of [`send`].
+        if let Some(multicast) = self.multicast.as_ref() {
+            if matches!(
+                multicast.get_mc_role(),
+                multicast::MulticastRole::Client(_) |
+                    multicast::MulticastRole::ServerUnicast(_)
+            ) {
+                if let Some(mc_path) = multicast.get_mc_space_id() {
+                    return Ok(self
+                        .pkt_num_spaces
+                        .spaces
+                        .application_data_space_ids()
+                        .find(|&sid| sid != mc_path as u64)
+                        .ok_or(Error::Multicast(
+                            multicast::MulticastError::McPath,
+                        ))? as usize);
+                }
             }
         }
 
@@ -9701,35 +9777,13 @@ impl Connection {
                     .min_by_key(|(_, p)| p.recovery.rtt())
                     .map(|(pid, _)| pid)
                 {
+                    debug!("Using aggregate mode");
                     return Ok(pid);
                 }
                 if consider_standby || !self.paths.consider_standby_paths() {
                     break;
                 }
                 consider_standby = true;
-            }
-        }
-
-        // If multicast is enabled, send packets on the client anywhere but on the
-        // multicast path.
-        // MC-TODO: this could be simplified if the client/unicast server does a
-        // [`send_on_path`] instead of [`send`].
-        if let Some(multicast) = self.multicast.as_ref() {
-            if matches!(
-                multicast.get_mc_role(),
-                multicast::MulticastRole::Client(_) |
-                    multicast::MulticastRole::ServerUnicast(_)
-            ) {
-                if let Some(mc_path) = multicast.get_mc_space_id() {
-                    return Ok(self
-                        .pkt_num_spaces
-                        .spaces
-                        .application_data_space_ids()
-                        .find(|&sid| sid != mc_path as u64)
-                        .ok_or(Error::Multicast(
-                            multicast::MulticastError::McPath,
-                        ))? as usize);
-                }
             }
         }
 

@@ -555,16 +555,13 @@ impl Recovery {
                     .unwrap_or_else(|i| i)
             };
 
-            debug!("First unacked for {}: {} and largest_acked_in_block: {:?}", space_id, first_unacked, largest_acked_in_block);
-
             let unacked_iter = sent.range_mut(first_unacked..)
                 // Skip packets that follow the largest acked packet in the block.
-                .take_while(|p| {info!("Packet num of pkt: {:?}", p.pkt_num); p.pkt_num <= largest_acked_in_block})
+                .take_while(|p| p.pkt_num <= largest_acked_in_block)
                 // Skip packets that have already been acked or lost.
                 .filter(|p| p.time_acked.is_none());
 
             for unacked in unacked_iter {
-                debug!("So unacked {:?} is now acked (or should)", unacked.pkt_num);
                 unacked.time_acked = Some(now);
 
                 // Check if acked packet was already declared lost.
@@ -779,6 +776,7 @@ impl Recovery {
         // HANDSHAKE_DONE and MAX_DATA / MAX_STREAM_DATA as well, in addition
         // to CRYPTO and STREAM, if the original packet carried them.
         for unacked in unacked_iter {
+            trace!("Lost sent packet: {:?}", unacked.pkt_num);
             let mut contains_recovered_source_symbol = false;
             for frame in &unacked.frames {
                 if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame
@@ -845,9 +843,10 @@ impl Recovery {
 
     pub fn cwnd_available(&self) -> usize {
         // Ignore cwnd when sending probe packets.
-        if self.loss_probes.iter().any(|&x| x > 0) {
-            return usize::MAX;
-        }
+        // if self.loss_probes.iter().any(|&x| x > 0) {
+        //     info!("HERE QUE C'EST NUL");
+        //     return usize::MAX;
+        // }
 
         // Open more space (snd_cnt) for PRR when allowed.
         self.congestion_window.saturating_sub(self.bytes_in_flight) +

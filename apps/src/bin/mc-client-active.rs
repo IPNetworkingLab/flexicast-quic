@@ -47,6 +47,7 @@ use quiche::multicast::McPathType;
 use quiche::multicast::MulticastConnection;
 use quiche::ConnectionId;
 use std::io::Write;
+use quiche_apps::common::make_qlog_writer;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -147,6 +148,8 @@ fn main() {
     // Whether reliable multicast (RMC) is used.
     let mut is_mc_reliable = false;
 
+    let mut pending_streams = HashMap::new();
+
     // In a multicast communication where symmetric tags is used as authentication
     // mechanism, the client application is responsible of buffering
     // non-authenticated (na) packets as long as they desire (i.e., until an
@@ -211,7 +214,7 @@ fn main() {
     config.set_initial_max_streams_uni(1_000_000);
     config.set_active_connection_id_limit(5);
     config.verify_peer(false);
-    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
     // config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
 
     if args.multicast {
@@ -238,6 +241,21 @@ fn main() {
     // Create a QUIC connection and initiate handshake.
     let mut conn =
         quiche::connect(None, &scid, local_addr, peer_addr, &mut config).unwrap();
+
+    // Only bother with qlog if the user specified it.
+    #[cfg(feature = "qlog")]
+    {
+        if let Some(dir) = std::env::var_os("QLOGDIR") {
+            let id = format!("Client-{}", args.local_ip.to_string());
+            let writer = make_qlog_writer(&dir, "client", &id);
+
+            conn.set_qlog(
+                std::boxed::Box::new(writer),
+                "quiche-client qlog".to_string(),
+                format!("{} id={}", "quiche-client qlog", id),
+            );
+        }
+    }
 
     info!(
         "connecting to {:} from {:} with scid {}",
@@ -564,7 +582,6 @@ fn main() {
             ) && delay_join_leave.is_none()
             {
                 info!("Client leaves the multicast channel. Closing...");
-                break;
             }
         }
 
@@ -872,7 +889,7 @@ fn main() {
         );
         'read_stream: for s in conn.readable() {
             if !conn.stream_complete(s) {
-                debug!("Stream {} is not complete", s);
+                // debug!("Stream {} is not complete", s);
                 continue 'read_stream;
             }
 
@@ -880,16 +897,20 @@ fn main() {
                 // Application only reads full video frame.
                 continue 'read_stream;
             }
-            let mut total = 0;
+            let mut total = pending_streams.remove(&s).unwrap_or(0);
 
             while let Ok((read, fin)) = conn.stream_recv(s, &mut buf[total..]) {
                 if !fin {
                     debug!("Not fin and read: {}", read);
                 }
                 total += read;
+                
+                debug!("Read {} data for stream {}", read, s);
                 if fin {
                     debug!("Add a new stream in the list of received: {} of length: {}.", s, total);
                     app_handler.on_stream_complete(&buf[..total], s);
+                } else {
+                    pending_streams.insert(s, total);
                 }
             }
         }

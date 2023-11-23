@@ -401,6 +401,9 @@ pub struct MulticastAttributes {
     /// I need this variable because when receiving a frame, we do not have
     /// access anymore to the packet numer...
     pub(crate) mc_last_recv_pn: u64,
+
+    /// Maximum packet number already given to the unicast connection.
+    cur_max_pn: u64,
 }
 
 impl MulticastAttributes {
@@ -970,6 +973,7 @@ impl Default for MulticastAttributes {
             mc_reliable: None,
             mc_pn_stream_id: BTreeMap::default(),
             mc_last_recv_pn: 0,
+            cur_max_pn: 0,
         }
     }
 }
@@ -1538,7 +1542,6 @@ impl MulticastConnection for Connection {
                 pns_client,
                 use_complete_streams,
             )?;
-            println!("Expired pkt: {:?}", expired_pkt);
             if let Some(rmc) = self
                 .multicast
                 .as_mut()
@@ -1558,7 +1561,7 @@ impl MulticastConnection for Connection {
             let pkt_num_space =
                 self.pkt_num_spaces.spaces.get_mut(epoch, space_id)?;
             pkt_num_space.recv_pkt_need_ack.remove_until(exp_pn);
-            debug!("Remove packets until {} for space id {}", exp_pn, space_id);
+            trace!("Remove packets until {} for space id {}", exp_pn, space_id);
 
             expired_streams = self
                 .multicast
@@ -1815,7 +1818,10 @@ impl MulticastConnection for Connection {
         // Add the first packet number of interest for the new path if possible.
         if let Some(exp_pkt) = self.multicast.as_ref().unwrap().mc_last_expired {
             if let Some(exp_pn) = exp_pkt.pn {
-                println!("ICI QUE JE COMMENCE LE CACA: {}", exp_pn);
+                println!("P1 before: {:?}", self.pkt_num_spaces
+                .spaces
+                .get_mut_or_create(Epoch::Application, pid)
+                .recv_pkt_need_ack);
                 self.pkt_num_spaces
                     .spaces
                     .get_mut_or_create(Epoch::Application, pid)
@@ -1826,6 +1832,10 @@ impl MulticastConnection for Connection {
                     .get_mut_or_create(Epoch::Application, pid)
                     .recv_pkt_need_ack
                     .insert(exp_pn + 1..exp_pn + 2);
+                println!("P1 after: {:?}", self.pkt_num_spaces
+                .spaces
+                .get_mut_or_create(Epoch::Application, pid)
+                .recv_pkt_need_ack);
             }
         }
 
@@ -1934,7 +1944,7 @@ impl MulticastConnection for Connection {
                             // application.
                             // RMC-TODO: remove clients if they cannot support
                             // this minimum congestion window.
-                            path.recovery.mc_set_min_cwnd();
+                            // path.recovery.mc_set_min_cwnd();
                         }
                     } else {
                         debug!("No sent repairs but received an MC_NACK");
@@ -2015,18 +2025,18 @@ impl MulticastConnection for Connection {
             // The unicast server must retransmit streams that are still valid
             // but that the client did not get from the multicast channel.
             let multicast = self.multicast.as_mut().unwrap();
-            if multicast.mc_client_left_need_sync {
-                debug!("NEED SYNC BECAUSE CLIENT LEAVES");
-                multicast.mc_client_left_need_sync = false;
+            // if multicast.mc_client_left_need_sync {
+            //     debug!("NEED SYNC BECAUSE CLIENT LEAVES");
+            //     multicast.mc_client_left_need_sync = false;
 
-                for (&stream_id, stream) in mc_channel.streams.iter() {
-                    let data_vec = stream.send.emit_poll();
-                    for data in &data_vec[..data_vec.len() - 1] {
-                        self.stream_send(stream_id, data, false)?;
-                    }
-                    self.stream_send(stream_id, data_vec.last().unwrap(), true)?;
-                }
-            }
+            //     for (&stream_id, stream) in mc_channel.streams.iter() {
+            //         let data_vec = stream.send.emit_poll();
+            //         for data in &data_vec[..data_vec.len() - 1] {
+            //             self.stream_send(stream_id, data, false)?;
+            //         }
+            //         self.stream_send(stream_id, data_vec.last().unwrap(), true)?;
+            //     }
+            // }
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
         }
@@ -2034,11 +2044,13 @@ impl MulticastConnection for Connection {
         // Multicast source notifies the unicast server with the packets sent on
         // the multicast channel. This is used for the unicast server to compute
         // the congestion window.
-        mc_channel.mc_notify_sent_packets(self, now);
+        mc_channel.mc_notify_sent_packets(self);
 
         // Force multicast congestion window.
-        info!("Set the cwin");
+        let cwnd = mc_channel.paths.get(1).unwrap().recovery.cwnd();
         mc_channel.mc_set_cwin(self);
+        let cwnd2 = mc_channel.paths.get(1).unwrap().recovery.cwnd();
+        // debug!("After uc_to_mc_control congestion window for client {:?}: {} -> {}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), cwnd, cwnd2);
 
         Ok(())
     }
@@ -2059,11 +2071,6 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
-        println!(
-            "Stream len {} because {:?}",
-            self.streams.len(),
-            self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>()
-        );
         self.multicast.is_some() && self.streams.len() == 0
     }
 
@@ -2167,23 +2174,39 @@ impl MulticastConnection for Connection {
 impl Connection {
     /// The multicast source notifies the unicast server of the packets sent.
     fn mc_notify_sent_packets(
-        &mut self, uc: &mut Connection, now: time::Instant,
+        &mut self, uc: &mut Connection,
     ) {
-        info!("Call mc_notify_sent_packets");
         if let Some(multicast) = self.multicast.as_ref() {
+            // This just delays the problem.
+            // if let Some(mc_uc) = uc.get_multicast_attributes() {
+            //     if !matches!(mc_uc.get_mc_role(), MulticastRole::ServerUnicast(MulticastClientStatus::ListenMcPath(_))) {
+            //         return;
+            //     }
+            // } else {
+            //     return;
+            // }
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
                 let mc_path = self.paths.get(mc_space_id);
+                let uc_trace_id = uc.trace_id().to_string();
+                let cur_max_pn = if let Some(mc) = uc.multicast.as_ref() {
+                    mc.cur_max_pn
+                } else {
+                    return
+                };
                 let uc_path = uc.paths.get_mut(mc_space_id);
-                info!("Mais le uc path pour mc: {}", uc_path.is_ok());
                 if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
-                    mc_path.recovery.copy_sent(
+                    let new_max_pn = mc_path.recovery.copy_sent(
                         &mut uc_path.recovery,
                         mc_space_id as u32,
                         Epoch::Application,
-                        now,
                         self.handshake_status(),
-                        &self.trace_id,
+                        &uc_trace_id,
+                        cur_max_pn,
                     );
+                    let uc_mc = uc.multicast.as_mut().unwrap();
+                    uc_mc.cur_max_pn = new_max_pn;
+                    // self.multicast.as_mut().unwrap().cur_max_pn = new_max_pn;
+                    uc_mc.mc_last_expired = self.multicast.as_ref().unwrap().mc_last_expired;
                 }
             }
         }
@@ -2199,13 +2222,20 @@ impl Connection {
                 let uc_path = uc.paths.get(1);
                 if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
                     let cwin = mc_path.recovery.cwnd();
-                    mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd());
-                    mc_path.recovery.mc_set_min_cwnd();
-                    info!(
-                        "Set the congestion window from {} to {}",
-                        cwin,
-                        mc_path.recovery.cwnd()
-                    );
+                    if uc_path.recovery.cwnd_available() == usize::MAX {
+                        return;
+                    }
+                    mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd_available());
+                    // mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd());
+                    // mc_path.recovery.mc_set_min_cwnd();
+                    // trace!(
+                    //     "{}: Set the congestion window from {} to {}. UC cwnd={} and available={}",
+                    //     uc.trace_id(),
+                    //     cwin,
+                    //     mc_path.recovery.cwnd(),
+                    //     uc_path.recovery.cwnd(),
+                    //     uc_path.recovery.cwnd_available(),
+                    // );
                 }
             }
         }
@@ -2281,6 +2311,14 @@ impl From<&MulticastClientTp> for Vec<u8> {
             if v.ipv6_channels_allowed { 1 } else { 0 },
             if v.ipv4_channels_allowed { 1 } else { 0 },
         ]
+    }
+}
+
+impl Connection {
+    /// Prints the list of streams that are still open.
+    pub fn see_streams(&self) {
+        // debug!("This is the streams for client id {:?}: {:?}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        // debug!("And this is the list of I don't know: {:?}", self.streams.iter().map(|(_, s)| s.is_complete()).collect::<Vec<_>>());
     }
 }
 
@@ -3236,6 +3274,7 @@ pub mod testing {
         config.set_fec_scheduler_algorithm(
             crate::fec::fec_scheduler::FECSchedulerAlgorithm::RetransmissionFec,
         );
+        config.set_cc_algorithm(CongestionControlAlgorithm::Reno);
         if auth == McAuthType::AsymSign {
             config.set_fec_symbol_size(1280 - 64);
         } else {
@@ -4798,9 +4837,6 @@ mod tests {
         assert_eq!(nack_ranges.as_ref(), Some(&expected_ranges));
 
         // The client sends an MC_NACK to the server.
-        println!(
-            "Client should generate some ACKMP frame with the missing range"
-        );
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         // Communication to unicast servers.
@@ -4808,8 +4844,6 @@ mod tests {
             mc_pipe.server_control_to_mc_source(time::Instant::now()),
             Ok(())
         );
-
-        println!("It does not work from here");
 
         // The server generates FEC a single repair packet because the client lost
         // the first frame of the stream. Recall that the previous packets have

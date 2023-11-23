@@ -568,12 +568,12 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::multicast::MulticastClientTp;
     use crate::multicast::reliable::RMcClient;
     use crate::multicast::reliable::RMcServer;
     use crate::multicast::reliable::ReliableMc;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::McAuthType;
+    use crate::multicast::MulticastClientTp;
     use crate::ranges::RangeSet;
     use ring::rand::SystemRandom;
     use std::time;
@@ -1175,9 +1175,7 @@ mod tests {
             .unwrap()
             .recovery
             .cwnd();
-        println!("New: {:?} and initial: {:?}", new_cwin, initial_cwin);
         assert!(new_cwin > initial_cwin);
-        assert!(false);
 
         // Now a client does not receive any packet.
         let mut loss_1 = RangeSet::default();
@@ -1210,7 +1208,7 @@ mod tests {
         // assert_eq!(max_rangeset, Some(&(expected_recv, expected_lost)));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(33), Some(31)).into()));
+        assert_eq!(res, Ok((Some(45), Some(43)).into()));
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
 
         // Source decreases its congestion window to the minimum multicast value.
@@ -1517,7 +1515,7 @@ mod tests {
         let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
-            1,
+            0,
             "/tmp/test_rmc_cc_with_mc_expire_before.txt",
             auth_method,
             true,
@@ -1539,7 +1537,9 @@ mod tests {
         for _ in 0..100 {
             res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
             assert!(res.is_ok());
-            expired = expired.checked_add(time::Duration::from_millis(expiration_timer + 100)).unwrap();
+            expired = expired
+                .checked_add(time::Duration::from_millis(expiration_timer + 100))
+                .unwrap();
             mc_pipe.source_send_single(None, 0).unwrap();
         }
         assert_eq!(res, Ok((Some(100), None).into()));
@@ -1549,17 +1549,44 @@ mod tests {
         let random = SystemRandom::new();
         let mc_announce_data = &mc_pipe.mc_announce_data;
         let mc_data_auth = None;
-        let new_client = MulticastPipe::setup_client(&mut mc_pipe.mc_channel, &mc_client_tp, mc_announce_data, mc_data_auth, auth_method, &random, true).unwrap();
+
+        let new_client = MulticastPipe::setup_client(
+            &mut mc_pipe.mc_channel,
+            &mc_client_tp,
+            mc_announce_data,
+            mc_data_auth,
+            auth_method,
+            &random,
+            true,
+        )
+        .unwrap();
         mc_pipe.unicast_pipes.push(new_client);
-        let initial_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
+        let initial_cwin = mc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
+
+        // Remove manually the first sent packet because I have no idea of how to
+        // deal with it cleanly for now. The problem is that the first
+        // packet sent by the server on the new path carries PATH_ACCEPT frames or
+        // similar, which are not acknowledged by the client since it receives in
+        // the MC_KEY frame the first packet of interest which is much higher. As
+        // a consequence, the server thinks that the packet is lost (indeed, the
+        // client does not ack it).
 
         // --------------------------------- //
 
         // Now the server sends some interesting data.
         let stream = vec![0u8; 40 * max_datagram_size];
-        assert!(
-            mc_pipe.mc_channel.channel.stream_send(1, &stream, true).is_ok(),
-        );
+        assert!(mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(1, &stream, true)
+            .is_ok(),);
         while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
 
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
@@ -1598,8 +1625,193 @@ mod tests {
             .recovery
             .cwnd();
         assert_eq!(cwnd, exp_cwin);
-        let new_cwin = mc_pipe.unicast_pipes[0].0.server.paths.get(1).unwrap().recovery.cwnd();
-        println!("New: {:?} and initial: {:?}", new_cwin, initial_cwin);
+        let new_cwin = mc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
         assert!(new_cwin > initial_cwin);
+    }
+
+    #[test]
+    fn test_rmc_cc_multiple_clients() {
+        let max_datagram_size = 1350;
+        let auth_method = McAuthType::StreamAsym;
+        let mc_cwnd = 15;
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            0,
+            "/tmp/test_rmc_cc_multiple_clients.txt",
+            auth_method,
+            true,
+            true,
+            Some(mc_cwnd),
+        )
+        .unwrap();
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+
+        let init_cwnd = mc_pipe
+            .unicast_pipes
+            .iter()
+            .map(|(p, ..)| p.server.paths.get(1).unwrap().recovery.cwnd())
+            .min()
+            .unwrap();
+
+        let stream = vec![0u8; 40 * max_datagram_size];
+        assert!(mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(1, &stream, true)
+            .is_ok(),);
+        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+
+        let random = SystemRandom::new();
+        let now = time::Instant::now();
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+
+        assert_eq!(mc_pipe.client_rmc_timeout(expired, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+
+        // Multicast source deleguates streams.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let expired = expired
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(117), Some(15)).into()));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+
+        let new_cwnd = mc_pipe
+            .unicast_pipes
+            .iter()
+            .map(|(p, ..)| p.server.paths.get(1).unwrap().recovery.cwnd())
+            .min()
+            .unwrap();
+
+        assert!(new_cwnd > init_cwnd);
+    }
+
+    #[test]
+    /// The source sends a stream where the first packet is lost and must be
+    /// retransmitted over unicast. The client must receive the entire
+    /// stream after unicast retransmission, and the unicast server must drop
+    /// state after ACK.
+    fn test_rmc_retransmit_start_of_stream() {
+        let auth_method = McAuthType::StreamAsym;
+        let mc_cwnd = 15;
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_rmc_retransmit_start_of_stream.txt",
+            auth_method,
+            true,
+            true,
+            Some(mc_cwnd),
+        )
+        .unwrap();
+
+        let stream = [0u8; 2000];
+        mc_pipe.mc_channel.channel.stream_send(3, &stream, true).unwrap();
+        let mut client_1 = RangeSet::default();
+        client_1.insert(0..1);
+        mc_pipe.source_send_single(Some(&client_1), 0).unwrap();
+        mc_pipe.source_send_single(None, 0).unwrap();
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let expired = time::Instant::now()
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(3), Some(1)).into()));
+
+        let server = &mut mc_pipe.unicast_pipes[0].0.server;
+        let streams: Vec<_> = server.streams.iter().map(|(id, _)| *id).collect();
+        assert_eq!(streams, vec![3]);
+
+        mc_pipe.unicast_pipes[0].0.advance().unwrap();
+
+        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        let readables: Vec<_> = client.readable().collect();
+        assert_eq!(readables, vec![3]);
+        let mut buf = [0u8; 3000];
+        assert_eq!(client.stream_recv(3, &mut buf), Ok((2000, true)));
+
+        let server = &mut mc_pipe.unicast_pipes[0].0.server;
+        let streams: Vec<_> = server.streams.iter().map(|(id, _)| *id).collect();
+        assert!(streams.is_empty());
+    }
+
+    #[test]
+    fn test_rmc_retransmit_lost_stream_different_timeout() {
+        let auth_method = McAuthType::StreamAsym;
+        let mc_cwnd = 15;
+        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_rmc_retransmit_lost_stream_different_timeout.txt",
+            auth_method,
+            true,
+            true,
+            Some(mc_cwnd),
+        )
+        .unwrap();
+
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+
+        let stream = [0u8; 2000];
+        mc_pipe.mc_channel.channel.stream_send(7, &stream, true).unwrap();
+        let mut client_1 = RangeSet::default();
+        client_1.insert(0..1);
+        mc_pipe.source_send_single(Some(&client_1), 0).unwrap();
+        let now = time::Instant::now();
+        std::thread::sleep(time::Duration::from_millis(200));
+        // mc_pipe.source_send_single(Some(&client_1), 0).unwrap();
+        mc_pipe.source_send_single(None, 0).unwrap();
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(2), Some(0)).into()));
+
+        let server = &mut mc_pipe.unicast_pipes[0].0.server;
+        let streams: Vec<_> = server.streams.iter().map(|(id, _)| *id).collect();
+        assert_eq!(streams, vec![7]);
+
+        mc_pipe.unicast_pipes[0].0.advance().unwrap();
+
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        let expired = expired
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(3), Some(1)).into()));
+
+        mc_pipe.unicast_pipes[0].0.advance().unwrap();
+
+        let client = &mut mc_pipe.unicast_pipes[0].0.client;
+        let readables: Vec<_> = client.readable().collect();
+        assert_eq!(readables, vec![7]);
+        let mut buf = [0u8; 3000];
+        assert_eq!(client.stream_recv(7, &mut buf), Ok((2000, true)));
+
+        let server = &mut mc_pipe.unicast_pipes[0].0.server;
+        let streams: Vec<_> = server.streams.iter().map(|(id, _)| *id).collect();
+        assert!(streams.is_empty());
     }
 }

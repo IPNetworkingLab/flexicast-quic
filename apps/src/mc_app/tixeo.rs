@@ -75,7 +75,7 @@ impl TixeoServer {
             time_sent_to_wire: Vec::new(),
 
             sent_frames: 0,
-            cur_stream_id: 1,
+            cur_stream_id: 3,
             stream_written: 0,
 
             nxt_timestamp: Some(nxt_timestamp),

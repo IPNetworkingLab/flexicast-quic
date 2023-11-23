@@ -146,3 +146,4 @@ fn std_time_to_u64(time: &std::time::Instant) -> u64 {
 
     sec * NANOS_PER_SEC + nsec as u64
 }
+

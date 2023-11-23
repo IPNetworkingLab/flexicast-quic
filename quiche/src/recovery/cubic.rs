@@ -208,7 +208,6 @@ fn on_packets_acked(
 fn on_packet_acked(
     r: &mut Recovery, packet: &Acked, epoch: packet::Epoch, now: Instant,
 ) {
-    println!("On packet acked from CUBIC");
     let in_congestion_recovery = r.in_congestion_recovery(packet.time_sent);
 
     r.bytes_in_flight = r.bytes_in_flight.saturating_sub(packet.size);
@@ -220,17 +219,17 @@ fn on_packet_acked(
             r.ssthresh,
             r.max_datagram_size,
         );
-        println!("In congestion recovery");
+        trace!("In congestion recovery");
 
         return;
     }
 
     if (r.app_limited && !r.real_time) || (r.real_time && (r.bytes_in_flight.saturating_mul(3) / 2).saturating_add(packet.size) < r.congestion_window) {
-        println!("App limited: {}. bytes in flight: {}", r.app_limited, r.bytes_in_flight);
+        trace!("App limited: {}. bytes in flight: {}", r.app_limited, r.bytes_in_flight);
         return;
     }
 
-    println!("Not app limited. Bytes in flight: {}", r.bytes_in_flight);
+    trace!("Not app limited. Bytes in flight: {}", r.bytes_in_flight);
 
     // Detecting spurious congestion events.
     // <https://tools.ietf.org/id/draft-ietf-tcpm-rfc8312bis-00.html#section-4.9>
