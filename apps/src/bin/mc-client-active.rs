@@ -33,11 +33,11 @@ use std::net::Ipv4Addr;
 use std::net::ToSocketAddrs;
 
 use quiche::multicast::authentication::McAuthentication;
+use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::McConfig;
 use quiche::multicast::MulticastClientStatus;
 use quiche::multicast::MulticastError;
 use quiche::multicast::MulticastRole;
-use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche_apps::mc_app;
 use ring::rand::*;
 
@@ -46,8 +46,8 @@ use quiche::multicast;
 use quiche::multicast::McPathType;
 use quiche::multicast::MulticastConnection;
 use quiche::ConnectionId;
-use std::io::Write;
 use quiche_apps::common::make_qlog_writer;
+use std::io::Write;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -106,6 +106,12 @@ struct Args {
     /// Waits before joining the multicast channel, then waits the same amount
     /// of time before leaving.
     delay_in_mc_group: Option<u64>,
+
+    #[clap(long = "proxy")]
+    /// Multicast packets are proxied using packet replication for this client.
+    /// This argument is a trick to avoid out-of-band computation by the source of the proxies to the clients.
+    /// If this value is true, instead of binding to the multicast address given in the MC_ANNOUNCE frame, the client will listen to its own address and the port advertised by the source.
+    proxy_uc: bool,
 }
 
 fn main() {
@@ -283,7 +289,8 @@ fn main() {
         if is_mc_reliable {
             conn.rmc_set_next_timeout(now, &random).unwrap();
         }
-        let timers = [conn.timeout(), conn.mc_timeout(now), conn.rmc_timeout(now)];
+        let timers =
+            [conn.timeout(), conn.mc_timeout(now), conn.rmc_timeout(now)];
         let timeout = timers.iter().flatten().min().copied();
         debug!("Timeout: {:?}", timeout);
         poll.poll(&mut events, timeout).unwrap();
@@ -305,8 +312,8 @@ fn main() {
 
                 let now = std::time::Instant::now();
                 conn.on_rmc_timeout(now).unwrap();
-                if conn.on_mc_timeout(now) ==
-                    Err(quiche::Error::Multicast(
+                if conn.on_mc_timeout(now)
+                    == Err(quiche::Error::Multicast(
                         multicast::MulticastError::McInvalidRole(
                             MulticastRole::Client(
                                 MulticastClientStatus::Leaving(true),
@@ -393,16 +400,16 @@ fn main() {
                     from: peer_addr,
                     from_mc: Some(McPathType::Data),
                 };
-                if conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                    MulticastRole::Client(MulticastClientStatus::ListenMcPath(
+                if conn.get_multicast_attributes().unwrap().get_mc_role()
+                    == MulticastRole::Client(MulticastClientStatus::ListenMcPath(
                         true,
                     ))
                 {
                     let can_read_pkt = if conn
                         .get_multicast_attributes()
                         .unwrap()
-                        .get_mc_auth_type() ==
-                        quiche::multicast::authentication::McAuthType::SymSign
+                        .get_mc_auth_type()
+                        == quiche::multicast::authentication::McAuthType::SymSign
                     {
                         debug!("Ici appelle symetrique ?");
                         // Get the packet number used as identifier. Woops for the
@@ -504,8 +511,8 @@ fn main() {
                     from_mc: Some(McPathType::Authentication),
                 };
 
-                if conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                    MulticastRole::Client(MulticastClientStatus::ListenMcPath(
+                if conn.get_multicast_attributes().unwrap().get_mc_role()
+                    == MulticastRole::Client(MulticastClientStatus::ListenMcPath(
                         true,
                     ))
                 {
@@ -591,15 +598,15 @@ fn main() {
             let mut probe_already = false;
             // Join the multicast channel and create the listening socket if not
             // already done.
-            if conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+            if conn.get_multicast_attributes().unwrap().get_mc_role()
+                == MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
             {
                 info!("Before acting role");
                 // Did not join the multicast channel before.
                 let multicast = conn.get_multicast_attributes().unwrap();
                 let mc_announce_data =
                     multicast.get_mc_announce_data_path().unwrap().to_owned();
-                
+
                 is_mc_reliable = mc_announce_data.full_reliability;
 
                 // Add the new connection ID for the announce data.
@@ -641,9 +648,13 @@ fn main() {
                                     mc_announce_data.udp_port,
                                 )
                             } else {
-                                let group_ip = net::Ipv4Addr::from(
-                                    mc_announce_data.group_ip.to_owned(),
-                                );
+                                let group_ip = if args.proxy_uc {
+                                    args.local_ip
+                                } else {
+                                    net::Ipv4Addr::from(
+                                        mc_announce_data.group_ip.to_owned(),
+                                    )
+                                };
                                 net::SocketAddr::V4(net::SocketAddrV4::new(
                                     group_ip,
                                     mc_announce_data.udp_port,
@@ -670,14 +681,16 @@ fn main() {
                                 app_handler.leave_on_mc_timeout(),
                             )
                             .unwrap();
-                            mc_socket
-                                .join_multicast_v4(
-                                    &net::Ipv4Addr::from(
-                                        mc_announce_data.group_ip.to_owned(),
-                                    ),
-                                    &args.local_ip,
-                                )
-                                .unwrap();
+                            if !args.proxy_uc {
+                                mc_socket
+                                    .join_multicast_v4(
+                                        &net::Ipv4Addr::from(
+                                            mc_announce_data.group_ip.to_owned(),
+                                        ),
+                                        &args.local_ip,
+                                    )
+                                    .unwrap();
+                            }
                         }
                         mc_socket_opt = Some(mc_socket);
                         probe_already = true;
@@ -692,8 +705,8 @@ fn main() {
                         .duration_since(
                             times_join_leave.last().unwrap().to_owned(),
                         )
-                        .unwrap() >=
-                        delay
+                        .unwrap()
+                        >= delay
                     {
                         // Change in the client status in the multicast channel.
                         // If a single value in the Vec => join the multicast
@@ -731,23 +744,25 @@ fn main() {
             // Stop the socket if the client left the group and it was
             // acknowledged.
             if let Some(multicast) = conn.get_multicast_attributes() {
-                if multicast.get_mc_role() ==
-                    MulticastRole::Client(MulticastClientStatus::AwareUnjoined) &&
-                    mc_socket_opt.is_some()
+                if multicast.get_mc_role()
+                    == MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+                    && mc_socket_opt.is_some()
                 {
                     println!("Leave the multicast socket!");
                     let mc_announce_data =
                         multicast.get_mc_announce_data_path().unwrap().to_owned();
-                    mc_socket_opt
-                        .as_mut()
-                        .unwrap()
-                        .leave_multicast_v4(
-                            &net::Ipv4Addr::from(
-                                mc_announce_data.group_ip.to_owned(),
-                            ),
-                            &args.local_ip,
-                        )
-                        .unwrap();
+                    if !args.proxy_uc {
+                        mc_socket_opt
+                            .as_mut()
+                            .unwrap()
+                            .leave_multicast_v4(
+                                &net::Ipv4Addr::from(
+                                    mc_announce_data.group_ip.to_owned(),
+                                ),
+                                &args.local_ip,
+                            )
+                            .unwrap();
+                    }
                     mc_socket_opt = None;
                 }
             }
@@ -904,7 +919,7 @@ fn main() {
                     debug!("Not fin and read: {}", read);
                 }
                 total += read;
-                
+
                 debug!("Read {} data for stream {}", read, s);
                 if fin {
                     debug!("Add a new stream in the list of received: {} of length: {}.", s, total);
