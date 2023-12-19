@@ -212,12 +212,12 @@ fn main() {
     }
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(10_000_000);
-    config.set_initial_max_stream_data_bidi_local(1_000_000);
-    config.set_initial_max_stream_data_bidi_remote(1_000_000);
-    config.set_initial_max_stream_data_uni(1_000_000);
-    config.set_initial_max_streams_bidi(1_000_000);
-    config.set_initial_max_streams_uni(1_000_000);
+    config.set_initial_max_data(100_000_000);
+    config.set_initial_max_stream_data_bidi_local(10_000_000);
+    config.set_initial_max_stream_data_bidi_remote(10_000_000);
+    config.set_initial_max_stream_data_uni(10_000_000);
+    config.set_initial_max_streams_bidi(10_000_000);
+    config.set_initial_max_streams_uni(10_000_000);
     config.set_active_connection_id_limit(5);
     config.verify_peer(false);
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
