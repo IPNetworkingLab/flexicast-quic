@@ -36,6 +36,7 @@ use std::rc::Rc;
 use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::authentication::McSymAuth;
+use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::McConfig;
 use quiche::multicast::McPathType;
@@ -43,16 +44,16 @@ use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
-use quiche::SendInfo;
-use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::on_rmc_timeout_server;
-use quiche_apps::common::ClientIdMap;
+use quiche::ucs_to_mc_cwnd;
+use quiche::SendInfo;
 use quiche_apps::common::make_qlog_writer;
+use quiche_apps::common::ClientIdMap;
 use quiche_apps::mc_app;
 use quiche_apps::sendto::*;
-use std::time;
 use std::collections::HashMap;
 use std::io::Write;
+use std::time;
 
 use clap::Parser;
 use ring::rand::*;
@@ -335,7 +336,9 @@ fn main() {
     if let (Some(mc_channel), Some(rate)) = (mc_channel_opt.as_mut(), args.pacing)
     {
         // let cwnd = rate * args.expiration_timer;
-        let cwnd = ((rate * args.expiration_timer as f64 * 1_000_000f64) / 1000f64).round() as u64;
+        let cwnd = ((rate * args.expiration_timer as f64 * 1_000_000f64)
+            / 1000f64)
+            .round() as u64;
         mc_channel.channel.mc_set_constant_pacing(cwnd).unwrap();
         debug!(
             "Set the multicast channel pacing to {} and cwnd {}",
@@ -458,8 +461,8 @@ fn main() {
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
-            let client = if !clients_ids.contains_key(&hdr.dcid) &&
-                !clients_ids.contains_key(&hdr.dcid)
+            let client = if !clients_ids.contains_key(&hdr.dcid)
+                && !clients_ids.contains_key(&hdr.dcid)
             {
                 if hdr.ty != quiche::Type::Initial {
                     error!("Packet is not Initial");
@@ -681,25 +684,25 @@ fn main() {
                     .get_multicast_attributes()
                     .map(|mc| (mc.get_mc_role(), mc.mc_client_has_key()));
                 info!("APP HAS NOT STARTED: {:?}", uc_server_role);
-                if uc_server_role ==
-                    Some((
+                if uc_server_role
+                    == Some((
                         MulticastRole::ServerUnicast(
                             multicast::MulticastClientStatus::ListenMcPath(true),
                         ),
                         true,
-                    )) &&
-                    !client.active_client ||
-                    !args.multicast &&
-                        client.conn.is_established() &&
-                        !client.active_client
+                    ))
+                    && !client.active_client
+                    || !args.multicast
+                        && client.conn.is_established()
+                        && !client.active_client
                 {
                     info!("New client!");
                     nb_active_mc_receivers += 1;
                     client.active_client = true;
-                } else if args.multicast &&
-                    client.conn.is_established() &&
-                    !client.active_client &&
-                    args.soft_wait
+                } else if args.multicast
+                    && client.conn.is_established()
+                    && !client.active_client
+                    && args.soft_wait
                 {
                     info!("New soft client!");
                     nb_active_mc_receivers += 1;
@@ -713,9 +716,9 @@ fn main() {
                 }
 
                 // Is multicast disabled?
-                if !args.multicast &&
-                    client.conn.is_established() &&
-                    Some(nb_active_mc_receivers) == args.wait_first_client
+                if !args.multicast
+                    && client.conn.is_established()
+                    && Some(nb_active_mc_receivers) == args.wait_first_client
                 {
                     app_handler.start_content_delivery();
                 }
@@ -723,8 +726,8 @@ fn main() {
 
             // Maybe the status of the multicast client changed.
             if let Some(multicast) = client.conn.get_multicast_attributes() {
-                if client.mc_client_listen_uc &&
-                    matches!(
+                if client.mc_client_listen_uc
+                    && matches!(
                         multicast.get_mc_role(),
                         MulticastRole::ServerUnicast(
                             multicast::MulticastClientStatus::ListenMcPath(_)
@@ -733,8 +736,8 @@ fn main() {
                 {
                     println!("Client now joins the multicast channel");
                     client.mc_client_listen_uc = false;
-                } else if !client.mc_client_listen_uc &&
-                    matches!(
+                } else if !client.mc_client_listen_uc
+                    && matches!(
                         multicast.get_mc_role(),
                         MulticastRole::ServerUnicast(
                             multicast::MulticastClientStatus::Leaving(_)
@@ -777,10 +780,14 @@ fn main() {
             // Before expiring the data, deleguate to unicast connections if reliable multicast is enabled.
             if args.reliable_mc {
                 let clients_conn = clients.iter_mut().map(|c| &mut c.1.conn);
-                on_rmc_timeout_server!(&mut mc_channel.channel, clients_conn, now).unwrap();
+                on_rmc_timeout_server!(
+                    &mut mc_channel.channel,
+                    clients_conn,
+                    now
+                )
+                .unwrap();
             }
-            let expired_pkt =
-                mc_channel.channel.on_mc_timeout(now).unwrap();
+            let expired_pkt = mc_channel.channel.on_mc_timeout(now).unwrap();
             if expired_pkt.pn.is_some() {
                 app_handler.on_expiring();
             }
@@ -789,10 +796,9 @@ fn main() {
         // Generate video content frames if the timeout is expired.
         // This is independent of multicast beeing used or not.
         let mut can_go_to_next = false;
-        let before = std::time::Instant::now();
-        if pacing_timeout.is_none() ||
-            pacing_timeout.unwrap().duration_since(now) ==
-                std::time::Duration::ZERO
+        if pacing_timeout.is_none()
+            || pacing_timeout.unwrap().duration_since(now)
+                == std::time::Duration::ZERO
         {
             pacing_timeout = None;
             let app_data_to_send = if app_handler.should_send_app_data() {
@@ -1095,7 +1101,10 @@ fn main() {
                     if let Some(mc_channel) = mc_channel_opt.as_mut() {
                         client
                             .conn
-                            .uc_to_mc_control(&mut mc_channel.channel, time::Instant::now())
+                            .uc_to_mc_control(
+                                &mut mc_channel.channel,
+                                time::Instant::now(),
+                            )
                             .unwrap();
                     }
                 }
@@ -1106,8 +1115,6 @@ fn main() {
             // we will record an invalid (too early)
             // timestamp.
             if app_data_to_send && can_go_to_next {
-                let after = std::time::Instant::now();
-                // info!("On sent to wire: {:?}", after.duration_since(before));
                 app_handler.on_sent_to_wire();
             }
         }
@@ -1133,6 +1140,12 @@ fn main() {
         // concept... right?
         if clients.is_empty() && app_handler.app_has_finished() {
             break;
+        }
+
+        // Set the congestion window of the multicast channel.
+        if let Some(mc_channel) = mc_channel_opt.as_mut() {
+            let clients_conn = clients.iter_mut().map(|c| &mut c.1.conn);
+            ucs_to_mc_cwnd!(&mut mc_channel.channel, clients_conn, now);
         }
     }
 
@@ -1214,8 +1227,9 @@ fn validate_token<'a>(
 #[allow(clippy::too_many_arguments)]
 fn get_multicast_channel(
     mc_keylog_file: &str, authentication: multicast::authentication::McAuthType,
-    expiration_timer: u64, rng: &SystemRandom, soft_mc: bool, mc_cwnd: Option<usize>,
-    source_addr: net::SocketAddr, cert_path: &str, max_fec_rs: Option<u32>, reliable_mc: bool,
+    expiration_timer: u64, rng: &SystemRandom, soft_mc: bool,
+    mc_cwnd: Option<usize>, source_addr: net::SocketAddr, cert_path: &str,
+    max_fec_rs: Option<u32>, reliable_mc: bool,
 ) -> (
     Option<mio::net::UdpSocket>,
     Option<MulticastChannelSource>,

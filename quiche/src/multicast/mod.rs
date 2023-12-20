@@ -41,6 +41,18 @@ use crate::Error;
 use crate::RecvInfo;
 use crate::Result;
 
+/// Communication between the multicast channel and the unicast connections.
+#[macro_export]
+macro_rules! ucs_to_mc_cwnd {
+    ( $mc:expr, $ucs: expr, $now: expr ) => {
+        let min_cwnd = $ucs.filter_map(|uc| uc.mc_get_uc_cwnd()).min();
+        if let Some(cwnd) = min_cwnd {
+            // TODO: set the minimum cwnd from all uc.
+            $mc.mc_set_cwnd(cwnd);
+        }
+    }
+}
+
 /// Multicast extension errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MulticastError {
@@ -2024,7 +2036,7 @@ impl MulticastConnection for Connection {
             // and relies on the unicast connection to get the data.
             // The unicast server must retransmit streams that are still valid
             // but that the client did not get from the multicast channel.
-            let multicast = self.multicast.as_mut().unwrap();
+            // let multicast = self.multicast.as_mut().unwrap();
             // if multicast.mc_client_left_need_sync {
             //     debug!("NEED SYNC BECAUSE CLIENT LEAVES");
             //     multicast.mc_client_left_need_sync = false;
@@ -2047,9 +2059,9 @@ impl MulticastConnection for Connection {
         mc_channel.mc_notify_sent_packets(self);
 
         // Force multicast congestion window.
-        let cwnd = mc_channel.paths.get(1).unwrap().recovery.cwnd();
-        mc_channel.mc_set_cwin(self);
-        let cwnd2 = mc_channel.paths.get(1).unwrap().recovery.cwnd();
+        // let cwnd = mc_channel.paths.get(1).unwrap().recovery.cwnd();
+        // mc_channel.mc_set_cwin(self);
+        // let cwnd2 = mc_channel.paths.get(1).unwrap().recovery.cwnd();
         // debug!("After uc_to_mc_control congestion window for client {:?}: {} -> {}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), cwnd, cwnd2);
 
         Ok(())
@@ -2214,28 +2226,28 @@ impl Connection {
 
     /// Sets the congestion window of the multicast source based on the
     /// congestion window of the unicast connection.
-    fn mc_set_cwin(&mut self, uc: &Connection) {
+    pub fn mc_get_uc_cwnd(&mut self) -> Option<usize> {
         // Get paths.
         if let Some(multicast) = self.multicast.as_mut() {
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
-                let mc_path = self.paths.get_mut(mc_space_id);
-                let uc_path = uc.paths.get(1);
-                if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
-                    let cwin = mc_path.recovery.cwnd();
+                let uc_path = self.paths.get(mc_space_id);
+                if let Ok(uc_path) = uc_path {
                     if uc_path.recovery.cwnd_available() == usize::MAX {
-                        return;
+                        return None;
                     }
-                    mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd_available());
-                    // mc_path.recovery.mc_force_cwin(uc_path.recovery.cwnd());
-                    // mc_path.recovery.mc_set_min_cwnd();
-                    // trace!(
-                    //     "{}: Set the congestion window from {} to {}. UC cwnd={} and available={}",
-                    //     uc.trace_id(),
-                    //     cwin,
-                    //     mc_path.recovery.cwnd(),
-                    //     uc_path.recovery.cwnd(),
-                    //     uc_path.recovery.cwnd_available(),
-                    // );
+                    return Some(uc_path.recovery.cwnd_available());
+                }
+            }
+        }
+        None
+    }
+
+    /// Sets the congestion window of the multicast source.
+    pub fn mc_set_cwnd(&mut self, cwnd: usize) {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(mc_space_id) = multicast.get_mc_space_id() {
+                if let Ok(path) = self.paths.get_mut(mc_space_id) {
+                    path.recovery.mc_force_cwin(cwnd);
                 }
             }
         }
