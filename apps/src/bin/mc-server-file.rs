@@ -194,6 +194,16 @@ struct Args {
     /// Whether the multicast packet is proxied. In this case, the provided address will receive the multicast packet to transmit.
     #[clap(long = "proxy")]
     proxy_addr: Option<net::SocketAddr>,
+
+    /// Whether multicast is enabled after the specified number of clients have joined the communication.
+    #[clap(long = "nb-enable-mc")]
+    nb_enable_mc: Option<usize>,
+
+    /// Ask the client to leave the multicast channel if its congestion control state is not sufficient enough to ensure good communication.
+    /// The metric uses the congestion window in the number of bytes.
+    /// MC-TODO: need to find a correct metric other than the congestion window, which is not representative.
+    #[clap(long = "leave-cc-below")]
+    leave_cc_below: Option<usize>,
 }
 
 fn main() {
@@ -339,8 +349,8 @@ fn main() {
     if let (Some(mc_channel), Some(rate)) = (mc_channel_opt.as_mut(), args.pacing)
     {
         // let cwnd = rate * args.expiration_timer;
-        let cwnd = ((rate * args.expiration_timer as f64 * 1_000_000f64) /
-            1000f64)
+        let cwnd = ((rate * args.expiration_timer as f64 * 1_000_000f64)
+            / 1000f64)
             .round() as u64;
         mc_channel.channel.mc_set_constant_pacing(cwnd).unwrap();
         debug!(
@@ -458,8 +468,8 @@ fn main() {
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
-            let client = if !clients_ids.contains_key(&hdr.dcid) &&
-                !clients_ids.contains_key(&hdr.dcid)
+            let client = if !clients_ids.contains_key(&hdr.dcid)
+                && !clients_ids.contains_key(&hdr.dcid)
             {
                 if hdr.ty != quiche::Type::Initial {
                     error!("Packet is not Initial");
@@ -579,35 +589,39 @@ fn main() {
                 if let (Some(mc_announce_data), Some(mc_channel)) =
                     (mc_announce_data_opt.as_ref(), mc_channel_opt.as_ref())
                 {
-                    client
-                        .conn
-                        .mc_set_mc_announce_data(mc_announce_data)
-                        .unwrap();
-                    client
-                        .conn
-                        .mc_set_multicast_receiver(
-                            &mc_channel.master_secret,
-                            mc_channel
-                                .channel
-                                .get_multicast_attributes()
-                                .unwrap()
-                                .get_mc_space_id()
-                                .unwrap(),
-                        )
-                        .unwrap();
-                    debug!("Sets MC_ANNOUNCE data for new client");
-
-                    // Add the multicast authetication channel announcement if
-                    // symmetric authentication is used.
-                    if let Some(mc_announce_auth) = mc_announce_auth_opt.as_ref()
-                    {
+                    // Only advertise the MC_ANNOUNCE data directly to the clients if no dymanic scaling (i.e., creation of the multicast group when enough receivers are connected).
+                    if args.nb_enable_mc.is_none() {
                         client
                             .conn
-                            .mc_set_mc_announce_data(mc_announce_auth)
+                            .mc_set_mc_announce_data(mc_announce_data)
                             .unwrap();
-                        debug!(
-                            "Sets the MC_ANNOUNCE authentication for new client"
-                        );
+                        client
+                            .conn
+                            .mc_set_multicast_receiver(
+                                &mc_channel.master_secret,
+                                mc_channel
+                                    .channel
+                                    .get_multicast_attributes()
+                                    .unwrap()
+                                    .get_mc_space_id()
+                                    .unwrap(),
+                            )
+                            .unwrap();
+                        debug!("Sets MC_ANNOUNCE data for new client");
+
+                        // Add the multicast authetication channel announcement if
+                        // symmetric authentication is used.
+                        if let Some(mc_announce_auth) =
+                            mc_announce_auth_opt.as_ref()
+                        {
+                            client
+                                .conn
+                                .mc_set_mc_announce_data(mc_announce_auth)
+                                .unwrap();
+                            debug!(
+                                "Sets the MC_ANNOUNCE authentication for new client"
+                            );
+                        }
                     }
                 }
 
@@ -697,25 +711,25 @@ fn main() {
                     .get_multicast_attributes()
                     .map(|mc| (mc.get_mc_role(), mc.mc_client_has_key()));
                 info!("APP HAS NOT STARTED: {:?}", uc_server_role);
-                if uc_server_role ==
-                    Some((
+                if uc_server_role
+                    == Some((
                         MulticastRole::ServerUnicast(
                             multicast::MulticastClientStatus::ListenMcPath(true),
                         ),
                         true,
-                    )) &&
-                    !client.active_client ||
-                    !args.multicast &&
-                        client.conn.is_established() &&
-                        !client.active_client
+                    ))
+                    && !client.active_client
+                    || !args.multicast
+                        && client.conn.is_established()
+                        && !client.active_client
                 {
                     info!("New client!");
                     nb_active_mc_receivers += 1;
                     client.active_client = true;
-                } else if args.multicast &&
-                    client.conn.is_established() &&
-                    !client.active_client &&
-                    args.soft_wait
+                } else if args.multicast
+                    && client.conn.is_established()
+                    && !client.active_client
+                    && args.soft_wait
                 {
                     info!("New soft client!");
                     nb_active_mc_receivers += 1;
@@ -729,9 +743,9 @@ fn main() {
                 }
 
                 // Is multicast disabled?
-                if !args.multicast &&
-                    client.conn.is_established() &&
-                    Some(nb_active_mc_receivers) == args.wait_first_client
+                if !args.multicast
+                    && client.conn.is_established()
+                    && Some(nb_active_mc_receivers) == args.wait_first_client
                 {
                     app_handler.start_content_delivery();
                 }
@@ -739,8 +753,8 @@ fn main() {
 
             // Maybe the status of the multicast client changed.
             if let Some(multicast) = client.conn.get_multicast_attributes() {
-                if client.mc_client_listen_uc &&
-                    matches!(
+                if client.mc_client_listen_uc
+                    && matches!(
                         multicast.get_mc_role(),
                         MulticastRole::ServerUnicast(
                             multicast::MulticastClientStatus::ListenMcPath(_)
@@ -749,8 +763,8 @@ fn main() {
                 {
                     println!("Client now joins the multicast channel");
                     client.mc_client_listen_uc = false;
-                } else if !client.mc_client_listen_uc &&
-                    matches!(
+                } else if !client.mc_client_listen_uc
+                    && matches!(
                         multicast.get_mc_role(),
                         MulticastRole::ServerUnicast(
                             multicast::MulticastClientStatus::Leaving(_)
@@ -964,7 +978,6 @@ fn main() {
                     })
                 } else {
                     // Use pacing socket.
-                    println!("Use pacing socket to send multicat content. First few bytes: {:?}", &out[..10]);
                     send_to(
                         mc_socket,
                         &out[..write],
@@ -1070,6 +1083,23 @@ fn main() {
             // }
         }
 
+        // Advertise the MC_ANNOUNCE data if enough clients are in the communication and dynamic scaling is enabled.
+        // MC-TODO: this is not optimal because we will loop over all clients over and over...
+        if args.nb_enable_mc.is_some_and(|nb| clients.len() >= nb) {
+            if let Some(mc_announce_data) = mc_announce_data_opt.as_ref() {
+                for client in clients.values_mut() {
+                    if client.conn.get_multicast_attributes().is_some_and(|mc| {
+                        mc.get_mc_announce_data_path().is_none()
+                    }) {
+                        client
+                            .conn
+                            .mc_set_mc_announce_data(&mc_announce_data)
+                            .unwrap();
+                    }
+                }
+            }
+        }
+
         // Generate outgoing QUIC packets for all active connections and
         // send them on the UDP socket, until quiche
         // reports that there are no more packets to be
@@ -1082,8 +1112,8 @@ fn main() {
                         mc_channel.channel.mc_no_stream_active()
                     } else {
                         client.stream_buf.is_empty()
-                    } && (client.conn.get_multicast_attributes().is_none() ||
-                        client.conn.mc_no_stream_active());
+                    } && (client.conn.get_multicast_attributes().is_none()
+                        || client.conn.mc_no_stream_active());
                 // info!("END can close? {} because {} and {}. connection list of streams: {:?}.\n and for multicast: {:?}", can_close, mc_channel_opt.as_ref().unwrap().channel.mc_no_stream_active(), client.conn.mc_no_stream_active(), client.conn.see_streams(), mc_channel_opt.as_ref().unwrap().channel.see_streams());
                 if can_close {
                     let res = client.conn.close(true, 1, &[0, 1]);
