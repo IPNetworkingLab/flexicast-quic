@@ -45,6 +45,7 @@ use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
 use quiche::on_rmc_timeout_server;
+use quiche::ucs_to_mc_cwnd;
 use quiche::SendInfo;
 use quiche_apps::common::make_qlog_writer;
 use quiche_apps::common::ClientIdMap;
@@ -1198,6 +1199,12 @@ fn main() {
         // concept... right?
         if clients.is_empty() && app_handler.app_has_finished() {
             break;
+        }
+
+        // Set the congestion window of the multicast channel.
+        if let Some(mc_channel) = mc_channel_opt.as_mut() {
+            let clients_conn = clients.iter_mut().map(|c| &mut c.1.conn);
+            ucs_to_mc_cwnd!(&mut mc_channel.channel, clients_conn, now);
         }
     }
 
