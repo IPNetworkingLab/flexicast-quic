@@ -233,7 +233,6 @@ impl StreamMap {
             hash_map::Entry::Vacant(v) => {
                 // Stream has already been closed and garbage collected.
                 if self.collected.contains(&id) {
-                    println!("SC: dup stream id: {}", id);
                     return Err(Error::Done);
                 }
 

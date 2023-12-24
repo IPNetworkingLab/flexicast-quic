@@ -2230,12 +2230,13 @@ impl Connection {
         // Get paths.
         if let Some(multicast) = self.multicast.as_mut() {
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
-                let uc_path = self.paths.get(mc_space_id);
+                let uc_path = self.paths.get(1);
                 if let Ok(uc_path) = uc_path {
                     if uc_path.recovery.cwnd_available() == usize::MAX {
                         return None;
                     }
-                    return Some(uc_path.recovery.cwnd_available());
+                    return Some(uc_path.recovery.cwnd());
+                    // return Some(uc_path.recovery.cwnd_available());
                 }
             }
         }
