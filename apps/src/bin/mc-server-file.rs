@@ -606,6 +606,11 @@ fn main() {
                                     .unwrap()
                                     .get_mc_space_id()
                                     .unwrap(),
+                                mc_channel
+                                    .channel
+                                    .get_multicast_attributes()
+                                    .unwrap()
+                                    .get_decryption_key_algo(),
                             )
                             .unwrap();
                         debug!("Sets MC_ANNOUNCE data for new client");

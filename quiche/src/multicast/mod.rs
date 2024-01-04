@@ -1076,7 +1076,7 @@ pub trait MulticastConnection {
     /// Also sets the multicast channel decryption key secret on the unicast
     /// server. MC-TODO: change the name to be more explicit.
     fn mc_set_multicast_receiver(
-        &mut self, secret: &[u8], mc_space_id: usize,
+        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm,
     ) -> Result<()>;
 
     /// Returns true if the multicast extension has control data to send.
@@ -1265,7 +1265,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_set_multicast_receiver(
-        &mut self, secret: &[u8], mc_space_id: usize,
+        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm,
     ) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             match multicast.mc_role {
@@ -1290,6 +1290,7 @@ impl MulticastConnection for Connection {
                 MulticastRole::ServerUnicast(_) => {
                     multicast.mc_channel_key = Some(secret.to_owned());
                     multicast.mc_space_id = Some(mc_space_id);
+                    multicast.mc_channel_algo = algo;
 
                     Ok(())
                 },
