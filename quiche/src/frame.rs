@@ -34,6 +34,7 @@ use std::convert::TryInto;
 use crate::Error;
 use crate::Result;
 
+use crate::crypto::Algorithm;
 use crate::multicast::authentication::McSymSignature;
 use crate::multicast::MC_ANNOUNCE_CODE;
 use crate::multicast::MC_ASYM_CODE;
@@ -248,6 +249,7 @@ pub enum Frame {
     McKey {
         channel_id: Vec<u8>,
         key: Vec<u8>,
+        algo: Algorithm,
         first_pn: u64,
         client_id: u64,
     },
@@ -477,11 +479,14 @@ impl Frame {
                     .buf()
                     .try_into()
                     .map_err(|_| Error::BufferTooShort)?;
+                let algo =
+                    b.get_u8()?.try_into().map_err(|_| Error::CryptoFail)?;
                 let first_pn = b.get_varint()?;
                 let client_id = b.get_varint()?;
                 Frame::McKey {
                     channel_id,
                     key,
+                    algo,
                     first_pn,
                     client_id,
                 }
@@ -914,6 +919,7 @@ impl Frame {
             Frame::McKey {
                 channel_id,
                 key,
+                algo,
                 first_pn,
                 client_id,
             } => {
@@ -923,6 +929,7 @@ impl Frame {
                 b.put_bytes(channel_id.as_ref())?;
                 b.put_varint(key.len() as u64)?;
                 b.put_bytes(key)?;
+                b.put_u8(algo.to_owned().try_into().unwrap())?;
                 b.put_varint(*first_pn)?;
                 b.put_varint(*client_id)?;
             },
@@ -1309,6 +1316,7 @@ impl Frame {
             Frame::McKey {
                 channel_id,
                 key,
+                algo: _,
                 first_pn,
                 client_id,
             } => {
@@ -1321,6 +1329,7 @@ impl Frame {
                 channel_id.len() +
                 key_len_size +
                 key.len() +
+                1 + // algo len
                 first_pn_size +
                 client_id_size
             },
@@ -1352,9 +1361,9 @@ impl Frame {
                 let signatures_size: usize = signatures
                     .iter()
                     .map(|sign| {
-                        octets::varint_len(sign.mc_client_id) +
-                            1 +
-                            sign.sign.len()
+                        octets::varint_len(sign.mc_client_id)
+                            + 1
+                            + sign.sign.len()
                     })
                     .sum();
                 frame_type_size +
@@ -1435,24 +1444,24 @@ impl Frame {
         // Any other frame is ack-eliciting (note the `!`).
         !matches!(
             self,
-            Frame::Padding { .. } |
-                Frame::ACK { .. } |
-                Frame::ApplicationClose { .. } |
-                Frame::ConnectionClose { .. } |
-                Frame::ACKMP { .. } |
-                Frame::SourceSymbol { .. } |
-                Frame::SourceSymbolHeader { .. } |
-                Frame::SourceSymbolACK { .. }
+            Frame::Padding { .. }
+                | Frame::ACK { .. }
+                | Frame::ApplicationClose { .. }
+                | Frame::ConnectionClose { .. }
+                | Frame::ACKMP { .. }
+                | Frame::SourceSymbol { .. }
+                | Frame::SourceSymbolHeader { .. }
+                | Frame::SourceSymbolACK { .. }
         )
     }
 
     pub fn probing(&self) -> bool {
         matches!(
             self,
-            Frame::Padding { .. } |
-                Frame::NewConnectionId { .. } |
-                Frame::PathChallenge { .. } |
-                Frame::PathResponse { .. }
+            Frame::Padding { .. }
+                | Frame::NewConnectionId { .. }
+                | Frame::PathChallenge { .. }
+                | Frame::PathResponse { .. }
         )
     }
 
@@ -1570,14 +1579,16 @@ impl Frame {
                 maximum: *max,
             },
 
-            Frame::DataBlocked { limit } =>
-                QuicFrame::DataBlocked { limit: *limit },
+            Frame::DataBlocked { limit } => {
+                QuicFrame::DataBlocked { limit: *limit }
+            },
 
-            Frame::StreamDataBlocked { stream_id, limit } =>
+            Frame::StreamDataBlocked { stream_id, limit } => {
                 QuicFrame::StreamDataBlocked {
                     stream_id: *stream_id,
                     limit: *limit,
-                },
+                }
+            },
 
             Frame::StreamsBlockedBidi { limit } => QuicFrame::StreamsBlocked {
                 stream_type: StreamType::Bidirectional,
@@ -1604,13 +1615,15 @@ impl Frame {
                 )),
             },
 
-            Frame::RetireConnectionId { seq_num } =>
+            Frame::RetireConnectionId { seq_num } => {
                 QuicFrame::RetireConnectionId {
                     sequence_number: *seq_num as u32,
-                },
+                }
+            },
 
-            Frame::PathChallenge { .. } =>
-                QuicFrame::PathChallenge { data: None },
+            Frame::PathChallenge { .. } => {
+                QuicFrame::PathChallenge { data: None }
+            },
 
             Frame::PathResponse { .. } => QuicFrame::PathResponse { data: None },
 
@@ -1624,14 +1637,15 @@ impl Frame {
                 trigger_frame_type: None, // don't know trigger type
             },
 
-            Frame::ApplicationClose { error_code, reason } =>
+            Frame::ApplicationClose { error_code, reason } => {
                 QuicFrame::ConnectionClose {
                     error_space: Some(ErrorSpace::ApplicationError),
                     error_code: Some(*error_code),
                     error_code_value: None, // raw error is no different for us
                     reason: Some(String::from_utf8_lossy(reason).into_owned()),
                     trigger_frame_type: None, // don't know trigger type
-                },
+                }
+            },
 
             Frame::HandshakeDone => QuicFrame::HandshakeDone,
 
@@ -1991,13 +2005,14 @@ impl std::fmt::Debug for Frame {
             Frame::McKey {
                 channel_id,
                 key,
+                algo,
                 first_pn,
                 client_id,
             } => {
                 write!(
                     f,
-                    "MC_KEY channel ID={:?} key={:?} first pn={:?} client id={:?}",
-                    channel_id, key, first_pn, client_id,
+                    "MC_KEY channel ID={:?} key={:?} algo={:?} first pn={:?} client id={:?}",
+                    channel_id, key, algo, first_pn, client_id,
                 )?;
             },
 
@@ -2207,9 +2222,9 @@ fn common_ack_wire_len(
     }
 
     if let Some(ecn) = ecn_counts {
-        len += octets::varint_len(ecn.ect0_count) +
-            octets::varint_len(ecn.ect1_count) +
-            octets::varint_len(ecn.ecn_ce_count);
+        len += octets::varint_len(ecn.ect0_count)
+            + octets::varint_len(ecn.ect1_count)
+            + octets::varint_len(ecn.ecn_ce_count);
     }
 
     len
@@ -3769,6 +3784,7 @@ mod tests {
         let frame = Frame::McKey {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             key: vec![1; 32],
+            algo: Algorithm::AES128_GCM,
             first_pn: 0xffffff,
             client_id: 0xabcd,
         };
@@ -3778,7 +3794,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 51);
+        assert_eq!(wire_len, 52);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

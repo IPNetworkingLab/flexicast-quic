@@ -5001,6 +5001,7 @@ impl Connection {
                     let frame = frame::Frame::McKey {
                         channel_id: mc_announce_data.channel_id.clone(),
                         key: multicast.get_decryption_key_secret()?.to_vec(),
+                        algo: multicast.get_decryption_key_algo(),
                         first_pn,
                         client_id: multicast.get_self_client_id()?,
                     };
@@ -9315,6 +9316,7 @@ impl Connection {
             frame::Frame::McKey {
                 channel_id: _,
                 key,
+                algo,
                 first_pn,
                 client_id,
             } => {
@@ -9327,7 +9329,7 @@ impl Connection {
                         ),
                     ));
                 } else if let Some(multicast) = self.multicast.as_mut() {
-                    multicast.set_decryption_key_secret(key)?;
+                    multicast.set_decryption_key_secret(key, algo)?;
                     multicast.set_client_id(client_id)?;
 
                     multicast.update_client_state(

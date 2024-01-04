@@ -305,6 +305,9 @@ pub struct MulticastAttributes {
     /// Multicast channel decryption key secret.
     mc_channel_key: Option<Vec<u8>>,
 
+    /// Algorithm used for the channel symmetric encryption.
+    mc_channel_algo: Algorithm,
+
     /// Multicast crypto Open. Used for the multicast channel only.
     mc_crypto_open: Option<Open>,
 
@@ -693,17 +696,23 @@ impl MulticastAttributes {
         }
     }
 
+    /// Get the channel decryption algorithm.
+    pub fn get_decryption_key_algo(&self) -> Algorithm {
+        self.mc_channel_algo
+    }
+
     /// Sets the channel decryption key secret.
-    pub fn set_decryption_key_secret(&mut self, key: Vec<u8>) -> Result<()> {
+    pub fn set_decryption_key_secret(&mut self, key: Vec<u8>, algo: Algorithm) -> Result<()> {
         match self.mc_role {
             MulticastRole::Client(MulticastClientStatus::JoinedNoKey) |
             MulticastRole::Client(MulticastClientStatus::WaitingToJoin) => {
-                let aead_open = Open::from_secret(Algorithm::AES128_GCM, &key)?;
+                let aead_open = Open::from_secret(algo, &key)?;
                 self.mc_crypto_open = Some(aead_open);
-                let aead_seal = Seal::from_secret(Algorithm::AES128_GCM, &key)?;
+                let aead_seal = Seal::from_secret(algo, &key)?;
                 self.mc_crypto_seal = Some(aead_seal);
 
                 self.mc_channel_key = Some(key);
+                self.mc_channel_algo = algo;
                 Ok(())
             },
             _ => Err(Error::Multicast(MulticastError::McInvalidRole(
@@ -958,6 +967,7 @@ impl Default for MulticastAttributes {
             mc_role: MulticastRole::Undefined,
             mc_announce_data: Vec::with_capacity(2),
             mc_channel_key: None,
+            mc_channel_algo: Algorithm::AES128_GCM,
             mc_crypto_open: None,
             mc_crypto_seal: None,
             mc_key_up_to_date: false,
@@ -1266,9 +1276,9 @@ impl MulticastConnection for Connection {
 
                     // Derive the keys from the secret shared by the receiver.
                     let aead_open =
-                        Open::from_secret(Algorithm::AES128_GCM, secret).unwrap();
+                        Open::from_secret(multicast.mc_channel_algo, secret).unwrap();
                     let aead_seal =
-                        Seal::from_secret(Algorithm::AES128_GCM, secret).unwrap();
+                        Seal::from_secret(multicast.mc_channel_algo, secret).unwrap();
 
                     // Do not change the global context.
                     // We will use this crypto when needed by manually getting it.
@@ -2229,7 +2239,7 @@ impl Connection {
     pub fn mc_get_uc_cwnd(&mut self) -> Option<usize> {
         // Get paths.
         if let Some(multicast) = self.multicast.as_mut() {
-            if let Some(mc_space_id) = multicast.get_mc_space_id() {
+            if let Some(_mc_space_id) = multicast.get_mc_space_id() {
                 let uc_path = self.paths.get(1);
                 if let Ok(uc_path) = uc_path {
                     if uc_path.recovery.cwnd_available() == usize::MAX {
@@ -2418,6 +2428,9 @@ impl MulticastChannelSource {
         let exporter_secret =
             MulticastChannelSource::get_exporter_secret(keylog_filename)?;
 
+        // Get the encryption algorithm.
+        let encryption_algo = conn_server.handshake.cipher().ok_or(Error::CryptoFail)?;
+
         let signature_eddsa = match authentication {
             McAuthType::AsymSign | McAuthType::StreamAsym =>
                 Some(MulticastChannelSource::compute_asymetric_signature_keys()?),
@@ -2434,6 +2447,7 @@ impl MulticastChannelSource {
             mc_pn_need_sym_sign: Some(VecDeque::new()),
             mc_last_recv_time: Some(time::Instant::now()),
             mc_sent_repairs: Some(ranges::RangeSet::default()),
+            mc_channel_algo: encryption_algo,
             ..Default::default()
         });
 
