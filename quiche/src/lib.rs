@@ -3812,6 +3812,8 @@ impl Connection {
                     multicast::MulticastRole::ServerUnicast(_)
                 ) && Some(path_id) == m.get_mc_space_id()
             }) {
+                // Drain the lost frames.
+                for _ in p.recovery.lost[epoch].drain(..) {}
                 continue;
             }
             for lost_frame in p.recovery.lost[epoch].drain(..) {
@@ -7146,7 +7148,7 @@ impl Connection {
             // Disable loss detection timer for data sent on the multicast data
             // path.
             if let Some(multicast) = self.multicast.as_ref() {
-                if Some(path_id) == multicast.get_mc_space_id() {
+                if Some(path_id) == multicast.get_mc_space_id() && matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerMulticast) {
                     continue;
                 }
             }
