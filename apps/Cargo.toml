@@ -29,7 +29,7 @@ log = "0.4"
 ring = "0.16"
 quiche = { path = "../quiche" }
 libc = "0.2"
-nix = { version = "0", features = ["socket", "net", "uio"] }
+nix = { version = "0.27.1", features = ["socket", "net", "uio"] }
 slab = "0.4"
 itertools = "0.10"
 clap = { version = "4.1", features = ["derive"] }
