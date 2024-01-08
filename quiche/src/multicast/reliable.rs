@@ -246,8 +246,8 @@ impl ReliableMulticastConnection for Connection {
         // No timeout for client not in the group/transient leaving.
         if matches!(
             multicast.mc_role,
-            MulticastRole::Client(MulticastClientStatus::AwareUnjoined) |
-                MulticastRole::Client(MulticastClientStatus::Leaving(_))
+            MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+                | MulticastRole::Client(MulticastClientStatus::Leaving(_))
         ) {
             return None;
         }
@@ -297,8 +297,8 @@ impl ReliableMulticastConnection for Connection {
                 let mut random_v = [0u8; 4];
                 random.fill(&mut random_v).ok();
                 let additional_timer = i32::from_be_bytes(random_v) as i128;
-                let et_with_random = expiration_timer as i128 / 2 +
-                    (additional_timer % ((expiration_timer / 10) as i128));
+                let et_with_random = expiration_timer as i128 / 2
+                    + (additional_timer % ((expiration_timer / 10) as i128));
                 rmc.rmc_next_time_ack = now.checked_add(
                     time::Duration::from_millis(et_with_random as u64),
                 );
@@ -387,6 +387,7 @@ impl ReliableMulticastConnection for Connection {
                     lost_pn.remove_until(exp_pn);
                 }
             }
+            let max_pn = lost_pn.last().unwrap_or(0).max(recv_pn.last().unwrap_or(0));
 
             if let Some(rmc) = mc_s.rmc_get_mut().and_then(|rmc| rmc.source_mut())
             {
@@ -397,6 +398,13 @@ impl ReliableMulticastConnection for Connection {
                 } else {
                     rmc.max_rangeset = Some((lost_pn, recv_pn));
                 }
+            }
+
+            if let Ok(path) = uc.paths.get_mut(1) {
+                path.recovery.set_largest_ack(max_pn);
+                // println!("Set the maximum expired pn to {:?}", max_pn);
+                let _out = path.recovery.detect_lost_packets(crate::packet::Epoch::Application, now, &self.trace_id);
+                // println!("Lost packets: {:?}", out);
             }
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
@@ -483,8 +491,8 @@ impl MulticastAttributes {
     /// Always `None` for the multicast source and the client.
     /// `None` if reliable multicast is disabled.
     pub fn rmc_get_server_nb_lost_stream(&self) -> Option<u64> {
-        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_)) ||
-            !self.mc_is_reliable()
+        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_))
+            || !self.mc_is_reliable()
         {
             return None;
         }
@@ -1090,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rmc_cc() {
+    fn test_rmc_cc2() {
         let max_datagram_size = 1350;
         let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
@@ -1147,16 +1155,19 @@ mod tests {
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert_eq!(res, Ok((Some(17), Some(15)).into()));
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
-        let exp_cwin = (mc_cwnd * max_datagram_size).max(
-            mc_pipe.unicast_pipes[0]
-                .0
-                .server
-                .paths
-                .get(1)
-                .unwrap()
-                .recovery
-                .cwnd(),
+        ucs_to_mc_cwnd!(
+            &mut mc_pipe.mc_channel.channel,
+            mc_pipe.unicast_pipes.iter().map(|(v, _, _)| &v.server),
+            expired
         );
+        let exp_cwin = mc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
 
         let cwnd = mc_pipe
             .mc_channel
@@ -1177,15 +1188,14 @@ mod tests {
             .cwnd();
         assert!(new_cwin > initial_cwin);
 
+        let previous_cwin = new_cwin;
+
         // Now a client does not receive any packet.
         let mut loss_1 = RangeSet::default();
-        loss_1.insert(1..2);
-        let mut i = 0;
-        while let Ok(_) = mc_pipe
-            .source_send_single(if i > 18 { None } else { Some(&loss_1) }, 0)
-        {
-            i += 1;
-        }
+        loss_1.insert(0..1);
+        std::thread::sleep(expired.duration_since(time::Instant::now()));
+        while let Ok(_) = mc_pipe.source_send_single(Some(&loss_1), 0) {}
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
 
         let now = expired;
         assert_eq!(mc_pipe.client_rmc_timeout(now, &random), Ok(()));
@@ -1197,22 +1207,19 @@ mod tests {
             .checked_add(time::Duration::from_millis(expiration_timer + 100))
             .unwrap();
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
-
-        // let max_rangeset =
-        // mc_pipe.mc_channel.channel.multicast.as_ref().unwrap().rmc_get().
-        // and_then(|a| a.source()).unwrap().max_rangeset.as_ref();
-        // let mut expected_recv = RangeSet::default();
-        // let mut expected_lost = RangeSet::default();
-        // expected_recv.insert(5..10);
-        // expected_lost.insert(11..12);
-        // assert_eq!(max_rangeset, Some(&(expected_recv, expected_lost)));
+        assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert_eq!(res, Ok((Some(45), Some(43)).into()));
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
+        ucs_to_mc_cwnd!(
+            &mut mc_pipe.mc_channel.channel,
+            mc_pipe.unicast_pipes.iter().map(|(v, _, _)| &v.server),
+            expired
+        );
 
         // Source decreases its congestion window to the minimum multicast value.
-        let exp_cwin = (mc_cwnd * max_datagram_size).max(
+        let exp_cwin =
             mc_pipe.unicast_pipes[0]
                 .0
                 .server
@@ -1220,8 +1227,7 @@ mod tests {
                 .get(1)
                 .unwrap()
                 .recovery
-                .cwnd(),
-        );
+                .cwnd();
         let cwnd = mc_pipe
             .mc_channel
             .channel
@@ -1231,6 +1237,9 @@ mod tests {
             .recovery
             .cwnd();
         assert_eq!(cwnd, exp_cwin);
+
+        println!("Previous cwin: {} and current cwin: {}", previous_cwin, exp_cwin);
+        assert!(exp_cwin < previous_cwin);
     }
 
     #[test]
@@ -1718,7 +1727,11 @@ mod tests {
         .unwrap();
 
         let stream = [0u8; 2000];
-        mc_pipe.mc_channel.channel.stream_send(3, &stream, true).unwrap();
+        mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(3, &stream, true)
+            .unwrap();
         let mut client_1 = RangeSet::default();
         client_1.insert(0..1);
         mc_pipe.source_send_single(Some(&client_1), 0).unwrap();
@@ -1768,7 +1781,11 @@ mod tests {
         let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
 
         let stream = [0u8; 2000];
-        mc_pipe.mc_channel.channel.stream_send(7, &stream, true).unwrap();
+        mc_pipe
+            .mc_channel
+            .channel
+            .stream_send(7, &stream, true)
+            .unwrap();
         let mut client_1 = RangeSet::default();
         client_1.insert(0..1);
         mc_pipe.source_send_single(Some(&client_1), 0).unwrap();

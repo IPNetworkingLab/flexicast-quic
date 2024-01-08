@@ -50,7 +50,7 @@ macro_rules! ucs_to_mc_cwnd {
             // TODO: set the minimum cwnd from all uc.
             $mc.mc_set_cwnd(cwnd);
         }
-    }
+    };
 }
 
 /// Multicast extension errors.
@@ -702,7 +702,9 @@ impl MulticastAttributes {
     }
 
     /// Sets the channel decryption key secret.
-    pub fn set_decryption_key_secret(&mut self, key: Vec<u8>, algo: Algorithm) -> Result<()> {
+    pub fn set_decryption_key_secret(
+        &mut self, key: Vec<u8>, algo: Algorithm,
+    ) -> Result<()> {
         match self.mc_role {
             MulticastRole::Client(MulticastClientStatus::JoinedNoKey) |
             MulticastRole::Client(MulticastClientStatus::WaitingToJoin) => {
@@ -1276,9 +1278,11 @@ impl MulticastConnection for Connection {
 
                     // Derive the keys from the secret shared by the receiver.
                     let aead_open =
-                        Open::from_secret(multicast.mc_channel_algo, secret).unwrap();
+                        Open::from_secret(multicast.mc_channel_algo, secret)
+                            .unwrap();
                     let aead_seal =
-                        Seal::from_secret(multicast.mc_channel_algo, secret).unwrap();
+                        Seal::from_secret(multicast.mc_channel_algo, secret)
+                            .unwrap();
 
                     // Do not change the global context.
                     // We will use this crypto when needed by manually getting it.
@@ -1841,10 +1845,13 @@ impl MulticastConnection for Connection {
         // Add the first packet number of interest for the new path if possible.
         if let Some(exp_pkt) = self.multicast.as_ref().unwrap().mc_last_expired {
             if let Some(exp_pn) = exp_pkt.pn {
-                println!("P1 before: {:?}", self.pkt_num_spaces
-                .spaces
-                .get_mut_or_create(Epoch::Application, pid)
-                .recv_pkt_need_ack);
+                // println!(
+                //     "P1 before: {:?}",
+                //     self.pkt_num_spaces
+                //         .spaces
+                //         .get_mut_or_create(Epoch::Application, pid)
+                //         .recv_pkt_need_ack
+                // );
                 self.pkt_num_spaces
                     .spaces
                     .get_mut_or_create(Epoch::Application, pid)
@@ -1855,10 +1862,13 @@ impl MulticastConnection for Connection {
                     .get_mut_or_create(Epoch::Application, pid)
                     .recv_pkt_need_ack
                     .insert(exp_pn + 1..exp_pn + 2);
-                println!("P1 after: {:?}", self.pkt_num_spaces
-                .spaces
-                .get_mut_or_create(Epoch::Application, pid)
-                .recv_pkt_need_ack);
+                // println!(
+                //     "P1 after: {:?}",
+                //     self.pkt_num_spaces
+                //         .spaces
+                //         .get_mut_or_create(Epoch::Application, pid)
+                //         .recv_pkt_need_ack
+                // );
             }
         }
 
@@ -2057,8 +2067,8 @@ impl MulticastConnection for Connection {
             //         for data in &data_vec[..data_vec.len() - 1] {
             //             self.stream_send(stream_id, data, false)?;
             //         }
-            //         self.stream_send(stream_id, data_vec.last().unwrap(), true)?;
-            //     }
+            //         self.stream_send(stream_id, data_vec.last().unwrap(),
+            // true)?;     }
             // }
         } else {
             return Err(Error::Multicast(MulticastError::McDisabled));
@@ -2073,7 +2083,43 @@ impl MulticastConnection for Connection {
         // let cwnd = mc_channel.paths.get(1).unwrap().recovery.cwnd();
         // mc_channel.mc_set_cwin(self);
         // let cwnd2 = mc_channel.paths.get(1).unwrap().recovery.cwnd();
-        // debug!("After uc_to_mc_control congestion window for client {:?}: {} -> {}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), cwnd, cwnd2);
+        // debug!("After uc_to_mc_control congestion window for client {:?}: {} ->
+        // {}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), cwnd,
+        // cwnd2);
+
+        if let Some(multicast) = self.multicast.as_ref() {
+            if let Some(mc_space_id) = multicast.get_mc_space_id() {
+                // let uc_path = &self.paths.get(0).unwrap();
+                // let loss_detection_timer =
+                //     uc_path.recovery.loss_detection_timer();
+                // println!(
+                //     "Mais le detection timer du uc_path c'est {:?}",
+                //     loss_detection_timer
+                // );
+                if let Ok(mc_path) = self.paths.get_mut(mc_space_id) {
+                    // mc_path.recovery.
+                    // mc_set_loss_detection_timer(loss_detection_timer);
+                    let expiration_timer = multicast
+                        .get_mc_announce_data_path()
+                        .unwrap()
+                        .expiration_timer;
+                    mc_path.recovery.mc_set_rtt(time::Duration::from_millis(
+                        expiration_timer,
+                    ));
+                    // println!(
+                    //     "Et le loss detection timer du mc_path est {:?}",
+                    //     mc_path.recovery.loss_detection_timer()
+                    // );
+
+                    // Sets the largest acked packet as the maximum between the largest actually received and the last expired.
+                    if let Some(last_exp) = mc_channel.multicast.as_ref().unwrap().mc_last_expired.map(|exp| exp.pn).flatten() {
+                        mc_path.recovery.set_largest_ack(last_exp);
+                        // println!("Set the largest ack with last expired: {:?}", last_exp);
+                    }
+                }
+                
+            }
+        }
 
         Ok(())
     }
@@ -2196,14 +2242,13 @@ impl MulticastConnection for Connection {
 
 impl Connection {
     /// The multicast source notifies the unicast server of the packets sent.
-    fn mc_notify_sent_packets(
-        &mut self, uc: &mut Connection,
-    ) {
+    fn mc_notify_sent_packets(&mut self, uc: &mut Connection) {
         if let Some(multicast) = self.multicast.as_ref() {
             // This just delays the problem.
             // if let Some(mc_uc) = uc.get_multicast_attributes() {
-            //     if !matches!(mc_uc.get_mc_role(), MulticastRole::ServerUnicast(MulticastClientStatus::ListenMcPath(_))) {
-            //         return;
+            //     if !matches!(mc_uc.get_mc_role(),
+            // MulticastRole::ServerUnicast(MulticastClientStatus::ListenMcPath(_)))
+            // {         return;
             //     }
             // } else {
             //     return;
@@ -2214,7 +2259,7 @@ impl Connection {
                 let cur_max_pn = if let Some(mc) = uc.multicast.as_ref() {
                     mc.cur_max_pn
                 } else {
-                    return
+                    return;
                 };
                 let uc_path = uc.paths.get_mut(mc_space_id);
                 if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
@@ -2229,7 +2274,8 @@ impl Connection {
                     let uc_mc = uc.multicast.as_mut().unwrap();
                     uc_mc.cur_max_pn = new_max_pn;
                     // self.multicast.as_mut().unwrap().cur_max_pn = new_max_pn;
-                    uc_mc.mc_last_expired = self.multicast.as_ref().unwrap().mc_last_expired;
+                    uc_mc.mc_last_expired =
+                        self.multicast.as_ref().unwrap().mc_last_expired;
                 }
             }
         }
@@ -2237,9 +2283,9 @@ impl Connection {
 
     /// Sets the congestion window of the multicast source based on the
     /// congestion window of the unicast connection.
-    pub fn mc_get_uc_cwnd(&mut self) -> Option<usize> {
+    pub fn mc_get_uc_cwnd(&self) -> Option<usize> {
         // Get paths.
-        if let Some(multicast) = self.multicast.as_mut() {
+        if let Some(multicast) = self.multicast.as_ref() {
             if let Some(_mc_space_id) = multicast.get_mc_space_id() {
                 let uc_path = self.paths.get(1);
                 if let Ok(uc_path) = uc_path {
@@ -2341,8 +2387,12 @@ impl From<&MulticastClientTp> for Vec<u8> {
 impl Connection {
     /// Prints the list of streams that are still open.
     pub fn see_streams(&self) {
-        // debug!("This is the streams for client id {:?}: {:?}", self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()), self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
-        // debug!("And this is the list of I don't know: {:?}", self.streams.iter().map(|(_, s)| s.is_complete()).collect::<Vec<_>>());
+        // debug!("This is the streams for client id {:?}: {:?}",
+        // self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()),
+        // self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        // debug!("And this is the list of I don't know: {:?}",
+        // self.streams.iter().map(|(_, s)|
+        // s.is_complete()).collect::<Vec<_>>());
     }
 }
 
@@ -2430,7 +2480,8 @@ impl MulticastChannelSource {
             MulticastChannelSource::get_exporter_secret(keylog_filename)?;
 
         // Get the encryption algorithm.
-        let encryption_algo = conn_server.handshake.cipher().ok_or(Error::CryptoFail)?;
+        let encryption_algo =
+            conn_server.handshake.cipher().ok_or(Error::CryptoFail)?;
 
         let signature_eddsa = match authentication {
             McAuthType::AsymSign | McAuthType::StreamAsym =>
@@ -3121,6 +3172,10 @@ pub mod testing {
             }
 
             assert_eq!(pipe.advance(), Ok(()));
+
+            if let Ok(p) = pipe.server.paths.get_mut(1) {
+                p.recovery.set_mc_max_cwnd(10);
+            }
 
             Some((pipe, client_addr_2, server_addr))
         }

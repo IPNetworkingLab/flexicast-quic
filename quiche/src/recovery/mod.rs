@@ -726,7 +726,7 @@ impl Recovery {
     ) -> (usize, usize) {
         let (earliest_loss_time, epoch) = self.loss_time_and_space();
 
-        if earliest_loss_time.is_some() {
+        if earliest_loss_time.is_some() || self.mc_cwnd.is_some() {
             // Time threshold loss detection.
             let (lost_packets, lost_bytes) =
                 self.detect_lost_packets(epoch, now, trace_id);
@@ -776,7 +776,6 @@ impl Recovery {
         // HANDSHAKE_DONE and MAX_DATA / MAX_STREAM_DATA as well, in addition
         // to CRYPTO and STREAM, if the original packet carried them.
         for unacked in unacked_iter {
-            trace!("Lost sent packet: {:?}", unacked.pkt_num);
             let mut contains_recovered_source_symbol = false;
             for frame in &unacked.frames {
                 if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame
@@ -1003,6 +1002,8 @@ impl Recovery {
                 pto_timeout = new_time;
                 pto_space = e;
             }
+
+            // println!("MC_DEBUG: pto={:?}, max_delay={:?}, time_of_last_sent_ack_eliciting_pkt={:?}", self.pto(), self.max_ack_delay, self.time_of_last_sent_ack_eliciting_pkt[e]);
         }
 
         (pto_timeout, pto_space)
@@ -1094,7 +1095,7 @@ impl Recovery {
         (lost_packets, lost_bytes)
     }
 
-    fn detect_lost_packets(
+    pub fn detect_lost_packets(
         &mut self, epoch: packet::Epoch, now: Instant, trace_id: &str,
     ) -> (usize, usize) {
         let largest_acked = self.largest_acked_pkt[epoch];

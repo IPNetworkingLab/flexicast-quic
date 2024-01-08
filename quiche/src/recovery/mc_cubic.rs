@@ -1,6 +1,8 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::Recovery;
+use crate::packet::Epoch;
+
+use super::{Recovery, SpacedPktNum};
 
 impl Recovery {
     /// Whether the current CUBIC congestion window is smaller than the minimal
@@ -33,5 +35,24 @@ impl Recovery {
     /// Sets the minimum RTT to a defined value.
     pub fn mc_set_min_rtt(&mut self, min_rtt: Duration) {
         self.min_rtt = min_rtt;
+    }
+
+    /// Sets all RTT values to the values from another recovery mechanism.
+    pub fn mc_set_loss_detection_timer(&mut self, timer: Option<Instant>) {
+        self.loss_detection_timer = timer;
+    }
+
+    pub fn mc_set_rtt(&mut self, expiration_timer: Duration) {
+        self.min_rtt = expiration_timer;
+        self.rttvar = Duration::from_millis(0);
+        self.smoothed_rtt = Some(expiration_timer);
+        self.latest_rtt = expiration_timer;
+    }
+
+    pub fn set_largest_ack(&mut self, largest: u64) {
+        let pn = self.largest_acked_pkt[Epoch::Application].1;
+        if pn < largest {
+            self.largest_acked_pkt[Epoch::Application] = SpacedPktNum::new(self.largest_acked_pkt[Epoch::Application].0, largest);
+        }
     }
 }
