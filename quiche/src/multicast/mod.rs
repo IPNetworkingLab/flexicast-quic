@@ -2386,7 +2386,8 @@ impl From<&MulticastClientTp> for Vec<u8> {
 
 impl Connection {
     /// Prints the list of streams that are still open.
-    pub fn see_streams(&self) {
+    pub fn see_streams(&self) -> bool {
+        self.streams.len() == 0
         // debug!("This is the streams for client id {:?}: {:?}",
         // self.multicast.as_ref().map(|m| m.mc_client_id.as_ref()),
         // self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
