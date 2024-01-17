@@ -241,6 +241,7 @@ fn main() {
     // Log every packet sent on unicast and multicast.
     let mut log_uc_pkt = Vec::with_capacity(10000);
     let mut log_mc_pkt = Vec::with_capacity(10000);
+    let mut log_uc_pkt_recv = Vec::with_capacity(10000);
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -673,6 +674,8 @@ fn main() {
                 from,
                 from_mc: None,
             };
+
+            log_uc_pkt_recv.push(pkt_buf.len());
 
             // Process potentially coalesced packets.
             let read = match client.conn.recv(pkt_buf, recv_info) {
@@ -1250,6 +1253,15 @@ fn main() {
         std::fs::File::create(format!("{}-mc-pkt.txt", &args.result_wire_trace))
             .unwrap();
     for nb_bytes in log_mc_pkt.iter() {
+        writeln!(file, "{}", nb_bytes).unwrap();
+    }
+
+    let mut file = std::fs::File::create(format!(
+        "{}-uc-recv-pkt.txt",
+        &args.result_wire_trace
+    ))
+    .unwrap();
+    for nb_bytes in log_uc_pkt_recv.iter() {
         writeln!(file, "{}", nb_bytes).unwrap();
     }
 }
