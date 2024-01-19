@@ -143,7 +143,7 @@ impl AppDataServer {
     }
 
     #[inline]
-    pub fn next_timeout(&self) -> Option<time::Duration> {
+    pub fn next_timeout(&mut self) -> Option<time::Duration> {
         match self {
             Self::Tixeo(t) => t.next_timeout(),
             Self::File(f) => f.next_timeout(),

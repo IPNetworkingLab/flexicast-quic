@@ -127,10 +127,9 @@ struct Args {
     #[clap(short = 'n', long, value_parser)]
     nb_frames: Option<u64>,
 
-    /// Delay between packets in case no trace is replayed and the source sends
-    /// manual data. In ms.
+    /// Additional delay to pass to the application.
     #[clap(short = 'd', long, value_parser, default_value = "0")]
-    delay_no_replay: u64,
+    app_delay: u64,
 
     /// Time-to-live of video frames [ms].
     #[clap(long, value_parser, default_value = "600")]
@@ -228,7 +227,7 @@ fn main() {
         args.app,
         args.filepath.as_deref(),
         args.nb_frames,
-        args.delay_no_replay,
+        args.app_delay,
         args.wait_first_client.is_some(),
         &args.result_quic_trace,
         &args.result_wire_trace,

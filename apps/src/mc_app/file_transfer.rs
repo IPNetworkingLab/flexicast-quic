@@ -104,26 +104,14 @@ impl FileServer {
         })
     }
 
-    pub fn next_timeout(&self) -> Option<time::Duration> {
+    pub fn next_timeout(&mut self) -> Option<time::Duration> {
+        // The sleep_delay is used only at the beginning of the communication.
         if self.start.is_some() && self.is_active() && !self.sleep_delay.is_zero() {
-            if let Some(last) = self.last_sent {
-                let now = time::Instant::now();
-                // debug!(
-                //     "Last sent is {:?}, sleep delay: {:?}, now: {:?}",
-                //     last, self.sleep_delay, now
-                // );
-                if last + self.sleep_delay <= now {
-                    Some(time::Duration::ZERO)
-                } else {
-                    Some(
-                        last.checked_add(self.sleep_delay)
-                            .unwrap()
-                            .duration_since(now),
-                    )
-                }
-            } else {
-                Some(time::Duration::ZERO)
-            }
+            let now = time::Instant::now();
+
+            let delay = Some(self.sleep_delay - now.duration_since(self.start.unwrap()));
+            debug!("First delay: {:?}", delay);
+            delay
         } else {
             None
         }
@@ -132,7 +120,7 @@ impl FileServer {
     pub fn start_content_delivery(&mut self) {
         trace!("Start the file transfer delivery content");
         self.active = true;
-        self.start = Some(time::Instant::now())
+        self.start = Some(time::Instant::now());
     }
 
     pub fn get_app_data(&self) -> (u64, Vec<u8>) {
@@ -235,6 +223,6 @@ impl FileServer {
 
     #[inline]
     pub fn has_sent_some_data(&self) -> bool {
-        self.stream_id > 1
+        self.stream_id > 3
     }
 }
