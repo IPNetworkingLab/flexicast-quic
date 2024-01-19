@@ -237,7 +237,7 @@ fn on_packet_acked(
     // When the recovery episode ends with recovering
     // a few packets (less than cwnd / mss * ROLLBACK_THRESHOLD_PERCENT(%)), it's
     // considered as spurious and restore to the previous state.
-    /*if r.congestion_recovery_start_time.is_some() {
+    if r.congestion_recovery_start_time.is_some() {
         let new_lost = r.lost_count - r.cubic_state.prior.lost_count;
         let rollback_threshold = (r.congestion_window / r.max_datagram_size) *
             ROLLBACK_THRESHOLD_PERCENT /
@@ -251,7 +251,7 @@ fn on_packet_acked(
                 return;
             }
         }
-    }*/
+    }
 
     if r.congestion_window < r.ssthresh {
         // In Slow slart, bytes_acked_sl is used for counting

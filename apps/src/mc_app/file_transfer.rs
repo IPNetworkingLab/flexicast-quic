@@ -4,7 +4,7 @@
 //! each stream contains a single STREAM_FRAME.
 
 use std::io::Write;
-use std::time;
+use std::time::{self, Duration};
 use std::time::SystemTime;
 
 pub struct FileClient {
@@ -109,8 +109,11 @@ impl FileServer {
         if self.start.is_some() && self.is_active() && !self.sleep_delay.is_zero() {
             let now = time::Instant::now();
 
-            let delay = Some(self.sleep_delay - now.duration_since(self.start.unwrap()));
-            debug!("First delay: {:?}", delay);
+            let delay = Some(self.sleep_delay.saturating_sub(now.duration_since(self.start.unwrap())));
+            debug!("First delay: {:?} because now: {:?}, start: {:?} and sleep delay: {:?}", delay, now, self.start, self.sleep_delay);
+            if delay.unwrap().is_zero() {
+                self.sleep_delay = Duration::ZERO;
+            }
             delay
         } else {
             None
@@ -202,13 +205,8 @@ impl FileServer {
 
     #[inline]
     pub fn should_send_app_data(&self) -> bool {
-        let now = time::Instant::now();
         self.is_active() && self.chunks.len() > self.sent_chunks &&
-        if let Some(last) = self.last_sent {
-                now.duration_since(last) >= self.sleep_delay
-        } else {
-            true
-        }
+        self.sleep_delay.is_zero()
     }
 
     #[inline]

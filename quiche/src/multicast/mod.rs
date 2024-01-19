@@ -942,7 +942,7 @@ impl MulticastAttributes {
         self.mc_pn_stream_id = self
             .mc_pn_stream_id
             .iter()
-            .filter(|(&pn, _)| pn <= exp_pn)
+            .filter(|(&pn, _)| pn > exp_pn)
             .map(|(&pn, &sid)| (pn, sid))
             .collect();
         Ok(())
