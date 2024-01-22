@@ -380,11 +380,20 @@ impl ReliableMulticastConnection for Connection {
                     nb_lost_stream_frames;
             }
 
-            // Remove already expired feedback from the `recv_pn` value.
             if let Some(exp) = mc_s.mc_last_expired {
                 if let Some(exp_pn) = exp.pn {
+                    // Remove already expired feedback from the `recv_pn` value.
                     recv_pn.remove_until(exp_pn);
                     lost_pn.remove_until(exp_pn);
+
+                    // Reset the congestion control state if the expired packet is less than the first packet of interest given in the MC_KEY.
+                    // CHEAT: assume that we consider the first 3 packets sent on this path.
+                    if exp_pn <= 10 {
+                        if let Ok(uc_path) = uc.paths.get_mut(1) {
+                            debug!("MC-DEBUG: reset the congestion controller state for the server");
+                            uc_path.recovery.reset();
+                        }
+                    }
                 }
             }
             let max_pn = lost_pn.last().unwrap_or(0).max(recv_pn.last().unwrap_or(0));

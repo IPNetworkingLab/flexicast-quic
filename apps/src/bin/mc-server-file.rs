@@ -131,6 +131,10 @@ struct Args {
     #[clap(short = 'd', long, value_parser, default_value = "0")]
     app_delay: u64,
 
+    /// Second additional delay to pass to the application.
+    #[clap(long = "app-delay-2", value_parser, default_value = "0")]
+    app_delay_2: u64,
+
     /// Time-to-live of video frames [ms].
     #[clap(long, value_parser, default_value = "600")]
     expiration_timer: u64,
@@ -232,6 +236,7 @@ fn main() {
         &args.result_quic_trace,
         &args.result_wire_trace,
         args.chunk_size,
+        args.app_delay_2,
     );
 
     let authentication = args.authentication;
@@ -302,6 +307,7 @@ fn main() {
     config.set_disable_active_migration(true);
     config.set_active_connection_id_limit(5);
     config.enable_early_data();
+    config.set_real_time(true);
     if args.multicast {
         config.set_multipath(true);
         config.set_enable_server_multicast(true);
@@ -1120,7 +1126,7 @@ fn main() {
         // sent.
         for client in clients.values_mut() {
             if app_handler.app_has_finished() && client.conn.is_established() {
-                // info!("CAN TRY TO CLOSE THE APP");
+                info!("Trace {:?}: CAN TRY TO CLOSE THE APP: {:?}", client.conn.trace_id(), client.conn.mc_no_stream_active());
                 let can_close =
                     if let Some(mc_channel) = mc_channel_opt.as_ref() {
                         mc_channel.channel.mc_no_stream_active()
@@ -1496,6 +1502,7 @@ pub fn get_test_mc_config(
         quiche::FECSchedulerAlgorithm::RetransmissionFec,
     );
     config.enable_pacing(false);
+    config.set_real_time(true);
     if mc_cwnd.is_some() {
         config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     } else {

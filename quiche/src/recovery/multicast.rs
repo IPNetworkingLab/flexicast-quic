@@ -574,7 +574,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
         // Update app limited state.
         // trace!("{:?}: Update uc app limited to {}. Now uc has {} bytes in flight. The cur max pn={}", trace_id, self.app_limited, uc.bytes_in_flight, cur_max_pn);
-        uc.update_app_limited(self.app_limited);
+        // uc.update_app_limited(self.app_limited);
 
         new_max_pn + 1
     }

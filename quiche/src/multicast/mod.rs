@@ -46,6 +46,7 @@ use crate::Result;
 macro_rules! ucs_to_mc_cwnd {
     ( $mc:expr, $ucs: expr, $now: expr ) => {
         let min_cwnd = $ucs.filter_map(|uc| uc.mc_get_uc_cwnd()).min();
+        debug!("MC-DEBUG: This is the source new congestion window: {:?}", min_cwnd);
         if let Some(cwnd) = min_cwnd {
             // TODO: set the minimum cwnd from all uc.
             $mc.mc_set_cwnd(cwnd);
@@ -2140,6 +2141,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
+        debug!("MC-DEBUG: {:?}", self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
         self.multicast.is_some() && self.streams.len() == 0
     }
 
@@ -2292,6 +2294,7 @@ impl Connection {
                     if uc_path.recovery.cwnd_available() == usize::MAX {
                         return None;
                     }
+                    debug!("Client {:?} has a cwnd of {:?}", multicast.get_self_client_id(), uc_path.recovery.cwnd());
                     return Some(uc_path.recovery.cwnd());
                     // return Some(uc_path.recovery.cwnd_available());
                 }

@@ -4,7 +4,8 @@
 //! each stream contains a single STREAM_FRAME.
 
 use std::io::Write;
-use std::time::{self, Duration};
+use std::time;
+use std::time::Duration;
 use std::time::SystemTime;
 
 pub struct FileClient {
@@ -58,6 +59,7 @@ pub struct FileServer {
     active: bool,
     start: Option<time::Instant>,
     last_sent: Option<time::Instant>,
+    start_delay: time::Duration,
     sleep_delay: time::Duration,
 
     to_quic_filename: String,
@@ -68,7 +70,7 @@ impl FileServer {
     pub fn new(
         filename: Option<&str>, nb_frames: Option<u64>, wait: bool,
         to_quic_filename: &str, to_wire_filename: &str, chunk_size: usize,
-        sleep_delay: u64,
+        start_delay: u64, sleep_delay: u64,
     ) -> Result<Self, std::io::Error> {
         let chunks: Vec<_> = if let Some(filepath) = filename {
             std::fs::read(filepath)?
@@ -97,6 +99,7 @@ impl FileServer {
                 Some(time::Instant::now())
             },
             last_sent: None,
+            start_delay: time::Duration::from_millis(start_delay),
             sleep_delay: time::Duration::from_millis(sleep_delay),
 
             to_quic_filename: to_quic_filename.to_string(),
@@ -105,16 +108,30 @@ impl FileServer {
     }
 
     pub fn next_timeout(&mut self) -> Option<time::Duration> {
-        // The sleep_delay is used only at the beginning of the communication.
-        if self.start.is_some() && self.is_active() && !self.sleep_delay.is_zero() {
+        // The start_delay is used only at the beginning of the communication.
+        if self.start.is_some() && self.is_active() {
             let now = time::Instant::now();
 
-            let delay = Some(self.sleep_delay.saturating_sub(now.duration_since(self.start.unwrap())));
-            debug!("First delay: {:?} because now: {:?}, start: {:?} and sleep delay: {:?}", delay, now, self.start, self.sleep_delay);
-            if delay.unwrap().is_zero() {
-                self.sleep_delay = Duration::ZERO;
+            if !self.start_delay.is_zero() {
+                let delay = Some(
+                    self.start_delay
+                        .saturating_sub(now.duration_since(self.start.unwrap())),
+                );
+                debug!("First delay: {:?} because now: {:?}, start: {:?} and start delay: {:?}", delay, now, self.start, self.start_delay);
+                if delay.unwrap().is_zero() {
+                    self.start_delay = Duration::ZERO;
+                }
+                delay
+            } else if !self.sleep_delay.is_zero() {
+                let delay = self.last_sent.map(|last_sent| {
+                    self.sleep_delay
+                        .saturating_sub(now.duration_since(last_sent))
+                });
+                debug!("Delay between elems: {:?} because now={:?}, last sent={:?} and sleep delay={:?}", delay, now, self.last_sent, self.sleep_delay);
+                delay
+            } else {
+                None
             }
-            delay
         } else {
             None
         }
@@ -205,8 +222,9 @@ impl FileServer {
 
     #[inline]
     pub fn should_send_app_data(&self) -> bool {
-        self.is_active() && self.chunks.len() > self.sent_chunks &&
-        self.sleep_delay.is_zero()
+        self.is_active() &&
+            self.chunks.len() > self.sent_chunks &&
+            self.start_delay.is_zero()
     }
 
     #[inline]

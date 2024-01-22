@@ -7041,7 +7041,7 @@ impl Connection {
             // result is `None`, but if at least one of them is set then a
             // `Some(...)` value is returned.
             let path_timer =
-                self.paths.iter().filter_map(|(i, p)| {let a = p.path_timer(); println!("For path {:?} the timer is {:?}", i, a); a}).min();
+                self.paths.iter().filter_map(|(_, p)| p.path_timer()).min();
             let key_update_timer = self
                 .pkt_num_spaces
                 .crypto
@@ -7148,22 +7148,34 @@ impl Connection {
             // Disable loss detection timer for data sent on the multicast data
             // path.
             if let Some(multicast) = self.multicast.as_ref() {
-                if Some(path_id) == multicast.get_mc_space_id() && matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerMulticast) {
+                if Some(path_id) == multicast.get_mc_space_id() &&
+                    matches!(
+                        multicast.get_mc_role(),
+                        multicast::MulticastRole::ServerMulticast
+                    )
+                {
                     continue;
                 }
             }
 
             // if let Some(multicast) = self.multicast.as_ref() {
-            //     if Some(path_id) == multicast.get_mc_space_id() && matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerUnicast(_)) {
-            //         println!("Checking for the loss detection timer for the unicast server for its multicast path");
-            //     }
+            //     if Some(path_id) == multicast.get_mc_space_id() &&
+            // matches!(multicast.get_mc_role(),
+            // multicast::MulticastRole::ServerUnicast(_)) {
+            //         println!("Checking for the loss detection timer for the
+            // unicast server for its multicast path");     }
             // }
 
             if let Some(timer) = p.recovery.loss_detection_timer() {
-                // println!("CHECKING FOR AT LEAST ONE: {:?} = {}", timer, path_id);
-                // if let Some(multicast) = self.multicast.as_ref() {
-                //     if Some(path_id) == multicast.get_mc_space_id() && matches!(multicast.get_mc_role(), multicast::MulticastRole::ServerUnicast(_)) {
-                //         println!("Loss detection timer for the unicast server {:?} and difference with now: {:?} so is timer below: {}", timer, timer.duration_since(now), timer <= now);
+                // println!("CHECKING FOR AT LEAST ONE: {:?} = {}", timer,
+                // path_id); if let Some(multicast) =
+                // self.multicast.as_ref() {     if Some(path_id)
+                // == multicast.get_mc_space_id() &&
+                // matches!(multicast.get_mc_role(),
+                // multicast::MulticastRole::ServerUnicast(_)) {
+                //         println!("Loss detection timer for the unicast server
+                // {:?} and difference with now: {:?} so is timer below: {}",
+                // timer, timer.duration_since(now), timer <= now);
                 //     }
                 // }
                 if timer <= now {
@@ -7180,7 +7192,8 @@ impl Connection {
                         &self.trace_id,
                     );
 
-                    // println!("Lost packets: {} and lost bytes: {}", lost_packets, lost_bytes);
+                    // println!("Lost packets: {} and lost bytes: {}",
+                    // lost_packets, lost_bytes);
                     self.lost_count += lost_packets;
                     self.lost_bytes += lost_bytes as u64;
 

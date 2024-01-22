@@ -109,6 +109,7 @@ impl AppDataServer {
     pub fn new(
         app: McApp, filename: Option<&str>, nb_frames: Option<u64>, delay: u64,
         wait: bool, result_quic: &str, result_wire: &str, chunk_size: usize,
+        delay_2: u64,
     ) -> Self {
         match app {
             McApp::Tixeo => Self::Tixeo(TixeoServer::new(
@@ -128,6 +129,7 @@ impl AppDataServer {
                     result_wire,
                     chunk_size,
                     delay,
+                    delay_2,
                 )
                 .unwrap(),
             ),
