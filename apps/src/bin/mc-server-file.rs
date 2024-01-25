@@ -929,12 +929,13 @@ fn main() {
                     &data.as_ref()[off..],
                     true,
                 ) {
-                    Ok(v) => v,
+                    Ok(v) => {debug!("Push stream {:?} at offset {:?} and length {:?}", s_id, off, v); v},
                     Err(quiche::Error::Done) => {
                         info!(
                             "Break on client {} stream {} because done",
                             client.client_id, s_id
                         );
+                        client.stream_buf.push_front((s_id, off, data));
                         break;
                     },
                     Err(e) => {
