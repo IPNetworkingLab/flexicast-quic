@@ -1002,7 +1002,7 @@ fn main() {
                 // the multicast destination port.
                 if let Some(proxy_addr) = args.proxy_addr {
                     send_info.to = proxy_addr;
-                    println!("Use proxy addr: {:?}", proxy_addr);
+                    debug!("Use proxy addr: {:?}", proxy_addr);
                 } else {
                     send_info.to = mc_channel.mc_send_addr;
                 }
