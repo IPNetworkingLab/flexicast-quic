@@ -43,7 +43,7 @@ impl FileClient {
     }
 
     pub fn leave_on_mc_timeout(&self) -> bool {
-        true
+        false
     }
 }
 
