@@ -139,11 +139,6 @@ struct Args {
     #[clap(long, value_parser, default_value = "600")]
     expiration_timer: u64,
 
-    /// Close the multicast channel and stop the server when the video
-    /// transmission is completed.
-    #[clap(long)]
-    close_complete: bool,
-
     /// Waits that at least a client connects before starting the video content.
     /// If multicast is enabled, waits for a first multicast client to connect.
     /// If multicast is disabled, waits for a first unicast client to connect.
@@ -207,11 +202,9 @@ struct Args {
 
     /// Ask the client to leave the multicast channel if its congestion control
     /// state is not sufficient enough to ensure good communication.
-    /// The metric uses the congestion window in the number of bytes.
-    /// MC-TODO: need to find a correct metric other than the congestion window,
-    /// which is not representative.
+    /// The metric is a throughput in Mbps. We use the expiration timer to convert to a cwin value in bytes.
     #[clap(long = "leave-cc-below")]
-    leave_cc_below: Option<usize>,
+    leave_below_bw: Option<f64>,
 
     /// Maximum number of sequential packets for unicast QUIC to send at once.
     #[clap(long = "max-nb-unicast")]
@@ -241,6 +234,9 @@ fn main() {
 
     let authentication = args.authentication;
     let mut nb_active_mc_receivers = 0;
+
+    let leave_mc_below_cwin = args.leave_below_bw.map(|bw| ((bw * 1_000_000f64 / 8f64 / (args.expiration_timer as f64 / 1000.0) )) as usize);
+    debug!("Leave mc below cwin={:?}", leave_mc_below_cwin);
 
     // Log every packet sent on unicast and multicast.
     let mut log_uc_pkt = Vec::with_capacity(10000);
@@ -312,7 +308,7 @@ fn main() {
         config.set_multipath(true);
         config.set_enable_server_multicast(true);
         config.set_fec_window_size(2000);
-        debug!("Set multicase true");
+        debug!("Set multicast true");
     }
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
     config.enable_pacing(false);
@@ -336,7 +332,6 @@ fn main() {
         None
     };
 
-    println!("MC CWND: {:?}", mc_cwnd);
     let (
         mut mc_socket_opt,
         mut mc_channel_opt,
@@ -894,17 +889,17 @@ fn main() {
                     }
                     app_data.len() == written
                 } else {
-                    // Unicast.
-                    // ... or for every client otherwise.
-                    // Buffer the data to allow clients to go on different paces.
-                    let data = Rc::new(app_data);
-                    clients.values_mut().for_each(|client| {
-                        client.stream_buf.push_back((stream_id, 0, data.clone()))
-                    });
-
-                    app_handler.stream_written(data.as_ref().len());
                     true
                 };
+                // Unicast to all clients that do not listen to the multicast group.
+                // ... or for every client otherwise.
+                // Buffer the data to allow clients to go on different paces.
+                let data = Rc::new(app_data);
+                clients.values_mut().filter(|client| !client.mc_client_listen_uc).for_each(|client| {
+                    client.stream_buf.push_back((stream_id, 0, data.clone()))
+                });
+
+                app_handler.stream_written(data.as_ref().len());
                 if all_stream_written {
                     // debug!("MC-DEBUG: gen next app data");
                     app_handler.on_sent_to_quic();
@@ -1127,7 +1122,7 @@ fn main() {
         // sent.
         for client in clients.values_mut() {
             if app_handler.app_has_finished() && client.conn.is_established() {
-                info!("Trace {:?}: CAN TRY TO CLOSE THE APP: {:?}", client.conn.trace_id(), client.conn.mc_no_stream_active());
+                println!("Trace {:?}: CAN TRY TO CLOSE THE APP: {:?}", client.conn.trace_id(), client.conn.mc_no_stream_active());
                 let can_close =
                     if let Some(mc_channel) = mc_channel_opt.as_ref() {
                         mc_channel.channel.mc_no_stream_active()
@@ -1240,7 +1235,7 @@ fn main() {
         // Set the congestion window of the multicast channel.
         if let Some(mc_channel) = mc_channel_opt.as_mut() {
             let clients_conn = clients.iter_mut().map(|c| &mut c.1.conn);
-            ucs_to_mc_cwnd!(&mut mc_channel.channel, clients_conn, now);
+            ucs_to_mc_cwnd!(&mut mc_channel.channel, clients_conn, now, leave_mc_below_cwin);
         }
     }
 

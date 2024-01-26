@@ -225,7 +225,7 @@ impl AppDataServer {
     }
 
     #[inline]
-    pub fn should_send_app_data(&self) -> bool {
+    pub fn should_send_app_data(&mut self) -> bool {
         match self {
             Self::Tixeo(t) => t.should_send_app_data(),
             Self::File(f) => f.should_send_app_data(),

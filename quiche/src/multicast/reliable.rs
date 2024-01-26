@@ -1166,8 +1166,9 @@ mod tests {
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
         ucs_to_mc_cwnd!(
             &mut mc_pipe.mc_channel.channel,
-            mc_pipe.unicast_pipes.iter().map(|(v, _, _)| &v.server),
-            expired
+            mc_pipe.unicast_pipes.iter_mut().map(|(v, _, _)| &mut v.server),
+            expired,
+            None
         );
         let exp_cwin = mc_pipe.unicast_pipes[0]
             .0
@@ -1223,8 +1224,9 @@ mod tests {
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
         ucs_to_mc_cwnd!(
             &mut mc_pipe.mc_channel.channel,
-            mc_pipe.unicast_pipes.iter().map(|(v, _, _)| &v.server),
-            expired
+            mc_pipe.unicast_pipes.iter_mut().map(|(v, _, _)| &mut v.server),
+            expired,
+            None
         );
 
         // Source decreases its congestion window to the minimum multicast value.

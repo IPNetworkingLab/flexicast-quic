@@ -221,10 +221,10 @@ impl FileServer {
     }
 
     #[inline]
-    pub fn should_send_app_data(&self) -> bool {
+    pub fn should_send_app_data(&mut self) -> bool {
         self.is_active() &&
             self.chunks.len() > self.sent_chunks &&
-            self.start_delay.is_zero()
+            self.start_delay.is_zero() && self.next_timeout().map_or(true, |timer| timer == Duration::ZERO)
     }
 
     #[inline]

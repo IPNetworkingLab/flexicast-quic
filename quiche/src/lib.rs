@@ -9333,7 +9333,6 @@ impl Connection {
                         action.try_into()?,
                         Some(action_data),
                     )?;
-                    debug!("After update client state");
                 } else {
                     return Err(Error::Multicast(
                         multicast::MulticastError::McDisabled,

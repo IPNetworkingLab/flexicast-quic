@@ -44,13 +44,23 @@ use crate::Result;
 /// Communication between the multicast channel and the unicast connections.
 #[macro_export]
 macro_rules! ucs_to_mc_cwnd {
-    ( $mc:expr, $ucs: expr, $now: expr ) => {
-        let min_cwnd = $ucs.filter_map(|uc| uc.mc_get_uc_cwnd()).min();
+    ( $mc:expr, $ucs: expr, $now: expr, $cwnd_limit: expr ) => {
+        let min_cwnd = $ucs.filter_map(|uc| {
+            let cwnd = uc.mc_get_uc_cwnd();
+
+            if let (Some(c), Some(cl)) = (cwnd, $cwnd_limit) {
+                if c < cl {
+                    _ = uc.mc_leave_channel();
+                }
+            }
+
+            cwnd
+        }).min();
         debug!("MC-DEBUG: This is the source new congestion window: {:?}", min_cwnd);
         if let Some(cwnd) = min_cwnd {
-            // TODO: set the minimum cwnd from all uc.
             $mc.mc_set_cwnd(cwnd);
         }
+        
     };
 }
 
@@ -2141,7 +2151,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
-        debug!("MC-DEBUG: {:?}", self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        debug!("MC-DEBUG: {:?}", self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>().first());
         self.multicast.is_some() && self.streams.len() == 0
     }
 
@@ -2288,15 +2298,18 @@ impl Connection {
     pub fn mc_get_uc_cwnd(&self) -> Option<usize> {
         // Get paths.
         if let Some(multicast) = self.multicast.as_ref() {
-            if let Some(_mc_space_id) = multicast.get_mc_space_id() {
-                let uc_path = self.paths.get(1);
-                if let Ok(uc_path) = uc_path {
-                    if uc_path.recovery.cwnd_available() == usize::MAX {
-                        return None;
+            // Do not give the multicast window if not in the multicast channel.
+            if matches!(multicast.get_mc_role(), MulticastRole::ServerUnicast(MulticastClientStatus::ListenMcPath(_))) {
+                if let Some(_mc_space_id) = multicast.get_mc_space_id() {
+                    let uc_path = self.paths.get(1);
+                    if let Ok(uc_path) = uc_path {
+                        if uc_path.recovery.cwnd_available() == usize::MAX {
+                            return None;
+                        }
+                        debug!("Client {:?} has a cwnd of {:?}", multicast.get_self_client_id(), uc_path.recovery.cwnd());
+                        return Some(uc_path.recovery.cwnd());
+                        // return Some(uc_path.recovery.cwnd_available());
                     }
-                    debug!("Client {:?} has a cwnd of {:?}", multicast.get_self_client_id(), uc_path.recovery.cwnd());
-                    return Some(uc_path.recovery.cwnd());
-                    // return Some(uc_path.recovery.cwnd_available());
                 }
             }
         }
