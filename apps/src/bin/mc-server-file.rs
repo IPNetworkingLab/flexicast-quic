@@ -912,7 +912,7 @@ fn main() {
                 let data = Rc::new(app_data);
                 clients
                     .values_mut()
-                    .filter(|client| !client.mc_client_listen_uc)
+                    .filter(|client| client.mc_client_listen_uc)
                     .for_each(|client| {
                         client.stream_buf.push_back((stream_id, 0, data.clone()))
                     });
@@ -957,7 +957,8 @@ fn main() {
                         break;
                     },
                     Err(e) => {
-                        panic!("Error stream send unicast: {}", e)
+                        error!("Error stream send unicast: {}", e);
+                        break;
                     },
                 };
                 if off + w < data.len() {
