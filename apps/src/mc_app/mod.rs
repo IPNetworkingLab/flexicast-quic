@@ -255,6 +255,14 @@ impl AppDataServer {
             Self::File(f) => f.has_sent_some_data(),
         }
     }
+
+    #[inline]
+    pub fn get_app_full_data(&self) -> (u64, Vec<u8>) {
+        match self {
+            Self::File(f) => f.get_app_full_data(),
+            Self::Tixeo(t) => t.get_app_full_data(),
+        }
+    }
 }
 
 pub mod file_transfer;

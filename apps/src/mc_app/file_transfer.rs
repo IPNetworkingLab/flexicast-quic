@@ -151,6 +151,13 @@ impl FileServer {
         )
     }
 
+    pub fn get_app_full_data(&self) -> (u64, Vec<u8>) {
+        (
+            self.stream_id,
+            self.chunks[self.sent_chunks].to_vec(),
+        )
+    }
+
     pub fn gen_nxt_app_data(&mut self) {
         if !self.active {
             return;

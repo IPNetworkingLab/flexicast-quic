@@ -118,6 +118,13 @@ impl TixeoServer {
         (self.cur_stream_id, vec![0u8; self.nxt_nb_bytes])
     }
 
+    pub fn get_app_full_data(&self) -> (u64, Vec<u8>) {
+        (
+            self.cur_stream_id,
+            vec![0u8; self.nxt_nb_bytes],
+        )
+    }
+
     pub fn gen_nxt_app_data(&mut self) {
         self.sent_frames += 1;
         if self.sent_frames >= self.frames.len() {
