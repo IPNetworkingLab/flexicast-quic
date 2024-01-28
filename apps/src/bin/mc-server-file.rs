@@ -214,6 +214,10 @@ struct Args {
     /// Maximum number of sequential packets for unicast QUIC to send at once.
     #[clap(long = "max-nb-unicast")]
     max_nb_uc: Option<usize>,
+
+    /// Disable the congestion control for the multicast channel. In practice, set the congestion window of the multicast channel to the maximum value.
+    #[clap(long = "disable-cc")]
+    disable_cc: bool,
 }
 
 fn main() {
@@ -909,7 +913,8 @@ fn main() {
                 // Unicast to all clients that do not listen to the multicast
                 // group. ... or for every client otherwise.
                 // Buffer the data to allow clients to go on different paces.
-                let data = Rc::new(app_data);
+                let (_, full_data) = app_handler.get_app_full_data();
+                let data = Rc::new(full_data);
                 clients
                     .values_mut()
                     .filter(|client| client.mc_client_listen_uc)
@@ -956,8 +961,12 @@ fn main() {
                         client.stream_buf.push_front((s_id, off, data));
                         break;
                     },
+                    Err(quiche::Error::InvalidStreamState(id)) => {
+                        info!("Stream {} already collected", id);
+                        continue; // Go to next element.
+                    },
                     Err(e) => {
-                        error!("Error stream send unicast: {}", e);
+                        error!("Error stream send unicast for stream {:?} and {:?}: {}", s_id, off, e);
                         break;
                     },
                 };
@@ -1144,6 +1153,7 @@ fn main() {
         // send them on the UDP socket, until quiche
         // reports that there are no more packets to be
         // sent.
+        let nb_clients = clients.len();
         for client in clients.values_mut() {
             if app_handler.app_has_finished() && client.conn.is_established() {
                 println!(
@@ -1157,7 +1167,7 @@ fn main() {
                     } else {
                         client.stream_buf.is_empty() && client.conn.see_streams()
                     } && (client.conn.get_multicast_attributes().is_none() ||
-                        client.conn.mc_no_stream_active());
+                        client.conn.mc_no_stream_active() || nb_clients == 1 && args.leave_bw_delay.is_some() && args.leave_below_bw.is_some());
                 // info!("END can close? {} because {} and {}. connection list of
                 // streams: {:?}.\n and for multicast: {:?}", can_close,
                 // mc_channel_opt.as_ref().unwrap().channel.mc_no_stream_active(),
@@ -1256,7 +1266,7 @@ fn main() {
         // more client. This may cause a problem if clients keep arriving
         // even after the video transmission is complete, but this is a proof of
         // concept... right?
-        if clients.is_empty() && app_handler.app_has_finished() {
+        if clients.is_empty() && app_handler.app_has_finished() && (args.leave_below_bw.is_none() || (args.leave_below_bw.is_some() && clients.len() == 1 && clients.iter().next().unwrap().1.conn.is_closed())) {
             break;
         }
 
@@ -1273,7 +1283,11 @@ fn main() {
                 } else {
                     None
                 };
-            ucs_to_mc_cwnd!(&mut mc_channel.channel, clients_conn, now, min_cwin);
+            if args.disable_cc {
+                mc_channel.channel.mc_set_cwnd(usize::MAX - 2);
+            } else {
+                ucs_to_mc_cwnd!(&mut mc_channel.channel, clients_conn, now, min_cwin);
+            }
         }
     }
 
