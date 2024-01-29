@@ -7042,6 +7042,7 @@ impl Connection {
             // `Some(...)` value is returned.
             let path_timer =
                 self.paths.iter().filter_map(|(_, p)| p.path_timer()).min();
+
             let key_update_timer = self
                 .pkt_num_spaces
                 .crypto
