@@ -888,7 +888,7 @@ fn main() {
                         // Also send to clients that are not yet in the channel
                         // and receive through unicast.
                         for (_, client) in clients.iter_mut() {
-                            if client.mc_client_listen_uc {
+                            if client.mc_client_listen_uc || !args.multicast {
                                 info!("Will send to client unicast");
                                 client
                                     .conn
