@@ -258,7 +258,11 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let mut lost_pn = RangeSet::default();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
-        debug!("Start deleguate stream for client {:?}. recv_pn={:?}", uc.multicast.as_ref().map(|m| m.get_self_client_id()), recv_pn);
+        debug!(
+            "Start deleguate stream for client {:?}. recv_pn={:?}",
+            uc.multicast.as_ref().map(|m| m.get_self_client_id()),
+            recv_pn
+        );
 
         let mut nb_lost_mc_stream_frames = 0;
         let expired_sent = self.sent[Epoch::Application]
@@ -328,7 +332,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         length,
                         fin,
                     } => {
-
                         nb_lost_mc_stream_frames += 1;
 
                         // This STREAM frame was lost. Retransmit in a (new)
@@ -338,7 +341,11 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                             *stream_id, packet.pkt_num.1
                         );
                         let stream: &mut crate::stream::Stream =
-                            uc.get_or_create_stream(*stream_id, true)?;
+                            match uc.get_or_create_stream(*stream_id, true) {
+                                Ok(v) => v,
+                                Err(Error::InvalidStreamState(_)) => continue,
+                                Err(e) => return Err(e),
+                            };
                         debug!("After getting the stream. Before getting local stream. The ID is {} from pn={}. Is the stream {} bidi={}", *stream_id, packet.pkt_num.1, *stream_id, stream.bidi);
                         let was_flushable = stream.is_flushable();
                         let local_stream = local_streams
@@ -356,13 +363,21 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         // copies) but requires the fewest
                         // changes.
                         let mut buf = vec![0u8; *length];
-                        local_stream.send.emit(&mut buf)?;
+                        if let Err(Error::FinalSize) =
+                            local_stream.send.emit(&mut buf)
+                        {
+                            continue;
+                        }
 
-                        let _written = stream.send.write_at_offset(
+                        let _written = match stream.send.write_at_offset(
                             &buf[..],
                             *offset,
                             *fin,
-                        )?;
+                        ) {
+                            Ok(v) => v,
+                            Err(Error::FinalSize) => continue,
+                            Err(e) => return Err(e),
+                        };
                         // assert_eq!(written, *length);
 
                         // Mark the stream as flushable. We do not take into
@@ -378,18 +393,28 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         }
 
                         protected_stream_id = Some(*stream_id);
-                        if let Some(client_id) = uc.multicast.as_ref().map(|m| m.get_self_client_id().ok()).flatten() {
+                        if let Some(client_id) = uc
+                            .multicast
+                            .as_ref()
+                            .map(|m| m.get_self_client_id().ok())
+                            .flatten()
+                        {
                             qlog_with_type!(QLOG_DATA_MV, uc.qlog, q, {
-                                let ev_data_client =
-                                    EventData::McRetransmit(qlog::events::quic::McRetransmit {
+                                let ev_data_client = EventData::McRetransmit(
+                                    qlog::events::quic::McRetransmit {
                                         stream_id: *stream_id,
                                         offset: *offset,
                                         len: *length,
                                         fin: *fin,
                                         client_id,
-                                    });
-                
-                                q.add_event_data_with_instant(ev_data_client, now).ok();
+                                    },
+                                );
+
+                                q.add_event_data_with_instant(
+                                    ev_data_client,
+                                    now,
+                                )
+                                .ok();
                             });
                         }
                     },
@@ -438,19 +463,24 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                 } = frame
                 {
                     if *fin {
-                        // If the stream does not exist for the unicast server, it means
-                        // that it did not have to retransmit frames to the client.
+                        // If the stream does not exist for the unicast server, it
+                        // means that it did not have to
+                        // retransmit frames to the client.
                         if let Some(uc_stream) = uc.streams.get_mut(*stream_id) {
                             // debug!(
                             //     "Here setting close offset for stream {:?}",
                             //     stream_id
                             // );
                             uc_stream.send.rmc_set_close_offset();
-                            uc_stream.send.rmc_set_fin_off(*offset + *length as u64);
+                            uc_stream
+                                .send
+                                .rmc_set_fin_off(*offset + *length as u64);
 
                             // Maybe the stream is now complete.
-                            if uc_stream.is_complete() && !uc_stream.is_readable() {
-                                // println!("Unicast stream {} is collected after deleguate_stream", stream_id);
+                            if uc_stream.is_complete() && !uc_stream.is_readable()
+                            {
+                                // println!("Unicast stream {} is collected after
+                                // deleguate_stream", stream_id);
                                 let local = uc_stream.local;
                                 uc.streams.collect(*stream_id, local);
                             }
@@ -573,8 +603,10 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         }
 
         // Update app limited state.
-        // trace!("{:?}: Update uc app limited to {}. Now uc has {} bytes in flight. The cur max pn={}", trace_id, self.app_limited, uc.bytes_in_flight, cur_max_pn);
-        // uc.update_app_limited(self.app_limited);
+        // trace!("{:?}: Update uc app limited to {}. Now uc has {} bytes in
+        // flight. The cur max pn={}", trace_id, self.app_limited,
+        // uc.bytes_in_flight, cur_max_pn); uc.update_app_limited(self.
+        // app_limited);
 
         new_max_pn + 1
     }

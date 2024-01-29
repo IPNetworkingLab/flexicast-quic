@@ -919,6 +919,7 @@ fn main() {
                     .values_mut()
                     .filter(|client| client.mc_client_listen_uc)
                     .for_each(|client| {
+                        println!("Push data to client for stream id={:?}", stream_id);
                         client.stream_buf.push_back((stream_id, 0, data.clone()))
                     });
 
@@ -1161,13 +1162,14 @@ fn main() {
                     client.conn.trace_id(),
                     client.conn.mc_no_stream_active()
                 );
+                debug!("Leave bw delay={:?} and leave_below_bw={:?}. Client stream buf is empty={:?}. client.conn.see_streams(): {:?}, client.conn.mc_no_stream_active={:?}", args.leave_bw_delay, args.leave_below_bw, client.stream_buf.is_empty(), client.conn.see_streams(),  client.conn.mc_no_stream_active());
                 let can_close =
                     if let Some(mc_channel) = mc_channel_opt.as_ref() {
                         mc_channel.channel.mc_no_stream_active()
                     } else {
                         client.stream_buf.is_empty() && client.conn.see_streams()
                     } && (client.conn.get_multicast_attributes().is_none() ||
-                        client.conn.mc_no_stream_active() || nb_clients == 1 && args.leave_bw_delay.is_some() && args.leave_below_bw.is_some());
+                        client.conn.mc_no_stream_active() || (nb_clients == 1 && args.leave_bw_delay.is_some() && args.leave_below_bw.is_some()));
                 // info!("END can close? {} because {} and {}. connection list of
                 // streams: {:?}.\n and for multicast: {:?}", can_close,
                 // mc_channel_opt.as_ref().unwrap().channel.mc_no_stream_active(),
