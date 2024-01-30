@@ -1157,7 +1157,7 @@ fn main() {
         let nb_clients = clients.len();
         for client in clients.values_mut() {
             if app_handler.app_has_finished() && client.conn.is_established() {
-                println!(
+                trace!(
                     "Trace {:?}: CAN TRY TO CLOSE THE APP: {:?}",
                     client.conn.trace_id(),
                     client.conn.mc_no_stream_active()
