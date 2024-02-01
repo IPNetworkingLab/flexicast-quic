@@ -5,6 +5,7 @@ df = pd.read_csv(sys.argv[1], delim_whitespace=True, header=None, names=["index"
 total = df["bytes"].sum()
 print("RESULT-BYTES",total)
 diff = df["time"].max() - df["time"].min()
+print("RESULT-DLTIME", diff )
 print("RESULT-CLIENTGP", total*1000000 / diff )
 if total <= 1:
     sys.exit(1)
