@@ -917,7 +917,7 @@ fn main() {
                 let data = Rc::new(full_data);
                 clients
                     .values_mut()
-                    .filter(|client| client.mc_client_listen_uc)
+                    .filter(|client| client.mc_client_listen_uc || !args.multicast)
                     .for_each(|client| {
                         println!("Push data to client for stream id={:?}", stream_id);
                         client.stream_buf.push_back((stream_id, 0, data.clone()))
