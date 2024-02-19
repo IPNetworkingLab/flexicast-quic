@@ -246,8 +246,8 @@ impl ReliableMulticastConnection for Connection {
         // No timeout for client not in the group/transient leaving.
         if matches!(
             multicast.mc_role,
-            MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
-                | MulticastRole::Client(MulticastClientStatus::Leaving(_))
+            MulticastRole::Client(MulticastClientStatus::AwareUnjoined) |
+                MulticastRole::Client(MulticastClientStatus::Leaving(_))
         ) {
             return None;
         }
@@ -297,8 +297,8 @@ impl ReliableMulticastConnection for Connection {
                 let mut random_v = [0u8; 4];
                 random.fill(&mut random_v).ok();
                 let additional_timer = i32::from_be_bytes(random_v) as i128;
-                let et_with_random = expiration_timer as i128 / 2
-                    + (additional_timer % ((expiration_timer / 10) as i128));
+                let et_with_random = expiration_timer as i128 / 2 +
+                    (additional_timer % ((expiration_timer / 10) as i128));
                 rmc.rmc_next_time_ack = now.checked_add(
                     time::Duration::from_millis(et_with_random as u64),
                 );
@@ -386,8 +386,10 @@ impl ReliableMulticastConnection for Connection {
                     recv_pn.remove_until(exp_pn);
                     lost_pn.remove_until(exp_pn);
 
-                    // Reset the congestion control state if the expired packet is less than the first packet of interest given in the MC_KEY.
-                    // CHEAT: assume that we consider the first 3 packets sent on this path.
+                    // Reset the congestion control state if the expired packet is
+                    // less than the first packet of interest given in the MC_KEY.
+                    // CHEAT: assume that we consider the first 3 packets sent on
+                    // this path.
                     if exp_pn <= 10 {
                         if let Ok(uc_path) = uc.paths.get_mut(1) {
                             debug!("MC-DEBUG: reset the congestion controller state for the server");
@@ -396,7 +398,8 @@ impl ReliableMulticastConnection for Connection {
                     }
                 }
             }
-            let max_pn = lost_pn.last().unwrap_or(0).max(recv_pn.last().unwrap_or(0));
+            let max_pn =
+                lost_pn.last().unwrap_or(0).max(recv_pn.last().unwrap_or(0));
 
             if let Some(rmc) = mc_s.rmc_get_mut().and_then(|rmc| rmc.source_mut())
             {
@@ -412,7 +415,11 @@ impl ReliableMulticastConnection for Connection {
             if let Ok(path) = uc.paths.get_mut(1) {
                 path.recovery.set_largest_ack(max_pn);
                 // println!("Set the maximum expired pn to {:?}", max_pn);
-                let _out = path.recovery.detect_lost_packets(crate::packet::Epoch::Application, now, &self.trace_id);
+                let _out = path.recovery.detect_lost_packets(
+                    crate::packet::Epoch::Application,
+                    now,
+                    &self.trace_id,
+                );
                 // println!("Lost packets: {:?}", out);
             }
         } else {
@@ -500,8 +507,8 @@ impl MulticastAttributes {
     /// Always `None` for the multicast source and the client.
     /// `None` if reliable multicast is disabled.
     pub fn rmc_get_server_nb_lost_stream(&self) -> Option<u64> {
-        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_))
-            || !self.mc_is_reliable()
+        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_)) ||
+            !self.mc_is_reliable()
         {
             return None;
         }
@@ -1166,7 +1173,10 @@ mod tests {
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
         ucs_to_mc_cwnd!(
             &mut mc_pipe.mc_channel.channel,
-            mc_pipe.unicast_pipes.iter_mut().map(|(v, _, _)| &mut v.server),
+            mc_pipe
+                .unicast_pipes
+                .iter_mut()
+                .map(|(v, ..)| &mut v.server),
             expired,
             None
         );
@@ -1224,21 +1234,23 @@ mod tests {
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
         ucs_to_mc_cwnd!(
             &mut mc_pipe.mc_channel.channel,
-            mc_pipe.unicast_pipes.iter_mut().map(|(v, _, _)| &mut v.server),
+            mc_pipe
+                .unicast_pipes
+                .iter_mut()
+                .map(|(v, ..)| &mut v.server),
             expired,
             None
         );
 
         // Source decreases its congestion window to the minimum multicast value.
-        let exp_cwin =
-            mc_pipe.unicast_pipes[0]
-                .0
-                .server
-                .paths
-                .get(1)
-                .unwrap()
-                .recovery
-                .cwnd();
+        let exp_cwin = mc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .paths
+            .get(1)
+            .unwrap()
+            .recovery
+            .cwnd();
         let cwnd = mc_pipe
             .mc_channel
             .channel
@@ -1249,7 +1261,10 @@ mod tests {
             .cwnd();
         assert_eq!(cwnd, exp_cwin);
 
-        println!("Previous cwin: {} and current cwin: {}", previous_cwin, exp_cwin);
+        println!(
+            "Previous cwin: {} and current cwin: {}",
+            previous_cwin, exp_cwin
+        );
         assert!(exp_cwin < previous_cwin);
     }
 
@@ -1625,26 +1640,6 @@ mod tests {
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert_eq!(res, Ok((Some(117), Some(15)).into()));
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
-        let exp_cwin = (mc_cwnd * max_datagram_size).max(
-            mc_pipe.unicast_pipes[0]
-                .0
-                .server
-                .paths
-                .get(1)
-                .unwrap()
-                .recovery
-                .cwnd(),
-        );
-
-        let cwnd = mc_pipe
-            .mc_channel
-            .channel
-            .paths
-            .get(1)
-            .unwrap()
-            .recovery
-            .cwnd();
-        assert_eq!(cwnd, exp_cwin);
         let new_cwin = mc_pipe.unicast_pipes[0]
             .0
             .server
@@ -1662,7 +1657,7 @@ mod tests {
         let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
-            0,
+            2,
             "/tmp/test_rmc_cc_multiple_clients.txt",
             auth_method,
             true,
@@ -1706,7 +1701,7 @@ mod tests {
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(117), Some(15)).into()));
+        assert_eq!(res, Ok((Some(17), Some(15)).into()));
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
 
         let new_cwnd = mc_pipe

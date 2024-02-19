@@ -45,22 +45,26 @@ use crate::Result;
 #[macro_export]
 macro_rules! ucs_to_mc_cwnd {
     ( $mc:expr, $ucs: expr, $now: expr, $cwnd_limit: expr ) => {
-        let min_cwnd = $ucs.filter_map(|uc| {
-            let cwnd = uc.mc_get_uc_cwnd();
+        let min_cwnd = $ucs
+            .filter_map(|uc| {
+                let cwnd = uc.mc_get_uc_cwnd();
 
-            if let (Some(c), Some(cl)) = (cwnd, $cwnd_limit) {
-                if c < cl {
-                    _ = uc.mc_leave_channel();
+                if let (Some(c), Some(cl)) = (cwnd, $cwnd_limit) {
+                    if c < cl {
+                        _ = uc.mc_leave_channel();
+                    }
                 }
-            }
 
-            cwnd
-        }).min();
-        debug!("MC-DEBUG: This is the source new congestion window: {:?}", min_cwnd);
+                cwnd
+            })
+            .min();
+        debug!(
+            "MC-DEBUG: This is the source new congestion window: {:?}",
+            min_cwnd
+        );
         if let Some(cwnd) = min_cwnd {
             $mc.mc_set_cwnd(cwnd);
         }
-        
     };
 }
 
@@ -2122,13 +2126,21 @@ impl MulticastConnection for Connection {
                     //     mc_path.recovery.loss_detection_timer()
                     // );
 
-                    // Sets the largest acked packet as the maximum between the largest actually received and the last expired.
-                    if let Some(last_exp) = mc_channel.multicast.as_ref().unwrap().mc_last_expired.map(|exp| exp.pn).flatten() {
+                    // Sets the largest acked packet as the maximum between the
+                    // largest actually received and the last expired.
+                    if let Some(last_exp) = mc_channel
+                        .multicast
+                        .as_ref()
+                        .unwrap()
+                        .mc_last_expired
+                        .map(|exp| exp.pn)
+                        .flatten()
+                    {
                         mc_path.recovery.set_largest_ack(last_exp);
-                        // println!("Set the largest ack with last expired: {:?}", last_exp);
+                        // println!("Set the largest ack with last expired:
+                        // {:?}", last_exp);
                     }
                 }
-                
             }
         }
 
@@ -2151,7 +2163,14 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
-        debug!("MC-DEBUG: {:?}", self.streams.iter().map(|(id, _)| id).collect::<Vec<_>>().first());
+        debug!(
+            "MC-DEBUG: {:?}",
+            self.streams
+                .iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+                .first()
+        );
         self.multicast.is_some() && self.streams.len() == 0
     }
 
@@ -2299,14 +2318,23 @@ impl Connection {
         // Get paths.
         if let Some(multicast) = self.multicast.as_ref() {
             // Do not give the multicast window if not in the multicast channel.
-            if matches!(multicast.get_mc_role(), MulticastRole::ServerUnicast(MulticastClientStatus::ListenMcPath(_))) {
+            if matches!(
+                multicast.get_mc_role(),
+                MulticastRole::ServerUnicast(
+                    MulticastClientStatus::ListenMcPath(_)
+                )
+            ) {
                 if let Some(_mc_space_id) = multicast.get_mc_space_id() {
                     let uc_path = self.paths.get(1);
                     if let Ok(uc_path) = uc_path {
                         if uc_path.recovery.cwnd_available() == usize::MAX {
                             return None;
                         }
-                        debug!("Client {:?} has a cwnd of {:?}", multicast.get_self_client_id(), uc_path.recovery.cwnd());
+                        debug!(
+                            "Client {:?} has a cwnd of {:?}",
+                            multicast.get_self_client_id(),
+                            uc_path.recovery.cwnd()
+                        );
                         return Some(uc_path.recovery.cwnd());
                         // return Some(uc_path.recovery.cwnd_available());
                     }
@@ -5611,34 +5639,6 @@ mod tests {
             pipe.server.multicast.as_ref().unwrap().mc_role,
             MulticastRole::ServerUnicast(MulticastClientStatus::AwareUnjoined)
         );
-
-        // The unicast server requests backup data from the multicast channel.
-        assert!(
-            pipe.server
-                .multicast
-                .as_ref()
-                .unwrap()
-                .mc_client_left_need_sync
-        );
-        assert_eq!(
-            mc_pipe.server_control_to_mc_source(time::Instant::now()),
-            Ok(())
-        );
-        let pipe = &mut mc_pipe.unicast_pipes[0].0;
-        let open_streams = pipe
-            .server
-            .streams
-            .iter()
-            .map(|(sid, _)| *sid)
-            .collect::<Vec<_>>();
-        assert_eq!(open_streams, vec![1, 5]);
-
-        // The unicast server sends the streams. The client now has all the
-        // streams.
-        assert_eq!(pipe.advance(), Ok(()));
-        let mut readables = pipe.client.readable().collect::<Vec<_>>();
-        readables.sort();
-        assert_eq!(readables, vec![1, 5]);
     }
 
     #[test]

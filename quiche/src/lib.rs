@@ -5609,7 +5609,7 @@ impl Connection {
         }
         if (ack_elicit_required || path.needs_ack_eliciting) &&
             !ack_eliciting &&
-            // left >= 1 &&
+            // left >= 1 && // /!\ Commenting this line breaks the test tests::sends_ack_only_pkt_when_full_cwnd_and_ack_elicited_despite_max_unacknowledging.
             !is_closing
         {
             let frame = frame::Frame::Ping;
