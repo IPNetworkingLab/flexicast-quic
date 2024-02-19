@@ -917,9 +917,9 @@ fn main() {
                 let data = Rc::new(full_data);
                 clients
                     .values_mut()
-                    .filter(|client| client.mc_client_listen_uc)
+                    .filter(|client| client.mc_client_listen_uc || !args.multicast)
                     .for_each(|client| {
-                        println!("Push data to client for stream id={:?}", stream_id);
+                        debug!("Push data to client for stream id={:?}", stream_id);
                         client.stream_buf.push_back((stream_id, 0, data.clone()))
                     });
 
@@ -1157,7 +1157,7 @@ fn main() {
         let nb_clients = clients.len();
         for client in clients.values_mut() {
             if app_handler.app_has_finished() && client.conn.is_established() {
-                println!(
+                trace!(
                     "Trace {:?}: CAN TRY TO CLOSE THE APP: {:?}",
                     client.conn.trace_id(),
                     client.conn.mc_no_stream_active()

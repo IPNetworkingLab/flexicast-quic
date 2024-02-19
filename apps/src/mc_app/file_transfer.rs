@@ -99,8 +99,8 @@ impl FileServer {
                 Some(time::Instant::now())
             },
             last_sent: None,
-            start_delay: time::Duration::from_millis(start_delay),
-            sleep_delay: time::Duration::from_millis(sleep_delay),
+            start_delay: time::Duration::from_micros(start_delay),
+            sleep_delay: time::Duration::from_micros(sleep_delay),
 
             to_quic_filename: to_quic_filename.to_string(),
             to_wire_filename: to_wire_filename.to_string(),
