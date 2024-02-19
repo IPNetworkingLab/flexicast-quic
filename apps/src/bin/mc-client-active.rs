@@ -46,6 +46,7 @@ use quiche::multicast;
 use quiche::multicast::McPathType;
 use quiche::multicast::MulticastConnection;
 use quiche::ConnectionId;
+#[cfg(feature = "qlog")]
 use quiche_apps::common::make_qlog_writer;
 use std::io::Write;
 

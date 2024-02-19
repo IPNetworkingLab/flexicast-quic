@@ -149,7 +149,6 @@ impl TryFrom<Algorithm> for u8 {
                 Algorithm::AES128_GCM => 0,
                 Algorithm::AES256_GCM => 1,
                 Algorithm::ChaCha20_Poly1305 => 2,
-                _ => return Err(Error::CryptoFail),
             }
         )
     }

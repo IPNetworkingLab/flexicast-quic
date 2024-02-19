@@ -393,7 +393,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         }
 
                         protected_stream_id = Some(*stream_id);
-                        if let Some(client_id) = uc
+                        if let Some(_client_id) = uc
                             .multicast
                             .as_ref()
                             .map(|m| m.get_self_client_id().ok())
@@ -406,7 +406,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                                         offset: *offset,
                                         len: *length,
                                         fin: *fin,
-                                        client_id,
+                                        client_id: _client_id,
                                     },
                                 );
 

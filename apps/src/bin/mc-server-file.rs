@@ -47,6 +47,7 @@ use quiche::multicast::MulticastRole;
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
 use quiche::SendInfo;
+#[cfg(feature = "qlog")]
 use quiche_apps::common::make_qlog_writer;
 use quiche_apps::common::ClientIdMap;
 use quiche_apps::mc_app;
@@ -386,9 +387,9 @@ fn main() {
         );
     }
 
+    #[cfg(feature = "qlog")]
     if let Some(mc_channel) = mc_channel_opt.as_mut() {
         // Only bother with qlog if the user specified it.
-        #[cfg(feature = "qlog")]
         {
             if let Some(dir) = std::env::var_os("QLOGDIR") {
                 let id = format!("MCS");
