@@ -840,8 +840,7 @@ mod tests {
                 .0
                 .server
                 .streams
-                .iter()
-                .map(|(sid, _)| *sid)
+                .readable()
                 .collect::<Vec<_>>();
             assert_eq!(open_stream_ids, vec![5, 13]);
 
@@ -849,8 +848,7 @@ mod tests {
                 .0
                 .server
                 .streams
-                .iter()
-                .map(|(sid, _)| *sid)
+                .readable()
                 .collect::<Vec<_>>();
             assert_eq!(open_stream_ids, vec![1, 9]);
 
@@ -1754,7 +1752,7 @@ mod tests {
         assert_eq!(res, Ok((Some(3), Some(1)).into()));
 
         let server = &mut mc_pipe.unicast_pipes[0].0.server;
-        let streams: Vec<_> = server.streams.iter().map(|(id, _)| *id).collect();
+        let streams: Vec<_> = server.streams.writable().collect();
         assert_eq!(streams, vec![3]);
 
         mc_pipe.unicast_pipes[0].0.advance().unwrap();
@@ -1766,7 +1764,7 @@ mod tests {
         assert_eq!(client.stream_recv(3, &mut buf), Ok((2000, true)));
 
         let server = &mut mc_pipe.unicast_pipes[0].0.server;
-        let streams: Vec<_> = server.streams.iter().map(|(id, _)| *id).collect();
+        let streams: Vec<_> = server.streams.writable().collect();
         assert!(streams.is_empty());
     }
 
@@ -1810,7 +1808,7 @@ mod tests {
         assert_eq!(res, Ok((Some(2), Some(0)).into()));
 
         let server = &mut mc_pipe.unicast_pipes[0].0.server;
-        let streams: Vec<_> = server.streams.iter().map(|(id, _)| *id).collect();
+        let streams: Vec<_> = server.streams.writable().collect();
         assert_eq!(streams, vec![7]);
 
         mc_pipe.unicast_pipes[0].0.advance().unwrap();
@@ -1834,7 +1832,7 @@ mod tests {
         assert_eq!(client.stream_recv(7, &mut buf), Ok((2000, true)));
 
         let server = &mut mc_pipe.unicast_pipes[0].0.server;
-        let streams: Vec<_> = server.streams.iter().map(|(id, _)| *id).collect();
+        let streams: Vec<_> = server.streams.writable().collect();
         assert!(streams.is_empty());
     }
 }

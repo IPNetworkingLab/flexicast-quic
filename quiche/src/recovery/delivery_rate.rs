@@ -80,7 +80,9 @@ impl Default for Rate {
 }
 
 impl Rate {
-    pub fn on_packet_sent(&mut self, pkt: &mut Sent, bytes_in_flight: usize) {
+    pub fn on_packet_sent(
+        &mut self, pkt: &mut Sent, bytes_in_flight: usize, bytes_lost: u64,
+    ) {
         // No packets in flight.
         if bytes_in_flight == 0 {
             self.first_sent_time = pkt.time_sent;
@@ -91,6 +93,8 @@ impl Rate {
         pkt.delivered_time = self.delivered_time;
         pkt.delivered = self.delivered;
         pkt.is_app_limited = self.app_limited();
+        pkt.tx_in_flight = bytes_in_flight;
+        pkt.lost = bytes_lost;
 
         self.last_sent_packet = pkt.pkt_num;
     }
@@ -180,6 +184,14 @@ impl Rate {
     pub fn sample_is_app_limited(&self) -> bool {
         self.rate_sample.is_app_limited
     }
+
+    pub fn sample_delivered(&self) -> usize {
+        self.rate_sample.delivered
+    }
+
+    pub fn sample_prior_delivered(&self) -> usize {
+        self.rate_sample.prior_delivered
+    }
 }
 
 #[derive(Default, Debug)]
@@ -235,6 +247,8 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                tx_in_flight: 0,
+                lost: 0,
                 retransmitted_for_probing: false,
             };
 
@@ -261,6 +275,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now.checked_sub(rtt).unwrap(),
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
             };
 
             r.delivery_rate.update_rate_sample(&acked, now);
@@ -300,6 +316,8 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                tx_in_flight: 0,
+                lost: 0,
                 retransmitted_for_probing: false,
             };
 
@@ -340,6 +358,8 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                tx_in_flight: 0,
+                lost: 0,
                 retransmitted_for_probing: false,
             };
 

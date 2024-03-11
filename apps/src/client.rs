@@ -95,10 +95,24 @@ pub fn connect(
         );
     }
 
+    let mut rm_addrs = args.rm_addrs.clone();
+    let mut status = args.status.clone();
+
     // Create the configuration for the QUIC connection.
     let mut config = quiche::Config::new(args.version).unwrap();
 
-    config.verify_peer(!args.no_verify);
+    if let Some(ref trust_origin_ca_pem) = args.trust_origin_ca_pem {
+        config
+            .load_verify_locations_from_file(trust_origin_ca_pem)
+            .map_err(|e| {
+                ClientError::Other(format!(
+                    "error loading origin CA file : {}",
+                    e
+                ))
+            })?;
+    } else {
+        config.verify_peer(!args.no_verify);
+    }
 
     config.set_application_protos(&conn_args.alpns).unwrap();
 
@@ -408,7 +422,7 @@ pub fn connect(
                         "Path ({}, {}) is now validated",
                         local_addr, peer_addr
                     );
-                    if conn_args.multipath {
+                    if conn.is_multipath_enabled() {
                         conn.set_active(local_addr, peer_addr, true).ok();
                     } else if args.perform_migration {
                         conn.migrate(local_addr, peer_addr).unwrap();
@@ -481,6 +495,34 @@ pub fn connect(
             conn.probe_path(additional_local_addr, peer_addr).unwrap();
 
             new_path_probed = true;
+        }
+
+        if conn.is_multipath_enabled() {
+            rm_addrs.retain(|(d, addr)| {
+                if app_data_start.elapsed() >= *d {
+                    info!("Abandoning path {:?}", addr);
+                    conn.abandon_path(
+                        *addr,
+                        peer_addr,
+                        0,
+                        "do not use me anymore".to_string().into_bytes(),
+                    )
+                    .is_err()
+                } else {
+                    true
+                }
+            });
+
+            status.retain(|(d, addr, available)| {
+                if app_data_start.elapsed() >= *d {
+                    let status = (*available).into();
+                    info!("Advertising path status {status:?} to {addr:?}");
+                    conn.set_path_status(*addr, peer_addr, status, true)
+                        .is_err()
+                } else {
+                    true
+                }
+            });
         }
 
         // Determine in which order we are going to iterate over paths.
@@ -638,6 +680,7 @@ fn lowest_latency_scheduler(
 ) -> impl Iterator<Item = (std::net::SocketAddr, std::net::SocketAddr)> {
     use itertools::Itertools;
     conn.path_stats()
+        .filter(|p| !matches!(p.state, quiche::PathState::Closed(_, _)))
         .sorted_by_key(|p| p.rtt)
         .map(|p| (p.local_addr, p.peer_addr))
 }

@@ -1978,12 +1978,12 @@ impl MulticastConnection for Connection {
                             // RMC-TODO: ideally, we should only consider packet
                             // numbers that were not taken into account before
                             // that, not simply the first packet.
-                            let first_time_sent = path
+                            let largest_lost = path
                                 .recovery
-                                .mc_get_time_sen(nack_ranges.first().unwrap());
+                                .mc_get_sent_pkt(nack_ranges.last().unwrap());
                             path.recovery.congestion_event(
                                 0,
-                                first_time_sent.unwrap(),
+                                &largest_lost.unwrap(),
                                 packet::Epoch::Application,
                                 now,
                             );
@@ -2163,14 +2163,6 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_no_stream_active(&self) -> bool {
-        debug!(
-            "MC-DEBUG: {:?}",
-            self.streams
-                .iter()
-                .map(|(id, _)| id)
-                .collect::<Vec<_>>()
-                .first()
-        );
         self.multicast.is_some() && self.streams.len() == 0
     }
 
@@ -4443,8 +4435,8 @@ mod tests {
             .mc_channel
             .channel
             .streams
-            .iter()
-            .map(|(sid, _)| *sid)
+            .writable()
+            // .map(|(sid, _)| *sid)
             .collect::<Vec<_>>();
         assert_eq!(open_streams, vec![11]);
 

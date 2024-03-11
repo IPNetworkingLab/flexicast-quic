@@ -313,6 +313,26 @@ pub fn priority_from_query_string(url: &url::Url) -> Option<Priority> {
     }
 }
 
+fn send_h3_dgram(
+    conn: &mut quiche::Connection, flow_id: u64, dgram_content: &[u8],
+) -> quiche::Result<()> {
+    info!(
+        "sending HTTP/3 DATAGRAM on flow_id={} with data {:?}",
+        flow_id, dgram_content
+    );
+
+    let len = octets::varint_len(flow_id) + dgram_content.len();
+    let mut d = vec![0; len];
+    let mut b = octets::OctetsMut::with_slice(&mut d);
+
+    b.put_varint(flow_id)
+        .map_err(|_| quiche::Error::BufferTooShort)?;
+    b.put_bytes(dgram_content)
+        .map_err(|_| quiche::Error::BufferTooShort)?;
+
+    conn.dgram_send(&d)
+}
+
 pub trait HttpConn {
     fn send_requests(
         &mut self, conn: &mut quiche::Connection, target_path: &Option<String>,
@@ -1177,17 +1197,8 @@ impl HttpConn for Http3Conn {
             let mut dgrams_done = 0;
 
             for _ in ds.dgrams_sent..ds.dgram_count {
-                info!(
-                    "sending HTTP/3 DATAGRAM on flow_id={} with data {:?}",
-                    ds.flow_id,
-                    ds.dgram_content.as_bytes()
-                );
-
-                match self.h3_conn.send_dgram(
-                    conn,
-                    0,
-                    ds.dgram_content.as_bytes(),
-                ) {
+                match send_h3_dgram(conn, ds.flow_id, ds.dgram_content.as_bytes())
+                {
                     Ok(v) => v,
 
                     Err(e) => {
@@ -1311,19 +1322,6 @@ impl HttpConn for Http3Conn {
                     break;
                 },
 
-                Ok((_flow_id, quiche::h3::Event::Datagram)) => {
-                    while let Ok((len, flow_id, flow_id_len)) =
-                        self.h3_conn.recv_dgram(conn, buf)
-                    {
-                        info!(
-                            "Received DATAGRAM flow_id={} len={} data={:?}",
-                            flow_id,
-                            len,
-                            buf[flow_id_len..len].to_vec()
-                        );
-                    }
-                },
-
                 Ok((
                     prioritized_element_id,
                     quiche::h3::Event::PriorityUpdate,
@@ -1354,6 +1352,19 @@ impl HttpConn for Http3Conn {
                 },
             }
         }
+
+        // Process datagram-related events.
+        while let Ok(len) = conn.dgram_recv(buf) {
+            let mut b = octets::Octets::with_slice(buf);
+            if let Ok(flow_id) = b.get_varint() {
+                info!(
+                    "Received DATAGRAM flow_id={} len={} data={:?}",
+                    flow_id,
+                    len,
+                    buf[b.off()..len].to_vec()
+                );
+            }
+        }
     }
 
     fn report_incomplete(&self, start: &std::time::Instant) -> bool {
@@ -1381,7 +1392,7 @@ impl HttpConn for Http3Conn {
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
     ) -> quiche::h3::Result<()> {
-        // Process HTTP events.
+        // Process HTTP stream-related events.
         loop {
             match self.h3_conn.poll(conn) {
                 Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
@@ -1484,35 +1495,14 @@ impl HttpConn for Http3Conn {
                         },
                     }
 
-                    let written = match self
-                        .h3_conn
-                        .send_body(conn, stream_id, &body, true)
-                    {
-                        Ok(v) => v,
-
-                        Err(quiche::h3::Error::Done) => 0,
-
-                        Err(e) => {
-                            error!(
-                                "{} stream send failed {:?}",
-                                conn.trace_id(),
-                                e
-                            );
-
-                            break;
-                        },
+                    let response = PartialResponse {
+                        headers: None,
+                        priority: None,
+                        body,
+                        written: 0,
                     };
 
-                    if written < body.len() {
-                        let response = PartialResponse {
-                            headers: None,
-                            priority: None,
-                            body,
-                            written,
-                        };
-
-                        partial_responses.insert(stream_id, response);
-                    }
+                    partial_responses.insert(stream_id, response);
                 },
 
                 Ok((stream_id, quiche::h3::Event::Data)) => {
@@ -1526,19 +1516,6 @@ impl HttpConn for Http3Conn {
                 Ok((_stream_id, quiche::h3::Event::Finished)) => (),
 
                 Ok((_stream_id, quiche::h3::Event::Reset { .. })) => (),
-
-                Ok((_, quiche::h3::Event::Datagram)) => {
-                    while let Ok((len, flow_id, flow_id_len)) =
-                        self.h3_conn.recv_dgram(conn, buf)
-                    {
-                        info!(
-                            "Received DATAGRAM flow_id={} len={} data={:?}",
-                            flow_id,
-                            len,
-                            buf[flow_id_len..len].to_vec()
-                        );
-                    }
-                },
 
                 Ok((
                     prioritized_element_id,
@@ -1573,21 +1550,25 @@ impl HttpConn for Http3Conn {
             }
         }
 
+        // Process datagram-related events.
+        while let Ok(len) = conn.dgram_recv(buf) {
+            let mut b = octets::Octets::with_slice(buf);
+            if let Ok(flow_id) = b.get_varint() {
+                info!(
+                    "Received DATAGRAM flow_id={} len={} data={:?}",
+                    flow_id,
+                    len,
+                    buf[b.off()..len].to_vec()
+                );
+            }
+        }
+
         if let Some(ds) = self.dgram_sender.as_mut() {
             let mut dgrams_done = 0;
 
             for _ in ds.dgrams_sent..ds.dgram_count {
-                info!(
-                    "sending HTTP/3 DATAGRAM on flow_id={} with data {:?}",
-                    ds.flow_id,
-                    ds.dgram_content.as_bytes()
-                );
-
-                match self.h3_conn.send_dgram(
-                    conn,
-                    0,
-                    ds.dgram_content.as_bytes(),
-                ) {
+                match send_h3_dgram(conn, ds.flow_id, ds.dgram_content.as_bytes())
+                {
                     Ok(v) => v,
 
                     Err(e) => {

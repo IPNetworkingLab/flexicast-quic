@@ -43,6 +43,7 @@ use crate::recovery::reno;
 use crate::recovery::Acked;
 use crate::recovery::CongestionControlOps;
 use crate::recovery::Recovery;
+use crate::recovery::Sent;
 
 pub static CUBIC: CongestionControlOps = CongestionControlOps {
     on_init,
@@ -352,9 +353,10 @@ fn on_packet_acked(
 }
 
 fn congestion_event(
-    r: &mut Recovery, _lost_bytes: usize, time_sent: Instant,
+    r: &mut Recovery, _lost_bytes: usize, largest_lost_pkt: &Sent,
     epoch: packet::Epoch, now: Instant,
 ) {
+    let time_sent = largest_lost_pkt.time_sent;
     let in_congestion_recovery = r.in_congestion_recovery(time_sent);
 
     // Start a new congestion event if packet was sent after the
@@ -489,12 +491,14 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited
-        for _ in 0..recovery::INITIAL_WINDOW_PACKETS {
+        for _ in 0..r.initial_congestion_window_packets {
             r.on_packet_sent_cc(p.size, now);
         }
 
@@ -508,6 +512,8 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             rtt: Duration::ZERO,
         }];
 
@@ -538,12 +544,14 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited
-        for _ in 0..recovery::INITIAL_WINDOW_PACKETS {
+        for _ in 0..r.initial_congestion_window_packets {
             r.on_packet_sent_cc(p.size, now);
         }
 
@@ -558,6 +566,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             },
             Acked {
@@ -568,6 +578,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             },
             Acked {
@@ -578,6 +590,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             },
         ];
@@ -597,9 +611,28 @@ mod tests {
         let now = Instant::now();
         let prev_cwnd = r.cwnd();
 
+        let p = recovery::Sent {
+            pkt_num: recovery::SpacedPktNum(0, 0),
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: r.max_datagram_size,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
+            retransmitted_for_probing: false,
+        };
+
         r.congestion_event(
             r.max_datagram_size,
-            now,
+            &p,
             packet::Epoch::Application,
             now,
         );
@@ -619,14 +652,33 @@ mod tests {
         let prev_cwnd = r.cwnd();
 
         // Send initcwnd full MSS packets to become no longer app limited
-        for _ in 0..recovery::INITIAL_WINDOW_PACKETS {
+        for _ in 0..r.initial_congestion_window_packets {
             r.on_packet_sent_cc(r.max_datagram_size, now);
         }
+
+        let p = recovery::Sent {
+            pkt_num: recovery::SpacedPktNum(0, 0),
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: r.max_datagram_size,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
+            retransmitted_for_probing: false,
+        };
 
         // Trigger congestion event to update ssthresh
         r.congestion_event(
             r.max_datagram_size,
-            now,
+            &p,
             packet::Epoch::Application,
             now,
         );
@@ -657,6 +709,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             }];
 
@@ -679,9 +733,28 @@ mod tests {
         r.on_packet_sent_cc(30000, now);
 
         // Trigger congestion event to update ssthresh
+        let p = recovery::Sent {
+            pkt_num: recovery::SpacedPktNum(0, 0),
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: r.max_datagram_size,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
+            retransmitted_for_probing: false,
+        };
+
         r.congestion_event(
             r.max_datagram_size,
-            now,
+            &p,
             packet::Epoch::Application,
             now,
         );
@@ -702,6 +775,8 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             rtt: Duration::ZERO,
         }];
 
@@ -737,6 +812,8 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
         };
@@ -770,6 +847,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             }];
 
@@ -808,6 +887,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             }];
 
@@ -849,6 +930,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             }];
 
@@ -889,6 +972,8 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
         };
@@ -922,6 +1007,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             }];
 
@@ -960,6 +1047,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             }];
 
@@ -999,6 +1088,8 @@ mod tests {
                     delivered_time: now,
                     first_sent_time: now,
                     is_app_limited: false,
+                    tx_in_flight: 0,
+                    lost: 0,
                     rtt: Duration::ZERO,
                 }];
 
@@ -1021,14 +1112,33 @@ mod tests {
         let prev_cwnd = r.cwnd();
 
         // Send initcwnd full MSS packets to become no longer app limited
-        for _ in 0..recovery::INITIAL_WINDOW_PACKETS {
+        for _ in 0..r.initial_congestion_window_packets {
             r.on_packet_sent_cc(r.max_datagram_size, now);
         }
 
         // Trigger congestion event to update ssthresh
+        let p = recovery::Sent {
+            pkt_num: recovery::SpacedPktNum(0, 0),
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: r.max_datagram_size,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
+            retransmitted_for_probing: false,
+        };
+
         r.congestion_event(
             r.max_datagram_size,
-            now,
+            &p,
             packet::Epoch::Application,
             now,
         );
@@ -1048,6 +1158,8 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             rtt: Duration::ZERO,
         }];
 
@@ -1067,10 +1179,29 @@ mod tests {
         let now = now + rtt;
 
         // Trigger another congestion event.
+        let p = recovery::Sent {
+            pkt_num: recovery::SpacedPktNum(0, 0),
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: r.max_datagram_size,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
+            retransmitted_for_probing: false,
+        };
+
         let prev_cwnd = r.cwnd();
         r.congestion_event(
             r.max_datagram_size,
-            now,
+            &p,
             packet::Epoch::Application,
             now,
         );
@@ -1090,6 +1221,8 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             rtt: Duration::ZERO,
         }];
 
@@ -1117,14 +1250,33 @@ mod tests {
         let prev_cwnd = r.cwnd();
 
         // Send initcwnd full MSS packets to become no longer app limited
-        for _ in 0..recovery::INITIAL_WINDOW_PACKETS {
+        for _ in 0..r.initial_congestion_window_packets {
             r.on_packet_sent_cc(r.max_datagram_size, now);
         }
 
         // Trigger congestion event to update ssthresh
+        let p = recovery::Sent {
+            pkt_num: recovery::SpacedPktNum(0, 0),
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: r.max_datagram_size,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
+            retransmitted_for_probing: false,
+        };
+
         r.congestion_event(
             r.max_datagram_size,
-            now,
+            &p,
             packet::Epoch::Application,
             now,
         );
@@ -1154,6 +1306,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             }];
 
@@ -1168,9 +1322,28 @@ mod tests {
         // Fast convergence: now there is 2nd congestion event and
         // cwnd is not fully recovered to w_max, w_max will be
         // further reduced.
+        let p = recovery::Sent {
+            pkt_num: recovery::SpacedPktNum(0, 0),
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: r.max_datagram_size,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
+            retransmitted_for_probing: false,
+        };
+
         r.congestion_event(
             r.max_datagram_size,
-            now,
+            &p,
             packet::Epoch::Application,
             now,
         );

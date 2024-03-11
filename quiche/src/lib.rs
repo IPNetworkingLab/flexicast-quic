@@ -70,7 +70,7 @@
 //!
 //! [`Config`] also holds TLS configuration. This can be changed by mutators on
 //! the an existing object, or by constructing a TLS context manually and
-//! creating a configuration using [`with_boring_ssl_ctx()`].
+//! creating a configuration using [`with_boring_ssl_ctx_builder()`].
 //!
 //! A configuration object can be shared among multiple connections.
 //!
@@ -310,7 +310,7 @@
 //! [`set_initial_max_stream_data_bidi_local()`]: https://docs.rs/quiche/latest/quiche/struct.Config.html#method.set_initial_max_stream_data_bidi_local
 //! [`set_initial_max_stream_data_bidi_remote()`]: https://docs.rs/quiche/latest/quiche/struct.Config.html#method.set_initial_max_stream_data_bidi_remote
 //! [`set_initial_max_stream_data_uni()`]: https://docs.rs/quiche/latest/quiche/struct.Config.html#method.set_initial_max_stream_data_uni
-//! [`with_boring_ssl_ctx()`]: https://docs.quic.tech/quiche/struct.Config.html#method.with_boring_ssl_ctx
+//! [`with_boring_ssl_ctx_builder()`]: https://docs.quic.tech/quiche/struct.Config.html#method.with_boring_ssl_ctx_builder
 //! [`connect()`]: fn.connect.html
 //! [`accept()`]: fn.accept.html
 //! [`recv()`]: struct.Connection.html#method.recv
@@ -403,11 +403,14 @@ use qlog::events::EventImportance;
 use qlog::events::EventType;
 #[cfg(feature = "qlog")]
 use qlog::events::RawInfo;
+use stream::StreamPriorityKey;
 
 use std::cmp;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::time;
+
+use std::sync::Arc;
 
 use std::net::SocketAddr;
 
@@ -491,6 +494,10 @@ const CONNECTION_WINDOW_FACTOR: f64 = 1.5;
 const MAX_PROBING_TIMEOUTS: usize = 3;
 
 const DEFAULT_FEC_WINDOW_SIZE: usize = 500;
+
+// The default initial congestion window size in terms of packet count.
+const DEFAULT_INITIAL_CONGESTION_WINDOW_PACKETS: usize = 10;
+
 /// A specialized [`Result`] type for quiche operations.
 ///
 /// This type is used throughout quiche's public API for any operation that
@@ -757,6 +764,7 @@ pub struct Config {
     grease: bool,
 
     cc_algorithm: CongestionControlAlgorithm,
+    initial_congestion_window_packets: usize,
 
     hystart: bool,
 
@@ -803,18 +811,19 @@ impl Config {
         Self::with_tls_ctx(version, tls::Context::new()?)
     }
 
-    /// Creates a config object with the given version and [`SslContext`].
+    /// Creates a config object with the given version and
+    /// [`SslContextBuilder`].
     ///
     /// This is useful for applications that wish to manually configure
-    /// [`SslContext`].
+    /// [`SslContextBuilder`].
     ///
-    /// [`SslContext`]: https://docs.rs/boring/latest/boring/ssl/struct.SslContext.html
+    /// [`SslContextBuilder`]: https://docs.rs/boring/latest/boring/ssl/struct.SslContextBuilder.html
     #[cfg(feature = "boringssl-boring-crate")]
     #[cfg_attr(docsrs, doc(cfg(feature = "boringssl-boring-crate")))]
-    pub fn with_boring_ssl_ctx(
-        version: u32, tls_ctx: boring::ssl::SslContext,
+    pub fn with_boring_ssl_ctx_builder(
+        version: u32, tls_ctx_builder: boring::ssl::SslContextBuilder,
     ) -> Result<Config> {
-        Self::with_tls_ctx(version, tls::Context::from_boring(tls_ctx))
+        Self::with_tls_ctx(version, tls::Context::from_boring(tls_ctx_builder))
     }
 
     fn with_tls_ctx(version: u32, tls_ctx: tls::Context) -> Result<Config> {
@@ -829,6 +838,8 @@ impl Config {
             application_protos: Vec::new(),
             grease: true,
             cc_algorithm: CongestionControlAlgorithm::CUBIC,
+            initial_congestion_window_packets:
+                DEFAULT_INITIAL_CONGESTION_WINDOW_PACKETS,
             hystart: true,
             pacing: true,
             max_pacing_rate: None,
@@ -925,6 +936,14 @@ impl Config {
     ///
     /// The default value is `true` for client connections, and `false` for
     /// server ones.
+    ///
+    /// Note that on the server-side, enabling verification of the peer will
+    /// trigger a certificate request and make authentication errors fatal, but
+    /// will still allow anonymous clients (i.e. clients that don't present a
+    /// certificate at all). Servers can check whether a client presented a
+    /// certificate by calling [`peer_cert()`] if they need to.
+    ///
+    /// [`peer_cert()`]: struct.Connection.html#method.peer_cert
     pub fn verify_peer(&mut self, verify: bool) {
         self.tls_ctx.set_verify(verify);
     }
@@ -1187,8 +1206,7 @@ impl Config {
     ///
     /// The default value is `false`.
     pub fn set_multipath(&mut self, v: bool) {
-        self.local_transport_params.enable_multipath =
-            if v { Some(1) } else { None };
+        self.local_transport_params.enable_multipath = v;
     }
 
     /// Sets the congestion control algorithm used by string.
@@ -1207,6 +1225,13 @@ impl Config {
         self.cc_algorithm = CongestionControlAlgorithm::from_str(name)?;
 
         Ok(())
+    }
+
+    /// Sets initial congestion window size in terms of packet count.
+    ///
+    /// The default value is 10.
+    pub fn set_initial_congestion_window_packets(&mut self, packets: usize) {
+        self.initial_congestion_window_packets = packets;
     }
 
     /// Sets the congestion control algorithm used.
@@ -1824,8 +1849,7 @@ impl Connection {
 
     fn with_tls(
         scid: &ConnectionId, odcid: Option<&ConnectionId>, local: SocketAddr,
-        peer: SocketAddr, config: &mut Config, tls: tls::Handshake,
-        is_server: bool,
+        peer: SocketAddr, config: &Config, tls: tls::Handshake, is_server: bool,
     ) -> Result<Connection> {
         let max_rx_data = config.local_transport_params.initial_max_data;
 
@@ -2019,7 +2043,7 @@ impl Connection {
 
         // Don't support multipath with zero-length CIDs.
         if conn.ids.zero_length_scid() || conn.ids.zero_length_dcid() {
-            conn.local_transport_params.enable_multipath = None;
+            conn.local_transport_params.enable_multipath = false;
         }
 
         if let Some(odcid) = odcid {
@@ -3051,7 +3075,7 @@ impl Connection {
 
             let qlog_pkt_hdr = qlog::events::quic::PacketHeader::with_type(
                 hdr.ty.to_qlog(),
-                pn,
+                Some(pn),
                 Some(hdr.version),
                 Some(&hdr.scid),
                 Some(&hdr.dcid),
@@ -3731,6 +3755,7 @@ impl Connection {
         }
 
         // Pad UDP datagram if it contains a QUIC Initial packet.
+        #[cfg(not(feature = "fuzzing"))]
         if has_initial && left > 0 && done < MIN_CLIENT_INITIAL_LEN {
             let pad_len = cmp::min(left, MIN_CLIENT_INITIAL_LEN - done);
 
@@ -3796,7 +3821,11 @@ impl Connection {
 
         let pkt_type = self.write_pkt_type(send_pid)?;
 
-        let max_dgram_len = self.dgram_max_writable_len();
+        let max_dgram_len = if !self.dgram_send_queue.is_empty() {
+            self.dgram_max_writable_len()
+        } else {
+            None
+        };
 
         let epoch = pkt_type.to_epoch()?;
 
@@ -3880,13 +3909,9 @@ impl Connection {
                                 if (stream.is_flushable() || empty_fin) &&
                                     !was_flushable
                                 {
-                                    let urgency = stream.urgency;
-                                    let incremental = stream.incremental;
-                                    self.streams.push_flushable(
-                                        stream_id,
-                                        urgency,
-                                        incremental,
-                                    );
+                                    let priority_key =
+                                        Arc::clone(&stream.priority_key);
+                                    self.streams.insert_flushable(&priority_key);
                                 }
 
                                 self.stream_retrans_bytes += length as u64;
@@ -3912,8 +3937,8 @@ impl Connection {
                                 final_size,
                             } =>
                                 if self.streams.get(stream_id).is_some() {
-                                    self.streams.mark_reset(
-                                        stream_id, true, error_code, final_size,
+                                    self.streams.insert_reset(
+                                        stream_id, error_code, final_size,
                                     );
                                 },
 
@@ -3928,8 +3953,7 @@ impl Connection {
 
                             frame::Frame::MaxStreamData { stream_id, .. } =>
                                 if self.streams.get(stream_id).is_some() {
-                                    self.streams
-                                        .mark_almost_full(stream_id, true);
+                                    self.streams.insert_almost_full(stream_id);
                                 },
 
                             frame::Frame::MaxData { .. } => {
@@ -4028,10 +4052,10 @@ impl Connection {
             .spaces
             .get_mut_or_create(epoch, space_id);
 
-        let space_reduction_due_to_cwnd = b.cap() - left;
-
         let pn = pkt_space.next_pkt_num;
         let pn_len = packet::pkt_num_len(pn)?;
+
+        let space_reduction_due_to_cwnd = b.cap() - left;
 
         // The AEAD overhead at the current encryption level.
         let crypto_overhead =
@@ -4086,7 +4110,7 @@ impl Connection {
         let qlog_pkt_hdr = self.qlog.streamer.as_ref().map(|_q| {
             qlog::events::quic::PacketHeader::with_type(
                 hdr.ty.to_qlog(),
-                pn,
+                Some(pn),
                 Some(hdr.version),
                 Some(&hdr.scid),
                 Some(&hdr.dcid),
@@ -4135,9 +4159,6 @@ impl Connection {
         // Whether or not we should explicitly elicit an ACK via PING frame if we
         // implicitly elicit one otherwise.
         let ack_elicit_required = path.recovery.should_elicit_ack(epoch);
-        if ack_elicit_required {
-            debug!("Ack elicit required. Left={}", left);
-        }
 
         let header_offset = b.off();
 
@@ -4347,13 +4368,6 @@ impl Connection {
                         ecn_counts: None, /* sending ECN is not supported at
                                            * this time */
                     };
-                    trace!(
-                        "Is server={}. Push frame ACKMP with ranges: {:?} and space_id={}. This is because {} or {} or {}",
-                        self.is_server,
-                        pns.recv_pkt_need_ack.clone(),
-                        space_id,
-                        pns.recv_pkt_need_ack.len(), pns.ack_elicited, ack_elicit_required,
-                    );
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
                         pns.ack_elicited = false;
@@ -4700,7 +4714,7 @@ impl Connection {
                     None => {
                         // The stream doesn't exist anymore, so remove it from
                         // the almost full set.
-                        self.streams.mark_almost_full(stream_id, false);
+                        self.streams.remove_almost_full(stream_id);
                         continue;
                     },
                 };
@@ -4718,7 +4732,7 @@ impl Connection {
 
                     stream.recv.update_max_data(now);
 
-                    self.streams.mark_almost_full(stream_id, false);
+                    self.streams.remove_almost_full(stream_id);
 
                     ack_eliciting = true;
                     in_flight = true;
@@ -4775,7 +4789,7 @@ impl Connection {
                 );
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    self.streams.mark_stopped(stream_id, false, 0);
+                    self.streams.remove_stopped(stream_id);
 
                     ack_eliciting = true;
                     in_flight = true;
@@ -4796,7 +4810,7 @@ impl Connection {
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    self.streams.mark_reset(stream_id, false, 0, 0);
+                    self.streams.remove_reset(stream_id);
 
                     ack_eliciting = true;
                     in_flight = true;
@@ -4813,7 +4827,7 @@ impl Connection {
                 let frame = frame::Frame::StreamDataBlocked { stream_id, limit };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    self.streams.mark_blocked(stream_id, false, 0);
+                    self.streams.remove_blocked(stream_id);
 
                     ack_eliciting = true;
                     in_flight = true;
@@ -4865,16 +4879,23 @@ impl Connection {
                 }
             }
 
-            // Create PATH_STATUS frames as needed.
-            while let Some((path_id, seq_num, status)) = self.paths.path_status()
+            // Create PATH_AVAILABLE/PATH_STANDBY frames as needed.
+            while let Some((path_id, seq_num, available)) =
+                self.paths.path_status()
             {
                 let status_path = self.paths.get(path_id)?;
                 let dcid_seq_num =
                     status_path.active_dcid_seq.ok_or(Error::InvalidState)?;
-                let frame = frame::Frame::PathStatus {
-                    dcid_seq_num,
-                    seq_num,
-                    status,
+                let frame = if available {
+                    frame::Frame::PathAvailable {
+                        dcid_seq_num,
+                        seq_num,
+                    }
+                } else {
+                    frame::Frame::PathStandby {
+                        dcid_seq_num,
+                        seq_num,
+                    }
                 };
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     self.paths.on_path_status_sent();
@@ -5420,8 +5441,8 @@ impl Connection {
             !fec_only_path &&
             !sent_mc_auth
         {
-            while let Some(stream_id) = self.streams.peek_flushable() {
-                debug!("Get first flushable stream: {}", stream_id);
+            while let Some(priority_key) = self.streams.peek_flushable() {
+                let stream_id = priority_key.id;
                 let stream = match self.streams.get_mut(stream_id) {
                     // Avoid sending frames for streams that were already stopped.
                     //
@@ -5429,16 +5450,7 @@ impl Connection {
                     // flushed on the wire when a STOP_SENDING frame is received.
                     Some(v) if !v.send.is_stopped() => v,
                     _ => {
-                        debug!(
-                            "Removing flushable here for stream id={}",
-                            stream_id
-                        );
-                        let res = self.streams.get_mut(stream_id);
-                        debug!(
-                            "So the state is the following. Is None={}.",
-                            res.is_none()
-                        );
-                        self.streams.remove_flushable();
+                        self.streams.remove_flushable(&priority_key);
                         continue;
                     },
                 };
@@ -5467,7 +5479,9 @@ impl Connection {
                 let mut max_len = match left.checked_sub(hdr_len) {
                     Some(v) => v,
                     None => {
-                        self.streams.remove_flushable();
+                        let priority_key = Arc::clone(&stream.priority_key);
+                        self.streams.remove_flushable(&priority_key);
+
                         continue;
                     },
                 };
@@ -5543,9 +5557,22 @@ impl Connection {
                     has_data = true;
                 }
 
+                let priority_key = Arc::clone(&stream.priority_key);
+
+                // If the stream is no longer flushable, remove it from the queue
+                if !stream.is_flushable() {
+                    self.streams.remove_flushable(&priority_key);
+                } else if stream.incremental {
+                    // Shuffle the incremental stream to the back of the the
+                    // queue.
+                    self.streams.remove_flushable(&priority_key);
+                    self.streams.insert_flushable(&priority_key);
+                }
+
                 // Write the MC_ASYM frame authenticating this stream if it is
                 // complete.
                 let mut mc_tmp = [0u8; 1500];
+                let stream = self.streams.get_mut(stream_id).unwrap();
                 if (mc_used_auth_packet == McAuthType::StreamAsym ||
                     rmc_retr_asym) &&
                     fin
@@ -5558,7 +5585,7 @@ impl Connection {
                             ))?
                             .to_vec();
                         if !stream.is_flushable() {
-                            self.streams.remove_flushable();
+                            self.streams.remove_flushable(&priority_key);
                         }
                         sign
                     } else {
@@ -5568,7 +5595,7 @@ impl Connection {
                         // If the stream is no longer flushable, remove it from
                         // the queue.
                         if !stream.is_flushable() {
-                            self.streams.remove_flushable();
+                            self.streams.remove_flushable(&priority_key);
                         }
                         stream_to_auth.extend_from_slice(&[0u8; 64]);
                         let stream_len = stream_to_auth.len() - 64;
@@ -5586,7 +5613,7 @@ impl Connection {
                     // If the stream is no longer flushable, remove it from the
                     // queue
                     if !stream.is_flushable() {
-                        self.streams.remove_flushable();
+                        self.streams.remove_flushable(&priority_key);
                     }
                 }
 
@@ -5604,9 +5631,6 @@ impl Connection {
         // - if we've sent too many non ack-eliciting packets without having
         // sent an ACK eliciting one; OR
         // - the application requested an ack-eliciting frame be sent.
-        if ack_elicit_required {
-            trace!("Before ping. Ack required: {}, ack_eliciting: {}, left: {}, is_closing:{}", ack_elicit_required, ack_eliciting, left, is_closing);
-        }
         if (ack_elicit_required || path.needs_ack_eliciting) &&
             !ack_eliciting &&
             left >= 1 && // /!\ Commenting this line breaks the test tests::sends_ack_only_pkt_when_full_cwnd_and_ack_elicited_despite_max_unacknowledging.
@@ -5832,6 +5856,8 @@ impl Connection {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             has_data,
             retransmitted_for_probing: false,
         };
@@ -6018,6 +6044,7 @@ impl Connection {
         }
 
         let local = stream.local;
+        let priority_key = Arc::clone(&stream.priority_key);
 
         #[cfg(feature = "qlog")]
         let offset = stream.recv.off_front();
@@ -6034,7 +6061,7 @@ impl Connection {
                     self.streams.collect(stream_id, local);
                 }
 
-                self.streams.mark_readable(stream_id, false);
+                self.streams.remove_readable(&priority_key);
                 return Err(e);
             },
         };
@@ -6046,11 +6073,11 @@ impl Connection {
         let complete = stream.is_complete();
 
         if stream.recv.almost_full() {
-            self.streams.mark_almost_full(stream_id, true);
+            self.streams.insert_almost_full(stream_id);
         }
 
         if !readable {
-            self.streams.mark_readable(stream_id, false);
+            self.streams.remove_readable(&priority_key);
         }
 
         if complete {
@@ -6073,6 +6100,12 @@ impl Connection {
 
         if self.should_update_max_data() {
             self.almost_full = true;
+        }
+
+        if priority_key.incremental && readable {
+            // Shuffle the incremental stream to the back of the the queue.
+            self.streams.remove_readable(&priority_key);
+            self.streams.insert_readable(&priority_key);
         }
 
         Ok((read, fin))
@@ -6156,6 +6189,8 @@ impl Connection {
 
         let was_flushable = stream.is_flushable();
 
+        let priority_key = Arc::clone(&stream.priority_key);
+
         // Truncate the input buffer based on the connection's send capacity if
         // necessary.
         //
@@ -6169,7 +6204,7 @@ impl Connection {
                 // again once the capacity increases.
                 //
                 // Since the stream is writable already, mark it here instead.
-                self.streams.mark_writable(stream_id, true);
+                self.streams.insert_writable(&priority_key);
             }
 
             return Err(Error::Done);
@@ -6185,13 +6220,13 @@ impl Connection {
             Ok(v) => v,
 
             Err(e) => {
-                self.streams.mark_writable(stream_id, false);
+                self.streams.remove_writable(&priority_key);
                 return Err(e);
             },
         };
 
-        let urgency = stream.urgency;
         let incremental = stream.incremental;
+        let priority_key = Arc::clone(&stream.priority_key);
 
         let flushable = stream.is_flushable();
 
@@ -6204,11 +6239,11 @@ impl Connection {
 
             if stream.send.blocked_at() != Some(max_off) {
                 stream.send.update_blocked_at(Some(max_off));
-                self.streams.mark_blocked(stream_id, true, max_off);
+                self.streams.insert_blocked(stream_id, max_off);
             }
         } else {
             stream.send.update_blocked_at(None);
-            self.streams.mark_blocked(stream_id, false, 0);
+            self.streams.remove_blocked(stream_id);
         }
 
         // If the stream is now flushable push it to the flushable queue, but
@@ -6217,11 +6252,11 @@ impl Connection {
         // Consider the stream flushable also when we are sending a zero-length
         // frame that has the fin flag set.
         if (flushable || empty_fin) && !was_flushable {
-            self.streams.push_flushable(stream_id, urgency, incremental);
+            self.streams.insert_flushable(&priority_key);
         }
 
         if !writable {
-            self.streams.mark_writable(stream_id, false);
+            self.streams.remove_writable(&priority_key);
         } else if was_writable && blocked_by_cap {
             // When `stream_writable_next()` returns a stream, the writable
             // mark is removed, but because the stream is blocked by the
@@ -6229,7 +6264,7 @@ impl Connection {
             // again once the capacity increases.
             //
             // Since the stream is writable already, mark it here instead.
-            self.streams.mark_writable(stream_id, true);
+            self.streams.insert_writable(&priority_key);
         }
 
         self.tx_cap -= sent;
@@ -6254,6 +6289,12 @@ impl Connection {
 
         if sent == 0 && !buf.is_empty() {
             return Err(Error::Done);
+        }
+
+        if incremental && writable {
+            // Shuffle the incremental stream to the back of the the queue.
+            self.streams.remove_writable(&priority_key);
+            self.streams.insert_writable(&priority_key);
         }
 
         Ok(sent)
@@ -6287,7 +6328,18 @@ impl Connection {
         stream.urgency = urgency;
         stream.incremental = incremental;
 
-        // TODO: reprioritization
+        let new_priority_key = Arc::new(StreamPriorityKey {
+            urgency: stream.urgency,
+            incremental: stream.incremental,
+            id: stream_id,
+            ..Default::default()
+        });
+
+        let old_priority_key =
+            std::mem::replace(&mut stream.priority_key, new_priority_key.clone());
+
+        self.streams
+            .update_priority(&old_priority_key, &new_priority_key);
 
         Ok(())
     }
@@ -6339,16 +6391,18 @@ impl Connection {
         // Get existing stream.
         let stream = self.streams.get_mut(stream_id).ok_or(Error::Done)?;
 
+        let priority_key = Arc::clone(&stream.priority_key);
+
         match direction {
             Shutdown::Read => {
                 stream.recv.shutdown()?;
 
                 if !stream.recv.is_fin() {
-                    self.streams.mark_stopped(stream_id, true, err);
+                    self.streams.insert_stopped(stream_id, err);
                 }
 
                 // Once shutdown, the stream is guaranteed to be non-readable.
-                self.streams.mark_readable(stream_id, false);
+                self.streams.remove_readable(&priority_key);
             },
 
             Shutdown::Write => {
@@ -6364,10 +6418,10 @@ impl Connection {
                 // Update send capacity.
                 self.update_tx_cap();
 
-                self.streams.mark_reset(stream_id, true, err, final_size);
+                self.streams.insert_reset(stream_id, err, final_size);
 
                 // Once shutdown, the stream is guaranteed to be non-writable.
-                self.streams.mark_writable(stream_id, false);
+                self.streams.remove_writable(&priority_key);
             },
         }
 
@@ -6409,11 +6463,11 @@ impl Connection {
     ///
     /// [`readable()`]: struct.Connection.html#method.readable
     pub fn stream_readable_next(&mut self) -> Option<u64> {
-        let &stream_id = self.streams.readable.iter().next()?;
+        let priority_key = self.streams.readable.front().clone_pointer()?;
 
-        self.streams.mark_readable(stream_id, false);
+        self.streams.remove_readable(&priority_key);
 
-        Some(stream_id)
+        Some(priority_key.id)
     }
 
     /// Returns true if the stream has data that can be read.
@@ -6449,8 +6503,10 @@ impl Connection {
             return None;
         }
 
-        for &stream_id in &self.streams.writable {
-            if let Some(stream) = self.streams.get(stream_id) {
+        let mut cursor = self.streams.writable.front();
+
+        while let Some(priority_key) = cursor.clone_pointer() {
+            if let Some(stream) = self.streams.get(priority_key.id) {
                 let cap = match stream.send.cap() {
                     Ok(v) => v,
 
@@ -6458,16 +6514,19 @@ impl Connection {
                     // stopped.
                     Err(_) =>
                         return {
-                            self.streams.mark_writable(stream_id, false);
-                            Some(stream_id)
+                            self.streams.remove_writable(&priority_key);
+
+                            Some(priority_key.id)
                         },
                 };
 
                 if cmp::min(self.tx_cap, cap) >= stream.send_lowat {
-                    self.streams.mark_writable(stream_id, false);
-                    return Some(stream_id);
+                    self.streams.remove_writable(&priority_key);
+                    return Some(priority_key.id);
                 }
             }
+
+            cursor.move_next();
         }
 
         None
@@ -6513,6 +6572,8 @@ impl Connection {
 
         let is_writable = stream.is_writable();
 
+        let priority_key = Arc::clone(&stream.priority_key);
+
         if self.max_tx_data - self.tx_data < len as u64 {
             self.blocked_limit = Some(self.max_tx_data);
         }
@@ -6521,7 +6582,7 @@ impl Connection {
             let max_off = stream.send.max_off();
             if stream.send.blocked_at() != Some(max_off) {
                 stream.send.update_blocked_at(Some(max_off));
-                self.streams.mark_blocked(stream_id, true, max_off);
+                self.streams.insert_blocked(stream_id, max_off);
             }
         } else if is_writable {
             // When `stream_writable_next()` returns a stream, the writable
@@ -6530,7 +6591,7 @@ impl Connection {
             // again once the capacity increases.
             //
             // Since the stream is writable already, mark it here instead.
-            self.streams.mark_writable(stream_id, true);
+            self.streams.insert_writable(&priority_key);
         }
 
         Ok(false)
@@ -6620,7 +6681,13 @@ impl Connection {
         self.streams.readable()
     }
 
-    /// Returns an iterator over streams that can be written to.
+    /// Returns an iterator over streams that can be written in priority order.
+    ///
+    /// The priority order is based on RFC 9218 scheduling recommendations.
+    /// Stream priority can be controlled using [`stream_priority()`]. In order
+    /// to support fairness requirements, each time this method is called,
+    /// internal state is updated. Therefore the iterator ordering can change
+    /// between calls, even if no streams were added or removed.
     ///
     /// A "writable" stream is a stream that has enough flow control capacity to
     /// send data to the peer. To avoid buffering an infinite amount of data,
@@ -6629,8 +6696,8 @@ impl Connection {
     ///
     /// Note that the iterator will only include streams that were writable at
     /// the time the iterator itself was created (i.e. when `writable()` was
-    /// called). To account for newly writable streams, the iterator needs to
-    /// be created again.
+    /// called). To account for newly writable streams, the iterator needs to be
+    /// created again.
     ///
     /// ## Examples:
     ///
@@ -6651,6 +6718,7 @@ impl Connection {
     /// }
     /// # Ok::<(), quiche::Error>(())
     /// ```
+    /// [`stream_priority()`]: struct.Connection.html#method.stream_priority
     #[inline]
     pub fn writable(&self) -> StreamIter {
         // If there is not enough connection-level send capacity, none of the
@@ -7042,7 +7110,6 @@ impl Connection {
             // `Some(...)` value is returned.
             let path_timer =
                 self.paths.iter().filter_map(|(_, p)| p.path_timer()).min();
-
             let key_update_timer = self
                 .pkt_num_spaces
                 .crypto
@@ -7145,6 +7212,18 @@ impl Connection {
                     p.on_closing_timeout();
                 }
             }
+            if let Some(timer) = p.recovery.loss_detection_timer() {
+                if timer <= now {
+                    trace!("{} path closing timeout expired", self.trace_id);
+                    if let Some(dcid_seq) = p.active_dcid_seq {
+                        self.ids.retire_dcid(dcid_seq).ok();
+                        self.pkt_num_spaces
+                            .spaces
+                            .update_lowest_active_tx_id(self.ids.min_dcid_seq());
+                    }
+                    p.on_closing_timeout();
+                }
+            }
 
             // Disable loss detection timer for data sent on the multicast data
             // path.
@@ -7214,12 +7293,11 @@ impl Connection {
         // If the active path failed, try to find a new candidate.
         if self.paths.get_active_path_id().is_err() {
             match self.paths.find_candidate_path() {
-                Some(pid) => {
+                Some(pid) =>
                     if self.set_active_path(pid, now).is_err() {
                         // The connection cannot continue.
                         self.closed = true;
-                    }
-                },
+                    },
 
                 // The connection cannot continue.
                 None => self.closed = true,
@@ -7234,8 +7312,8 @@ impl Connection {
     ///
     /// The probing of new addresses can only be done by the client. The server
     /// can only probe network paths that were previously advertised by
-    /// [`NewPath`]. If the server tries to probe such an unseen network path,
-    /// this call raises an [`InvalidState`].
+    /// [`PathEvent::New`]. If the server tries to probe such an unseen network
+    /// path, this call raises an [`InvalidState`].
     ///
     /// The caller might also want to probe an existing path. In such case, it
     /// triggers a PATH_CHALLENGE frame, but it does not require spare CIDs.
@@ -7252,7 +7330,7 @@ impl Connection {
     /// Returns the Destination Connection ID sequence number associated to that
     /// path.
     ///
-    /// [`NewPath`]: enum.QuicEvent.html#NewPath
+    /// [`PathEvent::New`]: enum.PathEvent.html#variant.New
     /// [`OutOfIdentifiers`]: enum.Error.html#OutOfIdentifiers
     /// [`InvalidState`]: enum.Error.html#InvalidState
     /// [`send()`]: struct.Connection.html#method.send
@@ -7494,22 +7572,25 @@ impl Connection {
         self.ids.active_source_cids()
     }
 
-    /// Returns the maximum number of concurrently active source Connection IDs
-    /// that can be provided to the peer.
-    pub fn max_active_source_cids(&self) -> usize {
-        self.peer_transport_params.active_conn_id_limit as usize
-    }
-
-    /// Returns the number of source Connection IDs that can still be provided
+    /// Returns the number of source Connection IDs that should be provided
     /// to the peer without exceeding the limit it advertised.
     ///
-    /// The application should not issue the maximum number of permitted source
-    /// Connection IDs, but instead treat this as an untrusted upper bound.
-    /// Applications should limit how many outstanding source ConnectionIDs
-    /// are simultaneously issued to prevent issuing more than they can handle.
+    /// This will automatically limit the number of Connection IDs to the
+    /// minimum between the locally configured active connection ID limit,
+    /// and the one sent by the peer.
+    ///
+    /// To obtain the maximum possible value allowed by the peer an application
+    /// can instead inspect the [`peer_active_conn_id_limit`] value.
+    ///
+    /// [`peer_active_conn_id_limit`]: struct.Stats.html#structfield.peer_active_conn_id_limit
     #[inline]
     pub fn source_cids_left(&self) -> usize {
-        self.max_active_source_cids() - self.active_source_cids()
+        let max_active_source_cids = cmp::min(
+            self.peer_transport_params.active_conn_id_limit,
+            self.local_transport_params.active_conn_id_limit,
+        ) as usize;
+
+        max_active_source_cids - self.active_source_cids()
     }
 
     /// Requests the retirement of the destination Connection ID used by the
@@ -7616,9 +7697,9 @@ impl Connection {
     /// Note that the iterator includes all the possible combination of
     /// destination `SockAddr`s, even those whose sending is not required now.
     /// In other words, this is another way for the application to recall from
-    /// past [`NewPath`] events.
+    /// past [`PathEvent::New`] events.
     ///
-    /// [`NewPath`]: enum.QuicEvent.html#NewPath
+    /// [`PathEvent::New`]: enum.PathEvent.html#variant.New
     /// [`send_on_path()`]: struct.Connection.html#method.send_on_path
     ///
     /// ## Examples:
@@ -7662,6 +7743,7 @@ impl Connection {
             sockaddrs: self
                 .paths
                 .iter()
+                .filter(|(_, p)| p.active_dcid_seq.is_some())
                 .filter(|(_, p)| p.usable() || p.probing_required())
                 .filter(|(_, p)| p.local_addr() == from)
                 .map(|(_, p)| p.peer_addr())
@@ -7956,40 +8038,17 @@ impl Connection {
             lost_bytes: self.lost_bytes,
             stream_retrans_bytes: self.stream_retrans_bytes,
             paths_count: self.paths.len(),
-            peer_max_idle_timeout: self.peer_transport_params.max_idle_timeout,
-            peer_max_udp_payload_size: self
-                .peer_transport_params
-                .max_udp_payload_size,
-            peer_initial_max_data: self.peer_transport_params.initial_max_data,
-            peer_initial_max_stream_data_bidi_local: self
-                .peer_transport_params
-                .initial_max_stream_data_bidi_local,
-            peer_initial_max_stream_data_bidi_remote: self
-                .peer_transport_params
-                .initial_max_stream_data_bidi_remote,
-            peer_initial_max_stream_data_uni: self
-                .peer_transport_params
-                .initial_max_stream_data_uni,
-            peer_initial_max_streams_bidi: self
-                .peer_transport_params
-                .initial_max_streams_bidi,
-            peer_initial_max_streams_uni: self
-                .peer_transport_params
-                .initial_max_streams_uni,
-            peer_ack_delay_exponent: self
-                .peer_transport_params
-                .ack_delay_exponent,
-            peer_max_ack_delay: self.peer_transport_params.max_ack_delay,
-            peer_disable_active_migration: self
-                .peer_transport_params
-                .disable_active_migration,
-            peer_active_conn_id_limit: self
-                .peer_transport_params
-                .active_conn_id_limit,
-            peer_max_datagram_frame_size: self
-                .peer_transport_params
-                .max_datagram_frame_size,
         }
+    }
+
+    /// Returns reference to peer's transport parameters. Returns `None` if we
+    /// have not yet processed the peer's transport parameters.
+    pub fn peer_transport_params(&self) -> Option<&TransportParams> {
+        if !self.parsed_peer_transport_params {
+            return None;
+        }
+
+        Some(&self.peer_transport_params)
     }
 
     /// Collects and returns statistics about each known path for the
@@ -8004,7 +8063,7 @@ impl Connection {
     }
 
     fn encode_transport_params(&mut self) -> Result<()> {
-        let mut raw_params = [0; 128];
+        let mut raw_params = [0; 168];
 
         let raw_params = TransportParams::encode(
             &self.local_transport_params,
@@ -8111,16 +8170,10 @@ impl Connection {
         self.ids
             .set_source_conn_id_limit(peer_params.active_conn_id_limit);
 
-        if let Some(mp) = self
-            .local_transport_params
-            .enable_multipath
-            .zip(peer_params.enable_multipath)
-            .map(|(l, p)| l & p)
+        if self.local_transport_params.enable_multipath &&
+            peer_params.enable_multipath
         {
-            if mp > 1 {
-                return Err(Error::InvalidTransportParam);
-            }
-            self.paths.set_multipath(mp == 1);
+            self.paths.set_multipath(true);
         }
 
         self.peer_transport_params = peer_params;
@@ -8456,6 +8509,7 @@ impl Connection {
                 };
 
                 let was_readable = stream.is_readable();
+                let priority_key = Arc::clone(&stream.priority_key);
 
                 let max_off_delta =
                     stream.recv.reset(error_code, final_size)? as u64;
@@ -8465,7 +8519,7 @@ impl Connection {
                 }
 
                 if !was_readable && stream.is_readable() {
-                    self.streams.mark_readable(stream_id, true);
+                    self.streams.insert_readable(&priority_key);
                 }
 
                 self.rx_data += max_off_delta;
@@ -8503,6 +8557,8 @@ impl Connection {
 
                 let was_writable = stream.is_writable();
 
+                let priority_key = Arc::clone(&stream.priority_key);
+
                 // Try stopping the stream.
                 if let Ok((final_size, unsent)) = stream.send.stop(error_code) {
                     // Claw back some flow control allowance from data that was
@@ -8516,11 +8572,10 @@ impl Connection {
                     self.tx_buffered =
                         self.tx_buffered.saturating_sub(unsent as usize);
 
-                    self.streams
-                        .mark_reset(stream_id, true, error_code, final_size);
+                    self.streams.insert_reset(stream_id, error_code, final_size);
 
                     if !was_writable {
-                        self.streams.mark_writable(stream_id, true);
+                        self.streams.insert_writable(&priority_key);
                     }
                 }
             },
@@ -8595,15 +8650,16 @@ impl Connection {
                 }
 
                 let was_readable = stream.is_readable();
+                let priority_key = Arc::clone(&stream.priority_key);
 
-                let was_draining = stream.is_draining();
+                let was_draining = stream.recv.is_draining();
 
                 stream.recv.write(data)?;
 
                 let stream_has_fin = stream.recv.has_fin();
 
                 if !was_readable && stream.is_readable() {
-                    self.streams.mark_readable(stream_id, true);
+                    self.streams.insert_readable(&priority_key);
                 }
 
                 self.rx_data += max_off_delta;
@@ -8680,16 +8736,17 @@ impl Connection {
 
                 let writable = stream.is_writable();
 
+                let priority_key = Arc::clone(&stream.priority_key);
+
                 // If the stream is now flushable push it to the flushable queue,
                 // but only if it wasn't already queued.
                 if stream.is_flushable() && !was_flushable {
-                    let urgency = stream.urgency;
-                    let incremental = stream.incremental;
-                    self.streams.push_flushable(stream_id, urgency, incremental);
+                    let priority_key = Arc::clone(&stream.priority_key);
+                    self.streams.insert_flushable(&priority_key);
                 }
 
                 if writable {
-                    self.streams.mark_writable(stream_id, true);
+                    self.streams.insert_writable(&priority_key);
                 }
             },
 
@@ -9130,6 +9187,7 @@ impl Connection {
                 ..
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
+                    println!("ICI 4");
                     return Err(Error::MultiPathViolation);
                 }
                 let ack_delay = ack_delay
@@ -9153,6 +9211,7 @@ impl Connection {
                 // MUST treat this as a connection error of type
                 // MP_PROTOCOL_VIOLATION and close the connection.
                 if space_identifier > self.ids.largest_dcid_seq() {
+                    println!("ICI 5");
                     return Err(Error::MultiPathViolation);
                 }
 
@@ -9247,15 +9306,21 @@ impl Connection {
                 dcid_seq_num,
                 error_code,
                 reason,
+                ..
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
+                    println!("ICI 1");
                     return Err(Error::MultiPathViolation);
                 }
-                let abandon_pid = self
+                let abandon_pid = match self
                     .ids
                     .get_dcid(dcid_seq_num)?
                     .path_id
-                    .ok_or(Error::InvalidFrame)?;
+                    .ok_or(Error::InvalidFrame)
+                {
+                    Ok(ap) => ap,
+                    Err(_) => return Ok(()),
+                };
                 self.paths.on_path_abandon_received(
                     abandon_pid,
                     error_code,
@@ -9263,12 +9328,12 @@ impl Connection {
                 )?;
             },
 
-            frame::Frame::PathStatus {
+            frame::Frame::PathStandby {
                 dcid_seq_num,
                 seq_num,
-                status,
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
+                    println!("ICI 2");
                     return Err(Error::MultiPathViolation);
                 }
                 let pid = self
@@ -9276,7 +9341,23 @@ impl Connection {
                     .get_dcid(dcid_seq_num)?
                     .path_id
                     .ok_or(Error::InvalidFrame)?;
-                self.paths.on_path_status_received(pid, seq_num, status);
+                self.paths.on_path_status_received(pid, seq_num, false);
+            },
+
+            frame::Frame::PathAvailable {
+                dcid_seq_num,
+                seq_num,
+            } => {
+                if !self.use_path_pkt_num_space(epoch) {
+                    println!("ICI 3");
+                    return Err(Error::MultiPathViolation);
+                }
+                let pid = self
+                    .ids
+                    .get_dcid(dcid_seq_num)?
+                    .path_id
+                    .ok_or(Error::InvalidFrame)?;
+                self.paths.on_path_status_received(pid, seq_num, true);
             },
 
             frame::Frame::McAnnounce {
@@ -9578,7 +9659,7 @@ impl Connection {
             .filter(|(_, p)| p.active())
             .map(|(_, p)| p.recovery.cwnd_available())
             .filter(|cwnd| *cwnd != std::usize::MAX)
-            .fold(0, |s: usize, v: usize| s.saturating_add(v));
+            .sum();
         self.tx_cap = cmp::min(
             cwin_available,
             (self.max_tx_data - self.tx_data)
@@ -9609,7 +9690,7 @@ impl Connection {
             .map(|p| p.recovery.cwnd_available())
             .unwrap_or(0);
 
-        ((self.tx_buffered + self.dgram_send_queue_len()) < cwin_available) &&
+        ((self.tx_buffered + self.dgram_send_queue_byte_size()) < cwin_available) &&
             (self.tx_data.saturating_sub(self.last_tx_data)) <
                 cwin_available as u64 &&
             cwin_available > 0
@@ -9843,6 +9924,64 @@ impl Connection {
             }
         }
 
+        let mut consider_standby = false;
+        let dgrams_to_emit = self.dgram_send_queue.has_pending();
+        let stream_to_emit = self.streams.has_flushable();
+        // When using aggregate mode, favour lowest-latency path on which CWIN
+        // is open. This should only be used when data need to be sent.
+        // If we have standby paths, we may run the loop a second time.
+        if self.paths.multipath() && (dgrams_to_emit || stream_to_emit) {
+            // We loop at most twice.
+            loop {
+                if let Some(pid) = self
+                    .paths
+                    .iter()
+                    .filter(|(_, p)| {
+                        // Follow the filter provided as parameters.
+                        let local = from.map(|f| f == p.local_addr()).unwrap_or(true);
+                        let peer = to.map(|t| t == p.peer_addr()).unwrap_or(true);
+                        // Favour non-standby paths first, only consider active ones with open CWND.
+                        local && peer && (consider_standby || !p.is_standby()) && p.active() && p.recovery.cwnd_available() > 0
+                    })
+                    // Lowest-latency first.
+                    .min_by_key(|(_, p)| p.recovery.rtt())
+                    .map(|(pid, _)| pid)
+                {
+                    return Ok(pid);
+                }
+                if consider_standby || !self.paths.consider_standby_paths() {
+                    break;
+                }
+                consider_standby = true;
+            }
+        }
+
+        // When using multiple packet number spaces, let's force ACK_MP sending
+        // on their corresponding paths.
+        if self.is_multipath_enabled() {
+            if let Some(pid) =
+                self.pkt_num_spaces
+                    .spaces
+                    .application_data_space_ids()
+                    .find_map(|seq| {
+                        self.pkt_num_spaces
+                            .is_ready(packet::Epoch::Application, Some(seq))
+                            .then(|| {
+                                self.ids.get_scid(seq).ok().and_then(|e| {
+                                    e.path_id.and_then(|pid| {
+                                        self.paths.get(pid).ok().and_then(|p| {
+                                            p.active().then_some(pid)
+                                        })
+                                    })
+                                })
+                            })
+                            .flatten()
+                    })
+            {
+                return Ok(pid);
+            }
+        }
+
         if let Some((pid, p)) = self.paths.get_active_with_pid() {
             if from.is_some() && Some(p.local_addr()) != from {
                 return Err(Error::Done);
@@ -9943,6 +10082,7 @@ impl Connection {
     /// sending packets.
     #[inline]
     fn use_path_pkt_num_space(&self, epoch: packet::Epoch) -> bool {
+        println!("Is multipath enabled: {} and epoch: {:?}", self.is_multipath_enabled(), epoch);
         self.is_multipath_enabled() && epoch == packet::Epoch::Application
     }
 }
@@ -10100,45 +10240,6 @@ pub struct Stats {
 
     /// The number of known paths for the connection.
     pub paths_count: usize,
-
-    /// The maximum idle timeout.
-    pub peer_max_idle_timeout: u64,
-
-    /// The maximum UDP payload size.
-    pub peer_max_udp_payload_size: u64,
-
-    /// The initial flow control maximum data for the connection.
-    pub peer_initial_max_data: u64,
-
-    /// The initial flow control maximum data for local bidirectional streams.
-    pub peer_initial_max_stream_data_bidi_local: u64,
-
-    /// The initial flow control maximum data for remote bidirectional streams.
-    pub peer_initial_max_stream_data_bidi_remote: u64,
-
-    /// The initial flow control maximum data for unidirectional streams.
-    pub peer_initial_max_stream_data_uni: u64,
-
-    /// The initial maximum bidirectional streams.
-    pub peer_initial_max_streams_bidi: u64,
-
-    /// The initial maximum unidirectional streams.
-    pub peer_initial_max_streams_uni: u64,
-
-    /// The ACK delay exponent.
-    pub peer_ack_delay_exponent: u64,
-
-    /// The max ACK delay.
-    pub peer_max_ack_delay: u64,
-
-    /// Whether active migration is disabled.
-    pub peer_disable_active_migration: bool,
-
-    /// The active connection ID limit.
-    pub peer_active_conn_id_limit: u64,
-
-    /// DATAGRAM frame extension parameter, if any.
-    pub peer_max_datagram_frame_size: Option<u64>,
 }
 
 impl std::fmt::Debug for Stats {
@@ -10156,97 +10257,55 @@ impl std::fmt::Debug for Stats {
             self.sent_bytes, self.recv_bytes, self.lost_bytes,
         )?;
 
-        write!(f, " peer_tps={{")?;
-
-        write!(f, " max_idle_timeout={},", self.peer_max_idle_timeout)?;
-
-        write!(
-            f,
-            " max_udp_payload_size={},",
-            self.peer_max_udp_payload_size,
-        )?;
-
-        write!(f, " initial_max_data={},", self.peer_initial_max_data)?;
-
-        write!(
-            f,
-            " initial_max_stream_data_bidi_local={},",
-            self.peer_initial_max_stream_data_bidi_local,
-        )?;
-
-        write!(
-            f,
-            " initial_max_stream_data_bidi_remote={},",
-            self.peer_initial_max_stream_data_bidi_remote,
-        )?;
-
-        write!(
-            f,
-            " initial_max_stream_data_uni={},",
-            self.peer_initial_max_stream_data_uni,
-        )?;
-
-        write!(
-            f,
-            " initial_max_streams_bidi={},",
-            self.peer_initial_max_streams_bidi,
-        )?;
-
-        write!(
-            f,
-            " initial_max_streams_uni={},",
-            self.peer_initial_max_streams_uni,
-        )?;
-
-        write!(f, " ack_delay_exponent={},", self.peer_ack_delay_exponent)?;
-
-        write!(f, " max_ack_delay={},", self.peer_max_ack_delay)?;
-
-        write!(
-            f,
-            " disable_active_migration={},",
-            self.peer_disable_active_migration,
-        )?;
-
-        write!(
-            f,
-            " active_conn_id_limit={},",
-            self.peer_active_conn_id_limit,
-        )?;
-
-        write!(
-            f,
-            " max_datagram_frame_size={:?}",
-            self.peer_max_datagram_frame_size,
-        )?;
-
-        write!(f, "}}")
+        Ok(())
     }
 }
 
+/// QUIC Transport Parameters
 #[derive(Clone, Debug, PartialEq)]
-struct TransportParams {
+pub struct TransportParams {
+    /// Value of Destination CID field from first Initial packet sent by client
     pub original_destination_connection_id: Option<ConnectionId<'static>>,
+    /// The maximum idle timeout.
     pub max_idle_timeout: u64,
+    /// Token used for verifying stateless resets
     pub stateless_reset_token: Option<u128>,
+    /// The maximum UDP payload size.
     pub max_udp_payload_size: u64,
+    /// The initial flow control maximum data for the connection.
     pub initial_max_data: u64,
+    /// The initial flow control maximum data for local bidirectional streams.
     pub initial_max_stream_data_bidi_local: u64,
+    /// The initial flow control maximum data for remote bidirectional streams.
     pub initial_max_stream_data_bidi_remote: u64,
+    /// The initial flow control maximum data for unidirectional streams.
     pub initial_max_stream_data_uni: u64,
+    /// The initial maximum bidirectional streams.
     pub initial_max_streams_bidi: u64,
+    /// The initial maximum unidirectional streams.
     pub initial_max_streams_uni: u64,
+    /// The ACK delay exponent.
     pub ack_delay_exponent: u64,
+    /// The max ACK delay.
     pub max_ack_delay: u64,
+    /// Whether active migration is disabled.
     pub disable_active_migration: bool,
-    // pub preferred_address: ...,
+    /// The active connection ID limit.
     pub active_conn_id_limit: u64,
+    /// The value that the endpoint included in the Source CID field of a Retry
+    /// Packet.
     pub initial_source_connection_id: Option<ConnectionId<'static>>,
+    /// The value that the server included in the Source CID field of a Retry
+    /// Packet.
     pub retry_source_connection_id: Option<ConnectionId<'static>>,
+    /// DATAGRAM frame extension parameter, if any.
     pub max_datagram_frame_size: Option<u64>,
-    pub enable_multipath: Option<u64>,
+    /// Multicast extension support for the server.
     pub multicast_server_params: bool,
+    /// Multicast extension parameters for the client.
     pub multicast_client_params: Option<multicast::MulticastClientTp>,
+    /// Multipath extension parameter, if any.
+    pub enable_multipath: bool,
 }
 
 impl Default for TransportParams {
@@ -10269,9 +10328,9 @@ impl Default for TransportParams {
             initial_source_connection_id: None,
             retry_source_connection_id: None,
             max_datagram_frame_size: None,
-            enable_multipath: None,
             multicast_server_params: false,
             multicast_client_params: None,
+            enable_multipath: false,
         }
     }
 }
@@ -10422,10 +10481,6 @@ impl TransportParams {
                     tp.max_datagram_frame_size = Some(val.get_varint()?);
                 },
 
-                0x0f739bbc1b666d04 => {
-                    tp.enable_multipath = Some(val.get_varint()?);
-                },
-
                 0xedf3 => {
                     debug!("Received a multicast_server_params TP");
                     // Should not receive a multicast_server_params if it is the
@@ -10457,6 +10512,10 @@ impl TransportParams {
                         "The multicast client params: {:?}",
                         tp.multicast_client_params
                     );
+                },
+
+                0x0f739bbc1b666d06 => {
+                    tp.enable_multipath = true;
                 },
 
                 // Ignore unknown parameters.
@@ -10621,15 +10680,6 @@ impl TransportParams {
             b.put_varint(max_datagram_frame_size)?;
         }
 
-        if let Some(enable_multipath) = tp.enable_multipath {
-            TransportParams::encode_param(
-                &mut b,
-                0x0f739bbc1b666d04,
-                octets::varint_len(enable_multipath),
-            )?;
-            b.put_varint(enable_multipath)?;
-        }
-
         if is_server {
             if tp.multicast_server_params {
                 TransportParams::encode_param(&mut b, 0xedf3, 0)?;
@@ -10643,14 +10693,17 @@ impl TransportParams {
                 let tmp_buf: Vec<u8> = mc_client_params.into();
                 b.put_bytes(&tmp_buf[..])?;
             }
+            if tp.enable_multipath {
+                TransportParams::encode_param(&mut b, 0x0f739bbc1b666d06, 0)?;
+            }
         }
-
         let out_len = b.off();
 
         Ok(&mut out[..out_len])
     }
 
-    /// Creates a qlog event for connection transport parameters and TLS fields
+    /// Creates a qlog event for connection transport parameters and TLS
+    /// fields
     #[cfg(feature = "qlog")]
     pub fn to_qlog(
         &self, owner: TransportOwner, cipher: Option<crypto::Algorithm>,
@@ -10876,6 +10929,37 @@ pub mod testing {
             })
         }
 
+        pub fn with_client_and_server_config(
+            client_config: &mut Config, server_config: &mut Config,
+        ) -> Result<Pipe> {
+            let mut client_scid = [0; 16];
+            rand::rand_bytes(&mut client_scid[..]);
+            let client_scid = ConnectionId::from_ref(&client_scid);
+            let client_addr = Pipe::client_addr();
+
+            let mut server_scid = [0; 16];
+            rand::rand_bytes(&mut server_scid[..]);
+            let server_scid = ConnectionId::from_ref(&server_scid);
+            let server_addr = Pipe::server_addr();
+
+            Ok(Pipe {
+                client: connect(
+                    Some("quic.tech"),
+                    &client_scid,
+                    client_addr,
+                    server_addr,
+                    client_config,
+                )?,
+                server: accept(
+                    &server_scid,
+                    None,
+                    server_addr,
+                    client_addr,
+                    server_config,
+                )?,
+            })
+        }
+
         pub fn handshake(&mut self) -> Result<()> {
             while !self.client.is_established() || !self.server.is_established() {
                 let flight = emit_flight(&mut self.client)?;
@@ -11026,14 +11110,15 @@ pub mod testing {
     }
 
     pub fn emit_flight_with_max_buffer(
-        conn: &mut Connection, out_size: usize,
+        conn: &mut Connection, out_size: usize, from: Option<SocketAddr>,
+        to: Option<SocketAddr>,
     ) -> Result<Vec<(Vec<u8>, SendInfo)>> {
         let mut flight = Vec::new();
 
         loop {
             let mut out = vec![0u8; out_size];
 
-            let info = match conn.send(&mut out) {
+            let info = match conn.send_on_path(&mut out, from, to) {
                 Ok((written, info)) => {
                     out.truncate(written);
                     info
@@ -11054,10 +11139,16 @@ pub mod testing {
         Ok(flight)
     }
 
+    pub fn emit_flight_on_path(
+        conn: &mut Connection, from: Option<SocketAddr>, to: Option<SocketAddr>,
+    ) -> Result<Vec<(Vec<u8>, SendInfo)>> {
+        emit_flight_with_max_buffer(conn, 65535, from, to)
+    }
+
     pub fn emit_flight(
         conn: &mut Connection,
     ) -> Result<Vec<(Vec<u8>, SendInfo)>> {
-        emit_flight_with_max_buffer(conn, 65535)
+        emit_flight_on_path(conn, None, None)
     }
 
     pub fn encode_pkt(
@@ -11149,9 +11240,9 @@ pub mod testing {
     }
 
     pub fn decode_pkt(
-        conn: &mut Connection, buf: &mut [u8], len: usize,
+        conn: &mut Connection, buf: &mut [u8],
     ) -> Result<Vec<frame::Frame>> {
-        let mut b = octets::OctetsMut::with_slice(&mut buf[..len]);
+        let mut b = octets::OctetsMut::with_slice(buf);
 
         let mut hdr = Header::from_bytes(&mut b, conn.source_id().len()).unwrap();
 
@@ -11248,10 +11339,10 @@ mod tests {
             initial_source_connection_id: Some(b"woot woot".to_vec().into()),
             retry_source_connection_id: Some(b"retry".to_vec().into()),
             max_datagram_frame_size: Some(32),
-            enable_multipath: Some(1),
             multicast_server_params: true,
             multicast_client_params: None, /* Server should not send client TP
                                             * for multicast. */
+            enable_multipath: true,
         };
 
         let mut raw_params = [42; 256];
@@ -11286,9 +11377,9 @@ mod tests {
             initial_source_connection_id: Some(b"woot woot".to_vec().into()),
             retry_source_connection_id: None,
             max_datagram_frame_size: Some(32),
-            enable_multipath: Some(1),
             multicast_server_params: false,
             multicast_client_params: Some(mc_client_params),
+            enable_multipath: true,
         };
 
         let mut raw_params = [42; 256];
@@ -11400,6 +11491,87 @@ mod tests {
 
         let mut pipe = testing::Pipe::with_client_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
+    }
+
+    #[test]
+    fn verify_client_invalid() {
+        let mut server_config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        server_config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        server_config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        server_config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        server_config.set_initial_max_data(30);
+        server_config.set_initial_max_stream_data_bidi_local(15);
+        server_config.set_initial_max_stream_data_bidi_remote(15);
+        server_config.set_initial_max_streams_bidi(3);
+
+        // The server shouldn't be able to verify the client's certificate due
+        // to missing CA.
+        server_config.verify_peer(true);
+
+        let mut client_config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        client_config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        client_config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        client_config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        client_config.set_initial_max_data(30);
+        client_config.set_initial_max_stream_data_bidi_local(15);
+        client_config.set_initial_max_stream_data_bidi_remote(15);
+        client_config.set_initial_max_streams_bidi(3);
+
+        // The client is able to verify the server's certificate with the
+        // appropriate CA.
+        client_config
+            .load_verify_locations_from_file("examples/rootca.crt")
+            .unwrap();
+        client_config.verify_peer(true);
+
+        let mut pipe = testing::Pipe::with_client_and_server_config(
+            &mut client_config,
+            &mut server_config,
+        )
+        .unwrap();
+        assert_eq!(pipe.handshake(), Err(Error::TlsFail));
+
+        // Client did send a certificate.
+        assert!(pipe.server.peer_cert().is_some());
+    }
+
+    #[test]
+    fn verify_client_anonymous() {
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.set_initial_max_data(30);
+        config.set_initial_max_stream_data_bidi_local(15);
+        config.set_initial_max_stream_data_bidi_remote(15);
+        config.set_initial_max_streams_bidi(3);
+
+        // Try to validate client certificate.
+        config.verify_peer(true);
+
+        let mut pipe = testing::Pipe::with_server_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        // Client didn't send a certificate.
+        assert!(pipe.server.peer_cert().is_none());
     }
 
     #[test]
@@ -12254,7 +12426,7 @@ mod tests {
         assert!(len > 0);
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         let mut iter = frames.iter();
 
         // Ignore ACK.
@@ -12372,7 +12544,7 @@ mod tests {
         assert!(len > 0);
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         let mut iter = frames.iter();
 
         // Ignore ACK.
@@ -12573,6 +12745,92 @@ mod tests {
             pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
             Err(Error::InvalidFrame),
         );
+    }
+
+    #[test]
+    fn stream_left_reset_bidi() {
+        let mut buf = [0; 65535];
+
+        let mut pipe = testing::Pipe::new().unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        assert_eq!(3, pipe.client.peer_streams_left_bidi());
+        assert_eq!(3, pipe.server.peer_streams_left_bidi());
+
+        pipe.client.stream_send(0, b"a", false).ok();
+        assert_eq!(2, pipe.client.peer_streams_left_bidi());
+        pipe.client.stream_send(4, b"a", false).ok();
+        assert_eq!(1, pipe.client.peer_streams_left_bidi());
+        pipe.client.stream_send(8, b"a", false).ok();
+        assert_eq!(0, pipe.client.peer_streams_left_bidi());
+
+        // Client resets the stream.
+        pipe.client
+            .stream_shutdown(0, Shutdown::Write, 1001)
+            .unwrap();
+        pipe.advance().unwrap();
+
+        assert_eq!(0, pipe.client.peer_streams_left_bidi());
+        let mut r = pipe.server.readable();
+        assert_eq!(Some(0), r.next());
+        assert_eq!(Some(4), r.next());
+        assert_eq!(Some(8), r.next());
+        assert_eq!(None, r.next());
+
+        assert_eq!(
+            pipe.server.stream_recv(0, &mut buf),
+            Err(Error::StreamReset(1001))
+        );
+
+        let mut r = pipe.server.readable();
+        assert_eq!(Some(4), r.next());
+        assert_eq!(Some(8), r.next());
+        assert_eq!(None, r.next());
+
+        // Server resets the stream in reaction.
+        pipe.server
+            .stream_shutdown(0, Shutdown::Write, 1001)
+            .unwrap();
+        pipe.advance().unwrap();
+
+        assert_eq!(1, pipe.client.peer_streams_left_bidi());
+
+        // Repeat for the other 2 streams
+        pipe.client
+            .stream_shutdown(4, Shutdown::Write, 1001)
+            .unwrap();
+        pipe.client
+            .stream_shutdown(8, Shutdown::Write, 1001)
+            .unwrap();
+        pipe.advance().unwrap();
+
+        let mut r = pipe.server.readable();
+        assert_eq!(Some(4), r.next());
+        assert_eq!(Some(8), r.next());
+        assert_eq!(None, r.next());
+
+        assert_eq!(
+            pipe.server.stream_recv(4, &mut buf),
+            Err(Error::StreamReset(1001))
+        );
+
+        assert_eq!(
+            pipe.server.stream_recv(8, &mut buf),
+            Err(Error::StreamReset(1001))
+        );
+
+        let mut r = pipe.server.readable();
+        assert_eq!(None, r.next());
+
+        pipe.server
+            .stream_shutdown(4, Shutdown::Write, 1001)
+            .unwrap();
+        pipe.server
+            .stream_shutdown(8, Shutdown::Write, 1001)
+            .unwrap();
+        pipe.advance().unwrap();
+
+        assert_eq!(3, pipe.client.peer_streams_left_bidi());
     }
 
     #[test]
@@ -12896,7 +13154,7 @@ mod tests {
         assert!(len > 0);
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         let mut iter = frames.iter();
 
         // Ignore ACK.
@@ -13045,7 +13303,7 @@ mod tests {
 
         // Server sent a RESET_STREAM frame in response.
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -13099,7 +13357,7 @@ mod tests {
             .unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         assert_eq!(frames.len(), 1);
 
@@ -13161,7 +13419,7 @@ mod tests {
 
         // Server sent a RESET_STREAM frame in response.
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -13282,7 +13540,7 @@ mod tests {
         let mut dummy = buf[..len].to_vec();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut dummy, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut dummy[..len]).unwrap();
         let mut iter = frames.iter();
 
         assert_eq!(
@@ -13490,7 +13748,7 @@ mod tests {
         let mut dummy = buf[..len].to_vec();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut dummy, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut dummy[..len]).unwrap();
         let mut iter = frames.iter();
 
         assert_eq!(
@@ -13626,7 +13884,7 @@ mod tests {
         let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -13644,7 +13902,7 @@ mod tests {
         let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         assert_eq!(
             frames.first(),
@@ -13657,7 +13915,7 @@ mod tests {
         let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         assert_eq!(
             frames.first(),
@@ -14697,7 +14955,7 @@ mod tests {
         assert_eq!(pipe.client.blocked_limit, None);
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -14734,7 +14992,7 @@ mod tests {
         assert_eq!(pipe.client.streams.blocked().len(), 0);
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -14767,7 +15025,7 @@ mod tests {
         assert_eq!(pipe.client.streams.blocked().len(), 0);
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -14838,7 +15096,7 @@ mod tests {
         assert_eq!(pipe.client.streams.blocked().len(), 0);
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -15062,7 +15320,7 @@ mod tests {
             );
 
             let frames =
-                testing::decode_pkt(&mut pipe.server, &mut buf, sent).unwrap();
+                testing::decode_pkt(&mut pipe.server, &mut buf[..sent]).unwrap();
 
             assert_eq!(1, frames.len());
 
@@ -15396,7 +15654,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let stream = frames.first().unwrap();
 
             assert_eq!(stream, &frame::Frame::Stream {
@@ -15419,7 +15677,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let stream = frames.first().unwrap();
 
             assert_eq!(stream, &frame::Frame::Stream {
@@ -15442,7 +15700,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let stream = frames.first().unwrap();
 
             assert_eq!(stream, &frame::Frame::Stream {
@@ -15465,7 +15723,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
             assert_eq!(
                 frames.first(),
@@ -15479,7 +15737,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
             let stream = frames.first().unwrap();
 
@@ -15503,7 +15761,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let stream = frames.first().unwrap();
 
             assert_eq!(stream, &frame::Frame::Stream {
@@ -15523,9 +15781,6 @@ mod tests {
 
     #[test]
     /// Tests that changing a stream's priority is correctly propagated.
-    ///
-    /// Re-prioritization is not supported, so this should fail.
-    #[should_panic]
     fn stream_reprioritize() {
         let mut buf = [0; 65535];
 
@@ -15587,7 +15842,7 @@ mod tests {
         let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         assert_eq!(
             frames.first(),
@@ -15601,7 +15856,7 @@ mod tests {
         let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         assert_eq!(
             frames.first(),
@@ -15615,7 +15870,7 @@ mod tests {
         let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         assert_eq!(
             frames.first(),
@@ -15628,7 +15883,7 @@ mod tests {
         let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         assert_eq!(
             frames.first(),
@@ -15711,7 +15966,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let mut frame_iter = frames.iter();
 
             assert_eq!(frame_iter.next().unwrap(), &frame::Frame::Datagram {
@@ -15724,7 +15979,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let mut frame_iter = frames.iter();
             let stream = frame_iter.next().unwrap();
 
@@ -15745,7 +16000,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let mut frame_iter = frames.iter();
 
             assert_eq!(frame_iter.next().unwrap(), &frame::Frame::Datagram {
@@ -15758,7 +16013,7 @@ mod tests {
                 pipe.server.send(&mut buf[..MAX_TEST_PACKET_SIZE]).unwrap();
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let mut frame_iter = frames.iter();
             let stream = frame_iter.next().unwrap();
 
@@ -15822,7 +16077,7 @@ mod tests {
         );
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -16493,7 +16748,7 @@ mod tests {
         let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         assert_eq!(
             frames.first(),
@@ -16519,7 +16774,7 @@ mod tests {
         let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.server, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         assert_eq!(
             frames.first(),
@@ -16904,25 +17159,23 @@ mod tests {
     #[test]
     fn user_provided_boring_ctx() -> Result<()> {
         // Manually construct boring ssl ctx for server
-        let server_tls_ctx = {
-            let mut builder = boring::ssl::SslContextBuilder::new(
-                boring::ssl::SslMethod::tls(),
+        let mut server_tls_ctx_builder =
+            boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls())
+                .unwrap();
+        server_tls_ctx_builder
+            .set_certificate_chain_file("examples/cert.crt")
+            .unwrap();
+        server_tls_ctx_builder
+            .set_private_key_file(
+                "examples/cert.key",
+                boring::ssl::SslFiletype::PEM,
             )
             .unwrap();
-            builder
-                .set_certificate_chain_file("examples/cert.crt")
-                .unwrap();
-            builder
-                .set_private_key_file(
-                    "examples/cert.key",
-                    boring::ssl::SslFiletype::PEM,
-                )
-                .unwrap();
-            builder.build()
-        };
 
-        let mut server_config =
-            Config::with_boring_ssl_ctx(crate::PROTOCOL_VERSION, server_tls_ctx)?;
+        let mut server_config = Config::with_boring_ssl_ctx_builder(
+            crate::PROTOCOL_VERSION,
+            server_tls_ctx_builder,
+        )?;
         let mut client_config = Config::new(crate::PROTOCOL_VERSION)?;
         client_config.load_cert_chain_from_pem_file("examples/cert.crt")?;
         client_config.load_priv_key_from_pem_file("examples/cert.key")?;
@@ -17639,8 +17892,13 @@ mod tests {
         // Limited MTU of 1199 bytes for some reason.
         testing::process_flight(
             &mut pipe.server,
-            testing::emit_flight_with_max_buffer(&mut pipe.client, 1199)
-                .expect("no packet"),
+            testing::emit_flight_with_max_buffer(
+                &mut pipe.client,
+                1199,
+                None,
+                None,
+            )
+            .expect("no packet"),
         )
         .expect("error when processing client packets");
         testing::process_flight(
@@ -17798,6 +18056,7 @@ mod tests {
             ),
             Err(Error::Done)
         );
+
         // Client should send padded PATH_CHALLENGE.
         let (sent, si) = pipe
             .client
@@ -17806,6 +18065,14 @@ mod tests {
         assert_eq!(sent, MIN_CLIENT_INITIAL_LEN);
         assert_eq!(si.from, client_addr_2);
         assert_eq!(si.to, server_addr);
+
+        let ri = RecvInfo {
+            to: si.to,
+            from: si.from,
+            from_mc: None,
+        };
+        assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
+
         // A non-existing 4-tuple raises an InvalidState.
         let client_addr_3 = "127.0.0.1:9012".parse().unwrap();
         let server_addr_2 = "127.0.0.1:9876".parse().unwrap();
@@ -17852,13 +18119,29 @@ mod tests {
         assert_eq!(sent, MIN_CLIENT_INITIAL_LEN);
         assert_eq!(si.from, client_addr);
         assert_eq!(si.to, server_addr_2);
+
+        let ri = RecvInfo {
+            to: si.to,
+            from: si.from,
+            from_mc: None,
+        };
+        assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
+
         // STREAM frame on active path.
-        let (_, si) = pipe
+        let (sent, si) = pipe
             .client
             .send_on_path(&mut buf, Some(client_addr), None)
             .expect("No error");
         assert_eq!(si.from, client_addr);
         assert_eq!(si.to, server_addr);
+
+        let ri = RecvInfo {
+            to: si.to,
+            from: si.from,
+            from_mc: None,
+        };
+        assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
+
         // PATH_CHALLENGE
         let (sent, si) = pipe
             .client
@@ -17867,13 +18150,28 @@ mod tests {
         assert_eq!(sent, MIN_CLIENT_INITIAL_LEN);
         assert_eq!(si.from, client_addr_3);
         assert_eq!(si.to, server_addr);
+
+        let ri = RecvInfo {
+            to: si.to,
+            from: si.from,
+            from_mc: None,
+        };
+        assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
+
         // STREAM frame on active path.
-        let (_, si) = pipe
+        let (sent, si) = pipe
             .client
             .send_on_path(&mut buf, None, Some(server_addr))
             .expect("No error");
         assert_eq!(si.from, client_addr);
         assert_eq!(si.to, server_addr);
+
+        let ri = RecvInfo {
+            to: si.to,
+            from: si.from,
+            from_mc: None,
+        };
+        assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
         // No more data to exchange leads to Error::Done.
         assert_eq!(
@@ -17885,27 +18183,31 @@ mod tests {
             Err(Error::Done)
         );
 
-        assert_eq!(
-            pipe.client
-                .paths_iter(client_addr)
-                .collect::<Vec<_>>()
-                .sort(),
-            vec![server_addr, server_addr_2].sort(),
-        );
-        assert_eq!(
-            pipe.client
-                .paths_iter(client_addr_2)
-                .collect::<Vec<_>>()
-                .sort(),
-            vec![server_addr].sort(),
-        );
-        assert_eq!(
-            pipe.client
-                .paths_iter(client_addr_3)
-                .collect::<Vec<_>>()
-                .sort(),
-            vec![server_addr].sort(),
-        );
+        assert_eq!(pipe.advance(), Ok(()));
+
+        let mut v1 = pipe.client.paths_iter(client_addr).collect::<Vec<_>>();
+        let mut v2 = vec![server_addr, server_addr_2];
+
+        v1.sort();
+        v2.sort();
+
+        assert_eq!(v1, v2);
+
+        let mut v1 = pipe.client.paths_iter(client_addr_2).collect::<Vec<_>>();
+        let mut v2 = vec![server_addr];
+
+        v1.sort();
+        v2.sort();
+
+        assert_eq!(v1, v2);
+
+        let mut v1 = pipe.client.paths_iter(client_addr_3).collect::<Vec<_>>();
+        let mut v2 = vec![server_addr];
+
+        v1.sort();
+        v2.sort();
+
+        assert_eq!(v1, v2);
     }
 
     #[test]
@@ -18409,7 +18711,7 @@ mod tests {
             assert!(len > 0);
 
             let frames =
-                testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+                testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             assert!(
                 frames
                     .iter()
@@ -18425,7 +18727,7 @@ mod tests {
         assert!(len > 0);
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         assert!(
             frames
                 .iter()
@@ -18448,7 +18750,7 @@ mod tests {
         let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         let mut iter = frames.iter();
 
         assert_eq!(iter.next(), Some(&frame::Frame::Ping));
@@ -18471,7 +18773,7 @@ mod tests {
         let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         let mut iter = frames.iter();
 
         assert!(matches!(
@@ -18535,30 +18837,30 @@ mod tests {
         let mut r = pipe.server.readable();
         assert_eq!(r.len(), 10);
         assert_eq!(r.next(), Some(0));
-        assert_eq!(r.next(), Some(16));
-        assert_eq!(r.next(), Some(32));
         assert_eq!(r.next(), Some(4));
-        assert_eq!(r.next(), Some(20));
-        assert_eq!(r.next(), Some(36));
         assert_eq!(r.next(), Some(8));
-        assert_eq!(r.next(), Some(24));
         assert_eq!(r.next(), Some(12));
+        assert_eq!(r.next(), Some(16));
+        assert_eq!(r.next(), Some(20));
+        assert_eq!(r.next(), Some(24));
         assert_eq!(r.next(), Some(28));
+        assert_eq!(r.next(), Some(32));
+        assert_eq!(r.next(), Some(36));
 
         assert_eq!(r.next(), None);
 
         let mut w = pipe.server.writable();
         assert_eq!(w.len(), 10);
         assert_eq!(w.next(), Some(0));
-        assert_eq!(w.next(), Some(16));
-        assert_eq!(w.next(), Some(32));
         assert_eq!(w.next(), Some(4));
-        assert_eq!(w.next(), Some(20));
-        assert_eq!(w.next(), Some(36));
         assert_eq!(w.next(), Some(8));
-        assert_eq!(w.next(), Some(24));
         assert_eq!(w.next(), Some(12));
+        assert_eq!(w.next(), Some(16));
+        assert_eq!(w.next(), Some(20));
+        assert_eq!(w.next(), Some(24));
         assert_eq!(w.next(), Some(28));
+        assert_eq!(w.next(), Some(32));
+        assert_eq!(w.next(), Some(36));
         assert_eq!(w.next(), None);
 
         // Read one stream
@@ -18595,7 +18897,7 @@ mod tests {
 
         // Server sent a RESET_STREAM frame in response.
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -18651,7 +18953,7 @@ mod tests {
             .unwrap();
 
         let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf, len).unwrap();
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         assert_eq!(frames.len(), 1);
 
@@ -18679,7 +18981,116 @@ mod tests {
     }
 
     #[test]
-    fn multipath() {
+    fn challenge_no_cids() {
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.verify_peer(false);
+        config.set_active_connection_id_limit(4);
+        config.set_initial_max_data(30);
+        config.set_initial_max_stream_data_bidi_local(15);
+        config.set_initial_max_stream_data_bidi_remote(15);
+        config.set_initial_max_stream_data_uni(10);
+        config.set_initial_max_streams_bidi(3);
+
+        let mut pipe =
+            testing::Pipe::with_config_and_scid_lengths(&mut config, 16, 16)
+                .unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        // Server send CIDs to client
+        let mut server_cids = Vec::new();
+        for _ in 0..2 {
+            let (cid, reset_token) = testing::create_cid_and_reset_token(16);
+            pipe.server
+                .new_source_cid(&cid, reset_token, true)
+                .expect("server issue cid");
+            server_cids.push(cid);
+        }
+        assert_eq!(pipe.advance(), Ok(()));
+
+        let server_addr = testing::Pipe::server_addr();
+        let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
+
+        // Client probes path before sending CIDs (simulating race condition)
+        let frames = [frame::Frame::PathChallenge {
+            data: [0, 1, 2, 3, 4, 5, 6, 7],
+        }];
+        let mut pkt_buf = [0u8; 1500];
+        let mut b = octets::OctetsMut::with_slice(&mut pkt_buf);
+        let epoch = packet::Type::Short.to_epoch().unwrap();
+        let space = pipe.client.pkt_num_spaces.spaces.get_mut(epoch, 0).unwrap();
+        let pn = space.next_pkt_num;
+        let pn_len = 4;
+
+        let hdr = Header {
+            ty: packet::Type::Short,
+            version: pipe.client.version,
+            dcid: server_cids[0].clone(),
+            scid: ConnectionId::from_ref(&[5, 4, 3, 2, 1]),
+            pkt_num: 0,
+            pkt_num_len: pn_len,
+            token: pipe.client.token.clone(),
+            versions: None,
+            key_phase: pipe.client.key_phase,
+        };
+        hdr.to_bytes(&mut b).expect("encode header");
+        let payload_len = frames.iter().fold(0, |acc, x| acc + x.wire_len());
+        b.put_u32(pn as u32).expect("put pn");
+
+        let payload_offset = b.off();
+
+        for frame in frames {
+            frame.to_bytes(&mut b).expect("encode frames");
+        }
+
+        let aead = pipe
+            .client
+            .pkt_num_spaces
+            .crypto
+            .get(epoch)
+            .crypto_seal
+            .as_ref()
+            .expect("crypto seal");
+
+        let path_seq = packet::INITIAL_PACKET_NUMBER_SPACE_ID as u32;
+        let written = packet::encrypt_pkt(
+            &mut b,
+            path_seq,
+            pn,
+            pn_len,
+            payload_len,
+            payload_offset,
+            None,
+            aead,
+        )
+        .expect("packet encrypt");
+        space.next_pkt_num += 1;
+
+        pipe.server
+            .recv(&mut pkt_buf[..written], RecvInfo {
+                to: server_addr,
+                from: client_addr_2,
+                from_mc: None,
+            })
+            .expect("server receive path challenge");
+
+        // Show that the new path is not considered a destination path by quiche
+        assert!(!pipe
+            .server
+            .paths_iter(server_addr)
+            .any(|path| path == client_addr_2));
+    }
+
+    #[test]
+    fn multipath_magic() {
         let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
         config
             .load_cert_chain_from_pem_file("examples/cert.crt")
@@ -18918,6 +19329,7 @@ pub use crate::packet::Header;
 pub use crate::packet::Type;
 
 pub use crate::path::PathEvent;
+pub use crate::path::PathState;
 pub use crate::path::PathStats;
 pub use crate::path::PathStatus;
 pub use crate::path::SocketAddrIter;

@@ -25,6 +25,7 @@ use crate::stream::StreamMap;
 use crate::Connection;
 use crate::Error;
 use crate::Result;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -32,6 +33,7 @@ use super::Acked;
 use super::HandshakeStatus;
 use super::LostFrame;
 use super::Recovery;
+use super::Sent;
 use super::SpaceId;
 
 /// Multicast extension of the recovery mechanism of QUIC.
@@ -64,9 +66,8 @@ pub trait MulticastRecovery {
         &self, pn: u64, space_id: SpaceId, only_complete: bool,
     ) -> ExpiredStream;
 
-    /// Returns the time sent of the packet with packet number given as
-    /// argument.
-    fn mc_get_time_sen(&self, pn: u64) -> Option<Instant>;
+    /// Returns the sent packet for the given packet number.
+    fn mc_get_sent_pkt(&self, pn: u64) -> Option<Sent>;
 }
 
 impl crate::recovery::Recovery {
@@ -214,11 +215,10 @@ impl MulticastRecovery for crate::recovery::Recovery {
             .collect()
     }
 
-    fn mc_get_time_sen(&self, pn: u64) -> Option<Instant> {
+    fn mc_get_sent_pkt(&self, pn: u64) -> Option<Sent> {
         self.sent[Epoch::Application]
             .iter()
-            .find(|pkt| pkt.pkt_num.1 == pn)
-            .map(|pkt| pkt.time_sent)
+            .find(|pkt| pkt.pkt_num.1 == pn).map(|s| s.clone())
     }
 }
 
@@ -389,10 +389,9 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         // the multicast channel, and this data should be
                         // considered as a retransmission
                         // only.
-                        let urgency = stream.urgency;
-                        let incr = stream.incremental;
+                        let priority_key = Arc::clone(&stream.priority_key);
                         if !was_flushable {
-                            uc.streams.push_flushable(*stream_id, urgency, incr);
+                            uc.streams.insert_flushable(&priority_key);
                         }
 
                         protected_stream_id = Some(*stream_id);
@@ -679,6 +678,8 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
             retransmitted_for_probing: false,
         };
 
@@ -709,6 +710,8 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
             retransmitted_for_probing: false,
         };
 
@@ -739,6 +742,8 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
             retransmitted_for_probing: false,
         };
 
@@ -771,6 +776,8 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
             retransmitted_for_probing: false,
         };
 
@@ -853,6 +860,8 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
             retransmitted_for_probing: false,
         };
 
@@ -927,6 +936,8 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                tx_in_flight: 0,
+                lost: 0,
                 retransmitted_for_probing: false,
             };
 
@@ -981,6 +992,8 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                tx_in_flight: 0,
+                lost: 0,
                 retransmitted_for_probing: false,
             };
 
@@ -1035,6 +1048,8 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                tx_in_flight: 0,
+                lost: 0,
                 retransmitted_for_probing: false,
             };
 
@@ -1119,6 +1134,8 @@ mod tests {
                 first_sent_time: now,
                 is_app_limited: false,
                 has_data: false,
+                tx_in_flight: 0,
+                lost: 0,
                 retransmitted_for_probing: false,
             };
 
@@ -1203,6 +1220,8 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
             retransmitted_for_probing: false,
         };
 
@@ -1238,6 +1257,8 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
             retransmitted_for_probing: false,
         };
 
@@ -1268,6 +1289,8 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
             retransmitted_for_probing: false,
         };
 
@@ -1300,6 +1323,8 @@ mod tests {
             first_sent_time: now,
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
             retransmitted_for_probing: false,
         };
 

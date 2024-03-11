@@ -25,6 +25,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use std::net::SocketAddr;
+use std::str::FromStr;
 
 use super::common::alpns;
 
@@ -58,6 +59,7 @@ pub struct CommonArgs {
     pub multipath: bool,
     pub send_fec: bool,
     pub receive_fec: bool,
+    pub initial_cwnd_packets: u64,
 }
 
 /// Creates a new `CommonArgs` structure using the provided [`Docopt`].
@@ -83,6 +85,7 @@ pub struct CommonArgs {
 /// --max-field-section-size BYTES  Max size of uncompressed field section.
 /// --qpack-max-table-capacity BYTES  Max capacity of dynamic QPACK decoding.
 /// --qpack-blocked-streams STREAMS  Limit of blocked streams while decoding.
+/// --initial-cwnd-packets      Size of initial congestion window, in packets.
 /// --multipath                 Enable multipath support.
 ///
 /// [`Docopt`]: https://docs.rs/docopt/1.1.0/docopt/
@@ -194,6 +197,13 @@ impl Args for CommonArgs {
 
         let multipath = args.get_bool("--multipath");
 
+        let initial_cwnd_packets = args
+            .get_str("--initial-cwnd-packets")
+            .parse::<u64>()
+            .unwrap();
+
+        let multipath = args.get_bool("--multipath");
+
         CommonArgs {
             alpns,
             max_data,
@@ -216,6 +226,7 @@ impl Args for CommonArgs {
             max_field_section_size,
             qpack_max_table_capacity,
             qpack_blocked_streams,
+            initial_cwnd_packets,
             multipath,
             send_fec,
             receive_fec,
@@ -247,6 +258,7 @@ impl Default for CommonArgs {
             max_field_section_size: None,
             qpack_max_table_capacity: None,
             qpack_blocked_streams: None,
+            initial_cwnd_packets: 10,
             multipath: false,
             send_fec: false,
             receive_fec: false,
@@ -280,6 +292,7 @@ Options:
   --max-json-payload BYTES  Per-response payload limit when dumping JSON [default: 10000].
   --connect-to ADDRESS     Override ther server's address.
   --no-verify              Don't verify server's certificate.
+  --trust-origin-ca-pem <file>  Path to the pem file of the origin's CA, if not publicly trusted.
   --no-grease              Don't send GREASE.
   --cc-algorithm NAME      Specify which congestion control algorithm to use [default: cubic].
   --disable-hystart        Disable HyStart++.
@@ -288,6 +301,8 @@ Options:
   --perform-migration      Perform connection migration on another source port.
   --multipath              Enable multipath support.
   -A --address ADDR ...    Specify addresses to be used instead of the unspecified address. Non-routable addresses will lead to connectivity issues.
+  -R --rm-addr TIMEADDR ...   Specify addresses to stop using after the provided time (format time,addr).
+  -S --status TIMEADDRSTAT ...   Specify availability status to advertise to the peer after the provided time (format time,addr,available).
   -H --header HEADER ...   Add a request header.
   -n --requests REQUESTS   Send the given number of identical requests [default: 1].
   --send-priority-update   Send HTTP/3 priority updates if the query string params 'u' or 'i' are present in URLs
@@ -298,6 +313,7 @@ Options:
   --source-port PORT       Source port to use when connecting to the server [default: 0].
   --send-fec               Sends FEC to protect the STREAM and DATAGRAM frames
   --receive-fec            Processes FEC data to protect the received STREAM and DATAGRAM frames
+  --initial-cwnd-packets PACKETS   The initial congestion window size in terms of packet count [default: 10].
   -h --help                Show this screen.
 ";
 
@@ -310,6 +326,7 @@ pub struct ClientArgs {
     pub reqs_cardinal: u64,
     pub req_headers: Vec<String>,
     pub no_verify: bool,
+    pub trust_origin_ca_pem: Option<String>,
     pub body: Option<Vec<u8>>,
     pub method: String,
     pub connect_to: Option<String>,
@@ -318,6 +335,8 @@ pub struct ClientArgs {
     pub perform_migration: bool,
     pub send_priority_update: bool,
     pub addrs: Vec<SocketAddr>,
+    pub rm_addrs: Vec<(std::time::Duration, SocketAddr)>,
+    pub status: Vec<(std::time::Duration, SocketAddr, bool)>,
 }
 
 impl Args for ClientArgs {
@@ -361,6 +380,13 @@ impl Args for ClientArgs {
 
         let no_verify = args.get_bool("--no-verify");
 
+        let trust_origin_ca_pem = args.get_str("--trust-origin-ca-pem");
+        let trust_origin_ca_pem = if !trust_origin_ca_pem.is_empty() {
+            Some(trust_origin_ca_pem.to_string())
+        } else {
+            None
+        };
+
         let body = if args.get_bool("--body") {
             std::fs::read(args.get_str("--body")).ok()
         } else {
@@ -394,6 +420,51 @@ impl Args for ClientArgs {
             .filter_map(|a| a.parse().ok())
             .collect();
 
+        let rm_addrs = args
+            .get_vec("--rm-addr")
+            .into_iter()
+            .filter_map(|ta| {
+                let s = ta.split(',').collect::<Vec<_>>();
+                if s.len() != 2 {
+                    return None;
+                }
+                let secs = match s[0].parse::<u64>() {
+                    Ok(s) => s,
+                    Err(_) => return None,
+                };
+                let addr = match SocketAddr::from_str(s[1]) {
+                    Ok(a) => a,
+                    Err(_) => return None,
+                };
+                Some((std::time::Duration::from_secs(secs), addr))
+            })
+            .collect();
+
+        let status = args
+            .get_vec("--status")
+            .into_iter()
+            .filter_map(|ta| {
+                let s = ta.split(',').collect::<Vec<_>>();
+                if s.len() != 3 {
+                    return None;
+                }
+                let secs = match s[0].parse::<u64>() {
+                    Ok(s) => s,
+                    Err(_) => return None,
+                };
+                let addr = match SocketAddr::from_str(s[1]) {
+                    Ok(a) => a,
+                    Err(_) => return None,
+                };
+                let status = match s[2].parse::<u64>() {
+                    Ok(0) => false,
+                    Ok(_) => true,
+                    Err(_) => return None,
+                };
+                Some((std::time::Duration::from_secs(secs), addr, status))
+            })
+            .collect();
+
         ClientArgs {
             version,
             dump_response_path,
@@ -402,6 +473,7 @@ impl Args for ClientArgs {
             reqs_cardinal,
             req_headers,
             no_verify,
+            trust_origin_ca_pem,
             body,
             method,
             connect_to,
@@ -410,6 +482,8 @@ impl Args for ClientArgs {
             perform_migration,
             send_priority_update,
             addrs,
+            rm_addrs,
+            status,
         }
     }
 }
@@ -424,6 +498,7 @@ impl Default for ClientArgs {
             req_headers: vec![],
             reqs_cardinal: 1,
             no_verify: false,
+            trust_origin_ca_pem: None,
             body: None,
             method: "GET".to_string(),
             connect_to: None,
@@ -432,6 +507,8 @@ impl Default for ClientArgs {
             perform_migration: false,
             send_priority_update: false,
             addrs: vec![],
+            rm_addrs: vec![],
+            status: vec![],
         }
     }
 }
@@ -471,6 +548,7 @@ Options:
   --qpack-blocked-streams STREAMS   Limit of streams that can be blocked while decoding. Any value other that 0 is currently unsupported.
   --disable-gso               Disable GSO (linux only).
   --disable-pacing            Disable pacing (linux only).
+  --initial-cwnd-packets PACKETS      The initial congestion window size in terms of packet count [default: 10].
   --multipath                 Enable multipath support.
   --send-fec               Sends FEC to protect the STREAM and DATAGRAM frames
   -h --help                   Show this screen.
