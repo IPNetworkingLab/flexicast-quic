@@ -4072,6 +4072,7 @@ impl Connection {
             return Err(Error::InvalidState);
         };
 
+
         let hdr = Header {
             ty: pkt_type,
 
@@ -7212,18 +7213,6 @@ impl Connection {
                     p.on_closing_timeout();
                 }
             }
-            if let Some(timer) = p.recovery.loss_detection_timer() {
-                if timer <= now {
-                    trace!("{} path closing timeout expired", self.trace_id);
-                    if let Some(dcid_seq) = p.active_dcid_seq {
-                        self.ids.retire_dcid(dcid_seq).ok();
-                        self.pkt_num_spaces
-                            .spaces
-                            .update_lowest_active_tx_id(self.ids.min_dcid_seq());
-                    }
-                    p.on_closing_timeout();
-                }
-            }
 
             // Disable loss detection timer for data sent on the multicast data
             // path.
@@ -9659,7 +9648,7 @@ impl Connection {
             .filter(|(_, p)| p.active())
             .map(|(_, p)| p.recovery.cwnd_available())
             .filter(|cwnd| *cwnd != std::usize::MAX)
-            .sum();
+            .fold(0usize, |acc, v| acc.saturating_add(v));
         self.tx_cap = cmp::min(
             cwin_available,
             (self.max_tx_data - self.tx_data)
@@ -10082,7 +10071,6 @@ impl Connection {
     /// sending packets.
     #[inline]
     fn use_path_pkt_num_space(&self, epoch: packet::Epoch) -> bool {
-        println!("Is multipath enabled: {} and epoch: {:?} and is_server: {:?}", self.is_multipath_enabled(), epoch, self.is_server);
         self.is_multipath_enabled() && epoch == packet::Epoch::Application
     }
 }
@@ -10693,10 +10681,12 @@ impl TransportParams {
                 let tmp_buf: Vec<u8> = mc_client_params.into();
                 b.put_bytes(&tmp_buf[..])?;
             }
-            if tp.enable_multipath {
-                TransportParams::encode_param(&mut b, 0x0f739bbc1b666d06, 0)?;
-            }
         }
+        
+        if tp.enable_multipath {
+            TransportParams::encode_param(&mut b, 0x0f739bbc1b666d06, 0)?;
+        }
+
         let out_len = b.off();
 
         Ok(&mut out[..out_len])
@@ -11348,7 +11338,7 @@ mod tests {
         let mut raw_params = [42; 256];
         let raw_params =
             TransportParams::encode(&tp, true, &mut raw_params).unwrap();
-        assert_eq!(raw_params.len(), 109);
+        assert_eq!(raw_params.len(), 108);
 
         let new_tp = TransportParams::decode(raw_params, false).unwrap();
 
@@ -11385,7 +11375,7 @@ mod tests {
         let mut raw_params = [42; 256];
         let raw_params =
             TransportParams::encode(&tp, false, &mut raw_params).unwrap();
-        assert_eq!(raw_params.len(), 86);
+        assert_eq!(raw_params.len(), 85);
 
         let new_tp = TransportParams::decode(raw_params, true).unwrap();
 

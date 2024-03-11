@@ -840,7 +840,7 @@ mod tests {
                 .0
                 .server
                 .streams
-                .readable()
+                .writable()
                 .collect::<Vec<_>>();
             assert_eq!(open_stream_ids, vec![5, 13]);
 
@@ -848,7 +848,7 @@ mod tests {
                 .0
                 .server
                 .streams
-                .readable()
+                .writable()
                 .collect::<Vec<_>>();
             assert_eq!(open_stream_ids, vec![1, 9]);
 

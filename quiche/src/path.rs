@@ -1038,7 +1038,6 @@ impl PathMap {
 
     /// Sets whether multipath extension is enabled.
     pub fn set_multipath(&mut self, v: bool) {
-        println!("Set multipath to {}", v);
         self.multipath = v;
     }
 

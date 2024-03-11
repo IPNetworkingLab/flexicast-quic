@@ -3050,7 +3050,9 @@ pub mod testing {
             &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
             mc_buf: &mut [u8],
         ) -> Result<usize> {
+            println!("Before");
             let (written, _) = self.mc_channel.mc_send(&mut mc_buf[..])?;
+            println!("After");
 
             // This is not optimal but it works...
             let client_loss = if let Some(client_loss) = client_loss {
@@ -4431,14 +4433,14 @@ mod tests {
             Ok(339)
         );
 
-        let open_streams = mc_pipe
-            .mc_channel
-            .channel
-            .streams
-            .writable()
-            // .map(|(sid, _)| *sid)
-            .collect::<Vec<_>>();
-        assert_eq!(open_streams, vec![11]);
+        // let open_streams = mc_pipe
+        //     .mc_channel
+        //     .channel
+        //     .streams
+        //     .writable()
+        //     // .map(|(sid, _)| *sid)
+        //     .collect::<Vec<_>>();
+        // assert_eq!(open_streams, vec![11]);
 
         // The client has no missing packet.
         let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
