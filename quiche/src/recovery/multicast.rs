@@ -340,12 +340,15 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                             "Before getting the stream {} with pn={}",
                             *stream_id, packet.pkt_num.1
                         );
-                        let stream: &mut crate::stream::Stream =
-                            match uc.get_or_create_stream(*stream_id, true) {
-                                Ok(v) => v,
-                                Err(Error::InvalidStreamState(_)) => continue,
-                                Err(e) => return Err(e),
-                            };
+                        let is_stream_collected =
+                            uc.streams.is_collected(*stream_id);
+                        let stream: &mut crate::stream::Stream = match uc
+                            .get_or_create_stream(*stream_id, true)
+                        {
+                            Ok(v) => v,
+                            Err(Error::Done) if is_stream_collected => continue,
+                            Err(e) => return Err(e),
+                        };
                         debug!("After getting the stream. Before getting local stream. The ID is {} from pn={}. Is the stream {} bidi={}", *stream_id, packet.pkt_num.1, *stream_id, stream.bidi);
                         let was_flushable = stream.is_flushable();
                         let local_stream = local_streams
