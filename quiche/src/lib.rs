@@ -10082,7 +10082,7 @@ impl Connection {
     /// sending packets.
     #[inline]
     fn use_path_pkt_num_space(&self, epoch: packet::Epoch) -> bool {
-        println!("Is multipath enabled: {} and epoch: {:?}", self.is_multipath_enabled(), epoch);
+        println!("Is multipath enabled: {} and epoch: {:?} and is_server: {:?}", self.is_multipath_enabled(), epoch, self.is_server);
         self.is_multipath_enabled() && epoch == packet::Epoch::Application
     }
 }

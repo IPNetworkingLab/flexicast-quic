@@ -519,12 +519,6 @@ pub enum QuicFrame {
         reason: Option<String>,
     },
 
-<<<<<<< HEAD
-    PathStatus {
-        dcid_seq_num: u64,
-        seq_num: u64,
-        status: u64,
-=======
     PathStandby {
         dcid_seq_num: u64,
         seq_num: u64,
@@ -533,7 +527,6 @@ pub enum QuicFrame {
     PathAvailable {
         dcid_seq_num: u64,
         seq_num: u64,
->>>>>>> multipath
     },
 
     Unknown {
