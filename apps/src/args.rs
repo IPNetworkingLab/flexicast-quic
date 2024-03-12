@@ -195,7 +195,7 @@ impl Args for CommonArgs {
         let send_fec = args.get_bool("--send-fec");
         let receive_fec = args.get_bool("--receive-fec");
 
-        let multipath = args.get_bool("--multipath");
+        let _multipath = args.get_bool("--multipath");
 
         let initial_cwnd_packets = args
             .get_str("--initial-cwnd-packets")

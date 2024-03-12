@@ -39,7 +39,7 @@ const PACING_RATE_24MBPS: u64 = 24 * 1000 * 1000 / 8;
 
 /// The minimal cwnd value BBR tries to target, in bytes
 #[inline]
-fn bbr_min_pipe_cwnd(r: &mut Recovery) -> usize {
+fn bbr_min_pipe_cwnd(r: &Recovery) -> usize {
     BBR_MIN_PIPE_CWND_PKTS * r.max_datagram_size
 }
 
@@ -146,7 +146,7 @@ fn bbr_update_target_cwnd(r: &mut Recovery) {
 }
 
 // 4.2.3.4 Modulating cwnd in Loss Recovery
-pub fn bbr_save_cwnd(r: &mut Recovery) -> usize {
+pub fn bbr_save_cwnd(r: &Recovery) -> usize {
     if !r.bbr_state.in_recovery && r.bbr_state.state != BBRStateMachine::ProbeRTT
     {
         r.congestion_window

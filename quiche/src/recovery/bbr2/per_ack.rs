@@ -36,7 +36,7 @@ const PACING_RATE_1_2MBPS: u64 = 1200 * 1000 / 8;
 
 /// The minimal cwnd value BBR2 tries to target, in bytes
 #[inline]
-fn bbr2_min_pipe_cwnd(r: &mut Recovery) -> usize {
+fn bbr2_min_pipe_cwnd(r: &Recovery) -> usize {
     MIN_PIPE_CWND_PKTS * r.max_datagram_size
 }
 
@@ -181,7 +181,7 @@ fn bbr2_pick_probe_wait(r: &mut Recovery) {
     );
 }
 
-fn bbr2_is_reno_coexistence_probe_time(r: &mut Recovery) -> bool {
+fn bbr2_is_reno_coexistence_probe_time(r: &Recovery) -> bool {
     let reno_rounds = bbr2_target_inflight(r);
     let rounds = reno_rounds.min(63);
 
@@ -190,7 +190,7 @@ fn bbr2_is_reno_coexistence_probe_time(r: &mut Recovery) -> bool {
 
 // How much data do we want in flight?
 // Our estimated BDP, unless congestion cut cwnd.
-pub fn bbr2_target_inflight(r: &mut Recovery) -> usize {
+pub fn bbr2_target_inflight(r: &Recovery) -> usize {
     r.bbr2_state.bdp.min(r.congestion_window)
 }
 
@@ -305,7 +305,7 @@ fn bbr2_update_probe_bw_cycle_phase(r: &mut Recovery, now: Instant) {
     }
 }
 
-pub fn bbr2_is_in_a_probe_bw_state(r: &mut Recovery) -> bool {
+pub fn bbr2_is_in_a_probe_bw_state(r: &Recovery) -> bool {
     let state = r.bbr2_state.state;
 
     state == BBR2StateMachine::ProbeBWDOWN ||
@@ -329,7 +329,7 @@ fn bbr2_check_time_to_cruise(r: &mut Recovery) -> bool {
 }
 
 fn bbr2_has_elapsed_in_phase(
-    r: &mut Recovery, interval: Duration, now: Instant,
+    r: &Recovery, interval: Duration, now: Instant,
 ) -> bool {
     now > r.bbr2_state.cycle_stamp + interval
 }
@@ -688,7 +688,7 @@ fn bbr2_update_max_inflight(r: &mut Recovery) {
 }
 
 // 4.6.4.4.  Modulating cwnd in Loss Recovery
-pub fn bbr2_save_cwnd(r: &mut Recovery) -> usize {
+pub fn bbr2_save_cwnd(r: &Recovery) -> usize {
     if !r.bbr2_state.in_recovery &&
         r.bbr2_state.state != BBR2StateMachine::ProbeRTT
     {

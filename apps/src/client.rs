@@ -74,7 +74,7 @@ pub fn connect(
     };
 
     let (sockets, src_addr_to_token, local_addr) =
-        create_sockets(&mut poll, &peer_addr, &args);
+        create_sockets(&poll, &peer_addr, &args);
     let mut addrs = Vec::with_capacity(sockets.len());
     addrs.push(local_addr);
     for src in src_addr_to_token.keys() {
@@ -613,7 +613,7 @@ pub fn connect(
 }
 
 fn create_sockets(
-    poll: &mut mio::Poll, peer_addr: &std::net::SocketAddr, args: &ClientArgs,
+    poll: &mio::Poll, peer_addr: &std::net::SocketAddr, args: &ClientArgs,
 ) -> (
     Slab<mio::net::UdpSocket>,
     HashMap<std::net::SocketAddr, usize>,

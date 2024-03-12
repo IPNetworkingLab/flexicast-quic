@@ -4266,77 +4266,12 @@ impl Connection {
             }
         }
 
-        // Create MC_NACK frame if needed.
-        // MC_NACK frames are only sent on active multicast path.
-        // MC-TODO.
-        if self.multicast.is_some() && !self.is_server && false {
-            if let Some(mc_space_id) =
-                self.multicast.as_ref().unwrap().get_mc_space_id()
-            {
-                // If the result is None, it means that either it is empty or an
-                // error occured.
-                // MC-TODO: verify that the space ID corresponds to the multicast
-                // path.
-                if let Some(nack_range) =
-                    self.mc_nack_range(epoch, mc_space_id as u64)
-                {
-                    let max_pn = self.multicast.as_ref().unwrap().mc_max_pn;
-                    let nb_degree_needed_opt: Option<u64> =
-                        self.fec_decoder.nb_missing_degrees();
-
-                    if let Some(nb_degree_needed) = nb_degree_needed_opt {
-                        self.multicast.as_mut().unwrap().set_mc_nack_ranges(
-                            Some((&nack_range, max_pn)),
-                            Some(nb_degree_needed),
-                        )?;
-
-                        info!(
-                            "After setting it on client for {:?}, it is: {:?}",
-                            self.multicast.as_ref().unwrap().get_self_client_id(),
-                            nack_range
-                        );
-
-                        // We have some nack range to send! Create the MC_NACK
-                        // frame.
-
-                        info!(
-                            "Send an MC_NACK with ranges: {:?} and degree: {:?}",
-                            nack_range, nb_degree_needed
-                        );
-
-                        let multicast = self.multicast.as_ref().unwrap();
-
-                        let frame = frame::Frame::McNack {
-                            channel_id: multicast
-                                .get_mc_announce_data_path()
-                                .ok_or(Error::Multicast(
-                                    multicast::MulticastError::McAnnounce,
-                                ))?
-                                .channel_id
-                                .to_owned(),
-                            last_pn: multicast.mc_max_pn,
-                            nb_repair_needed: nb_degree_needed,
-                            ranges: nack_range,
-                        };
-
-                        if push_frame_to_pkt!(b, frames, frame, left) {
-                            // We want the MC_NACK frames to be sent even if no
-                            // data is sent.
-                            ack_eliciting = true;
-                            in_flight = true;
-                        }
-                    }
-                }
-            }
-        }
         let mc_active_path_id = self
             .multicast
             .as_ref()
-            .map(|mc| mc.get_mc_space_id())
-            .flatten();
+            .and_then(|mc| mc.get_mc_space_id());
         let mc_nack_range = mc_active_path_id
-            .map(|space_id| self.mc_nack_range(epoch, space_id as u64))
-            .flatten();
+            .and_then(|space_id| self.mc_nack_range(epoch, space_id as u64));
         let mc_should_send_nack = !self.is_server && mc_nack_range.is_some();
         let path = self.paths.get_mut(send_pid)?;
 
@@ -11230,7 +11165,7 @@ pub mod testing {
     }
 
     pub fn decode_pkt(
-        conn: &mut Connection, buf: &mut [u8],
+        conn: &Connection, buf: &mut [u8],
     ) -> Result<Vec<frame::Frame>> {
         let mut b = octets::OctetsMut::with_slice(buf);
 

@@ -67,6 +67,7 @@ pub struct FileServer {
 }
 
 impl FileServer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         filename: Option<&str>, nb_frames: Option<u64>, wait: bool,
         to_quic_filename: &str, to_wire_filename: &str, chunk_size: usize,
@@ -113,15 +114,14 @@ impl FileServer {
             let now = time::Instant::now();
 
             if !self.start_delay.is_zero() {
-                let delay = Some(
+                let delay =
                     self.start_delay
-                        .saturating_sub(now.duration_since(self.start.unwrap())),
-                );
+                        .saturating_sub(now.duration_since(self.start.unwrap()));
                 debug!("First delay: {:?} because now: {:?}, start: {:?} and start delay: {:?}", delay, now, self.start, self.start_delay);
-                if delay.unwrap().is_zero() {
+                if delay.is_zero() {
                     self.start_delay = Duration::ZERO;
                 }
-                delay
+                Some(delay)
             } else if !self.sleep_delay.is_zero() {
                 let delay = self.last_sent.map(|last_sent| {
                     self.sleep_delay

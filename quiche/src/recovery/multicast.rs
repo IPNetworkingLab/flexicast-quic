@@ -218,7 +218,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_get_sent_pkt(&self, pn: u64) -> Option<Sent> {
         self.sent[Epoch::Application]
             .iter()
-            .find(|pkt| pkt.pkt_num.1 == pn).map(|s| s.clone())
+            .find(|pkt| pkt.pkt_num.1 == pn).cloned()
     }
 }
 
@@ -398,8 +398,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         if let Some(_client_id) = uc
                             .multicast
                             .as_ref()
-                            .map(|m| m.get_self_client_id().ok())
-                            .flatten()
+                            .and_then(|m| m.get_self_client_id().ok())
                         {
                             qlog_with_type!(QLOG_DATA_MV, uc.qlog, q, {
                                 let ev_data_client = EventData::McRetransmit(
@@ -577,7 +576,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             .map(|s| s.pkt_num.1)
             .unwrap_or(0);
         let sent_pkts = self.sent[epoch].iter().filter(|s| {
-            s.pkt_num.0 == space_id as u32 && s.pkt_num.1 >= cur_max_pn
+            s.pkt_num.0 == space_id && s.pkt_num.1 >= cur_max_pn
         });
         // uc.sent[epoch].extend(sent_pkts.map(|s| s.clone()));
         let mut first = true;

@@ -2133,8 +2133,7 @@ impl MulticastConnection for Connection {
                         .as_ref()
                         .unwrap()
                         .mc_last_expired
-                        .map(|exp| exp.pn)
-                        .flatten()
+                        .and_then(|exp| exp.pn)
                     {
                         mc_path.recovery.set_largest_ack(last_exp);
                         // println!("Set the largest ack with last expired:
@@ -3100,7 +3099,7 @@ pub mod testing {
             pipe.handshake().ok()?;
 
             pipe.server
-                .mc_set_mc_announce_data(&mc_announce_data)
+                .mc_set_mc_announce_data(mc_announce_data)
                 .unwrap();
             if let Some(mc_data) = mc_data_auth {
                 pipe.server.mc_set_mc_announce_data(mc_data).unwrap();

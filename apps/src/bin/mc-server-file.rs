@@ -46,7 +46,6 @@ use quiche::multicast::MulticastConnection;
 use quiche::multicast::MulticastRole;
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
-use quiche::SendInfo;
 #[cfg(feature = "qlog")]
 use quiche_apps::common::make_qlog_writer;
 use quiche_apps::common::ClientIdMap;
@@ -63,7 +62,6 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 
 struct Client {
     conn: quiche::Connection,
-    soft_mc_addr: net::SocketAddr,
     soft_mc_addr_auth: net::SocketAddr,
     client_id: u64,
     active_client: bool,
@@ -253,7 +251,7 @@ fn main() {
     let mut app_start = None;
     let leave_bw_delay = args
         .leave_bw_delay
-        .map(|delay| time::Duration::from_millis(delay));
+        .map(time::Duration::from_millis);
     debug!("Leave mc below cwin={:?}", leave_mc_below_cwin);
 
     // Log every packet sent on unicast and multicast.
@@ -342,13 +340,7 @@ fn main() {
     let local_addr = socket.local_addr().unwrap();
 
     // Multicast channel and sockets.
-    let mc_cwnd = if let Some(rate) = args.pacing {
-        // let et = args.expiration_timer as f64 / 1000f64; // In seconds
-        // Some((rate * et * 1_000_000f64).round() as usize)
-        Some(rate as usize)
-    } else {
-        None
-    };
+    let mc_cwnd = args.pacing.map(|rate| rate as usize);
 
     let (
         mut mc_socket_opt,
@@ -595,7 +587,6 @@ fn main() {
 
                 let client = Client {
                     conn,
-                    soft_mc_addr: net::SocketAddr::new(from.ip(), 7943),
                     soft_mc_addr_auth: net::SocketAddr::new(from.ip(), 8890),
                     client_id,
                     active_client: false,
@@ -1014,36 +1005,36 @@ fn main() {
                 } else {
                     send_info.to = mc_channel.mc_send_addr;
                 }
-                let err = if args.soft_mc && false {
-                    println!("Soft multicast used");
-                    clients.values().try_for_each(|client| {
-                        let send_info_uc = SendInfo {
-                            from: send_info.from,
-                            to: client.soft_mc_addr,
-                            at: send_info.at,
-                        };
-                        send_to(
-                            &socket,
-                            &out[..write],
-                            &send_info_uc,
-                            MAX_DATAGRAM_SIZE,
-                            args.pacing.is_some(),
-                            false,
-                        )
-                        .map(|r| log_uc_pkt.push(r))
-                    })
-                } else {
-                    // Use pacing socket.
-                    send_to(
-                        mc_socket,
-                        &out[..write],
-                        &send_info,
-                        MAX_DATAGRAM_SIZE,
-                        args.pacing.is_some(),
-                        false,
-                    )
-                    .map(|r| log_mc_pkt.push(r))
-                };
+                // let err = if args.soft_mc && false {
+                //     println!("Soft multicast used");
+                //     clients.values().try_for_each(|client| {
+                //         let send_info_uc = SendInfo {
+                //             from: send_info.from,
+                //             to: client.soft_mc_addr,
+                //             at: send_info.at,
+                //         };
+                //         send_to(
+                //             &socket,
+                //             &out[..write],
+                //             &send_info_uc,
+                //             MAX_DATAGRAM_SIZE,
+                //             args.pacing.is_some(),
+                //             false,
+                //         )
+                //         .map(|r| log_uc_pkt.push(r))
+                //     })
+                // } else {
+                // Use pacing socket.
+                let err = send_to(
+                    mc_socket,
+                    &out[..write],
+                    &send_info,
+                    MAX_DATAGRAM_SIZE,
+                    args.pacing.is_some(),
+                    false,
+                )
+                .map(|r| log_mc_pkt.push(r));
+                // };
 
                 if let Err(e) = err {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -1150,7 +1141,7 @@ fn main() {
                     }) {
                         client
                             .conn
-                            .mc_set_mc_announce_data(&mc_announce_data)
+                            .mc_set_mc_announce_data(mc_announce_data)
                             .unwrap();
                     }
                 }
@@ -1536,7 +1527,7 @@ fn get_multicast_channel(
 
 pub fn get_test_mc_config(
     mc_server: bool, mc_client: Option<&MulticastClientTp>, use_fec: bool,
-    mc_cwnd: Option<usize>, cert_path: &str, max_fec_rs: Option<u32>,
+    _mc_cwnd: Option<usize>, cert_path: &str, max_fec_rs: Option<u32>,
 ) -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
     config
@@ -1574,11 +1565,7 @@ pub fn get_test_mc_config(
     );
     config.enable_pacing(false);
     config.set_real_time(true);
-    if mc_cwnd.is_some() {
-        config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
-    } else {
-        config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
-    }
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     config.set_fec_symbol_size(1280 - 64); // MC-TODO: make dynamic with auth.
     config.set_fec_window_size(2000);
     config

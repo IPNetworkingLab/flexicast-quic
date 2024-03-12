@@ -50,7 +50,7 @@ pub fn bbr2_check_inflight_too_high(r: &mut Recovery, now: Instant) -> bool {
     false
 }
 
-pub fn bbr2_is_inflight_too_high(r: &mut Recovery) -> bool {
+pub fn bbr2_is_inflight_too_high(r: &Recovery) -> bool {
     r.bbr2_state.lost > (r.bbr2_state.tx_in_flight as f64 * LOSS_THRESH) as usize
 }
 
@@ -87,7 +87,7 @@ fn bbr2_handle_lost_packet(r: &mut Recovery, packet: &Sent, now: Instant) {
     }
 }
 
-fn bbr2_inflight_hi_from_lost_packet(r: &mut Recovery, packet: &Sent) -> usize {
+fn bbr2_inflight_hi_from_lost_packet(r: &Recovery, packet: &Sent) -> usize {
     let size = packet.size;
     let inflight_prev = r.bbr2_state.tx_in_flight - size;
     let lost_prev = r.bbr2_state.lost - size;
@@ -201,7 +201,7 @@ pub fn bbr2_bound_bw_for_model(r: &mut Recovery) {
 }
 
 // This function is not defined in the draft but used.
-fn bbr2_is_probing_bw(r: &mut Recovery) -> bool {
+fn bbr2_is_probing_bw(r: &Recovery) -> bool {
     let state = r.bbr2_state.state;
 
     state == BBR2StateMachine::Startup ||

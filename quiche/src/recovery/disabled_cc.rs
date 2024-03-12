@@ -119,7 +119,7 @@ fn on_packet_acked(
 }
 
 fn congestion_event(
-    r: &mut Recovery, _lost_bytes: usize, largest_lost_pkt: &Sent,
+    r: &mut Recovery, _lost_bytes: usize, _largest_lost_pkt: &Sent,
     _epoch: packet::Epoch, _now: Instant,
 ) {
     r.congestion_window = match r.mc_cwnd {
