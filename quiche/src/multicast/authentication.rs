@@ -1,8 +1,8 @@
 //! Handles the signatures for authentication of the multicast source.
 use crate::crypto::mc_crypto::McVerifySymSign;
 use crate::multicast::McClientId;
-use crate::multicast::MulticastError;
-use crate::multicast::MulticastRole;
+use crate::multicast::McError;
+use crate::multicast::McRole;
 use crate::packet::Epoch;
 use crate::packet::MAX_PKT_NUM_LEN;
 use crate::Connection;
@@ -52,7 +52,7 @@ impl TryFrom<u64> for McAuthType {
             2 => Ok(Self::Dynamic(20)),
             3 => Ok(Self::None),
             4 => Ok(Self::StreamAsym),
-            _ => Err(Error::Multicast(MulticastError::McInvalidAuth)),
+            _ => Err(Error::Multicast(McError::McInvalidAuth)),
         }
     }
 }
@@ -75,14 +75,14 @@ impl FromStr for McAuthType {
     /// Converts a string to `McAuthType`.
     ///
     /// If `name` is not valid,
-    /// `Error::Multicast(MulticastError::McInvalidAuth)` is returned.
+    /// `Error::Multicast(McError::McInvalidAuth)` is returned.
     fn from_str(name: &str) -> Result<Self> {
         match name {
             "asymmetric" => Ok(McAuthType::AsymSign),
             "symmetric" => Ok(McAuthType::SymSign),
             "none" => Ok(McAuthType::None),
             "stream" => Ok(McAuthType::StreamAsym),
-            _ => Err(Error::Multicast(MulticastError::McInvalidAuth)),
+            _ => Err(Error::Multicast(McError::McInvalidAuth)),
         }
     }
 }
@@ -155,8 +155,8 @@ pub trait McAuthentication {
 impl McAuthentication for Connection {
     fn mc_sign_asym(&self, buf: &mut [u8], data_len: usize) -> Result<usize> {
         if let Some(multicast) = self.multicast.as_ref() {
-            if multicast.mc_role != MulticastRole::ServerMulticast {
-                return Err(Error::Multicast(MulticastError::McInvalidRole(
+            if multicast.mc_role != McRole::ServerMulticast {
+                return Err(Error::Multicast(McError::McInvalidRole(
                     multicast.mc_role,
                 )));
             }
@@ -170,10 +170,10 @@ impl McAuthentication for Connection {
 
                 Ok(signature_len)
             } else {
-                Err(Error::Multicast(MulticastError::McInvalidAsymKey))
+                Err(Error::Multicast(McError::McInvalidAsymKey))
             }
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            Err(Error::Multicast(McError::McDisabled))
         }
     }
 
@@ -234,10 +234,10 @@ impl McAuthentication for Connection {
             let signature = &buf[buf_data_len..];
             public_key
                 .verify(&buf[..buf_data_len], signature)
-                .map_err(|_| Error::Multicast(MulticastError::McInvalidSign))?;
+                .map_err(|_| Error::Multicast(McError::McInvalidSign))?;
             Ok(buf_data_len)
         } else {
-            Err(Error::Multicast(MulticastError::McInvalidAsymKey))
+            Err(Error::Multicast(McError::McInvalidAsymKey))
         }
     }
 
@@ -253,16 +253,16 @@ impl McAuthentication for Connection {
                         Ok(())
                     } else {
                         error!("Invalid sign sign for packet {}: {:?} vs {:?}. My client id {:?}", pn, recv_tag, tag, self.multicast.as_ref().unwrap().mc_client_id);
-                        Err(Error::Multicast(MulticastError::McInvalidSign))
+                        Err(Error::Multicast(McError::McInvalidSign))
                     }
                 } else {
-                    Err(Error::Multicast(MulticastError::McNoAuthPacket))
+                    Err(Error::Multicast(McError::McNoAuthPacket))
                 }
             } else {
-                Err(Error::Multicast(MulticastError::McInvalidSign))
+                Err(Error::Multicast(McError::McInvalidSign))
             }
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            Err(Error::Multicast(McError::McDisabled))
         }
     }
 
@@ -270,7 +270,7 @@ impl McAuthentication for Connection {
         if let Some(multicast) = self.multicast.as_ref() {
             let cid_len = multicast
                 .get_mc_announce_data_path()
-                .ok_or(Error::Multicast(MulticastError::McAnnounce))?
+                .ok_or(Error::Multicast(McError::McAnnounce))?
                 .channel_id
                 .len();
 
@@ -282,12 +282,12 @@ impl McAuthentication for Connection {
             let mut header = crate::packet::Header::from_bytes(&mut b, cid_len)?;
             let aead = multicast
                 .get_mc_crypto_open()
-                .ok_or(Error::Multicast(MulticastError::McInvalidCrypto))?;
+                .ok_or(Error::Multicast(McError::McInvalidCrypto))?;
 
             crate::packet::decrypt_hdr(&mut b, &mut header, aead)?;
             Ok(header.pkt_num)
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            Err(Error::Multicast(McError::McDisabled))
         }
     }
 
@@ -296,12 +296,12 @@ impl McAuthentication for Connection {
             match &multicast.mc_sym_signs {
                 McSymSign::Client(m) =>
                     Ok(m.keys().copied().collect::<HashSet<u64>>()),
-                _ => Err(Error::Multicast(MulticastError::McInvalidRole(
+                _ => Err(Error::Multicast(McError::McInvalidRole(
                     multicast.mc_role,
                 ))),
             }
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            Err(Error::Multicast(McError::McDisabled))
         }
     }
 }
@@ -343,8 +343,8 @@ pub trait McSymAuth {
 impl McSymAuth for Connection {
     fn mc_sym_sign(&mut self, clients: &ClientMap) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
-            if !matches!(multicast.mc_role, MulticastRole::ServerMulticast) {
-                return Err(Error::Multicast(MulticastError::McInvalidRole(
+            if !matches!(multicast.mc_role, McRole::ServerMulticast) {
+                return Err(Error::Multicast(McError::McInvalidRole(
                     multicast.mc_role,
                 )));
             }
@@ -366,7 +366,7 @@ impl McSymAuth for Connection {
 
             Ok(())
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            Err(Error::Multicast(McError::McDisabled))
         }
     }
 
@@ -382,7 +382,7 @@ impl McSymAuth for Connection {
                 for conn in clients.iter() {
                     let mc_client_id =
                         map.get_client_id(conn.source_id().as_ref()).ok_or(
-                            Error::Multicast(MulticastError::McInvalidClientId),
+                            Error::Multicast(McError::McInvalidClientId),
                         );
                     let mc_client_id = match mc_client_id {
                         Ok(v) => v,
@@ -402,10 +402,10 @@ impl McSymAuth for Connection {
                 Ok(signatures)
             } else {
                 error!("No map");
-                Err(Error::Multicast(MulticastError::McInvalidClientId))
+                Err(Error::Multicast(McError::McInvalidClientId))
             }
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            Err(Error::Multicast(McError::McDisabled))
         }
     }
 }

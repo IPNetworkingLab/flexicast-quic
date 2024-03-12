@@ -544,7 +544,7 @@ impl SendBuf {
 
         let digest = ring::digest::digest(&ring::digest::SHA256, &buffer);
         self.hash = digest.as_ref().try_into().map_err(|_| {
-            Error::Multicast(crate::multicast::MulticastError::McInvalidSign)
+            Error::Multicast(crate::multicast::McError::McInvalidSign)
         })?;
 
         Ok(())

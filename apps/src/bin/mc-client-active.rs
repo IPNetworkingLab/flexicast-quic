@@ -35,9 +35,9 @@ use std::net::ToSocketAddrs;
 use quiche::multicast::authentication::McAuthentication;
 use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::McConfig;
-use quiche::multicast::MulticastClientStatus;
-use quiche::multicast::MulticastError;
-use quiche::multicast::MulticastRole;
+use quiche::multicast::McClientStatus;
+use quiche::multicast::McError;
+use quiche::multicast::McRole;
 use quiche_apps::mc_app;
 use ring::rand::*;
 
@@ -318,9 +318,9 @@ fn main() {
                 conn.on_rmc_timeout(now).unwrap();
                 if conn.on_mc_timeout(now) ==
                     Err(quiche::Error::Multicast(
-                        multicast::MulticastError::McInvalidRole(
-                            MulticastRole::Client(
-                                MulticastClientStatus::Leaving(true),
+                        multicast::McError::McInvalidRole(
+                            McRole::Client(
+                                McClientStatus::Leaving(true),
                             ),
                         ),
                     ))
@@ -405,7 +405,7 @@ fn main() {
                     from_mc: Some(McPathType::Data),
                 };
                 if conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                    MulticastRole::Client(MulticastClientStatus::ListenMcPath(
+                    McRole::Client(McClientStatus::ListenMcPath(
                         true,
                     ))
                 {
@@ -436,7 +436,7 @@ fn main() {
                         match conn.mc_verify_sym(&buf[..len], pn) {
                             Ok(()) => true,
                             Err(quiche::Error::Multicast(
-                                MulticastError::McNoAuthPacket,
+                                McError::McNoAuthPacket,
                             )) => {
                                 // The authentication packet is not received yet.
                                 // Store the packet until we receive it.
@@ -516,7 +516,7 @@ fn main() {
                 };
 
                 if conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                    MulticastRole::Client(MulticastClientStatus::ListenMcPath(
+                    McRole::Client(McClientStatus::ListenMcPath(
                         true,
                     ))
                 {
@@ -541,7 +541,7 @@ fn main() {
                             let mut pkt_na = mc_na_packets.remove(&pn).unwrap();
                             match conn.mc_verify_sym(&pkt_na, pn) {
                                     Ok(()) => (),
-                                    Err(quiche::Error::Multicast(MulticastError::McInvalidSign)) => error!("Packet {} has invalid authentication!", pn),
+                                    Err(quiche::Error::Multicast(McError::McInvalidSign)) => error!("Packet {} has invalid authentication!", pn),
                                     Err(e) => panic!("Unknown error when authenticating a previously received packet with symmetric tags: {:?}", e)
                                 }
                             debug!("Can read packet 2 with pn={}", pn);
@@ -587,7 +587,7 @@ fn main() {
         if let Some(multicast) = conn.get_multicast_attributes() {
             if matches!(
                 multicast.get_mc_role(),
-                multicast::MulticastRole::Client(MulticastClientStatus::Leaving(
+                multicast::McRole::Client(McClientStatus::Leaving(
                     _
                 ))
             ) && delay_join_leave.is_none()
@@ -603,7 +603,7 @@ fn main() {
             // Join the multicast channel and create the listening socket if not
             // already done.
             if conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                MulticastRole::Client(MulticastClientStatus::AwareUnjoined)
+                McRole::Client(McClientStatus::AwareUnjoined)
             {
                 info!("Before acting role");
                 // Did not join the multicast channel before.
@@ -721,7 +721,7 @@ fn main() {
             // acknowledged.
             if let Some(multicast) = conn.get_multicast_attributes() {
                 if multicast.get_mc_role() ==
-                    MulticastRole::Client(MulticastClientStatus::AwareUnjoined) &&
+                    McRole::Client(McClientStatus::AwareUnjoined) &&
                     mc_socket_opt.is_some()
                 {
                     println!("Leave the multicast socket!");

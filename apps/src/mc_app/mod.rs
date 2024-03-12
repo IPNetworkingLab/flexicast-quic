@@ -39,7 +39,7 @@ impl FromStr for McApp {
     /// Converts a string to `McAuthType`.
     ///
     /// If `name` is not valid,
-    /// `Error::Multicast(MulticastError::McInvalidAuth)` is returned.
+    /// `Error::Multicast(McError::McInvalidAuth)` is returned.
     fn from_str(name: &str) -> Result<Self> {
         match name {
             "tixeo" => Ok(McApp::Tixeo),

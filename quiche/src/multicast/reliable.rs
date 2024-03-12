@@ -2,7 +2,7 @@
 
 use super::MulticastAttributes;
 use super::MulticastConnection;
-use super::MulticastError;
+use super::McError;
 use crate::multicast::MissingRangeSet;
 use crate::ranges::RangeSet;
 use crate::recovery::multicast::ReliableMulticastRecovery;
@@ -13,8 +13,8 @@ use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 use std::time;
 
-use super::MulticastClientStatus;
-use super::MulticastRole;
+use super::McClientStatus;
+use super::McRole;
 
 /// On rmc timeout for the server.
 #[macro_export]
@@ -194,20 +194,20 @@ pub trait ReliableMulticastConnection {
     /// server.
     ///
     /// Returns a [`crate::Error::Multicast`] with
-    /// [`crate::multicast::MulticastError::McInvalidRole`] if this is not a
+    /// [`crate::multicast::McError::McInvalidRole`] if this is not a
     /// client.
     /// Returns a [`crate::Error::Multicast`] with
-    /// [`crate::multicast::MulticastError::McReliableDisabled`] if reliable
+    /// [`crate::multicast::McError::McReliableDisabled`] if reliable
     /// multicast is disabled.
     fn rmc_should_send_positive_ack(&self) -> Result<bool>;
 
     /// Whether the client should send a SourceSymbolAck frame.
     ///
     /// Returns a [`crate::Error::Multicast`] with
-    /// [`crate::multicast::MulticastError::McInvalidRole`] if this is not a
+    /// [`crate::multicast::McError::McInvalidRole`] if this is not a
     /// client.
     /// Returns a [`crate::Error::Multicast`] with
-    /// [`crate::multicast::MulticastError::McReliableDisabled`] if reliable
+    /// [`crate::multicast::McError::McReliableDisabled`] if reliable
     /// multicast is disabled.
     fn rmc_should_send_source_symbol_ack(&self) -> Result<bool>;
 
@@ -218,8 +218,8 @@ pub trait ReliableMulticastConnection {
     /// chunks. RMC-TODO: does the stream library handle this correctly?
     ///
     /// Requires that the caller is the multicast source
-    /// ([`crate::multicast::MulticastRole::ServerMulticast`]) and the callee
-    /// the unicast server ([`crate::multicast::MulticastRole::ServerUnicast`]).
+    /// ([`crate::multicast::McRole::ServerMulticast`]) and the callee
+    /// the unicast server ([`crate::multicast::McRole::ServerUnicast`]).
     /// Returns the stream IDs of streams that are deleguated to the unicast
     /// path.
     fn rmc_deleguate_streams(
@@ -246,8 +246,8 @@ impl ReliableMulticastConnection for Connection {
         // No timeout for client not in the group/transient leaving.
         if matches!(
             multicast.mc_role,
-            MulticastRole::Client(MulticastClientStatus::AwareUnjoined) |
-                MulticastRole::Client(MulticastClientStatus::Leaving(_))
+            McRole::Client(McClientStatus::AwareUnjoined) |
+                McRole::Client(McClientStatus::Leaving(_))
         ) {
             return None;
         }
@@ -304,23 +304,23 @@ impl ReliableMulticastConnection for Connection {
                 );
                 Ok(())
             } else {
-                Err(Error::Multicast(MulticastError::McReliableDisabled))
+                Err(Error::Multicast(McError::McReliableDisabled))
             }
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            Err(Error::Multicast(McError::McDisabled))
         }
     }
 
     fn rmc_should_send_positive_ack(&self) -> Result<bool> {
         self.multicast
             .as_ref()
-            .ok_or(Error::Multicast(MulticastError::McDisabled))?
+            .ok_or(Error::Multicast(McError::McDisabled))?
             .mc_reliable
             .as_ref()
-            .ok_or(Error::Multicast(MulticastError::McReliableDisabled))?
+            .ok_or(Error::Multicast(McError::McReliableDisabled))?
             .client()
-            .ok_or(Error::Multicast(MulticastError::McInvalidRole(
-                MulticastRole::Undefined,
+            .ok_or(Error::Multicast(McError::McInvalidRole(
+                McRole::Undefined,
             )))
             .map(|c| c.rmc_client_send_ack)
     }
@@ -328,13 +328,13 @@ impl ReliableMulticastConnection for Connection {
     fn rmc_should_send_source_symbol_ack(&self) -> Result<bool> {
         self.multicast
             .as_ref()
-            .ok_or(Error::Multicast(MulticastError::McDisabled))?
+            .ok_or(Error::Multicast(McError::McDisabled))?
             .mc_reliable
             .as_ref()
-            .ok_or(Error::Multicast(MulticastError::McReliableDisabled))?
+            .ok_or(Error::Multicast(McError::McReliableDisabled))?
             .client()
-            .ok_or(Error::Multicast(MulticastError::McInvalidRole(
-                MulticastRole::Undefined,
+            .ok_or(Error::Multicast(McError::McInvalidRole(
+                McRole::Undefined,
             )))
             .map(|c| c.rmc_client_send_ssa)
     }
@@ -345,13 +345,13 @@ impl ReliableMulticastConnection for Connection {
         if let (Some(mc_s), Some(mc_u)) =
             (self.multicast.as_mut(), uc.get_multicast_attributes())
         {
-            if mc_s.get_mc_role() != MulticastRole::ServerMulticast {
-                return Err(Error::Multicast(MulticastError::McInvalidRole(
+            if mc_s.get_mc_role() != McRole::ServerMulticast {
+                return Err(Error::Multicast(McError::McInvalidRole(
                     mc_s.get_mc_role(),
                 )));
             }
-            if !matches!(mc_u.get_mc_role(), MulticastRole::ServerUnicast(_)) {
-                return Err(Error::Multicast(MulticastError::McInvalidRole(
+            if !matches!(mc_u.get_mc_role(), McRole::ServerUnicast(_)) {
+                return Err(Error::Multicast(McError::McInvalidRole(
                     mc_u.get_mc_role(),
                 )));
             }
@@ -359,11 +359,11 @@ impl ReliableMulticastConnection for Connection {
             // Deleguate streams sent on the multicast path.
             let expiration_timer = mc_s
                 .get_mc_announce_data_path()
-                .ok_or(Error::Multicast(MulticastError::McAnnounce))?
+                .ok_or(Error::Multicast(McError::McAnnounce))?
                 .expiration_timer;
             let space_id = mc_s
                 .get_mc_space_id()
-                .ok_or(Error::Multicast(MulticastError::McPath))?;
+                .ok_or(Error::Multicast(McError::McPath))?;
             let path = self.paths.get_mut(space_id)?;
             let stream_map = &mut self.streams;
             let (nb_lost_stream_frames, (mut lost_pn, mut recv_pn)) =
@@ -423,7 +423,7 @@ impl ReliableMulticastConnection for Connection {
                 // println!("Lost packets: {:?}", out);
             }
         } else {
-            return Err(Error::Multicast(MulticastError::McDisabled));
+            return Err(Error::Multicast(McError::McDisabled));
         }
 
         Ok(())
@@ -434,10 +434,10 @@ impl ReliableMulticastConnection for Connection {
             if let Some(ReliableMc::Server(s)) = multicast.mc_reliable.as_ref() {
                 Ok(&s.recv_pn_mc)
             } else {
-                Err(Error::Multicast(MulticastError::McReliableDisabled))
+                Err(Error::Multicast(McError::McReliableDisabled))
             }
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            Err(Error::Multicast(McError::McDisabled))
         }
     }
 
@@ -446,10 +446,10 @@ impl ReliableMulticastConnection for Connection {
             if let Some(ReliableMc::Server(s)) = multicast.mc_reliable.as_ref() {
                 Ok(&s.recv_fec_mc)
             } else {
-                Err(Error::Multicast(MulticastError::McReliableDisabled))
+                Err(Error::Multicast(McError::McReliableDisabled))
             }
         } else {
-            Err(Error::Multicast(MulticastError::McDisabled))
+            Err(Error::Multicast(McError::McDisabled))
         }
     }
 
@@ -507,7 +507,7 @@ impl MulticastAttributes {
     /// Always `None` for the multicast source and the client.
     /// `None` if reliable multicast is disabled.
     pub fn rmc_get_server_nb_lost_stream(&self) -> Option<u64> {
-        if !matches!(self.mc_role, MulticastRole::ServerUnicast(_)) ||
+        if !matches!(self.mc_role, McRole::ServerUnicast(_)) ||
             !self.mc_is_reliable()
         {
             return None;

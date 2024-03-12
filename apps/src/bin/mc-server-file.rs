@@ -43,7 +43,7 @@ use quiche::multicast::McPathType;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastClientTp;
 use quiche::multicast::MulticastConnection;
-use quiche::multicast::MulticastRole;
+use quiche::multicast::McRole;
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
 #[cfg(feature = "qlog")]
@@ -742,8 +742,8 @@ fn main() {
                 info!("APP HAS NOT STARTED: {:?}", uc_server_role);
                 if uc_server_role ==
                     Some((
-                        MulticastRole::ServerUnicast(
-                            multicast::MulticastClientStatus::ListenMcPath(true),
+                        McRole::ServerUnicast(
+                            multicast::McClientStatus::ListenMcPath(true),
                         ),
                         true,
                     )) &&
@@ -787,8 +787,8 @@ fn main() {
                 if client.mc_client_listen_uc &&
                     matches!(
                         multicast.get_mc_role(),
-                        MulticastRole::ServerUnicast(
-                            multicast::MulticastClientStatus::ListenMcPath(_)
+                        McRole::ServerUnicast(
+                            multicast::McClientStatus::ListenMcPath(_)
                         )
                     )
                 {
@@ -797,8 +797,8 @@ fn main() {
                 } else if !client.mc_client_listen_uc &&
                     matches!(
                         multicast.get_mc_role(),
-                        MulticastRole::ServerUnicast(
-                            multicast::MulticastClientStatus::Leaving(_)
+                        McRole::ServerUnicast(
+                            multicast::McClientStatus::Leaving(_)
                         )
                     )
                 {

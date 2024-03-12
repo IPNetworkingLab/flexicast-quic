@@ -17,7 +17,7 @@ use crate::frame::Frame;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::multicast::ExpiredPkt;
 use crate::multicast::ExpiredStream;
-use crate::multicast::MulticastError;
+use crate::multicast::McError;
 use crate::packet::Epoch;
 use crate::ranges;
 use crate::ranges::RangeSet;
@@ -430,7 +430,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         // RMC-TODO: maybe the StreamHeader frame follows this
                         // frame?
                         let stream_id = protected_stream_id.ok_or(
-                            Error::Multicast(MulticastError::McInvalidAuth),
+                            Error::Multicast(McError::McInvalidAuth),
                         )?;
 
                         let stream = uc.get_or_create_stream(stream_id, true)?;
