@@ -3,6 +3,7 @@ extern crate log;
 
 use clap::Parser;
 use quiche::h3;
+use quiche::h3::NameValue;
 use quiche::multicast;
 use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::McClientStatus;
@@ -150,11 +151,11 @@ fn main() {
     }
 
     // Prepare request.
-    // let mut h3_conn = None;
+    let mut h3_conn = None;
     let h3_config = quiche::h3::Config::new().unwrap();
     let h3_request = get_h3_request(&url);
     let h3_request_start = std::time::Instant::now();
-    let h3_request_sent = false;
+    let mut h3_request_sent = false;
 
     'main_loop: loop {
         // Compute (FC-)QUIC timeout.
@@ -281,8 +282,6 @@ fn main() {
             info!("connection closed, {:?}", conn.stats());
         }
 
-        // HTTP/3 connection: TODO.
-
         // Process Flexicast events.
         if conn.get_multicast_attributes().is_some() {
             // Join the flexicast channel and creates the listening socket if not
@@ -406,6 +405,98 @@ fn main() {
             }
         }
 
+        // Create a new HTTP/3 connection once the QUIC connection is established.
+        // Further waits for the flexicast path establishment if flexicast is
+        // enabled.
+        if conn.is_established() &&
+            (args.multicast &&
+                conn.get_multicast_attributes().is_some_and(|mc| {
+                    mc.get_mc_role() ==
+                        McRole::Client(McClientStatus::ListenMcPath(true))
+                }) ||
+                !args.multicast) &&
+            h3_conn.is_none()
+        {
+            h3_conn = Some(
+                quiche::h3::Connection::with_transport(&mut conn, &h3_config)
+                .expect("Unable to create HTTP/3 connection, check the server's uni stream limit and window size"),
+            );
+        }
+
+        // Send HTTP requests once the QUIC connection is established, and until
+        // all requests have been sent.
+        if let Some(h3_conn) = &mut h3_conn {
+            if !h3_request_sent {
+                info!("Sending HTTP/3 request {:?}", h3_request);
+
+                h3_conn.send_request(&mut conn, &h3_request, true).unwrap();
+
+                h3_request_sent = true;
+            }
+        }
+
+        // Process HTTP/3 events.
+        if let Some(h3_conn) = &mut h3_conn {
+            loop {
+                match h3_conn.poll(&mut conn) {
+                    Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                        info!(
+                            "Got response headers {:?} on stream id {}",
+                            hdrs_to_strings(&list),
+                            stream_id,
+                        );
+                    },
+
+                    Ok((stream_id, quiche::h3::Event::Data)) => {
+                        while let Ok(read) =
+                            h3_conn.recv_body(&mut conn, stream_id, &mut buf)
+                        {
+                            debug!(
+                                "Got {} bytes of response data on stream {}",
+                                read, stream_id
+                            );
+
+                            // TODO: do something with the data.
+                        }
+                    },
+
+                    Ok((_stream_id, quiche::h3::Event::Finished)) => {
+                        info!(
+                            "Response received in {:?}, closing...",
+                            h3_request_start.elapsed()
+                        );
+
+                        conn.close(true, 0x100, b"kthxbye").unwrap();
+                    },
+
+                    Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
+                        error!(
+                            "Request was reset by peer with {}, closing...",
+                            e
+                        );
+
+                        conn.close(true, 0x100, b"kthxbye").unwrap();
+                    },
+
+                    Ok((_, quiche::h3::Event::PriorityUpdate)) => unreachable!(),
+
+                    Ok((goaway_id, quiche::h3::Event::GoAway)) => {
+                        info!("GOAWAY id={}", goaway_id);
+                    },
+
+                    Err(quiche::h3::Error::Done) => {
+                        break;
+                    },
+
+                    Err(e) => {
+                        error!("HTTP/3 processing failed: {:?}", e);
+
+                        break;
+                    },
+                }
+            }
+        }
+
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
         loop {
@@ -517,4 +608,15 @@ fn hex_dump(buf: &[u8]) -> String {
     let vec: Vec<String> = buf.iter().map(|b| format!("{b:02x}")).collect();
 
     vec.join("")
+}
+
+pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
+    hdrs.iter()
+        .map(|h| {
+            let name = String::from_utf8_lossy(h.name()).to_string();
+            let value = String::from_utf8_lossy(h.value()).to_string();
+
+            (name, value)
+        })
+        .collect()
 }
