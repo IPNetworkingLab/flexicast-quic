@@ -41,7 +41,7 @@ use quiche::multicast::McAnnounceData;
 use quiche::multicast::McConfig;
 use quiche::multicast::McPathType;
 use quiche::multicast::MulticastChannelSource;
-use quiche::multicast::MulticastClientTp;
+use quiche::multicast::McClientTp;
 use quiche::multicast::MulticastConnection;
 use quiche::multicast::McRole;
 use quiche::on_rmc_timeout_server;
@@ -1410,7 +1410,7 @@ fn get_multicast_channel(
     let socket = mio::net::UdpSocket::bind(source_addr).unwrap();
     socket.set_multicast_ttl_v4(10).unwrap();
 
-    let mc_client_tp = MulticastClientTp::default();
+    let mc_client_tp = McClientTp::default();
     let mut server_config =
         get_test_mc_config(true, None, true, mc_cwnd, cert_path, max_fec_rs);
     let mut client_config = get_test_mc_config(
@@ -1526,7 +1526,7 @@ fn get_multicast_channel(
 }
 
 pub fn get_test_mc_config(
-    mc_server: bool, mc_client: Option<&MulticastClientTp>, use_fec: bool,
+    mc_server: bool, mc_client: Option<&McClientTp>, use_fec: bool,
     _mc_cwnd: Option<usize>, cert_path: &str, max_fec_rs: Option<u32>,
 ) -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();

@@ -239,7 +239,7 @@ pub trait McConfig {
     /// Clones the transport parameter values given as argument.
     ///
     /// The default value is `None`.
-    fn set_enable_client_multicast(&mut self, v: Option<&MulticastClientTp>);
+    fn set_enable_client_multicast(&mut self, v: Option<&McClientTp>);
 }
 
 impl McConfig for crate::Config {
@@ -251,7 +251,7 @@ impl McConfig for crate::Config {
         self.mc_fec_max_rs = v;
     }
 
-    fn set_enable_client_multicast(&mut self, v: Option<&MulticastClientTp>) {
+    fn set_enable_client_multicast(&mut self, v: Option<&McClientTp>) {
         self.local_transport_params.multicast_client_params = v.cloned();
     }
 }
@@ -2383,24 +2383,24 @@ impl MissingRangeSet for ranges::RangeSet {
 #[derive(Clone, PartialEq, Debug)]
 /// Multicast parameters advertised by a client.
 /// TODO: complete the structure and documentation.
-pub struct MulticastClientTp {
+pub struct McClientTp {
     /// Allow IPv6 multicast channels.
     pub ipv6_channels_allowed: bool,
     /// Allows IPv4 multicast channels.
     pub ipv4_channels_allowed: bool,
 }
 
-impl Default for MulticastClientTp {
+impl Default for McClientTp {
     #[inline]
     fn default() -> Self {
-        MulticastClientTp {
+        McClientTp {
             ipv6_channels_allowed: true,
             ipv4_channels_allowed: true,
         }
     }
 }
 
-impl From<Vec<u8>> for MulticastClientTp {
+impl From<Vec<u8>> for McClientTp {
     #[inline]
     fn from(v: Vec<u8>) -> Self {
         Self {
@@ -2410,8 +2410,8 @@ impl From<Vec<u8>> for MulticastClientTp {
     }
 }
 
-impl From<&MulticastClientTp> for Vec<u8> {
-    fn from(v: &MulticastClientTp) -> Self {
+impl From<&McClientTp> for Vec<u8> {
+    fn from(v: &McClientTp) -> Self {
         vec![
             if v.ipv6_channels_allowed { 1 } else { 0 },
             if v.ipv4_channels_allowed { 1 } else { 0 },
@@ -2922,7 +2922,7 @@ pub mod testing {
             use_fec: bool, probe_mc_path: bool, max_cwnd: Option<usize>,
             mut mc_announce_data: McAnnounceData,
         ) -> Result<MulticastPipe> {
-            let mc_client_tp = MulticastClientTp::default();
+            let mc_client_tp = McClientTp::default();
             let mut server_config =
                 get_test_mc_config(true, None, use_fec, authentication);
             let mut client_config = get_test_mc_config(
@@ -3084,7 +3084,7 @@ pub mod testing {
         /// Creates a new client and initiate the handshake to use multicast.
         pub fn setup_client(
             mc_channel: &mut MulticastChannelSource,
-            mc_client_tp: &MulticastClientTp, mc_announce_data: &McAnnounceData,
+            mc_client_tp: &McClientTp, mc_announce_data: &McAnnounceData,
             mc_data_auth: Option<&McAnnounceData>, authentication: McAuthType,
             random: &SystemRandom, probe_mc_path: bool,
         ) -> Option<(Pipe, SocketAddr, SocketAddr)> {
@@ -3349,7 +3349,7 @@ pub mod testing {
 
     /// Simple config used for testing the multicast extension only.
     pub fn get_test_mc_config(
-        mc_server: bool, mc_client: Option<&MulticastClientTp>, use_fec: bool,
+        mc_server: bool, mc_client: Option<&McClientTp>, use_fec: bool,
         auth: McAuthType,
     ) -> Config {
         let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
@@ -3369,7 +3369,7 @@ pub mod testing {
     /// Populate a configuration with multicast values.
     pub fn populate_test_mc_config(
         config: &mut Config, mc_server: bool,
-        mc_client: Option<&MulticastClientTp>, use_fec: bool, auth: McAuthType,
+        mc_client: Option<&McClientTp>, use_fec: bool, auth: McAuthType,
     ) {
         config
             .set_application_protos(&[b"proto1", b"proto2"])
@@ -3582,7 +3582,7 @@ mod tests {
     /// Both added the multicast extension in their transport parameters.
     /// The sharing of the transport parameters are already tested in lib.rs.
     fn mc_announce_data_init() {
-        let mc_client_tp = MulticastClientTp::default();
+        let mc_client_tp = McClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
         let mut config = get_test_mc_config(
             true,
@@ -3628,7 +3628,7 @@ mod tests {
     /// The client receives the MC_ANNOUNCE.
     /// It creates a multicast state on the client.
     fn mc_announce_data_exchange() {
-        let mc_client_tp = MulticastClientTp::default();
+        let mc_client_tp = McClientTp::default();
         let mut mc_announce_data = get_test_mc_announce_data();
         let mut config = get_test_mc_config(
             true,
@@ -3686,7 +3686,7 @@ mod tests {
     ///
     /// MC-TODO: also test when the client refuses to join the channel.
     fn client_join_mc_channel() {
-        let mc_client_tp = MulticastClientTp::default();
+        let mc_client_tp = McClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
         let mut config = get_test_mc_config(
             true,
@@ -3799,7 +3799,7 @@ mod tests {
     ///
     /// Both the client and the server move to the JoinedAndKey state.
     fn test_mc_key() {
-        let mc_client_tp = MulticastClientTp::default();
+        let mc_client_tp = McClientTp::default();
         let mc_announce_data = get_test_mc_announce_data();
         let mut config = get_test_mc_config(
             true,
@@ -3852,7 +3852,7 @@ mod tests {
     /// Tests the dummy handshake for the creation of the multicast channel
     /// of the server.
     fn test_mc_channel_server_handshake() {
-        let mc_client_tp = MulticastClientTp::default();
+        let mc_client_tp = McClientTp::default();
         let mut server_config =
             get_test_mc_config(true, None, false, McAuthType::None);
         let mut client_config = get_test_mc_config(
@@ -3876,7 +3876,7 @@ mod tests {
     /// This tests the multicast channel on the backup path (using the dummy
     /// client), not the multicast path.
     fn test_mc_channel_alone() {
-        let mc_client_tp = MulticastClientTp::default();
+        let mc_client_tp = McClientTp::default();
         let mut server_config =
             get_test_mc_config(true, None, false, McAuthType::None);
         let mut client_config = get_test_mc_config(

@@ -10226,7 +10226,7 @@ pub struct TransportParams {
     /// Multicast extension support for the server.
     pub multicast_server_params: bool,
     /// Multicast extension parameters for the client.
-    pub multicast_client_params: Option<multicast::MulticastClientTp>,
+    pub multicast_client_params: Option<multicast::McClientTp>,
     /// Multipath extension parameter, if any.
     pub enable_multipath: bool,
 }
@@ -11280,7 +11280,7 @@ mod tests {
         assert_eq!(new_tp, tp);
 
         // Client encodes, server decodes.
-        let mc_client_params = multicast::MulticastClientTp {
+        let mc_client_params = multicast::McClientTp {
             ipv4_channels_allowed: true,
             ipv6_channels_allowed: false,
         };

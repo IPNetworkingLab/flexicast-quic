@@ -63,7 +63,7 @@ fn main() {
 
     let args = Args::parse();
 
-    let mc_client_params = multicast::MulticastClientTp {
+    let mc_client_params = multicast::McClientTp {
         ipv4_channels_allowed: true,
         ipv6_channels_allowed: true,
     };
@@ -544,7 +544,7 @@ fn main() {
 }
 
 fn get_config(
-    multicast: bool, mc_client_params: &multicast::MulticastClientTp,
+    multicast: bool, mc_client_params: &multicast::McClientTp,
 ) -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
     config.verify_peer(false); // Not prodction-ready.

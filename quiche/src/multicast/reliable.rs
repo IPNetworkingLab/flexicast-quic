@@ -597,7 +597,7 @@ mod tests {
     use crate::multicast::reliable::ReliableMc;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::McAuthType;
-    use crate::multicast::MulticastClientTp;
+    use crate::multicast::McClientTp;
     use crate::ranges::RangeSet;
     use ring::rand::SystemRandom;
     use std::time;
@@ -1578,7 +1578,7 @@ mod tests {
         assert_eq!(res, Ok((Some(100), None).into()));
 
         // A new client joins the channel.
-        let mc_client_tp = MulticastClientTp::default();
+        let mc_client_tp = McClientTp::default();
         let random = SystemRandom::new();
         let mc_announce_data = &mc_pipe.mc_announce_data;
         let mc_data_auth = None;

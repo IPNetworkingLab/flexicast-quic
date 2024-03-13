@@ -131,7 +131,7 @@ fn main() {
     let mut app_handler =
         mc_app::AppDataClient::new(args.app, &args.output_latency);
 
-    let mc_client_params = multicast::MulticastClientTp {
+    let mc_client_params = multicast::McClientTp {
         ipv4_channels_allowed: true,
         ipv6_channels_allowed: true,
     };
