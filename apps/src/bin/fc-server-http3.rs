@@ -7,12 +7,12 @@ use std::path::Path;
 
 use clap::Parser;
 use quiche::multicast::authentication::McAuthType;
+use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::McClientTp;
 use quiche::multicast::McConfig;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastConnection;
-use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::{self,};
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
@@ -459,7 +459,9 @@ fn main() {
         // FC-TODO.
 
         // Generate outgoing Flexicast QUIC packets for the flexicast channel.
-        if let (Some(mc_socket), Some(mc_channel)) = (mc_socket_opt.as_mut(), mc_channel_opt.as_mut()) {
+        if let (Some(mc_socket), Some(mc_channel)) =
+            (mc_socket_opt.as_mut(), mc_channel_opt.as_mut())
+        {
             'flexicast: loop {
                 let (write, mut send_info) = match mc_channel.mc_send(&mut out) {
                     Ok(v) => v,
@@ -472,10 +474,18 @@ fn main() {
                     },
                 };
 
-                // The source may send to the proxy its content instead of injecting in the multicast network.
+                // The source may send to the proxy its content instead of
+                // injecting in the multicast network.
                 send_info.to = args.proxy_addr.unwrap_or(mc_channel.mc_send_addr);
 
-                let err = send_to(mc_socket, &out[..write], &send_info, MAX_DATAGRAM_SIZE, false, false);
+                let err = send_to(
+                    mc_socket,
+                    &out[..write],
+                    &send_info,
+                    MAX_DATAGRAM_SIZE,
+                    false,
+                    false,
+                );
                 if let Err(e) = err {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
                         debug!("mc_send() would block");
@@ -485,10 +495,7 @@ fn main() {
                     panic!("mc_send() failed: {:?}", e);
                 }
 
-                debug!(
-                    "Flexicast written {} bytes to {:?}",
-                    write, send_info
-                );
+                debug!("Flexicast written {} bytes to {:?}", write, send_info);
             }
         }
 
@@ -502,7 +509,10 @@ fn main() {
             'uc_send: loop {
                 // Communication between the unicast and flexicast channels.
                 if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                    client.conn.uc_to_mc_control(&mut mc_channel.channel, now).unwrap();
+                    client
+                        .conn
+                        .uc_to_mc_control(&mut mc_channel.channel, now)
+                        .unwrap();
                 }
 
                 let (write, send_info) = match client.conn.send(&mut out) {
@@ -515,7 +525,7 @@ fn main() {
 
                         client.conn.close(false, 0x1, b"fail").ok();
                         break 'uc_send;
-                    }
+                    },
                 };
 
                 if let Err(e) = socket.send_to(&out[..write], send_info.to) {
@@ -532,7 +542,10 @@ fn main() {
 
             // Communication between the unicast and flexicast channels.
             if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                client.conn.uc_to_mc_control(&mut mc_channel.channel, now).unwrap();
+                client
+                    .conn
+                    .uc_to_mc_control(&mut mc_channel.channel, now)
+                    .unwrap();
             }
         }
 
@@ -556,12 +569,7 @@ fn main() {
             if args.disable_cc {
                 mc_channel.channel.mc_set_cwnd(usize::MAX - 2);
             } else {
-                ucs_to_mc_cwnd!(
-                    &mut mc_channel.channel,
-                    clients_conn,
-                    now,
-                    None
-                );
+                ucs_to_mc_cwnd!(&mut mc_channel.channel, clients_conn, now, None);
             }
         }
     }
