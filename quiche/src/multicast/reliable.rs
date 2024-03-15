@@ -20,7 +20,7 @@ use super::McRole;
 #[macro_export]
 macro_rules! on_rmc_timeout_server {
     ( $mc:expr, $ucs:expr, $now:expr ) => {
-        if $mc.mc_timeout($now) == Some(time::Duration::ZERO) {
+        if $mc.mc_timeout($now) == Some(std::time::Duration::ZERO) {
             $ucs.map(|uc| $mc.rmc_deleguate_streams(uc, $now)).collect()
         } else {
             Ok(())
