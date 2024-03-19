@@ -1711,6 +1711,60 @@ impl Connection {
         Ok(())
     }
 
+    /// Sends a MAX_PUSH_ID frame.
+    ///
+    /// Returns an [`Error::Done`] error if the server already sent a
+    /// MAX_PUSH_ID frame with the same maximum push id.
+    /// Returns an [`Error::Done`] error if the server attempts to call this
+    /// function.
+    pub fn send_max_push_id(
+        &mut self, conn: &mut super::Connection, max_push_id: u64,
+    ) -> Result<()> {
+        if self.is_server {
+            return Err(Error::Done);
+        }
+
+        if max_push_id <= self.max_push_id {
+            return Err(Error::Done);
+        }
+
+        if let Some(stream_id) = self.control_stream_id {
+            let mut d = [42; 10];
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+
+            let frame = frame::Frame::MaxPushId {
+                push_id: max_push_id,
+            };
+
+            let wire_len = frame.to_bytes(&mut b)?;
+            let stream_cap = conn.stream_capacity(stream_id)?;
+
+            if stream_cap < wire_len {
+                return Err(Error::StreamBlocked);
+            }
+
+            trace!("{} tx frm {:?}", conn.trace_id(), frame);
+
+            qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
+                let ev_data = EventData::H3FrameCreated(H3FrameCreated {
+                    stream_id,
+                    length: Some(octets::varint_len(id) as u64),
+                    frame: frame.to_qlog(),
+                    raw: None,
+                });
+
+                q.add_event_data_now(ev_data).ok();
+            });
+
+            let off = b.off();
+            conn.stream_send(stream_id, &d[..off], false)?;
+
+            self.max_push_id = max_push_id;
+        }
+
+        Ok(())
+    }
+
     /// Gets the raw settings from peer including unknown and reserved types.
     ///
     /// The order of settings is the same as received in the SETTINGS frame.
@@ -6283,6 +6337,37 @@ mod tests {
         assert_eq!(s.poll_client(), Ok((stream, ev_headers)));
         assert_eq!(s.poll_client(), Ok((stream, Event::Finished)));
         assert_eq!(s.poll_client(), Err(Error::Done));
+    }
+
+    #[test]
+    /// Send a MAX_PUSH_ID frame.
+    fn max_push_id_fn() {
+        let mut s = Session::new().unwrap();
+        s.handshake().unwrap();
+
+        let max_push_id = 100;
+        s.client
+            .send_max_push_id(&mut s.pipe.client, max_push_id)
+            .unwrap();
+
+        s.advance().ok();
+
+        assert_eq!(s.server.poll(&mut s.pipe.server), Err(Error::Done));
+
+        assert_eq!(s.server.max_push_id, max_push_id);
+
+        // Send a lower MAX_PUSH_ID value.
+        let max_push_id = 99;
+        assert_eq!(
+            s.client.send_max_push_id(&mut s.pipe.client, max_push_id),
+            Err(Error::Done)
+        );
+
+        // The server cannot advertise a MAX_PUSH_ID value.
+        assert_eq!(
+            s.server.send_max_push_id(&mut s.pipe.server, max_push_id),
+            Err(Error::Done)
+        );
     }
 }
 
