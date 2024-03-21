@@ -834,6 +834,7 @@ pub struct Connection {
     peer_qpack_streams: QpackStreams,
 
     max_push_id: u64,
+    current_push_id: u64,
 
     finished_streams: VecDeque<u64>,
 
@@ -894,6 +895,7 @@ impl Connection {
             },
 
             max_push_id: 0,
+            current_push_id: 0,
 
             finished_streams: VecDeque::new(),
 
@@ -1765,6 +1767,108 @@ impl Connection {
         Ok(())
     }
 
+    /// Sends a PUSH_PROMISE frame to the client.
+    ///
+    /// Returns an [`Error::Done`] if the client attempts to call this function.
+    /// Returns an [`Error:IdError`] if the server attempts to send a
+    /// PUSH_PROMISE with an ID above the maximum value advertised by the
+    /// client.
+    ///
+    /// TODO: currently automatically increases the push id after each call to
+    /// this function.
+    pub fn send_push_promise<T: NameValue>(
+        &mut self, conn: &mut super::Connection, stream_id: u64, headers: &[T],
+        fin: bool,
+    ) -> Result<()> {
+        if !self.is_server {
+            return Err(Error::Done);
+        }
+
+        if self.current_push_id >= self.max_push_id {
+            return Err(Error::IdError);
+        }
+
+        let mut d = [42; 18];
+        let mut b = octets::OctetsMut::with_slice(&mut d);
+
+        // TODO: grease?
+
+        let header_block = self.encode_header_block(headers)?;
+
+        let overhead = octets::varint_len(frame::HEADERS_FRAME_TYPE_ID) +
+            octets::varint_len(header_block.len() as u64);
+
+        // Headers need to be sent atomically, so make sure the stream has enough
+        // capacity.
+        match conn.stream_writable(stream_id, overhead + header_block.len()) {
+            Ok(true) => (),
+
+            Ok(false) => return Err(Error::StreamBlocked),
+
+            Err(e) => {
+                if conn.stream_finished(stream_id) {
+                    self.streams.remove(&stream_id);
+                }
+
+                return Err(e.into());
+            },
+        };
+
+        b.put_varint(frame::PUSH_PROMISE_FRAME_TYPE_ID)?;
+        b.put_varint(header_block.len() as u64)?;
+        b.put_varint(self.current_push_id)?;
+        let off = b.off();
+        conn.stream_send(stream_id, &d[..off], false)?;
+
+        // Sending header block separately avoids unnecessary copy.
+        conn.stream_send(stream_id, &header_block, fin)?;
+
+        println!(
+            "{} tx frm PUSH_PROMISE push_id={} stream={} len={} fin={}",
+            conn.trace_id(),
+            self.current_push_id,
+            stream_id,
+            header_block.len(),
+            fin
+        );
+
+        qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
+            let qlog_headers = headers
+                .iter()
+                .map(|h| qlog::events::h3::HttpHeader {
+                    name: String::from_utf8_lossy(h.name()).into_owned(),
+                    value: String::from_utf8_lossy(h.value()).into_owned(),
+                })
+                .collect();
+
+            let frame = Http3Frame::PushPromise {
+                push_id: stream_id,
+                headers: qlog_headers,
+            };
+            let ev_data = EventData::H3FrameCreated(H3FrameCreated {
+                stream_id,
+                length: Some(header_block.len() as u64),
+                frame,
+                raw: None,
+            });
+
+            q.add_event_data_now(ev_data).ok();
+        });
+
+        if fin && conn.stream_finished(stream_id) {
+            self.streams.remove(&stream_id);
+        }
+
+        // TODO: initiate the local unidirectional stream that is created with the
+        // PUSH_PROMISE on the server. TODO: potentially already create
+        // the unidirectional stream with the client?
+
+        // Sent the PUSH_PROMISE. Increase the ID.
+        self.current_push_id += 1;
+
+        Ok(())
+    }
+
     /// Gets the raw settings from peer including unknown and reserved types.
     ///
     /// The order of settings is the same as received in the SETTINGS frame.
@@ -2627,6 +2731,7 @@ impl Connection {
             },
 
             frame::Frame::PushPromise { .. } => {
+                println!("Here PUSH_PROMISE received");
                 if self.is_server {
                     conn.close(
                         true,
@@ -3126,6 +3231,20 @@ pub mod testing {
             self.advance().ok();
 
             Ok(())
+        }
+
+        /// Sends a valid MAX_PUSH_ID frame from the client and advances the
+        /// pipe.
+        pub fn send_max_push_id(&mut self, max_push_id: u64) -> Result<()> {
+            self.client
+                .send_max_push_id(&mut self.pipe.client, max_push_id)?;
+            self.advance()?;
+
+            match self.server.poll(&mut self.pipe.server) {
+                Ok(_) | Err(Error::Done) => Ok(()),
+
+                Err(e) => Err(e),
+            }
         }
     }
 }
@@ -6368,6 +6487,43 @@ mod tests {
             s.server.send_max_push_id(&mut s.pipe.server, max_push_id),
             Err(Error::Done)
         );
+    }
+
+    #[test]
+    /// Send a PUSH_PROMISE from the server when the client already sent valid
+    /// MAX_PUSH_ID.
+    fn push_promise_server_good() {
+        let mut s = Session::new().unwrap();
+        s.handshake().unwrap();
+
+        s.send_max_push_id(10).unwrap();
+
+        // Client sends a request to open the bidirectional stream.
+        let (stream_id, mut req) = s.send_request(false).unwrap();
+
+        let ev_headers = Event::Headers {
+            list: req.clone(),
+            has_body: true,
+        };
+
+        assert_eq!(s.poll_server(), Ok((stream_id, ev_headers)));
+
+        req[3] = Header::new(b":path", b"/test-push-promise");
+        println!("Send push promise");
+        assert_eq!(
+            s.server.send_push_promise(
+                &mut s.pipe.server,
+                stream_id,
+                &req,
+                false
+            ),
+            Ok(())
+        );
+
+        s.advance().unwrap();
+        println!("Send push promise done");
+
+        assert_eq!(s.client.poll(&mut s.pipe.client), Err(Error::Done));
     }
 }
 
