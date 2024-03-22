@@ -2732,9 +2732,7 @@ impl Connection {
                         )),
                 }
             } else {
-                return Err(Error::Multicast(
-                    multicast::McError::McDisabled,
-                ));
+                return Err(Error::Multicast(multicast::McError::McDisabled));
             }
         } else {
             // Otherwise use the packet number space's main key.
@@ -3294,23 +3292,28 @@ impl Connection {
                             multicast.set_mc_state_in_flight(false);
                             match multicast.get_mc_role() {
                                 multicast::McRole::Client(
-                                    multicast::McClientStatus::Leaving(
-                                        true
-                                    )
-                                ) | multicast::McRole::ServerUnicast(
-                                    multicast::McClientStatus::Leaving(
-                                        true
-                                    )
+                                    multicast::McClientStatus::Leaving(true),
+                                ) |
+                                multicast::McRole::ServerUnicast(
+                                    multicast::McClientStatus::Leaving(true),
                                 ) if multicast::McClientAction::try_from(
                                     action,
-                                )? == multicast::McClientAction::Leave => multicast.update_client_state(
-                                    action.try_into()?,
-                                    Some(action_data),
-                                )?,
-                                multicast::McRole::Client(multicast::McClientStatus::ListenMcPath(false)) if multicast::McClientAction::try_from(action)? == multicast::McClientAction::McPath => multicast.update_client_state(
-                                    action.try_into()?,
-                                    Some(action_data),
-                                )?,
+                                )? == multicast::McClientAction::Leave =>
+                                    multicast.update_client_state(
+                                        action.try_into()?,
+                                        Some(action_data),
+                                    )?,
+                                multicast::McRole::Client(
+                                    multicast::McClientStatus::ListenMcPath(
+                                        false,
+                                    ),
+                                ) if multicast::McClientAction::try_from(
+                                    action,
+                                )? == multicast::McClientAction::McPath =>
+                                    multicast.update_client_state(
+                                        action.try_into()?,
+                                        Some(action_data),
+                                    )?,
                                 _ => multicast.update_client_state(
                                     action.try_into()?,
                                     Some(action_data),
@@ -3836,10 +3839,8 @@ impl Connection {
             // Does not retransmit frames that were sent by the multicast source
             // on the multicast path.
             if self.multicast.as_ref().is_some_and(|m| {
-                matches!(
-                    m.get_mc_role(),
-                    multicast::McRole::ServerUnicast(_)
-                ) && Some(path_id) == m.get_mc_space_id()
+                matches!(m.get_mc_role(), multicast::McRole::ServerUnicast(_)) &&
+                    Some(path_id) == m.get_mc_space_id()
             }) {
                 // Drain the lost frames.
                 for _ in p.recovery.lost[epoch].drain(..) {}
@@ -4072,7 +4073,6 @@ impl Connection {
             return Err(Error::InvalidState);
         };
 
-
         let hdr = Header {
             ty: pkt_type,
 
@@ -4266,10 +4266,8 @@ impl Connection {
             }
         }
 
-        let mc_active_path_id = self
-            .multicast
-            .as_ref()
-            .and_then(|mc| mc.get_mc_space_id());
+        let mc_active_path_id =
+            self.multicast.as_ref().and_then(|mc| mc.get_mc_space_id());
         let mc_nack_range = mc_active_path_id
             .and_then(|space_id| self.mc_nack_range(epoch, space_id as u64));
         let mc_should_send_nack = !self.is_server && mc_nack_range.is_some();
@@ -4539,9 +4537,7 @@ impl Connection {
                         // source.
                         if multicast.get_mc_role() ==
                             multicast::McRole::Client(
-                                multicast::McClientStatus::ListenMcPath(
-                                    true,
-                                ),
+                                multicast::McClientStatus::ListenMcPath(true),
                             )
                         {
                             debug!("Reset the recovered symbols need ack");
@@ -4850,13 +4846,13 @@ impl Connection {
             // state machine to know when all data has been sent?
             while let Some(mc_data_idx) = self.mc_should_send_mc_announce() {
                 debug!("Will send MC_ANNOUNCE frame");
-                let multicast = self.multicast.as_mut().ok_or(
-                    Error::Multicast(multicast::McError::McDisabled),
-                )?;
-                let mc_announce_data =
-                    multicast.get_mut_mc_announce_data(mc_data_idx).ok_or(
-                        Error::Multicast(multicast::McError::McDisabled),
-                    )?;
+                let multicast = self
+                    .multicast
+                    .as_mut()
+                    .ok_or(Error::Multicast(multicast::McError::McDisabled))?;
+                let mc_announce_data = multicast
+                    .get_mut_mc_announce_data(mc_data_idx)
+                    .ok_or(Error::Multicast(multicast::McError::McDisabled))?;
                 let frame = frame::Frame::McAnnounce {
                     channel_id: mc_announce_data.channel_id.clone(),
                     path_type: mc_announce_data.path_type.into(),
@@ -4945,11 +4941,10 @@ impl Connection {
             // Create MC_KEY frame.
             if let Some(multicast) = self.multicast.as_mut() {
                 if multicast.should_send_mc_key() {
-                    let mc_announce_data = multicast
-                        .get_mc_announce_data_path()
-                        .ok_or(Error::Multicast(
-                            multicast::McError::McAnnounce,
-                        ))?;
+                    let mc_announce_data =
+                        multicast.get_mc_announce_data_path().ok_or(
+                            Error::Multicast(multicast::McError::McAnnounce),
+                        )?;
                     let first_pn =
                         if let Some(exp_pkt) = multicast.mc_last_expired {
                             exp_pkt.pn.unwrap_or(1)
@@ -4963,6 +4958,7 @@ impl Connection {
                         algo: multicast.get_decryption_key_algo(),
                         first_pn,
                         client_id: multicast.get_self_client_id()?,
+                        stream_states: Vec::new(),
                     };
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
@@ -4987,11 +4983,10 @@ impl Connection {
                     if exp_pkt.ssid.is_some() {
                         expiration_type += 4;
                     }
-                    let mc_announce_data = multicast
-                        .get_mc_announce_data_path()
-                        .ok_or(Error::Multicast(
-                            multicast::McError::McAnnounce,
-                        ))?;
+                    let mc_announce_data =
+                        multicast.get_mc_announce_data_path().ok_or(
+                            Error::Multicast(multicast::McError::McAnnounce),
+                        )?;
 
                     let frame = frame::Frame::McExpire {
                         channel_id: mc_announce_data.channel_id.clone(),
@@ -5516,9 +5511,7 @@ impl Connection {
                     let signature = if rmc_retr_asym {
                         let sign = stream
                             .mc_get_asym_sign()
-                            .ok_or(Error::Multicast(
-                                McError::McInvalidSign,
-                            ))?
+                            .ok_or(Error::Multicast(McError::McInvalidSign))?
                             .to_vec();
                         if !stream.is_flushable() {
                             self.streams.remove_flushable(&priority_key);
@@ -8986,9 +8979,7 @@ impl Connection {
                         ));
                     }
                 } else {
-                    return Err(Error::Multicast(
-                        multicast::McError::McDisabled,
-                    ));
+                    return Err(Error::Multicast(multicast::McError::McDisabled));
                 }
             },
 
@@ -9340,9 +9331,7 @@ impl Connection {
                         Some(action_data),
                     )?;
                 } else {
-                    return Err(Error::Multicast(
-                        multicast::McError::McDisabled,
-                    ));
+                    return Err(Error::Multicast(multicast::McError::McDisabled));
                 }
             },
 
@@ -9352,6 +9341,7 @@ impl Connection {
                 algo,
                 first_pn,
                 client_id,
+                stream_states: _,
             } => {
                 if self.is_server {
                     return Err(Error::Multicast(
@@ -9427,9 +9417,7 @@ impl Connection {
                             now,
                         )?;
                     } else {
-                        return Err(Error::Multicast(
-                            multicast::McError::McPath,
-                        ));
+                        return Err(Error::Multicast(multicast::McError::McPath));
                     }
                 } else {
                     return Err(Error::Multicast(
@@ -9475,9 +9463,7 @@ impl Connection {
                         ));
                     }
                 } else {
-                    return Err(Error::Multicast(
-                        multicast::McError::McDisabled,
-                    ));
+                    return Err(Error::Multicast(multicast::McError::McDisabled));
                 }
 
                 panic!("Should not receive an MC_NACK frame");
@@ -9723,9 +9709,7 @@ impl Connection {
         // This calls the congestion control algorithm to set the congestion
         // window.
         if let Some(multicast) = self.multicast.as_ref() {
-            if let multicast::McRole::ServerMulticast =
-                multicast.get_mc_role()
-            {
+            if let multicast::McRole::ServerMulticast = multicast.get_mc_role() {
                 path.recovery.reset();
                 self.update_tx_cap();
             }
@@ -9782,9 +9766,8 @@ impl Connection {
                         .spaces
                         .application_data_space_ids()
                         .find(|&sid| sid != mc_path as u64)
-                        .ok_or(Error::Multicast(
-                            multicast::McError::McPath,
-                        ))? as usize);
+                        .ok_or(Error::Multicast(multicast::McError::McPath))?
+                        as usize);
                 }
             }
         }
@@ -10617,7 +10600,7 @@ impl TransportParams {
                 b.put_bytes(&tmp_buf[..])?;
             }
         }
-        
+
         if tp.enable_multipath {
             TransportParams::encode_param(&mut b, 0x0f739bbc1b666d06, 0)?;
         }
@@ -19245,10 +19228,10 @@ use crate::multicast::authentication::McAuthType;
 use crate::multicast::authentication::McAuthentication;
 use crate::multicast::reliable::ReliableMc;
 use crate::multicast::reliable::ReliableMulticastConnection;
+use crate::multicast::McError;
 use crate::multicast::McPathType;
 use crate::multicast::MissingRangeSet;
 use crate::multicast::MulticastConnection;
-use crate::multicast::McError;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;
 pub use crate::packet::Type;

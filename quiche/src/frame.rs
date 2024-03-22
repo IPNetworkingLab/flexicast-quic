@@ -46,6 +46,7 @@ use crate::multicast::MC_STATE_CODE;
 use crate::packet;
 use crate::ranges;
 use crate::stream;
+use crate::stream::flexicast::FcStreamState;
 
 #[cfg(feature = "qlog")]
 use qlog::events::quic::AckedRanges;
@@ -246,6 +247,7 @@ pub enum Frame {
         algo: Algorithm,
         first_pn: u64,
         client_id: u64,
+        stream_states: Vec<FcStreamState>,
     },
 
     McExpire {
@@ -288,7 +290,7 @@ pub enum Frame {
     SourceSymbolACK {
         ranges: ranges::RangeSet,
     },
-    
+
     PathStandby {
         dcid_seq_num: u64,
         seq_num: u64,
@@ -485,12 +487,17 @@ impl Frame {
                     b.get_u8()?.try_into().map_err(|_| Error::CryptoFail)?;
                 let first_pn = b.get_varint()?;
                 let client_id = b.get_varint()?;
+                let nb_stream_states = b.get_varint()?;
+                let stream_states = (0..nb_stream_states)
+                    .map(|_| FcStreamState::from_bytes(b))
+                    .collect::<Result<Vec<_>>>()?;
                 Frame::McKey {
                     channel_id,
                     key,
                     algo,
                     first_pn,
                     client_id,
+                    stream_states,
                 }
             },
 
@@ -920,6 +927,7 @@ impl Frame {
                 algo,
                 first_pn,
                 client_id,
+                stream_states,
             } => {
                 debug!("Going to encode the MC_KEY frame");
                 b.put_varint(MC_KEY_CODE)?;
@@ -930,6 +938,11 @@ impl Frame {
                 b.put_u8(algo.to_owned().try_into().unwrap())?;
                 b.put_varint(*first_pn)?;
                 b.put_varint(*client_id)?;
+                b.put_varint(stream_states.len() as u64)?;
+                stream_states
+                    .iter()
+                    .map(|s| s.to_bytes(b))
+                    .collect::<Result<_>>()?;
             },
 
             Frame::McExpire {
@@ -1325,11 +1338,13 @@ impl Frame {
                 algo: _,
                 first_pn,
                 client_id,
+                stream_states,
             } => {
                 let key_len_size = octets::varint_len(key.len() as u64);
                 let first_pn_size = octets::varint_len(*first_pn);
                 let client_id_size = octets::varint_len(*client_id);
                 let frame_type_size = octets::varint_len(MC_KEY_CODE);
+                let nb_stream_state_size = octets::varint_len(stream_states.len() as u64);
                 frame_type_size + // frame type
                 1 + // channel_id len
                 channel_id.len() +
@@ -1337,7 +1352,9 @@ impl Frame {
                 key.len() +
                 1 + // algo len
                 first_pn_size +
-                client_id_size
+                client_id_size + 
+                nb_stream_state_size +
+                stream_states.iter().map(|s| s.len()).sum::<usize>()
             },
 
             Frame::McExpire {
@@ -1367,9 +1384,9 @@ impl Frame {
                 let signatures_size: usize = signatures
                     .iter()
                     .map(|sign| {
-                        octets::varint_len(sign.mc_client_id)
-                            + 1
-                            + sign.sign.len()
+                        octets::varint_len(sign.mc_client_id) +
+                            1 +
+                            sign.sign.len()
                     })
                     .sum();
                 frame_type_size +
@@ -1443,7 +1460,7 @@ impl Frame {
                 }
                 len
             },
-            
+
             Frame::PathStandby {
                 dcid_seq_num,
                 seq_num,
@@ -1468,24 +1485,24 @@ impl Frame {
         // Any other frame is ack-eliciting (note the `!`).
         !matches!(
             self,
-            Frame::Padding { .. }
-                | Frame::ACK { .. }
-                | Frame::ApplicationClose { .. }
-                | Frame::ConnectionClose { .. }
-                | Frame::ACKMP { .. }
-                | Frame::SourceSymbol { .. }
-                | Frame::SourceSymbolHeader { .. }
-                | Frame::SourceSymbolACK { .. }
+            Frame::Padding { .. } |
+                Frame::ACK { .. } |
+                Frame::ApplicationClose { .. } |
+                Frame::ConnectionClose { .. } |
+                Frame::ACKMP { .. } |
+                Frame::SourceSymbol { .. } |
+                Frame::SourceSymbolHeader { .. } |
+                Frame::SourceSymbolACK { .. }
         )
     }
 
     pub fn probing(&self) -> bool {
         matches!(
             self,
-            Frame::Padding { .. }
-                | Frame::NewConnectionId { .. }
-                | Frame::PathChallenge { .. }
-                | Frame::PathResponse { .. }
+            Frame::Padding { .. } |
+                Frame::NewConnectionId { .. } |
+                Frame::PathChallenge { .. } |
+                Frame::PathResponse { .. }
         )
     }
 
@@ -1603,16 +1620,14 @@ impl Frame {
                 maximum: *max,
             },
 
-            Frame::DataBlocked { limit } => {
-                QuicFrame::DataBlocked { limit: *limit }
-            },
+            Frame::DataBlocked { limit } =>
+                QuicFrame::DataBlocked { limit: *limit },
 
-            Frame::StreamDataBlocked { stream_id, limit } => {
+            Frame::StreamDataBlocked { stream_id, limit } =>
                 QuicFrame::StreamDataBlocked {
                     stream_id: *stream_id,
                     limit: *limit,
-                }
-            },
+                },
 
             Frame::StreamsBlockedBidi { limit } => QuicFrame::StreamsBlocked {
                 stream_type: StreamType::Bidirectional,
@@ -1639,15 +1654,13 @@ impl Frame {
                 )),
             },
 
-            Frame::RetireConnectionId { seq_num } => {
+            Frame::RetireConnectionId { seq_num } =>
                 QuicFrame::RetireConnectionId {
                     sequence_number: *seq_num as u32,
-                }
-            },
+                },
 
-            Frame::PathChallenge { .. } => {
-                QuicFrame::PathChallenge { data: None }
-            },
+            Frame::PathChallenge { .. } =>
+                QuicFrame::PathChallenge { data: None },
 
             Frame::PathResponse { .. } => QuicFrame::PathResponse { data: None },
 
@@ -2028,11 +2041,12 @@ impl std::fmt::Debug for Frame {
                 algo,
                 first_pn,
                 client_id,
+                stream_states,
             } => {
                 write!(
                     f,
-                    "MC_KEY channel ID={:?} key={:?} algo={:?} first pn={:?} client id={:?}",
-                    channel_id, key, algo, first_pn, client_id,
+                    "MC_KEY channel ID={:?} key={:?} algo={:?} first pn={:?} client id={:?} stream_states={:?}",
+                    channel_id, key, algo, first_pn, client_id, stream_states,
                 )?;
             },
 
@@ -3771,12 +3785,20 @@ mod tests {
     fn mc_key() {
         let mut d = [41; 400];
 
+        let stream_states = vec![
+            FcStreamState::new(1, 100),
+            FcStreamState::new(100, 0),
+            FcStreamState::new(46929, 4567),
+            FcStreamState::new(111111, 1),
+        ];
+
         let frame = Frame::McKey {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             key: vec![1; 32],
             algo: Algorithm::AES128_GCM,
             first_pn: 0xffffff,
             client_id: 0xabcd,
+            stream_states,
         };
 
         let wire_len = {
@@ -3784,7 +3806,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 52);
+        assert_eq!(wire_len, 70);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

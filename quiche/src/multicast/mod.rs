@@ -2862,6 +2862,22 @@ pub enum McClientId {
     MulticastServer(McClientIdSource),
 }
 
+/// Implements out of order delivery of streams.
+impl Connection {
+    /// Receive a stream at the specified offset.
+    /// Reads contiguously until it fills the buffer or there is no data to read after this offset.
+    /// 
+    /// Returns an [`crate::Error::Done`] if the specified offset does not contain any data.
+    fn stream_recv_at_offset(&mut self, stream_id: u64, offset: usize, out: &mut [u8]) -> Result<(usize, bool)> {
+        Ok((0, true))
+    }
+
+    /// Returns the next available data offset for the given stream id.
+    fn stream_next_offset(&self, stream_id: u64) -> Option<usize> {
+        None
+    }
+}
+
 /// Provide structures and functions to help testing the multicast extension of
 /// QUIC.
 pub mod testing {
