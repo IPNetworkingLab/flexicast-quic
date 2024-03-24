@@ -66,6 +66,13 @@ pub struct RecvBuf {
 
     /// Whether incoming data is validated but not buffered.
     drain: bool,
+
+    /// Flexicast initial offset. This it the offset at which the stream is
+    /// created, if any.
+    pub(crate) fc_init_off: Option<u64>,
+
+    /// Flexicast whether the read already looped.
+    fc_looped: bool,
 }
 
 impl RecvBuf {
@@ -185,6 +192,7 @@ impl RecvBuf {
             self.len = cmp::max(self.len, buf.max_off());
 
             if !self.drain {
+                println!("Insert data!");
                 self.data.insert(buf.max_off(), buf);
             }
         }
@@ -206,6 +214,7 @@ impl RecvBuf {
         let mut cap = out.len();
 
         if !self.ready() {
+            println!("Done");
             return Err(Error::Done);
         }
 
@@ -221,10 +230,20 @@ impl RecvBuf {
                 Some(entry) => entry,
                 None => break,
             };
+            println!("Get entry: {:?}", entry.key());
 
             let buf = entry.get_mut();
 
-            let buf_len = cmp::min(buf.len(), cap);
+            let mut buf_len = cmp::min(buf.len(), cap);
+
+            // If Flexicast stream offset init is done and we already looped, take
+            // care that we do not send twice the same data (at
+            // self.fc_init_offset). So we constraint the size of the
+            // buffer to ensure that this does not happen.
+            if let (true, Some(fc_off)) = (self.fc_looped, self.fc_init_off) {
+                let gap_until_fc_off = fc_off.saturating_sub(self.off) as usize;
+                buf_len = cmp::min(buf_len, gap_until_fc_off);
+            }
 
             out[len..len + buf_len].copy_from_slice(&buf[..buf_len]);
 
@@ -245,6 +264,26 @@ impl RecvBuf {
 
         // Update consumed bytes for flow control.
         self.flow_control.add_consumed(len as u64);
+
+        // If the stream was set with Flexicast at a specific value and quiche
+        // provided the data until the end, it means that we must still loop back
+        // to the beginning to read the remaining of the stream.
+        if !self.fc_looped && self.fc_init_off.is_some() && self.is_fin() {
+            self.fc_looped = true;
+
+            self.off = 0;
+            println!("P1");
+
+            return Ok((len, false));
+        }
+
+        // If the thread already looped and reaches back the initial offset.
+        if self.fc_looped && self.fc_init_off.is_some_and(|off| off <= self.off) {
+            println!("P2");
+            return Ok((len, true));
+        }
+
+        println!("P3");
 
         Ok((len, self.is_fin()))
     }
@@ -362,8 +401,10 @@ impl RecvBuf {
     pub fn ready(&self) -> bool {
         let (_, buf) = match self.data.first_key_value() {
             Some(v) => v,
-            None => return false,
+            None => {println!("ICI"); return false},
         };
+
+        println!("Not ready here");
 
         buf.off() == self.off
     }
@@ -435,6 +476,17 @@ impl RecvBuf {
         }
 
         Ok(hash)
+    }
+
+    /// Sets the offset of the reception buffer to the given `offset` value.
+    /// This completely changes the state of the structure, as it will consider
+    /// that any byte before `offset` has already been received.
+    pub(crate) fn fc_set_offset_at(&mut self, offset: u64) -> Result<()> {
+        self.fc_init_off = Some(offset);
+
+        self.off = offset;
+
+        Ok(())
     }
 }
 
@@ -1044,5 +1096,47 @@ mod tests {
         assert_eq!(recv.data.len(), 0);
 
         assert_eq!(recv.emit(&mut buf), Err(Error::Done));
+    }
+
+    #[test]
+    /// Flexicast setting the offset to a different value and receiving data.
+    fn fc_set_offset_at() {
+        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
+        assert_eq!(recv.len, 0);
+        assert!(recv.fc_set_offset_at(5).is_ok());
+        assert_eq!(recv.off, 5);
+
+        let mut buf = [0; 32];
+
+        let first = RangeBuf::from(b"something", 0, false);
+        let second = RangeBuf::from(b"hello", 9, true);
+
+        println!("Should insert first data");
+        assert!(recv.write(first).is_ok());
+        assert_eq!(recv.len, 9);
+        assert_eq!(recv.off, 5);
+        assert_eq!(recv.data.len(), 1);
+
+        println!("Should insert second data");
+        assert!(recv.write(second).is_ok());
+        assert_eq!(recv.len, 14);
+        assert_eq!(recv.off, 5);
+        assert_eq!(recv.data.len(), 2);
+
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 9);
+        assert!(!fin);
+        assert_eq!(&buf[..len], b"hinghello");
+        assert_eq!(recv.len, 14);
+        assert_eq!(recv.off, 0);
+
+        // Loop back to the beginning.
+        println!("Before looping");
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 5);
+        assert!(fin);
+        assert_eq!(&buf[..len], b"somet");
+        assert_eq!(recv.len, 14);
+        assert_eq!(recv.off, 5);
     }
 }

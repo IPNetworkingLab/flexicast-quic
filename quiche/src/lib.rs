@@ -4958,7 +4958,7 @@ impl Connection {
                         algo: multicast.get_decryption_key_algo(),
                         first_pn,
                         client_id: multicast.get_self_client_id()?,
-                        stream_states: Vec::new(),
+                        stream_states: self.streams.to_fc_stream_state(),
                     };
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
@@ -9341,7 +9341,7 @@ impl Connection {
                 algo,
                 first_pn,
                 client_id,
-                stream_states: _,
+                stream_states,
             } => {
                 if self.is_server {
                     return Err(Error::Multicast(
@@ -9385,6 +9385,9 @@ impl Connection {
                             ..Default::default()
                         });
                     }
+
+                    // Sets the initial stream states.
+                    self.fc_set_stream_states(&stream_states)?;
                 } else {
                     return Err(Error::Multicast(
                         multicast::McError::McInvalidSymKey,

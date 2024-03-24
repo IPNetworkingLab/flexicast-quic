@@ -18,6 +18,7 @@ use crate::rand::rand_bytes;
 use crate::ranges;
 use crate::ranges::RangeSet;
 use crate::recovery::multicast::MulticastRecovery;
+use crate::stream::flexicast::FcStreamState;
 use crate::stream::McStream;
 use crate::CongestionControlAlgorithm;
 use crate::SendInfo;
@@ -434,6 +435,9 @@ pub struct MulticastAttributes {
 
     /// Maximum packet number already given to the unicast connection.
     cur_max_pn: u64,
+
+    /// Whether the source adds the stream states in the MC_KEY frame.
+    fc_send_stream_state: bool,
 }
 
 impl MulticastAttributes {
@@ -518,39 +522,27 @@ impl MulticastAttributes {
         let new_status = match (current_status, action) {
             (McClientStatus::Unaware, McClientAction::Notify) =>
                 McClientStatus::AwareUnjoined,
-            (
-                McClientStatus::AwareUnjoined,
-                McClientAction::Join,
-            ) if !is_server => McClientStatus::WaitingToJoin,
-            (
-                McClientStatus::AwareUnjoined,
-                McClientAction::Join,
-            ) if is_server => McClientStatus::JoinedNoKey,
+            (McClientStatus::AwareUnjoined, McClientAction::Join)
+                if !is_server =>
+                McClientStatus::WaitingToJoin,
+            (McClientStatus::AwareUnjoined, McClientAction::Join)
+                if is_server =>
+                McClientStatus::JoinedNoKey,
             (McClientStatus::Unaware, McClientAction::Join)
                 if is_server &&
                     self.get_mc_announce_data_path().unwrap().is_processed =>
                 McClientStatus::JoinedNoKey,
-            (
-                McClientStatus::WaitingToJoin,
-                McClientAction::Join,
-            ) => McClientStatus::JoinedNoKey,
-            (
+            (McClientStatus::WaitingToJoin, McClientAction::Join) =>
                 McClientStatus::JoinedNoKey,
-                McClientAction::DecryptionKey,
-            ) => McClientStatus::JoinedAndKey,
-            (
-                McClientStatus::WaitingToJoin,
-                McClientAction::DecryptionKey,
-            ) if is_server && self.mc_key_up_to_date =>
+            (McClientStatus::JoinedNoKey, McClientAction::DecryptionKey) =>
                 McClientStatus::JoinedAndKey,
-            (
-                McClientStatus::WaitingToJoin,
-                McClientAction::DecryptionKey,
-            ) if !is_server => McClientStatus::JoinedAndKey,
-            (
-                McClientStatus::ListenMcPath(_),
-                McClientAction::Leave,
-            ) =>
+            (McClientStatus::WaitingToJoin, McClientAction::DecryptionKey)
+                if is_server && self.mc_key_up_to_date =>
+                McClientStatus::JoinedAndKey,
+            (McClientStatus::WaitingToJoin, McClientAction::DecryptionKey)
+                if !is_server =>
+                McClientStatus::JoinedAndKey,
+            (McClientStatus::ListenMcPath(_), McClientAction::Leave) =>
                 if let Some(leaving_from) = action_data {
                     if leaving_from == LEAVE_FROM_CLIENT {
                         if is_server {
@@ -568,48 +560,34 @@ impl MulticastAttributes {
                         }
                     } else {
                         debug!("Invalid action 1");
-                        return Err(Error::Multicast(
-                            McError::McInvalidAction,
-                        ));
+                        return Err(Error::Multicast(McError::McInvalidAction));
                     }
                 } else {
                     debug!("Invalid action 2");
-                    return Err(Error::Multicast(
-                        McError::McInvalidAction,
-                    ));
+                    return Err(Error::Multicast(McError::McInvalidAction));
                 },
+            (McClientStatus::Leaving(false), McClientAction::Leave) =>
+                McClientStatus::AwareUnjoined,
+            (McClientStatus::Leaving(true), McClientAction::Leave) =>
+                McClientStatus::AwareUnjoined,
             (
-                McClientStatus::Leaving(false),
-                McClientAction::Leave,
-            ) => McClientStatus::AwareUnjoined,
-            (
-                McClientStatus::Leaving(true),
-                McClientAction::Leave,
-            ) => McClientStatus::AwareUnjoined,
-            (
-                McClientStatus::JoinedAndKey |
-                McClientStatus::JoinedNoKey,
+                McClientStatus::JoinedAndKey | McClientStatus::JoinedNoKey,
                 McClientAction::McPath,
             ) if action_data.is_some() && is_server => {
                 self.mc_space_id = Some(action_data.unwrap() as usize);
                 McClientStatus::ListenMcPath(true)
             },
-            (
-                McClientStatus::JoinedAndKey,
-                McClientAction::McPath,
-            ) if action_data.is_some() && !is_server => {
+            (McClientStatus::JoinedAndKey, McClientAction::McPath)
+                if action_data.is_some() && !is_server =>
+            {
                 self.mc_space_id = Some(action_data.unwrap() as usize);
                 McClientStatus::ListenMcPath(true)
             },
-            (
+            (McClientStatus::AwareUnjoined, McClientAction::Leave) =>
                 McClientStatus::AwareUnjoined,
-                McClientAction::Leave,
-            ) => McClientStatus::AwareUnjoined,
             (McClientStatus::ListenMcPath(_), _) => current_status,
-            (
-                McClientStatus::JoinedAndKey,
-                McClientAction::Join,
-            ) => current_status,
+            (McClientStatus::JoinedAndKey, McClientAction::Join) =>
+                current_status,
             _ => {
                 debug!(
                     "Invalid action 3: current={:?} and action is {:?}",
@@ -629,8 +607,7 @@ impl MulticastAttributes {
 
         self.mc_role = match self.mc_role {
             McRole::Client(_) => McRole::Client(new_status),
-            McRole::ServerUnicast(_) =>
-                McRole::ServerUnicast(new_status),
+            McRole::ServerUnicast(_) => McRole::ServerUnicast(new_status),
             other => other,
         };
 
@@ -648,15 +625,12 @@ impl MulticastAttributes {
         match self.mc_role {
             McRole::Client(status) => match status {
                 McClientStatus::WaitingToJoin => true,
-                McClientStatus::JoinedAndKey
-                    if self.mc_space_id.is_some() =>
+                McClientStatus::JoinedAndKey if self.mc_space_id.is_some() =>
                     true,
                 McClientStatus::Leaving(false) => true,
                 _ => false,
             },
-            McRole::ServerUnicast(McClientStatus::Leaving(
-                false,
-            )) => true,
+            McRole::ServerUnicast(McClientStatus::Leaving(false)) => true,
             _ => false,
         }
     }
@@ -677,8 +651,7 @@ impl MulticastAttributes {
             match status {
                 McClientStatus::JoinedAndKey |
                 McClientStatus::ListenMcPath(_) => true,
-                McClientStatus::JoinedNoKey
-                    if self.mc_client_id.is_some() =>
+                McClientStatus::JoinedNoKey if self.mc_client_id.is_some() =>
                     true,
                 _ => false,
             }
@@ -700,14 +673,11 @@ impl MulticastAttributes {
     /// Get the channel decryption key secret.
     pub fn get_decryption_key_secret(&self) -> Result<&[u8]> {
         match self.mc_role {
-            McRole::ServerUnicast(McClientStatus::JoinedNoKey) =>
-                Ok(self
-                    .mc_channel_key
-                    .as_ref()
-                    .ok_or(Error::Multicast(McError::McInvalidSymKey))?),
-            _ => Err(Error::Multicast(McError::McInvalidRole(
-                self.mc_role,
-            ))),
+            McRole::ServerUnicast(McClientStatus::JoinedNoKey) => Ok(self
+                .mc_channel_key
+                .as_ref()
+                .ok_or(Error::Multicast(McError::McInvalidSymKey))?),
+            _ => Err(Error::Multicast(McError::McInvalidRole(self.mc_role))),
         }
     }
 
@@ -732,9 +702,7 @@ impl MulticastAttributes {
                 self.mc_channel_algo = algo;
                 Ok(())
             },
-            _ => Err(Error::Multicast(McError::McInvalidRole(
-                self.mc_role,
-            ))),
+            _ => Err(Error::Multicast(McError::McInvalidRole(self.mc_role))),
         }
     }
 
@@ -818,13 +786,8 @@ impl MulticastAttributes {
         &mut self, ranges_opt: Option<(&ranges::RangeSet, u64)>,
         nb_degree_needed: Option<u64>,
     ) -> Result<()> {
-        if !matches!(
-            self.mc_role,
-            McRole::ServerUnicast(_) | McRole::Client(_)
-        ) {
-            return Err(Error::Multicast(McError::McInvalidRole(
-                self.mc_role,
-            )));
+        if !matches!(self.mc_role, McRole::ServerUnicast(_) | McRole::Client(_)) {
+            return Err(Error::Multicast(McError::McInvalidRole(self.mc_role)));
         }
 
         if let Some((ranges, pn)) = ranges_opt {
@@ -839,13 +802,8 @@ impl MulticastAttributes {
     /// Sets the client ID for the client and the unicast server (i.e., the id
     /// of their client).
     pub fn set_client_id(&mut self, client_id: u64) -> Result<()> {
-        if !matches!(
-            self.mc_role,
-            McRole::Client(_) | McRole::ServerUnicast(_)
-        ) {
-            return Err(Error::Multicast(McError::McInvalidRole(
-                self.mc_role,
-            )));
+        if !matches!(self.mc_role, McRole::Client(_) | McRole::ServerUnicast(_)) {
+            return Err(Error::Multicast(McError::McInvalidRole(self.mc_role)));
         }
         self.mc_client_id = Some(McClientId::Client(client_id));
 
@@ -856,9 +814,8 @@ impl MulticastAttributes {
     pub fn get_self_client_id(&self) -> Result<u64> {
         match self.mc_client_id {
             Some(McClientId::Client(v)) => Ok(v),
-            Some(McClientId::MulticastServer(_)) => Err(Error::Multicast(
-                McError::McInvalidRole(self.mc_role),
-            )),
+            Some(McClientId::MulticastServer(_)) =>
+                Err(Error::Multicast(McError::McInvalidRole(self.mc_role))),
             None => Err(Error::Multicast(McError::McInvalidClientId)),
         }
     }
@@ -930,9 +887,7 @@ impl MulticastAttributes {
         &self, exp_pn: u64,
     ) -> Result<ExpiredStream> {
         if !matches!(self.mc_role, McRole::Client(_)) {
-            return Err(Error::Multicast(McError::McInvalidRole(
-                self.mc_role,
-            )));
+            return Err(Error::Multicast(McError::McInvalidRole(self.mc_role)));
         }
 
         Ok(self
@@ -948,9 +903,7 @@ impl MulticastAttributes {
     /// the caller is not a multicast client.
     fn mc_rm_recv_expired_pns(&mut self, exp_pn: u64) -> Result<()> {
         if !matches!(self.mc_role, McRole::Client(_)) {
-            return Err(Error::Multicast(McError::McInvalidRole(
-                self.mc_role,
-            )));
+            return Err(Error::Multicast(McError::McInvalidRole(self.mc_role)));
         }
 
         // Not efficient but the desired library function is unstable :(.
@@ -968,13 +921,17 @@ impl MulticastAttributes {
     /// stream ID given as argument.
     pub fn mc_add_recv_pn_sid(&mut self, pn: u64, sid: u64) -> Result<()> {
         if !matches!(self.mc_role, McRole::Client(_)) {
-            return Err(Error::Multicast(McError::McInvalidRole(
-                self.mc_role,
-            )));
+            return Err(Error::Multicast(McError::McInvalidRole(self.mc_role)));
         }
 
         self.mc_pn_stream_id.insert(pn, sid);
         Ok(())
+    }
+
+    /// Whether the source adds the stream states when sending the MC_KEY frame
+    /// to the client.
+    pub fn fc_send_stream_state(&mut self, v: bool) {
+        self.fc_send_stream_state = v;
     }
 }
 
@@ -1013,6 +970,7 @@ impl Default for MulticastAttributes {
             mc_pn_stream_id: BTreeMap::default(),
             mc_last_recv_pn: 0,
             cur_max_pn: 0,
+            fc_send_stream_state: false,
         }
     }
 }
@@ -1230,9 +1188,9 @@ pub trait MulticastConnection {
     ///   [`authentication::McAuthType::StreamAsym`]: This version verifies the
     ///   asymmetric signature sent alongside the stream. Returns a
     ///   [McError::McInvalidSign] if the signature is invalid. Returns a
-    ///   [`McError::Done`] if the stream is not fully readable in the
-    ///   sense of [`crate::stream::Stream::RecvBuf::is_fully_readable`] (which
-    ///   should be verified beforehand).
+    ///   [`McError::Done`] if the stream is not fully readable in the sense of
+    ///   [`crate::stream::Stream::RecvBuf::is_fully_readable`] (which should be
+    ///   verified beforehand).
     /// * The behaviour of this function is strictly equivalent to the unicast
     ///   version otherwise.
     fn mc_stream_recv(
@@ -1262,9 +1220,7 @@ impl MulticastConnection for Connection {
                 .position(|mc_data| !mc_data.is_processed);
             if idx.is_some() &&
                 (multicast.mc_role ==
-                    McRole::ServerUnicast(
-                        McClientStatus::Unaware,
-                    ) ||
+                    McRole::ServerUnicast(McClientStatus::Unaware) ||
                     multicast
                         .mc_announce_data
                         .get(idx.unwrap())
@@ -1344,14 +1300,11 @@ impl MulticastConnection for Connection {
                             ));
                     }
                 },
-                McRole::ServerMulticast
-                    if mc_announce_data.full_reliability =>
-                {
+                McRole::ServerMulticast if mc_announce_data.full_reliability =>
                     if multicast.mc_reliable.is_none() {
                         multicast.mc_reliable =
                             Some(ReliableMc::McSource(RMcSource::default()));
-                    }
-                },
+                    },
                 _ => (),
             }
         } else {
@@ -1437,8 +1390,7 @@ impl MulticastConnection for Connection {
         let multicast = match self.multicast.as_mut() {
             None => return Err(Error::Multicast(McError::McDisabled)),
             Some(multicast) => match multicast.mc_role {
-                McRole::Client(McClientStatus::AwareUnjoined) =>
-                    multicast,
+                McRole::Client(McClientStatus::AwareUnjoined) => multicast,
                 _ =>
                     return Err(Error::Multicast(McError::McInvalidRole(
                         multicast.mc_role,
@@ -1453,11 +1405,9 @@ impl MulticastConnection for Connection {
         let multicast = match self.multicast.as_mut() {
             None => return Err(Error::Multicast(McError::McDisabled)),
             Some(multicast) => match multicast.mc_role {
-                McRole::Client(McClientStatus::ListenMcPath(_)) =>
+                McRole::Client(McClientStatus::ListenMcPath(_)) => multicast,
+                McRole::ServerUnicast(McClientStatus::ListenMcPath(_)) =>
                     multicast,
-                McRole::ServerUnicast(
-                    McClientStatus::ListenMcPath(_),
-                ) => multicast,
                 _ =>
                     return Err(Error::Multicast(McError::McInvalidRole(
                         multicast.mc_role,
@@ -1469,10 +1419,8 @@ impl MulticastConnection for Connection {
         } else {
             LEAVE_FROM_CLIENT
         };
-        multicast.update_client_state(
-            McClientAction::Leave,
-            Some(leaving_action_from),
-        )
+        multicast
+            .update_client_state(McClientAction::Leave, Some(leaving_action_from))
     }
 
     fn mc_recv(&mut self, buf: &mut [u8], info: RecvInfo) -> Result<usize> {
@@ -1906,9 +1854,7 @@ impl MulticastConnection for Connection {
         if let Some(multicast) = self.multicast.as_mut() {
             if !matches!(multicast.mc_role, McRole::ServerUnicast(_)) {
                 return Err(Error::Multicast(McError::McInvalidRole(
-                    McRole::ServerUnicast(
-                        McClientStatus::Unspecified,
-                    ),
+                    McRole::ServerUnicast(McClientStatus::Unspecified),
                 )));
             }
 
@@ -2031,9 +1977,7 @@ impl MulticastConnection for Connection {
                 {
                     map.new_client(self.source_id().as_ref())?
                 } else {
-                    return Err(Error::Multicast(
-                        McError::McInvalidClientId,
-                    ));
+                    return Err(Error::Multicast(McError::McInvalidClientId));
                 };
 
                 let multicast = self.multicast.as_mut().unwrap();
@@ -2047,17 +1991,14 @@ impl MulticastConnection for Connection {
             let multicast = self.multicast.as_ref().unwrap();
             if matches!(
                 multicast.mc_role,
-                McRole::ServerUnicast(
-                    McClientStatus::AwareUnjoined
-                )
+                McRole::ServerUnicast(McClientStatus::AwareUnjoined)
             ) && multicast.mc_client_id.is_some()
             {
                 if let Some(McClientId::MulticastServer(map)) =
                     mc_channel.multicast.as_mut().unwrap().mc_client_id.as_mut()
                 {
-                    map.remove_from_cid(self.source_id().as_ref()).ok_or(
-                        Error::Multicast(McError::McInvalidClientId),
-                    )?;
+                    map.remove_from_cid(self.source_id().as_ref())
+                        .ok_or(Error::Multicast(McError::McInvalidClientId))?;
 
                     // Remove the client ID from the server.
                     // MC-TODO: this currently disables the possibility of a
@@ -2311,9 +2252,7 @@ impl Connection {
             // Do not give the multicast window if not in the multicast channel.
             if matches!(
                 multicast.get_mc_role(),
-                McRole::ServerUnicast(
-                    McClientStatus::ListenMcPath(_)
-                )
+                McRole::ServerUnicast(McClientStatus::ListenMcPath(_))
             ) {
                 if let Some(_mc_space_id) = multicast.get_mc_space_id() {
                     let uc_path = self.paths.get(1);
@@ -2344,6 +2283,32 @@ impl Connection {
                 }
             }
         }
+    }
+
+    /// Creates streams and resets to the correct offset.
+    pub(crate) fn fc_set_stream_states(
+        &mut self, stream_states: &[FcStreamState],
+    ) -> Result<()> {
+        if self.is_server {
+            return Err(Error::Multicast(McError::McInvalidRole(
+                McRole::Client(McClientStatus::ListenMcPath(true)),
+            )));
+        }
+        // The endpoint should not have any state for the streams in
+        // `stream_states`.
+        for stream_state in stream_states.iter() {
+            let stream = self.streams.get_or_create(
+                stream_state.stream_id(),
+                &self.local_transport_params,
+                &self.peer_transport_params,
+                false,
+                self.is_server,
+            )?;
+
+            stream.recv.fc_set_offset_at(stream_state.offset() as u64)?; 
+        }
+
+        Ok(())
     }
 }
 
@@ -2707,9 +2672,7 @@ impl MulticastChannelSource {
     fn compute_asymetric_signature_keys() -> Result<signature::Ed25519KeyPair> {
         let rng = rand::SystemRandom::new();
         let pkcs8_bytes = signature::Ed25519KeyPair::generate_pkcs8(&rng)
-            .map_err(|_| {
-                crate::Error::Multicast(McError::McInvalidAsymKey)
-            })?;
+            .map_err(|_| crate::Error::Multicast(McError::McInvalidAsymKey))?;
 
         let key_pair = signature::Ed25519KeyPair::from_pkcs8(
             pkcs8_bytes.as_ref(),
@@ -2865,10 +2828,14 @@ pub enum McClientId {
 /// Implements out of order delivery of streams.
 impl Connection {
     /// Receive a stream at the specified offset.
-    /// Reads contiguously until it fills the buffer or there is no data to read after this offset.
-    /// 
-    /// Returns an [`crate::Error::Done`] if the specified offset does not contain any data.
-    fn stream_recv_at_offset(&mut self, stream_id: u64, offset: usize, out: &mut [u8]) -> Result<(usize, bool)> {
+    /// Reads contiguously until it fills the buffer or there is no data to read
+    /// after this offset.
+    ///
+    /// Returns an [`crate::Error::Done`] if the specified offset does not
+    /// contain any data.
+    fn stream_recv_at_offset(
+        &mut self, stream_id: u64, offset: usize, out: &mut [u8],
+    ) -> Result<(usize, bool)> {
         Ok((0, true))
     }
 
@@ -3099,8 +3066,8 @@ pub mod testing {
 
         /// Creates a new client and initiate the handshake to use multicast.
         pub fn setup_client(
-            mc_channel: &mut MulticastChannelSource,
-            mc_client_tp: &McClientTp, mc_announce_data: &McAnnounceData,
+            mc_channel: &mut MulticastChannelSource, mc_client_tp: &McClientTp,
+            mc_announce_data: &McAnnounceData,
             mc_data_auth: Option<&McAnnounceData>, authentication: McAuthType,
             random: &SystemRandom, probe_mc_path: bool,
         ) -> Option<(Pipe, SocketAddr, SocketAddr)> {
@@ -3384,8 +3351,8 @@ pub mod testing {
 
     /// Populate a configuration with multicast values.
     pub fn populate_test_mc_config(
-        config: &mut Config, mc_server: bool,
-        mc_client: Option<&McClientTp>, use_fec: bool, auth: McAuthType,
+        config: &mut Config, mc_server: bool, mc_client: Option<&McClientTp>,
+        use_fec: bool, auth: McAuthType,
     ) {
         config
             .set_application_protos(&[b"proto1", b"proto2"])
@@ -3762,8 +3729,7 @@ mod tests {
         );
 
         assert_eq!(
-            multicast
-                .update_client_state(McClientAction::DecryptionKey, None),
+            multicast.update_client_state(McClientAction::DecryptionKey, None),
             Ok(McClientStatus::Unaware),
         );
 
@@ -3784,8 +3750,7 @@ mod tests {
         );
 
         assert_eq!(
-            multicast
-                .update_client_state(McClientAction::DecryptionKey, None),
+            multicast.update_client_state(McClientAction::DecryptionKey, None),
             Ok(McClientStatus::JoinedAndKey)
         );
 
@@ -5541,9 +5506,7 @@ mod tests {
             // The client left the multicast channel.
             assert_eq!(
                 pipe.server.multicast.as_ref().unwrap().mc_role,
-                McRole::ServerUnicast(
-                    McClientStatus::AwareUnjoined
-                )
+                McRole::ServerUnicast(McClientStatus::AwareUnjoined)
             );
             assert_eq!(
                 pipe.client.multicast.as_ref().unwrap().mc_role,
@@ -6442,9 +6405,7 @@ mod tests {
             let server = &mut mc_pipe.unicast_pipes[0].0.server;
             assert_eq!(
                 server.multicast.as_ref().unwrap().mc_role,
-                McRole::ServerUnicast(
-                    McClientStatus::AwareUnjoined
-                )
+                McRole::ServerUnicast(McClientStatus::AwareUnjoined)
             );
 
             client = &mut mc_pipe.unicast_pipes[0].0.client;
@@ -6468,9 +6429,7 @@ mod tests {
             let server = &mut mc_pipe.unicast_pipes[0].0.server;
             assert_eq!(
                 server.multicast.as_ref().unwrap().mc_role,
-                McRole::ServerUnicast(
-                    McClientStatus::ListenMcPath(true)
-                )
+                McRole::ServerUnicast(McClientStatus::ListenMcPath(true))
             );
         }
     }
