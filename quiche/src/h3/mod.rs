@@ -1823,7 +1823,7 @@ impl Connection {
         // Sending header block separately avoids unnecessary copy.
         conn.stream_send(stream_id, &header_block, fin)?;
 
-        println!(
+        trace!(
             "{} tx frm PUSH_PROMISE push_id={} stream={} len={} fin={}",
             conn.trace_id(),
             self.current_push_id,

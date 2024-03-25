@@ -30,11 +30,13 @@ use std::time;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
+use crate::multicast::McError;
 use crate::Error;
 use crate::Result;
 
 use crate::flowcontrol;
 
+use super::flexicast::FcRecvBuf;
 use super::RangeBuf;
 use super::DEFAULT_STREAM_WINDOW;
 
@@ -67,12 +69,8 @@ pub struct RecvBuf {
     /// Whether incoming data is validated but not buffered.
     drain: bool,
 
-    /// Flexicast initial offset. This it the offset at which the stream is
-    /// created, if any.
-    pub(crate) fc_init_off: Option<u64>,
-
-    /// Flexicast whether the read already looped.
-    fc_looped: bool,
+    /// Flexicast receiving buffer extension.
+    fc_data: Option<FcRecvBuf>,
 }
 
 impl RecvBuf {
@@ -153,7 +151,19 @@ impl RecvBuf {
             // get stuck when a buffer with lower offset than the stream's is
             // buffered.
             if self.off_front() > buf.off() {
-                buf = buf.split_off((self.off_front() - buf.off()) as usize);
+                let buf_after =
+                    buf.split_off((self.off_front() - buf.off()) as usize);
+
+                // data. There is an exception if Flexicast is
+                // used with the ability to start reading the
+                // stream at a specific (potentially non-zero)
+                // offset. In this case, we still need to buffer the beginning
+                // of the data to allow to loop back to the
+                // beginning.
+                if let Some(fc_data) = self.fc_data.as_mut() {
+                    fc_data.write(buf)?;
+                }
+                buf = buf_after;
             }
 
             // Handle overlapping data. If the incoming data's starting offset
@@ -192,7 +202,6 @@ impl RecvBuf {
             self.len = cmp::max(self.len, buf.max_off());
 
             if !self.drain {
-                println!("Insert data!");
                 self.data.insert(buf.max_off(), buf);
             }
         }
@@ -214,7 +223,6 @@ impl RecvBuf {
         let mut cap = out.len();
 
         if !self.ready() {
-            println!("Done");
             return Err(Error::Done);
         }
 
@@ -230,7 +238,6 @@ impl RecvBuf {
                 Some(entry) => entry,
                 None => break,
             };
-            println!("Get entry: {:?}", entry.key());
 
             let buf = entry.get_mut();
 
@@ -240,9 +247,12 @@ impl RecvBuf {
             // care that we do not send twice the same data (at
             // self.fc_init_offset). So we constraint the size of the
             // buffer to ensure that this does not happen.
-            if let (true, Some(fc_off)) = (self.fc_looped, self.fc_init_off) {
-                let gap_until_fc_off = fc_off.saturating_sub(self.off) as usize;
-                buf_len = cmp::min(buf_len, gap_until_fc_off);
+            if let Some(fc_data) = self.fc_data.as_ref() {
+                if fc_data.looped() {
+                    let gap_until_fc_off =
+                        fc_data.init_off().saturating_sub(self.off) as usize;
+                    buf_len = cmp::min(buf_len, gap_until_fc_off);
+                }
             }
 
             out[len..len + buf_len].copy_from_slice(&buf[..buf_len]);
@@ -268,22 +278,28 @@ impl RecvBuf {
         // If the stream was set with Flexicast at a specific value and quiche
         // provided the data until the end, it means that we must still loop back
         // to the beginning to read the remaining of the stream.
-        if !self.fc_looped && self.fc_init_off.is_some() && self.is_fin() {
-            self.fc_looped = true;
+        if let (true, Some(fc_data)) = (self.is_fin(), self.fc_data.as_mut()) {
+            if !fc_data.looped() {
+                // We looped back to the beginning of the stream.
+                fc_data.set_looped(true);
 
-            self.off = 0;
-            println!("P1");
+                // Change the data to read the beginning of the stream.
+                let fc_recv_buf = *fc_data
+                    .take_recv_buf()
+                    .ok_or(Error::Multicast(McError::FcStreamLoop))?;
+                let fc_init_off = fc_data.init_off();
+                self.fc_copy(fc_recv_buf, fc_init_off);
 
-            return Ok((len, false));
+                return Ok((len, false));
+            }
         }
 
         // If the thread already looped and reaches back the initial offset.
-        if self.fc_looped && self.fc_init_off.is_some_and(|off| off <= self.off) {
-            println!("P2");
+        if self.fc_data.as_ref().is_some_and(|fc_data| {
+            fc_data.looped() && fc_data.init_off() <= self.off
+        }) {
             return Ok((len, true));
         }
-
-        println!("P3");
 
         Ok((len, self.is_fin()))
     }
@@ -401,7 +417,10 @@ impl RecvBuf {
     pub fn ready(&self) -> bool {
         let (_, buf) = match self.data.first_key_value() {
             Some(v) => v,
-            None => {println!("ICI"); return false},
+            None => {
+                println!("ICI");
+                return false;
+            },
         };
 
         println!("Not ready here");
@@ -478,15 +497,34 @@ impl RecvBuf {
         Ok(hash)
     }
 
-    /// Sets the offset of the reception buffer to the given `offset` value.
+    /// Specifies that this [`RecvBuf`] starts receiving data at a specific
+    /// offset, thus allowing kind of 'out of order' delivery.
+    ///
     /// This completely changes the state of the structure, as it will consider
     /// that any byte before `offset` has already been received.
+    /// Internally, it creates a [`super::flexicast::FcRecvBuf`] structure to
+    /// allow to loop.
     pub(crate) fn fc_set_offset_at(&mut self, offset: u64) -> Result<()> {
-        self.fc_init_off = Some(offset);
+        self.fc_data = Some(FcRecvBuf::new(
+            offset,
+            self.flow_control.max_data(),
+            DEFAULT_STREAM_WINDOW,
+        ));
 
         self.off = offset;
 
         Ok(())
+    }
+
+    /// Copies the state of another [`RecvBuf`] into self.
+    fn fc_copy(&mut self, other: RecvBuf, fin_off: u64) {
+        self.data = other.data;
+        self.off = other.off;
+        self.len = other.len;
+        self.flow_control = other.flow_control;
+        self.error = other.error;
+        self.drain = other.drain;
+        self.fin_off = Some(fin_off);
     }
 }
 
@@ -1106,18 +1144,17 @@ mod tests {
         assert!(recv.fc_set_offset_at(5).is_ok());
         assert_eq!(recv.off, 5);
 
-        let mut buf = [0; 32];
+        let mut buf = [0; 11];
 
         let first = RangeBuf::from(b"something", 0, false);
         let second = RangeBuf::from(b"hello", 9, true);
 
-        println!("Should insert first data");
-        assert!(recv.write(first).is_ok());
+        // assert!(recv.write(first).is_ok());
+        recv.write(first).unwrap();
         assert_eq!(recv.len, 9);
         assert_eq!(recv.off, 5);
         assert_eq!(recv.data.len(), 1);
 
-        println!("Should insert second data");
         assert!(recv.write(second).is_ok());
         assert_eq!(recv.len, 14);
         assert_eq!(recv.off, 5);
@@ -1127,16 +1164,18 @@ mod tests {
         assert_eq!(len, 9);
         assert!(!fin);
         assert_eq!(&buf[..len], b"hinghello");
-        assert_eq!(recv.len, 14);
+        assert_eq!(recv.len, 5);
         assert_eq!(recv.off, 0);
 
         // Loop back to the beginning.
-        println!("Before looping");
         let (len, fin) = recv.emit(&mut buf).unwrap();
         assert_eq!(len, 5);
         assert!(fin);
         assert_eq!(&buf[..len], b"somet");
-        assert_eq!(recv.len, 14);
+        assert_eq!(recv.len, 5);
         assert_eq!(recv.off, 5);
+
+        // All data is read.
+        assert_eq!(recv.emit(&mut buf), Err(Error::Done));
     }
 }

@@ -941,8 +941,7 @@ impl Frame {
                 b.put_varint(stream_states.len() as u64)?;
                 stream_states
                     .iter()
-                    .map(|s| s.to_bytes(b))
-                    .collect::<Result<_>>()?;
+                    .try_for_each(|s| s.fc_to_bytes(b))?;
             },
 
             Frame::McExpire {
