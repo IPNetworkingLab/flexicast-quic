@@ -96,6 +96,12 @@ pub struct SendBuf {
     /// Used for multicast. Set the maximum offset that the unicast source will
     /// transmit. After that, it can consider that the stream is complete.
     rmc_max_offset: Option<u64>,
+
+    /// Whether the sending-side of the stream rotates and will potentially
+    /// start again after completion.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub(super) fc_stream_rotate: bool,
 }
 
 impl SendBuf {
@@ -131,13 +137,11 @@ impl SendBuf {
         if let Some(fin_off) = self.fin_off {
             // Can't write past final offset.
             if max_off > fin_off {
-                println!("fin off={} mais max_off={} car self.off={} et len={}", fin_off, max_off, self.off, data.len());
                 return Err(Error::FinalSize);
             }
 
             // Can't "undo" final offset.
             if max_off == fin_off && !fin {
-                println!("Ici");
                 return Err(Error::FinalSize);
             }
         }

@@ -5976,6 +5976,14 @@ impl Connection {
             return Err(Error::Done);
         }
 
+        // Flexicast with stream rotation extension.
+        // To be compatible with the standard behaviour of the function, disable
+        // `stream_recv` if the data will not be sent in-order, i.e., stream
+        // rotation is enabled for this stream.
+        if !stream.recv.fc_can_be_read_out_of_order() {
+            return Err(Error::Multicast(McError::FcStreamOutOfOrder));
+        }
+
         let local = stream.local;
         let priority_key = Arc::clone(&stream.priority_key);
 

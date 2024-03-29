@@ -1,5 +1,6 @@
 //! Flexicast extension to allow for stream rotation loops.
 
+use crate::stream;
 use crate::stream::flexicast::FcStreamState;
 use crate::Connection;
 use crate::Error;
@@ -182,6 +183,41 @@ impl Connection {
         }
         Err(Error::Multicast(McError::FcStreamRotation))
     }
+
+    /// Reads contiguous data from a stream into the provided slice, starting at
+    /// a given `offset`.
+    ///
+    /// This function internally calls [`crate::Connection::stream_recv`] and
+    /// enables to read a stream at an offset potentially higher than 0.
+    pub fn stream_recv_ooo(
+        &mut self, stream_id: u64, out: &mut [u8],
+    ) -> Result<(usize, bool, u64)> {
+        if !stream::is_bidi(stream_id) &&
+            stream::is_local(stream_id, self.is_server)
+        {
+            return Err(Error::InvalidStreamState(stream_id));
+        }
+
+        let stream = self
+            .streams
+            .get_mut(stream_id)
+            .ok_or(Error::InvalidStreamState(stream_id))?;
+
+        // Enable to read the stream out of order.
+        stream.recv.fc_enable_out_of_order_read(true)?;
+        let init_off = stream.recv.fc_init_offset()?;
+
+        // Store the results for later...
+        let out = self.stream_recv(stream_id, out);
+
+        // ... because we must ensure that the stream is not readable anymore out
+        // of order. Maybe the stream is collected, so it can be `None`.
+        if let Some(stream) = self.streams.get_mut(stream_id) {
+            stream.recv.fc_enable_out_of_order_read(false)?;
+        }
+
+        out.map(|res| (res.0, res.1, init_off))
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +338,9 @@ mod tests {
         // The first client receives the entire stream in the correct order.
         let mut recv_buf = [99; 100];
         let client = &mut mc_pipe.unicast_pipes[0].0.client;
+
+        // The first client can read the stream because it was created after it
+        // joined the flexicast channel.
         let (len, fin) = client.stream_recv(3, &mut recv_buf).unwrap();
         assert!(fin);
         assert_eq!(len, stream_data.len());
@@ -310,14 +349,21 @@ mod tests {
         // The second client receives the stream in two pieces but the entire data
         // is there.
         let client = &mut mc_pipe.unicast_pipes[1].0.client;
-        let (len, fin) = client.stream_recv(3, &mut recv_buf).unwrap();
+        // Cannot use `stream_recv` when the stream uses rotation.
+        assert_eq!(
+            client.stream_recv(3, &mut recv_buf),
+            Err(Error::Multicast(McError::FcStreamOutOfOrder))
+        );
+        let (len, fin, off) = client.stream_recv_ooo(3, &mut recv_buf).unwrap();
         assert!(!fin);
         assert_eq!(len, 8);
+        assert_eq!(off, 22);
         assert_eq!(&recv_buf[..len], &stream_data[..len]);
 
-        let (len_2, fin) = client.stream_recv(3, &mut recv_buf).unwrap();
+        let (len_2, fin, off) = client.stream_recv_ooo(3, &mut recv_buf).unwrap();
         assert!(fin);
         assert_eq!(len_2, 22);
+        assert_eq!(off, 22);
         assert_eq!(&recv_buf[..len_2], &stream_data[len..]);
     }
 }

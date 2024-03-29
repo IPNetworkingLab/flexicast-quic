@@ -121,11 +121,11 @@ pub enum McError {
     /// Attempt to use reliable multicast which is disabled.
     McReliableDisabled,
 
-    /// Invalid stream loop.
-    FcStreamLoop,
-
     /// Stream rotation is disabled or invalid role.
     FcStreamRotation,
+
+    /// Attempt to read a stream in-order while it uses stream rotation.
+    FcStreamOutOfOrder,
 }
 
 /// MC_ANNOUNCE frame type.

@@ -75,7 +75,7 @@ impl Stream {
     ///
     /// Flexicast with stream rotation extension.
     pub fn fc_mark_rotate(&mut self, v: bool) {
-        self.fc_stream_rotate = v;
+        self.send.fc_stream_rotate = v;
     }
 
     /// Restart the sending state of a stream.
@@ -88,11 +88,18 @@ impl Stream {
     /// Flexicast with stream rotation extension.
     pub(crate) fn fc_restart_stream_send(&mut self) -> bool {
         // self.send.fc_restart_state()
-        if !self.fc_stream_rotate {
+        if !self.send.fc_stream_rotate {
             return false;
         }
         self.send = SendBuf::new(self.send.max_off());
         true
+    }
+
+    /// Whether the sending-side of the stream uses rotation.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub(crate) fn fc_send_use_rotation(&self) -> bool {
+        self.send.fc_stream_rotate
     }
 }
 
@@ -111,6 +118,11 @@ pub(crate) struct FcRecvBuf {
 
     /// Real start of the stream. It will be read once we loop.
     fc_recv_buf: Option<Box<RecvBuf>>,
+
+    /// Whether the stream can be read with [`crate::Connection::stream_recv`].
+    ///
+    /// Flexicast with stream rotation extension.
+    fc_can_read: bool,
 }
 
 #[allow(missing_docs)]
@@ -120,6 +132,7 @@ impl FcRecvBuf {
             fc_init_off: offset,
             fc_looped: false,
             fc_recv_buf: Some(Box::new(RecvBuf::new(max_data, max_window))),
+            fc_can_read: false,
         }
     }
 
@@ -144,9 +157,17 @@ impl FcRecvBuf {
             recv.write(buf)
         } else {
             Err(crate::Error::Multicast(
-                crate::multicast::McError::FcStreamLoop,
+                crate::multicast::McError::FcStreamRotation,
             ))
         }
+    }
+
+    pub fn fc_can_be_read(&self) -> bool {
+        self.fc_can_read
+    }
+
+    pub(super) fn fc_set_can_read(&mut self, v: bool) {
+        self.fc_can_read = v;
     }
 
     #[cfg(test)]

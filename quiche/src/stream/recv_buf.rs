@@ -531,6 +531,7 @@ impl RecvBuf {
     }
 
     /// Loops the receiving buffer to the beginning.
+    ///
     /// Flexicast with stream rotation extension.
     fn fc_loop_recv(&mut self) -> Result<()> {
         if let Some(fc_data) = self.fc_data.as_mut() {
@@ -541,7 +542,7 @@ impl RecvBuf {
                 // Change the data to read the beginning of the stream.
                 let fc_recv_buf = *fc_data
                     .take_recv_buf()
-                    .ok_or(Error::Multicast(McError::FcStreamLoop))?;
+                    .ok_or(Error::Multicast(McError::FcStreamRotation))?;
                 let fc_init_off = fc_data.init_off();
                 self.fc_copy(fc_recv_buf, fc_init_off);
             }
@@ -552,6 +553,8 @@ impl RecvBuf {
     }
 
     /// Copies the state of another [`RecvBuf`] into self.
+    ///
+    /// Flexicast with stream rotation extension.
     fn fc_copy(&mut self, other: RecvBuf, fin_off: u64) {
         self.data = other.data;
         self.off = other.off;
@@ -560,6 +563,36 @@ impl RecvBuf {
         self.error = other.error;
         self.drain = other.drain;
         self.fin_off = Some(fin_off);
+    }
+
+    /// Stream rotation initial offset.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub(crate) fn fc_init_offset(&self) -> Result<u64> {
+        self.fc_data
+            .as_ref()
+            .map(|d| d.init_off())
+            .ok_or(Error::Multicast(McError::FcStreamRotation))
+    }
+
+    /// Whether the stream uses rotation and can be read out of order.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub(crate) fn fc_can_be_read_out_of_order(&self) -> bool {
+        self.fc_data
+            .as_ref()
+            .map(|d| d.fc_can_be_read())
+            .unwrap_or(true)
+    }
+
+    /// Give temporarly access to read to the stream out of order.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub(crate) fn fc_enable_out_of_order_read(&mut self, v: bool) -> Result<()> {
+        self.fc_data
+            .as_mut()
+            .map(|d| d.fc_set_can_read(v))
+            .ok_or(Error::Multicast(McError::FcStreamRotation))
     }
 }
 
@@ -1394,7 +1427,8 @@ mod tests {
     }
 
     #[test]
-    /// Flexicast setting the offset at a value above the maximum offset of the stream.
+    /// Flexicast setting the offset at a value above the maximum offset of the
+    /// stream.
     fn fc_set_offset_at_above_fin_off() {
         let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
         let off = 15;
