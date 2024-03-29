@@ -56,6 +56,10 @@ struct Client {
 type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
 
 fn main() {
+    env_logger::builder()
+        .default_format_timestamp_nanos(true)
+        .init();
+
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -352,7 +356,7 @@ fn main() {
                                 client,
                                 stream_id,
                                 &list,
-                                "examples/root",
+                                "examples",
                             );
                         },
 

@@ -36,6 +36,10 @@ use ring::rand::*;
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 fn main() {
+    env_logger::builder()
+        .default_format_timestamp_nanos(true)
+        .init();
+
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 

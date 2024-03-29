@@ -144,7 +144,26 @@ impl RecvBuf {
                 // of the data to allow to loop back to the
                 // beginning.
                 if let Some(fc_data) = self.fc_data.as_mut() {
+                    let buf_is_fin = buf.fin();
+                    let buf_max_off = buf.max_off();
+
                     fc_data.write(buf)?;
+
+                    // In the unlikely case the flexicast init offset is the fin
+                    // offset, we must directly wrap around the receiving buffer
+                    // because we won't have any more data in the "offset-ed"
+                    // part of the buffer. We know this if
+                    // the rangebuf has the `fin` set and the offset is the
+                    // same. If the offset is lower, return a FinalSize error.
+                    if buf_is_fin {
+                        if fc_data.init_off() > buf_max_off {
+                            return Err(Error::FinalSize);
+                        }
+
+                        if fc_data.init_off() == buf_max_off {
+                            self.fc_loop_recv()?;
+                        }
+                    }
                 }
                 return Ok(());
             }
@@ -287,20 +306,9 @@ impl RecvBuf {
         // If the stream was set with Flexicast at a specific value and quiche
         // provided the data until the end, it means that we must still loop back
         // to the beginning to read the remaining of the stream.
-        if let (true, Some(fc_data)) = (self.is_fin(), self.fc_data.as_mut()) {
-            if !fc_data.looped() {
-                // We looped back to the beginning of the stream.
-                fc_data.set_looped(true);
-
-                // Change the data to read the beginning of the stream.
-                let fc_recv_buf = *fc_data
-                    .take_recv_buf()
-                    .ok_or(Error::Multicast(McError::FcStreamLoop))?;
-                let fc_init_off = fc_data.init_off();
-                self.fc_copy(fc_recv_buf, fc_init_off);
-
-                return Ok((len, false));
-            }
+        if self.is_fin() && self.fc_data.as_mut().is_some() {
+            self.fc_loop_recv()?;
+            return Ok((len, self.is_fin()));
         }
 
         // If the thread already looped and reaches back the initial offset.
@@ -520,6 +528,27 @@ impl RecvBuf {
         self.off = offset;
 
         Ok(())
+    }
+
+    /// Loops the receiving buffer to the beginning.
+    /// Flexicast with stream rotation extension.
+    fn fc_loop_recv(&mut self) -> Result<()> {
+        if let Some(fc_data) = self.fc_data.as_mut() {
+            if !fc_data.looped() {
+                // We looped back to the beginning of the stream.
+                fc_data.set_looped(true);
+
+                // Change the data to read the beginning of the stream.
+                let fc_recv_buf = *fc_data
+                    .take_recv_buf()
+                    .ok_or(Error::Multicast(McError::FcStreamLoop))?;
+                let fc_init_off = fc_data.init_off();
+                self.fc_copy(fc_recv_buf, fc_init_off);
+            }
+            Ok(())
+        } else {
+            Err(Error::Multicast(McError::FcStreamRotation))
+        }
     }
 
     /// Copies the state of another [`RecvBuf`] into self.
@@ -1292,5 +1321,55 @@ mod tests {
 
         // All data is read.
         assert_eq!(recv.emit(&mut buf), Err(Error::Done));
+    }
+
+    #[test]
+    /// Flexicast setting the offset to the complete end of the buffer.
+    /// Because the second [`RangeBuf`] indicates that this is the end of the
+    /// buffer, the structure automatically wraps.
+    fn fc_set_offset_at_end() {
+        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
+        let off = 14;
+        assert_eq!(recv.len, 0);
+        assert!(recv.fc_set_offset_at(off).is_ok());
+        assert_eq!(recv.off, off);
+
+        let mut buf = [0; 14];
+
+        let first = RangeBuf::from(b"something", 0, false);
+        let second = RangeBuf::from(b"hello", 9, true);
+
+        recv.write(first).unwrap();
+        // Because the data is stored in the flexicast recveiving buffer.
+        assert_eq!(recv.len, 0);
+        assert_eq!(recv.off, off);
+        assert_eq!(recv.data.len(), 0);
+
+        assert!(recv.write(second).is_ok());
+        assert_eq!(recv.len, 14);
+        assert_eq!(recv.off, 0);
+        assert_eq!(recv.data.len(), 2);
+
+        // The write contains all data after the wrapping.
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 14);
+        assert!(fin);
+        assert_eq!(&buf[..len], b"somethinghello");
+        assert_eq!(recv.len, off);
+        assert_eq!(recv.off, off);
+    }
+
+    #[test]
+    /// Flexicast setting the offset to the beginning of the buffer, simulating
+    /// a state where the client joins the channel when the stream starts
+    /// (again).
+    fn fc_set_offset_at_0() {
+        assert!(false);
+    }
+
+    #[test]
+    /// Flexicast setting the offset at a value above the maximum offset of the stream.
+    fn fc_set_offset_at_above_fin_off() {
+        assert!(false);
     }
 }
