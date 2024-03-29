@@ -1340,7 +1340,6 @@ mod tests {
         let second = RangeBuf::from(b"hello", 9, true);
 
         recv.write(first).unwrap();
-        // Because the data is stored in the flexicast recveiving buffer.
         assert_eq!(recv.len, 0);
         assert_eq!(recv.off, off);
         assert_eq!(recv.data.len(), 0);
@@ -1364,12 +1363,54 @@ mod tests {
     /// a state where the client joins the channel when the stream starts
     /// (again).
     fn fc_set_offset_at_0() {
-        assert!(false);
+        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
+        let off = 0;
+        assert_eq!(recv.len, 0);
+        assert!(recv.fc_set_offset_at(off).is_ok());
+        assert_eq!(recv.off, off);
+
+        let mut buf = [0; 14];
+
+        let first = RangeBuf::from(b"something", 0, false);
+        let second = RangeBuf::from(b"hello", 9, true);
+
+        recv.write(first).unwrap();
+        assert_eq!(recv.len, 9);
+        assert_eq!(recv.off, off);
+        assert_eq!(recv.data.len(), 1);
+
+        assert!(recv.write(second).is_ok());
+        assert_eq!(recv.len, 14);
+        assert_eq!(recv.off, 0);
+        assert_eq!(recv.data.len(), 2);
+
+        // The write contains all data after the wrapping.
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 14);
+        assert!(fin);
+        assert_eq!(&buf[..len], b"somethinghello");
+        assert_eq!(recv.len, off);
+        assert_eq!(recv.off, off);
     }
 
     #[test]
     /// Flexicast setting the offset at a value above the maximum offset of the stream.
     fn fc_set_offset_at_above_fin_off() {
-        assert!(false);
+        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
+        let off = 15;
+        assert_eq!(recv.len, 0);
+        assert!(recv.fc_set_offset_at(off).is_ok());
+        assert_eq!(recv.off, off);
+
+        let first = RangeBuf::from(b"something", 0, false);
+        let second = RangeBuf::from(b"hello", 9, true);
+
+        recv.write(first).unwrap();
+        // Because the data is stored in the flexicast recveiving buffer.
+        assert_eq!(recv.len, 0);
+        assert_eq!(recv.off, off);
+        assert_eq!(recv.data.len(), 0);
+
+        assert_eq!(recv.write(second), Err(Error::FinalSize));
     }
 }
