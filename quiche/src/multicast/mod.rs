@@ -18,7 +18,6 @@ use crate::rand::rand_bytes;
 use crate::ranges;
 use crate::ranges::RangeSet;
 use crate::recovery::multicast::MulticastRecovery;
-use crate::stream::flexicast::FcStreamState;
 use crate::stream::McStream;
 use crate::CongestionControlAlgorithm;
 use crate::SendInfo;
@@ -124,6 +123,9 @@ pub enum McError {
 
     /// Invalid stream loop.
     FcStreamLoop,
+
+    /// Stream rotation is disabled or invalid role.
+    FcStreamRotation,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -439,8 +441,8 @@ pub struct MulticastAttributes {
     /// Maximum packet number already given to the unicast connection.
     cur_max_pn: u64,
 
-    /// Whether the source adds the stream states in the MC_KEY frame.
-    fc_send_stream_state: bool,
+    /// Flexicast source stream rotation structure.
+    fc_rotate: Option<FcRotate>,
 }
 
 impl MulticastAttributes {
@@ -930,12 +932,6 @@ impl MulticastAttributes {
         self.mc_pn_stream_id.insert(pn, sid);
         Ok(())
     }
-
-    /// Whether the source adds the stream states when sending the MC_KEY frame
-    /// to the client.
-    pub fn fc_send_stream_state(&mut self, v: bool) {
-        self.fc_send_stream_state = v;
-    }
 }
 
 impl Default for MulticastAttributes {
@@ -973,7 +969,7 @@ impl Default for MulticastAttributes {
             mc_pn_stream_id: BTreeMap::default(),
             mc_last_recv_pn: 0,
             cur_max_pn: 0,
-            fc_send_stream_state: false,
+            fc_rotate: None,
         }
     }
 }
@@ -1967,6 +1963,21 @@ impl MulticastConnection for Connection {
                 // }
             }
 
+            // Flexicast stream rotation.
+            // Unicast server asks for the stream state of the flexicast source.
+            // Ideally, this should be computed based on the expired packet
+            // number, but for simplicity now, just look at the current stream
+            // state of the flexicast source.
+            if multicast
+                .fc_rotate_server()
+                .is_some_and(|s| !s.already_drained()) ||
+                multicast.fc_rotate_server().is_none()
+            {
+                multicast.fc_rotate = Some(FcRotate::Server(FcRotateServer::new(
+                    mc_channel.streams.to_fc_stream_state(),
+                )));
+            }
+
             // Unicast connection asks the multicast channel for a new client ID.
             // MC-TODO: now we assign a new client ID even before the client joins
             // the multicast channel.
@@ -2286,32 +2297,6 @@ impl Connection {
                 }
             }
         }
-    }
-
-    /// Creates streams and resets to the correct offset.
-    pub(crate) fn fc_set_stream_states(
-        &mut self, stream_states: &[FcStreamState],
-    ) -> Result<()> {
-        if self.is_server {
-            return Err(Error::Multicast(McError::McInvalidRole(
-                McRole::Client(McClientStatus::ListenMcPath(true)),
-            )));
-        }
-        // The endpoint should not have any state for the streams in
-        // `stream_states`.
-        for stream_state in stream_states.iter() {
-            let stream = self.streams.get_or_create(
-                stream_state.stream_id(),
-                &self.local_transport_params,
-                &self.peer_transport_params,
-                false,
-                self.is_server,
-            )?;
-
-            stream.recv.fc_set_offset_at(stream_state.offset() as u64)?; 
-        }
-
-        Ok(())
     }
 }
 
@@ -3015,9 +3000,7 @@ pub mod testing {
             &mut self, client_loss: Option<&RangeSet>, signature_len: usize,
             mc_buf: &mut [u8],
         ) -> Result<usize> {
-            println!("Before");
             let (written, _) = self.mc_channel.mc_send(&mut mc_buf[..])?;
-            println!("After");
 
             // This is not optimal but it works...
             let client_loss = if let Some(client_loss) = client_loss {
@@ -6483,7 +6466,7 @@ mod tests {
         let use_auth = McAuthType::StreamAsym;
         let mut mc_pipe = MulticastPipe::new(
             1,
-            "/tmp/test_dummy_understand.txt",
+            "/tmp/test_mc_no_retransmit_timer.txt",
             use_auth,
             true,
             true,
@@ -6507,10 +6490,13 @@ mod tests {
 pub mod authentication;
 use authentication::McAuthType;
 pub mod reliable;
+pub mod rotate;
 
 use self::authentication::McAuthentication;
 use self::authentication::McSymSign;
 use self::reliable::RMcClient;
 use self::reliable::RMcServer;
 use self::reliable::ReliableMc;
+use self::rotate::FcRotate;
+use self::rotate::FcRotateServer;
 use super::recovery::multicast::ReliableMulticastRecovery;

@@ -528,6 +528,12 @@ impl StreamMap {
     /// This should only be called when Stream::is_complete() returns true for
     /// the given stream.
     pub fn collect(&mut self, stream_id: u64, local: bool) {
+        // Do not collect the stream if it was marked as potentially rotable.
+        // Flexicast with stream rotation extension.
+        if self.get(stream_id).is_some_and(|s| s.fc_stream_rotate) {
+            return;
+        }
+
         if !local {
             // If the stream was created by the peer, give back a max streams
             // credit.
@@ -689,6 +695,12 @@ pub struct Stream {
     /// stream buffer is authenticated, while the stream is not authenticated
     /// yet by the signature.
     pub mc_asym_sign: Option<Vec<u8>>,
+
+    /// Whether the stream rotates and will potentially start again after
+    /// completion.
+    ///
+    /// Flexicast with stream rotation extension.
+    fc_stream_rotate: bool,
 }
 
 impl Stream {
@@ -713,6 +725,7 @@ impl Stream {
             priority_key,
             mc_asym_verified: false,
             mc_asym_sign: None,
+            fc_stream_rotate: false,
         }
     }
 

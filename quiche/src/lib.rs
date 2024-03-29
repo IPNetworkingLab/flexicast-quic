@@ -4958,7 +4958,11 @@ impl Connection {
                         algo: multicast.get_decryption_key_algo(),
                         first_pn,
                         client_id: multicast.get_self_client_id()?,
-                        stream_states: self.streams.to_fc_stream_state(),
+                        stream_states: if multicast.fc_use_stream_rotation() {
+                            multicast.fc_drain_svr_stream_states()?
+                        } else {
+                            Vec::new()
+                        },
                     };
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
@@ -9102,7 +9106,6 @@ impl Connection {
                 ..
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
-                    println!("ICI 4");
                     return Err(Error::MultiPathViolation);
                 }
                 let ack_delay = ack_delay
@@ -9126,7 +9129,6 @@ impl Connection {
                 // MUST treat this as a connection error of type
                 // MP_PROTOCOL_VIOLATION and close the connection.
                 if space_identifier > self.ids.largest_dcid_seq() {
-                    println!("ICI 5");
                     return Err(Error::MultiPathViolation);
                 }
 
@@ -9224,7 +9226,6 @@ impl Connection {
                 ..
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
-                    println!("ICI 1");
                     return Err(Error::MultiPathViolation);
                 }
                 let abandon_pid = match self
@@ -9248,7 +9249,6 @@ impl Connection {
                 seq_num,
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
-                    println!("ICI 2");
                     return Err(Error::MultiPathViolation);
                 }
                 let pid = self
@@ -9264,7 +9264,6 @@ impl Connection {
                 seq_num,
             } => {
                 if !self.use_path_pkt_num_space(epoch) {
-                    println!("ICI 3");
                     return Err(Error::MultiPathViolation);
                 }
                 let pid = self

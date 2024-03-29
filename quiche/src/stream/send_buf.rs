@@ -131,11 +131,13 @@ impl SendBuf {
         if let Some(fin_off) = self.fin_off {
             // Can't write past final offset.
             if max_off > fin_off {
+                println!("fin off={} mais max_off={} car self.off={} et len={}", fin_off, max_off, self.off, data.len());
                 return Err(Error::FinalSize);
             }
 
             // Can't "undo" final offset.
             if max_off == fin_off && !fin {
+                println!("Ici");
                 return Err(Error::FinalSize);
             }
         }
@@ -603,6 +605,12 @@ impl SendBuf {
     /// Sets the fin offset.
     pub fn rmc_set_fin_off(&mut self, off: u64) {
         self.fin_off = Some(off);
+    }
+}
+
+impl SendBuf {
+    pub(super) fn fc_emit_off(&self) -> u64 {
+        self.emit_off
     }
 }
 

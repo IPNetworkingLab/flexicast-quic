@@ -1,5 +1,7 @@
 use super::recv_buf::RecvBuf;
+use super::send_buf::SendBuf;
 use super::RangeBuf;
+use super::Stream;
 use super::StreamMap;
 use crate::Result;
 use octets;
@@ -62,9 +64,35 @@ impl StreamMap {
             .iter()
             .filter(|(_, stream)| stream.local)
             .map(|(stream_id, stream)| {
-                FcStreamState::new(*stream_id, stream.send.off_back() as usize)
+                FcStreamState::new(*stream_id, stream.send.fc_emit_off() as usize)
             })
             .collect()
+    }
+}
+
+impl Stream {
+    /// Mark the stream as rotable.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub fn fc_mark_rotate(&mut self, v: bool) {
+        self.fc_stream_rotate = v;
+    }
+
+    /// Restart the sending state of a stream.
+    /// This will restart the stream state to send again the same data.
+    /// Returns true if the stream is started again.
+    /// FC-TODO: URGENT!!!
+    /// Currently it is possible to send different data on the same stream
+    /// because we do not buffer the data, we consume it.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub(crate) fn fc_restart_stream_send(&mut self) -> bool {
+        // self.send.fc_restart_state()
+        if !self.fc_stream_rotate {
+            return false;
+        }
+        self.send = SendBuf::new(self.send.max_off());
+        true
     }
 }
 
@@ -119,5 +147,66 @@ impl FcRecvBuf {
                 crate::multicast::McError::FcStreamLoop,
             ))
         }
+    }
+
+    #[cfg(test)]
+    pub fn peek_recv_buf(&self) -> Option<&Box<RecvBuf>> {
+        self.fc_recv_buf.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::stream::DEFAULT_STREAM_WINDOW;
+
+    use super::*;
+
+    #[test]
+    fn fc_send_buf_restart_state() {
+        let mut buf = [0; 20];
+
+        let mut stream =
+            Stream::new(0, 0, 20, true, false, DEFAULT_STREAM_WINDOW);
+        stream.fc_mark_rotate(true);
+
+        let first = b"hello";
+        let second = b"world";
+        let third = b"rotation";
+        assert_eq!(stream.send.write(first, false), Ok(5));
+        assert_eq!(stream.send.write(second, false), Ok(5));
+        assert_eq!(stream.send.write(third, true), Ok(8));
+        assert!(stream.send.is_fin());
+
+        // First write, normal behaviour.
+        let (written, fin) = stream.send.emit(&mut buf[..]).unwrap();
+        assert_eq!(written, 18);
+        assert!(fin);
+        assert_eq!(&buf[..written], b"helloworldrotation");
+        assert_eq!(stream.send.off_front(), 18);
+
+        // Should not send any more data.
+        assert_eq!(stream.send.emit(&mut buf[..]), Ok((0, true)));
+
+        // Restart the stream.
+        assert!(stream.fc_restart_stream_send());
+
+        // Send again the data.
+        let first = b"hello";
+        let second = b"world";
+        let third = b"rotation";
+        assert_eq!(stream.send.write(first, false), Ok(5));
+        assert_eq!(stream.send.write(second, false), Ok(5));
+        assert_eq!(stream.send.write(third, true), Ok(8));
+        assert!(stream.send.is_fin());
+
+        // Second write, same behaviour.
+        let (written, fin) = stream.send.emit(&mut buf[..]).unwrap();
+        assert_eq!(written, 18);
+        assert!(fin);
+        assert_eq!(&buf[..written], b"helloworldrotation");
+        assert_eq!(stream.send.off_front(), 18);
+
+        // Should not send any more data.
+        assert_eq!(stream.send.emit(&mut buf[..]), Ok((0, true)));
     }
 }

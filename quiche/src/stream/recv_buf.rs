@@ -137,6 +137,15 @@ impl RecvBuf {
             // By this point all spurious empty buffers should have already been
             // discarded, so allowing empty buffers here should be safe.
             if !buf.is_empty() {
+                // There is an exception if Flexicast is
+                // used with the ability to start reading the
+                // stream at a specific (potentially non-zero)
+                // offset. In this case, we still need to buffer the beginning
+                // of the data to allow to loop back to the
+                // beginning.
+                if let Some(fc_data) = self.fc_data.as_mut() {
+                    fc_data.write(buf)?;
+                }
                 return Ok(());
             }
         }
@@ -154,7 +163,7 @@ impl RecvBuf {
                 let buf_after =
                     buf.split_off((self.off_front() - buf.off()) as usize);
 
-                // data. There is an exception if Flexicast is
+                // There is an exception if Flexicast is
                 // used with the ability to start reading the
                 // stream at a specific (potentially non-zero)
                 // offset. In this case, we still need to buffer the beginning
@@ -418,12 +427,9 @@ impl RecvBuf {
         let (_, buf) = match self.data.first_key_value() {
             Some(v) => v,
             None => {
-                println!("ICI");
                 return false;
             },
         };
-
-        println!("Not ready here");
 
         buf.off() == self.off
     }
@@ -1137,8 +1143,9 @@ mod tests {
     }
 
     #[test]
-    /// Flexicast setting the offset to a different value and receiving data.
-    fn fc_set_offset_at() {
+    /// Flexicast setting the offset to a different value and receiving data in
+    /// order.
+    fn fc_set_offset_at_middle() {
         let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
         assert_eq!(recv.len, 0);
         assert!(recv.fc_set_offset_at(5).is_ok());
@@ -1174,6 +1181,114 @@ mod tests {
         assert_eq!(&buf[..len], b"somet");
         assert_eq!(recv.len, 5);
         assert_eq!(recv.off, 5);
+
+        // All data is read.
+        assert_eq!(recv.emit(&mut buf), Err(Error::Done));
+    }
+
+    #[test]
+    /// Flexicast setting the offset to a different value and receiving data in
+    /// order with a first block below the offset.
+    fn fc_set_offset_at_above_first_block() {
+        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
+        let off = 9;
+        assert_eq!(recv.len, 0);
+        assert!(recv.fc_set_offset_at(off).is_ok());
+        assert_eq!(recv.off, off);
+
+        let mut buf = [0; 11];
+
+        let first = RangeBuf::from(b"something", 0, false);
+        let second = RangeBuf::from(b"hello", 9, true);
+
+        recv.write(first).unwrap();
+        // Because the data is stored in the flexicast recveiving buffer.
+        assert_eq!(recv.len, 0);
+        assert_eq!(recv.off, off);
+        assert_eq!(recv.data.len(), 0);
+
+        // But the flexicast RecvBuf contains the buffer.
+        let fc_recv = recv.fc_data.as_mut().unwrap().peek_recv_buf().unwrap();
+        assert_eq!(fc_recv.len, 9);
+        assert_eq!(fc_recv.off, 0);
+        assert_eq!(fc_recv.data.len(), 1);
+
+        assert!(recv.write(second).is_ok());
+        assert_eq!(recv.len, 14);
+        assert_eq!(recv.off, off);
+        assert_eq!(recv.data.len(), 1);
+
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 5);
+        assert!(!fin);
+        assert_eq!(&buf[..len], b"hello");
+        assert_eq!(recv.len, off);
+        assert_eq!(recv.off, 0);
+
+        // Loop back to the beginning.
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 9);
+        assert!(fin);
+        assert_eq!(&buf[..len], b"something");
+        assert_eq!(recv.len, off);
+        assert_eq!(recv.off, off);
+
+        // The flexicast RecvBuf is now empty because we took it.
+        assert!(recv.fc_data.as_mut().unwrap().peek_recv_buf().is_none());
+
+        // All data is read.
+        assert_eq!(recv.emit(&mut buf), Err(Error::Done));
+    }
+
+    #[test]
+    /// Flexicast setting the offset to a different value and receiving data not
+    /// in order.
+    fn fc_set_offset_at_unordered() {
+        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
+        let off = 9;
+        assert_eq!(recv.len, 0);
+        assert!(recv.fc_set_offset_at(off).is_ok());
+        assert_eq!(recv.off, off);
+
+        let mut buf = [0; 11];
+
+        let first = RangeBuf::from(b"something", 0, false);
+        let second = RangeBuf::from(b"hello", 9, true);
+
+        recv.write(first).unwrap();
+        // Because the data is stored in the flexicast recveiving buffer.
+        assert_eq!(recv.len, 0);
+        assert_eq!(recv.off, off);
+        assert_eq!(recv.data.len(), 0);
+
+        // But the flexicast RecvBuf contains the buffer.
+        let fc_recv = recv.fc_data.as_mut().unwrap().peek_recv_buf().unwrap();
+        assert_eq!(fc_recv.len, 9);
+        assert_eq!(fc_recv.off, 0);
+        assert_eq!(fc_recv.data.len(), 1);
+
+        assert!(recv.write(second).is_ok());
+        assert_eq!(recv.len, 14);
+        assert_eq!(recv.off, off);
+        assert_eq!(recv.data.len(), 1);
+
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 5);
+        assert!(!fin);
+        assert_eq!(&buf[..len], b"hello");
+        assert_eq!(recv.len, off);
+        assert_eq!(recv.off, 0);
+
+        // Loop back to the beginning.
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 9);
+        assert!(fin);
+        assert_eq!(&buf[..len], b"something");
+        assert_eq!(recv.len, off);
+        assert_eq!(recv.off, off);
+
+        // The flexicast RecvBuf is now empty because we took it.
+        assert!(recv.fc_data.as_mut().unwrap().peek_recv_buf().is_none());
 
         // All data is read.
         assert_eq!(recv.emit(&mut buf), Err(Error::Done));
