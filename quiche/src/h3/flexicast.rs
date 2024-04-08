@@ -378,12 +378,31 @@ mod tests {
         let resp = fc_session.fc_send_response(fc_stream, false).unwrap();
         let body = fc_session.fc_send_body_source(fc_stream, true).unwrap();
 
+        let ev_headers = Event::Headers {
+            list: resp,
+            has_body: true,
+        };
+
         // Send the data to all clients.
         let (fc_session, fin) =
             fc_session.fc_source_send_single(None, 0).unwrap();
         assert!(!fin);
-        let (fc_session, fin) =
+        let (mut fc_session, fin) =
             fc_session.fc_source_send_single(None, 0).unwrap();
         assert!(fin);
+
+        // The clients received the response through the flexicast path.
+        let mut recv_buf = vec![0; body.len()];
+        for s in fc_session.sessions.iter_mut() {
+            assert_eq!(s.poll_client(), Ok((fc_stream, ev_headers.clone())));
+            assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
+            assert_eq!(
+                s.recv_body_client(fc_stream, &mut recv_buf),
+                Ok(body.len())
+            );
+
+            assert_eq!(s.poll_client(), Ok((fc_stream, Event::Finished)));
+            assert_eq!(s.poll_client(), Err(crate::h3::Error::Done));
+        }
     }
 }
