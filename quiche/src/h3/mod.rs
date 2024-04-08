@@ -2731,7 +2731,6 @@ impl Connection {
             },
 
             frame::Frame::PushPromise { .. } => {
-                println!("Here PUSH_PROMISE received");
                 if self.is_server {
                     conn.close(
                         true,
@@ -6509,7 +6508,6 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream_id, ev_headers)));
 
         req[3] = Header::new(b":path", b"/test-push-promise");
-        println!("Send push promise");
         assert_eq!(
             s.server.send_push_promise(
                 &mut s.pipe.server,
@@ -6521,7 +6519,6 @@ mod tests {
         );
 
         s.advance().unwrap();
-        println!("Send push promise done");
 
         assert_eq!(s.client.poll(&mut s.pipe.client), Err(Error::Done));
     }
@@ -6533,3 +6530,4 @@ mod frame;
 #[doc(hidden)]
 pub mod qpack;
 mod stream;
+mod flexicast;

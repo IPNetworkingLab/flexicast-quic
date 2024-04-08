@@ -1973,9 +1973,9 @@ impl MulticastConnection for Connection {
                 .is_some_and(|s| !s.already_drained()) ||
                 multicast.fc_rotate_server().is_none()
             {
-                multicast.fc_rotate = Some(FcRotate::Server(FcRotateServer::new(
-                    mc_channel.streams.to_fc_stream_state(),
-                )));
+                multicast.fc_rotate = Some(FcRotate::Server(
+                    FcRotateServer::new(mc_channel.streams.to_fc_stream_state()),
+                ));
             }
 
             // Unicast connection asks the multicast channel for a new client ID.
@@ -2572,6 +2572,12 @@ impl MulticastChannelSource {
             None
         };
 
+        conn_client.multicast = Some(MulticastAttributes {
+            mc_role: McRole::Client(McClientStatus::Unspecified),
+            ..MulticastAttributes::default()
+        });
+        conn_client.multicast.as_mut().unwrap().mc_space_id = Some(pid_c2s_1);
+
         let cid = channel_id.clone().into_owned();
         Ok(Self {
             channel: conn_server,
@@ -2602,7 +2608,9 @@ impl MulticastChannelSource {
 
     /// Copy of the Pipe::advance method. Used for the setup
     /// to create the source multicast channel.
-    fn advance(server: &mut Connection, client: &mut Connection) -> Result<()> {
+    pub(crate) fn advance(
+        server: &mut Connection, client: &mut Connection,
+    ) -> Result<()> {
         let mut client_done = false;
         let mut server_done = false;
 
