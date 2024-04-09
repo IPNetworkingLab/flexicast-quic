@@ -30,6 +30,10 @@ pub struct FcRotateServer {
     /// Note that this could be correlated with the fact that the server already
     /// gave the MC_KEY.
     already_drained: bool,
+
+    /// Whether the server must transmit the stream states to the client in the
+    /// MC_KEY frame.
+    send_stream_states: bool,
 }
 
 impl FcRotateServer {
@@ -39,6 +43,7 @@ impl FcRotateServer {
         Self {
             stream_states,
             already_drained: false,
+            send_stream_states: true,
         }
     }
 
@@ -53,6 +58,12 @@ impl FcRotateServer {
     /// Whether the stream state was already drained.
     pub fn already_drained(&self) -> bool {
         self.already_drained
+    }
+
+    #[inline]
+    /// Whether the server must send the stream states to the client.
+    pub(super) fn set_send_stream_state(&mut self, v: bool) {
+        self.send_stream_states = v;
     }
 }
 
@@ -70,9 +81,27 @@ impl MulticastAttributes {
     }
 
     #[inline]
+    /// Set whether the server must transmit the stream states to the client.
+    pub fn fc_set_send_stream_state(&mut self, v: bool) -> Result<()> {
+        self.fc_rotate_server_mut()
+            .map(|r| r.set_send_stream_state(v))
+            .ok_or(Error::Multicast(McError::FcStreamRotation))
+    }
+
+    #[inline]
     /// Whether the connection uses Flexicast with stream rotation extension.
     pub fn fc_use_stream_rotation(&self) -> bool {
         self.fc_rotate.is_some()
+    }
+
+    #[inline]
+    /// Whether the server must transmit the stream states to the client.
+    pub fn fc_send_stream_states(&self) -> bool {
+        if let Some(FcRotate::Server(s)) = self.fc_rotate.as_ref() {
+            s.send_stream_states
+        } else {
+            false
+        }
     }
 
     #[inline]
@@ -217,6 +246,25 @@ impl Connection {
         }
 
         out.map(|res| (res.0, res.1, init_off))
+    }
+
+    /// Returns the current emit offset of the specified stream, if it exists.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub fn fc_get_stream_emit_off(&self, stream_id: u64) -> Option<u64> {
+        self.streams
+            .get(stream_id)
+            .map(|stream| stream.send.fc_emit_off())
+    }
+
+    /// Sets the reception offset of the specified stream, if it exists.
+    pub fn fc_set_stream_offset(
+        &mut self, stream_id: u64, off: u64,
+    ) -> Result<()> {
+        self.streams
+            .get_mut(stream_id)
+            .map(|stream| stream.recv.fc_set_offset_at(off))
+            .ok_or(Error::InvalidStreamState(stream_id))?
     }
 }
 

@@ -399,7 +399,18 @@ impl Stream {
 
         let buf = &mut self.state_buf[self.state_off..self.state_len];
 
-        let read = match conn.stream_recv(self.id, buf) {
+        // Maybe the stream uses rotation and cannot be read using `stream_recv`,
+        // so we must use `stream_recv_ooo` instead.
+        let err = match conn.stream_recv(self.id, buf) {
+            Err(crate::Error::Multicast(
+                crate::multicast::McError::FcStreamOutOfOrder,
+            )) => conn
+                .stream_recv_ooo(self.id, buf)
+                .map(|(read, fin, _)| (read, fin)),
+            e => e,
+        };
+
+        let read = match err {
             Ok((len, _)) => len,
 
             Err(e) => {
@@ -626,6 +637,43 @@ impl Stream {
         self.state_len = expected_len;
 
         Ok(())
+    }
+
+    /// Tries to read DATA payload from the transport stream, out-of-order.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub fn try_consume_data_ooo(
+        &mut self, conn: &mut crate::Connection, out: &mut [u8],
+    ) -> Result<(usize, bool, u64)> {
+        let left = std::cmp::min(out.len(), self.state_len - self.state_off);
+
+        let (len, fin, off) = match conn
+            .stream_recv_ooo(self.id, &mut out[..left])
+        {
+            Ok(v) => v,
+
+            Err(e) => {
+                // The stream is not readable anymore, so re-arm the Data event.
+                if e == crate::Error::Done {
+                    self.reset_data_event();
+                }
+
+                return Err(e.into());
+            },
+        };
+
+        self.state_off += len;
+
+        // The stream is not readable anymore, so re-arm the Data event.
+        if !conn.stream_readable(self.id) {
+            self.reset_data_event();
+        }
+
+        if self.state_buffer_complete() {
+            self.state_transition(State::FrameType, 1, true)?;
+        }
+
+        Ok((len, fin, off))
     }
 }
 

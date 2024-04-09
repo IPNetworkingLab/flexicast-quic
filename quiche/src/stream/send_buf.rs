@@ -613,7 +613,7 @@ impl SendBuf {
 }
 
 impl SendBuf {
-    pub(super) fn fc_emit_off(&self) -> u64 {
+    pub(crate) fn fc_emit_off(&self) -> u64 {
         self.emit_off
     }
 }

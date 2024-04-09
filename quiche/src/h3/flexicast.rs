@@ -1,6 +1,7 @@
 use crate::h3::testing::Session;
 use crate::h3::Config;
 use crate::h3::Connection;
+use crate::h3::Error;
 use crate::h3::Event;
 use crate::h3::Header;
 use crate::h3::Result;
@@ -10,7 +11,91 @@ use crate::multicast::McAnnounceData;
 use crate::multicast::McClientTp;
 use crate::multicast::McError;
 use crate::multicast::MulticastChannelSource;
-use crate::Error;
+
+use super::stream;
+
+impl Connection {
+    /// Reads request or response body data into the provided buffer,
+    /// out-of-order.
+    ///
+    /// Applications should call this method whenever the [`poll()`] method
+    /// returns a [`Data`] event.
+    ///
+    /// On success the amount of bytes read is returned, or [`Done`] if there is
+    /// no data to read, as well as the starting offset of the response.
+    ///
+    /// The body of the function is quite similar to
+    /// [`crate::h3::Connection::recv_body`], but we return the starting offset
+    /// as well.
+    ///
+    /// [`poll()`]: struct.Connection.html#method.poll
+    /// [`Data`]: enum.Event.html#variant.Data
+    /// [`Done`]: enum.Error.html#variant.Done
+    pub fn recv_body_ooo(
+        &mut self, conn: &mut crate::Connection, stream_id: u64, out: &mut [u8],
+    ) -> Result<(usize, u64)> {
+        let mut total = 0;
+        let mut off = None;
+
+        // Try to consume all buffered data for the stream, even across multicast
+        // DATA frames.
+        while total < out.len() {
+            let stream = self.streams.get_mut(&stream_id).ok_or(Error::Done)?;
+
+            if stream.state() != stream::State::Data {
+                break;
+            }
+
+            let (read, fin, cur_off) =
+                match stream.try_consume_data_ooo(conn, &mut out[total..]) {
+                    Ok(v) => v,
+
+                    Err(Error::Done) => break,
+
+                    Err(e) => return Err(e),
+                };
+
+            // The returned offset must be the same.
+            off.map(|o| assert_eq!(o, cur_off));
+            off = Some(cur_off);
+
+            total += read;
+
+            // No more data to read, we are done.
+            if read == 0 || fin {
+                break;
+            }
+
+            // Process incoming data from the stream. For example, if a whole
+            // DATA frame was consumed, and another one is queud behind it, this
+            // will ensure the additional data will also be returned to the
+            // application.
+            match self.process_readable_stream(conn, stream_id, false) {
+                Ok(_) => unreachable!(),
+
+                Err(Error::Done) => (),
+
+                Err(e) => return Err(e),
+            };
+
+            if conn.stream_finished(stream_id) {
+                break;
+            }
+        }
+
+        // While body is being received, the stream is marked as finished only
+        // when all data is read by the application.
+        if conn.stream_finished(stream_id) {
+            self.process_finished_stream(stream_id);
+        }
+
+        if total == 0 {
+            return Err(Error::Done);
+        }
+
+        Ok((total, off.unwrap_or(0)))
+    }
+}
 
 #[doc(hidden)]
 pub mod testing {
@@ -75,7 +160,7 @@ pub mod testing {
                     &random,
                     probe_mc_path,
                 )
-                .ok_or(Error::Multicast(McError::McPipe))?;
+                .ok_or(crate::Error::Multicast(McError::McPipe))?;
 
                 let client_dgram = pipe.client.dgram_enabled();
                 let server_dgram = pipe.server.dgram_enabled();
@@ -276,7 +361,7 @@ pub mod testing {
                 .source_send_single(client_loss, signature_len)
             {
                 Ok(_) => false,
-                Err(Error::Done) => true,
+                Err(crate::Error::Done) => true,
                 Err(e) => return Err(crate::h3::Error::TransportError(e)),
             };
 
@@ -342,7 +427,8 @@ mod tests {
     use testing::*;
 
     #[test]
-    /// Test a simple HTTP/3 request/response sent on the flexicast channel.
+    /// Test a simple HTTP/3 request/response sent on the flexicast channel with
+    /// data received in-order.
     fn fc_h3_simple() {
         let mut fc_session = FcSession::new(
             2,
@@ -404,5 +490,71 @@ mod tests {
             assert_eq!(s.poll_client(), Ok((fc_stream, Event::Finished)));
             assert_eq!(s.poll_client(), Err(crate::h3::Error::Done));
         }
+    }
+
+    #[test]
+    /// Test a simple HTTP/3 request/response sent on the flexicast channel with
+    /// data received in-order.
+    fn fc_h3_out_of_order() {
+        let mut fc_session = FcSession::new(
+            1,
+            "/tmp/fc_h3_out_of_order.txt",
+            McAuthType::StreamAsym,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(fc_session.fc_handshake(), Ok(()));
+        assert_eq!(fc_session.handhakes(), Ok(()));
+
+        let (fc_stream, fc_req) = fc_session.fc_send_request(true).unwrap();
+        assert_eq!(fc_stream, 0);
+        let requests = fc_session.send_requests(true).unwrap();
+        for (stream, ..) in requests.iter() {
+            assert_eq!(*stream, 0);
+        }
+
+        let ev_headers = Event::Headers {
+            list: fc_req,
+            has_body: false,
+        };
+
+        // assert_eq!(fc_session.poll_fc_source(), Ok((fc_stream, ev_headers)));
+        // assert_eq!(
+        //     fc_session.poll_fc_source(),
+        //     Ok((fc_stream, Event::Finished))
+        // );
+
+        // let resp = fc_session.fc_send_response(fc_stream, false).unwrap();
+        // let body = fc_session.fc_send_body_source(fc_stream, false).unwrap();
+
+        // let ev_headers = Event::Headers {
+        //     list: resp,
+        //     has_body: true,
+        // };
+
+        // // Send the data to all clients.
+        // let (fc_session, fin) =
+        //     fc_session.fc_source_send_single(None, 0).unwrap();
+        // assert!(!fin);
+        // let (mut fc_session, fin) =
+        //     fc_session.fc_source_send_single(None, 0).unwrap();
+        // assert!(fin);
+
+        // // The clients received the response through the flexicast path.
+        // let mut recv_buf = vec![0; body.len()];
+        // for s in fc_session.sessions.iter_mut() {
+        //     assert_eq!(s.poll_client(), Ok((fc_stream, ev_headers.clone())));
+        //     assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
+        //     assert_eq!(
+        //         s.recv_body_client(fc_stream, &mut recv_buf),
+        //         Ok(body.len())
+        //     );
+
+        //     assert_eq!(s.poll_client(), Ok((fc_stream, Event::Finished)));
+        //     assert_eq!(s.poll_client(), Err(crate::h3::Error::Done));
+        // }
     }
 }
