@@ -437,14 +437,14 @@ pub mod testing {
             let mut pipes = Vec::with_capacity(nb_clients);
             let mut h3_conns = Vec::with_capacity(nb_clients);
 
-            for session in value.sessions {
-                h3_conns.push((session.client, session.server));
-                pipes.push((
-                    session.pipe,
-                    "127.0.0.1:5678".parse().unwrap(),
-                    crate::testing::Pipe::server_addr(),
-                ));
-            }
+            // for session in value.sessions {
+            //     h3_conns.push((session.client, session.server));
+            //     pipes.push((
+            //         session.pipe,
+            //         "127.0.0.1:5678".parse().unwrap(),
+            //         crate::testing::Pipe::server_addr(),
+            //     ));
+            // }
 
             let fc_pipe = MulticastPipe {
                 unicast_pipes: pipes,
@@ -463,17 +463,18 @@ pub mod testing {
 
             // for ((pipe, ..), (client, server)) in
             //     value.0.unicast_pipes.drain(..).zip(value.1.drain(..))
-            let mut pipes = value.0.unicast_pipes;
-            let mut conns = value.1;
-            for ((pipe, ..), (client, server)) in pipes.drain(..).zip(conns.drain(..))
-            {
-                let session = Session {
-                    pipe,
-                    client,
-                    server,
-                };
-                sessions.push(session);
-            }
+            // let mut pipes = value.0.unicast_pipes;
+            // let mut conns = value.1;
+            // for ((pipe, ..), (client, server)) in
+            //     pipes.drain(..).zip(conns.drain(..))
+            // {
+            //     let session = Session {
+            //         pipe,
+            //         client,
+            //         server,
+            //     };
+            //     sessions.push(session);
+            // }
 
             FcSession {
                 fc_pipe: value.0.mc_channel,
@@ -615,11 +616,10 @@ mod tests {
         };
 
         // Send the data to the first client.
-        let (fc_session, fin) =
-            fc_session.fc_source_send_single(None, 0).unwrap();
+        let mut fin;
+        (fc_session, fin) = fc_session.fc_source_send_single(None, 0).unwrap();
         assert!(!fin);
-        let (mut fc_session, fin) =
-            fc_session.fc_source_send_single(None, 0).unwrap();
+        (fc_session, fin) = fc_session.fc_source_send_single(None, 0).unwrap();
         assert!(fin);
 
         // The first client received the response through the flexicast path.
@@ -685,23 +685,24 @@ mod tests {
         // let (mut fc_session, fin) =
         //     fc_session.fc_source_send_single(None, 0).unwrap();
         let mut fc_session_translate: FcSessionTranslate = fc_session.into();
-        let fin = match fc_session_translate
-            .0
-            .source_send_single(None, 0)
-        {
+        fin = match fc_session_translate.0.source_send_single(None, 0) {
             Ok(_) => false,
             Err(crate::Error::Done) => true,
             Err(e) => panic!(),
         };
-        println!("{:?}, {:?}", fc_session_translate.1.len(), fc_session_translate.0.unicast_pipes.len());
-        // let mut fc_session: FcSession = fc_session_translate.into();
+        println!(
+            "{:?}, {:?}",
+            fc_session_translate.1.len(),
+            fc_session_translate.0.unicast_pipes.len()
+        );
+        fc_session = fc_session_translate.into();
         assert!(false);
     }
 
     #[test]
     fn dummy_test() {
         let mut fc_session = FcSession::new(
-            1,
+            0,
             "/tmp/fc_h3_out_of_order.txt",
             McAuthType::StreamAsym,
             true,
@@ -710,14 +711,16 @@ mod tests {
         )
         .unwrap();
 
-        let mut translate: FcSessionTranslate = fc_session.into();
-        fc_session = translate.into();
+        let mut translate: FcSessionTranslate;
         translate = fc_session.into();
         fc_session = translate.into();
         translate = fc_session.into();
         fc_session = translate.into();
-        // translate = fc_session.into();
-        // fc_session = translate.into();
-        assert!(false);
+        translate = fc_session.into();
+        fc_session = translate.into();
+        // for _ in 0..100 {
+        //     translate = fc_session.into();
+        //     fc_session = translate.into();
+        // }
     }
 }
