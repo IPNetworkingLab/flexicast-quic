@@ -595,6 +595,7 @@ mod tests {
     use crate::multicast::reliable::RMcClient;
     use crate::multicast::reliable::RMcServer;
     use crate::multicast::reliable::ReliableMc;
+    use crate::multicast::testing::FcConfigTest;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::McAuthType;
     use crate::multicast::McClientTp;
@@ -1583,14 +1584,19 @@ mod tests {
         let mc_announce_data = &mc_pipe.mc_announce_data;
         let mc_data_auth = None;
 
+        let fc_config = FcConfigTest {
+            mc_client_tp,
+            mc_announce_data: mc_announce_data.clone(),
+            mc_data_auth,
+            authentication: auth_method,
+            probe_mc_path: true,
+            ..FcConfigTest::default()
+        };
+
         let new_client = MulticastPipe::setup_client(
             &mut mc_pipe.mc_channel,
-            &mc_client_tp,
-            mc_announce_data,
-            mc_data_auth,
-            auth_method,
+            &fc_config,
             &random,
-            true,
         )
         .unwrap();
         mc_pipe.unicast_pipes.push(new_client);

@@ -1968,10 +1968,16 @@ impl MulticastConnection for Connection {
             // Ideally, this should be computed based on the expired packet
             // number, but for simplicity now, just look at the current stream
             // state of the flexicast source.
-            if multicast
+            // Additionally, only forward the stream states if the source is authorised to.
+            if (multicast
                 .fc_rotate_server()
                 .is_some_and(|s| !s.already_drained()) ||
-                multicast.fc_rotate_server().is_none()
+                multicast.fc_rotate_server().is_none()) &&
+                mc_channel
+                    .multicast
+                    .as_ref()
+                    .map(|m| m.fc_send_stream_states())
+                    .unwrap_or(false)
             {
                 multicast.fc_rotate = Some(FcRotate::Server(
                     FcRotateServer::new(mc_channel.streams.to_fc_stream_state()),
@@ -2840,6 +2846,32 @@ pub mod testing {
     #[doc(hidden)]
     pub const CLIENT_AUTH_ADDR: &str = "127.0.0.1:5679";
 
+    #[doc(hidden)]
+    /// Flexicast configuration for testing.
+    pub struct FcConfigTest {
+        pub mc_client_tp: McClientTp,
+
+        pub mc_announce_data: McAnnounceData,
+
+        pub mc_data_auth: Option<McAnnounceData>,
+
+        pub authentication: McAuthType,
+
+        pub probe_mc_path: bool,
+    }
+
+    impl Default for FcConfigTest {
+        fn default() -> Self {
+            Self {
+                mc_announce_data: get_test_mc_announce_data(),
+                authentication: McAuthType::None,
+                probe_mc_path: true,
+                mc_client_tp: McClientTp::default(),
+                mc_data_auth: None,
+            }
+        }
+    }
+
     /// Multicast extension of crate::testing::Pipe.
     ///
     /// Contains a Pipe for each unicast connection and multicast source
@@ -2973,16 +3005,21 @@ pub mod testing {
 
             let random = ring::rand::SystemRandom::new();
 
+            let fc_config = FcConfigTest {
+                mc_client_tp,
+                mc_announce_data: mc_announce_data.clone(),
+                mc_data_auth,
+                authentication,
+                probe_mc_path,
+                ..FcConfigTest::default()
+            };
+
             let pipes: Vec<_> = (0..nb_clients)
                 .flat_map(|_| {
                     MulticastPipe::setup_client(
                         &mut mc_channel,
-                        &mc_client_tp,
-                        &mc_announce_data,
-                        mc_data_auth.as_ref(),
-                        authentication,
+                        &fc_config,
                         &random,
-                        probe_mc_path,
                     )
                 })
                 .collect();
@@ -3040,25 +3077,23 @@ pub mod testing {
 
         /// Creates a new client and initiate the handshake to use multicast.
         pub fn setup_client(
-            mc_channel: &mut MulticastChannelSource, mc_client_tp: &McClientTp,
-            mc_announce_data: &McAnnounceData,
-            mc_data_auth: Option<&McAnnounceData>, authentication: McAuthType,
-            random: &SystemRandom, probe_mc_path: bool,
+            mc_channel: &mut MulticastChannelSource, fc_config: &FcConfigTest,
+            random: &SystemRandom,
         ) -> Option<(Pipe, SocketAddr, SocketAddr)> {
             let mut config = get_test_mc_config(
                 true,
-                Some(mc_client_tp),
+                Some(&fc_config.mc_client_tp),
                 true,
-                authentication,
+                fc_config.authentication,
             );
             let mut pipe =
                 Pipe::with_config_and_scid_lengths(&mut config, 16, 16).ok()?;
             pipe.handshake().ok()?;
 
             pipe.server
-                .mc_set_mc_announce_data(mc_announce_data)
+                .mc_set_mc_announce_data(&fc_config.mc_announce_data)
                 .unwrap();
-            if let Some(mc_data) = mc_data_auth {
+            if let Some(mc_data) = &fc_config.mc_data_auth {
                 pipe.server.mc_set_mc_announce_data(mc_data).unwrap();
             }
             let multicast = pipe.server.multicast.as_mut().unwrap();
@@ -3077,7 +3112,7 @@ pub mod testing {
                 .new_source_cid(&scid, reset_token, true)
                 .unwrap();
 
-            if mc_data_auth.is_some() {
+            if fc_config.mc_data_auth.is_some() {
                 let mut scid = [0; 16];
                 random.fill(&mut scid[..]).unwrap();
 
@@ -3104,7 +3139,8 @@ pub mod testing {
             // The server gives the master key.
             pipe.advance().unwrap();
 
-            let scid = ConnectionId::from_ref(&mc_announce_data.channel_id);
+            let scid =
+                ConnectionId::from_ref(&fc_config.mc_announce_data.channel_id);
             pipe.client.add_mc_cid(&scid).unwrap();
             assert_eq!(pipe.advance(), Ok(()));
 
@@ -3112,7 +3148,11 @@ pub mod testing {
             let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
 
             pipe.client
-                .create_mc_path(client_addr_2, server_addr, probe_mc_path)
+                .create_mc_path(
+                    client_addr_2,
+                    server_addr,
+                    fc_config.probe_mc_path,
+                )
                 .unwrap();
 
             let pid_c2s_1 = pipe
@@ -3138,7 +3178,7 @@ pub mod testing {
                 .is_some()
             {
                 let scid = crate::ConnectionId::from_ref(
-                    &mc_data_auth.as_ref().unwrap().channel_id,
+                    &fc_config.mc_data_auth.as_ref().unwrap().channel_id,
                 );
 
                 pipe.client.add_mc_cid(&scid).unwrap();
@@ -3148,7 +3188,11 @@ pub mod testing {
                 let client_addr_2 = CLIENT_AUTH_ADDR.parse().unwrap();
 
                 pipe.client
-                    .create_mc_path(client_addr_2, server_addr, probe_mc_path)
+                    .create_mc_path(
+                        client_addr_2,
+                        server_addr,
+                        fc_config.probe_mc_path,
+                    )
                     .unwrap();
 
                 let pid_c2s_1 = pipe

@@ -14,7 +14,7 @@ use super::MulticastAttributes;
 /// Flexicast stream rotation enum.
 pub enum FcRotate {
     /// Flexicast source.
-    Src,
+    Src(bool),
 
     /// Server instance.
     Server(FcRotateServer),
@@ -30,10 +30,6 @@ pub struct FcRotateServer {
     /// Note that this could be correlated with the fact that the server already
     /// gave the MC_KEY.
     already_drained: bool,
-
-    /// Whether the server must transmit the stream states to the client in the
-    /// MC_KEY frame.
-    send_stream_states: bool,
 }
 
 impl FcRotateServer {
@@ -43,7 +39,6 @@ impl FcRotateServer {
         Self {
             stream_states,
             already_drained: false,
-            send_stream_states: true,
         }
     }
 
@@ -59,19 +54,15 @@ impl FcRotateServer {
     pub fn already_drained(&self) -> bool {
         self.already_drained
     }
-
-    #[inline]
-    /// Whether the server must send the stream states to the client.
-    pub(super) fn set_send_stream_state(&mut self, v: bool) {
-        self.send_stream_states = v;
-    }
 }
 
 impl MulticastAttributes {
     /// Activate the stream rotation extension at the source.
-    pub fn fc_enable_stream_rotation(&mut self) -> Result<()> {
+    /// 
+    /// Additionally, sets whether the source must transmit its stream state.
+    pub fn fc_enable_stream_rotation(&mut self, send_stream_state: bool) -> Result<()> {
         if self.mc_role == McRole::ServerMulticast {
-            self.fc_rotate = Some(FcRotate::Src);
+            self.fc_rotate = Some(FcRotate::Src(send_stream_state));
             Ok(())
         } else {
             Err(Error::Multicast(McError::McInvalidRole(
@@ -81,27 +72,15 @@ impl MulticastAttributes {
     }
 
     #[inline]
-    /// Set whether the server must transmit the stream states to the client.
-    pub fn fc_set_send_stream_state(&mut self, v: bool) -> Result<()> {
-        self.fc_rotate_server_mut()
-            .map(|r| r.set_send_stream_state(v))
-            .ok_or(Error::Multicast(McError::FcStreamRotation))
-    }
-
-    #[inline]
     /// Whether the connection uses Flexicast with stream rotation extension.
     pub fn fc_use_stream_rotation(&self) -> bool {
         self.fc_rotate.is_some()
     }
 
     #[inline]
-    /// Whether the server must transmit the stream states to the client.
+    /// Whether the source must transmit the stream states to the client.
     pub fn fc_send_stream_states(&self) -> bool {
-        if let Some(FcRotate::Server(s)) = self.fc_rotate.as_ref() {
-            s.send_stream_states
-        } else {
-            false
-        }
+        matches!(self.fc_rotate, Some(FcRotate::Src(true)))
     }
 
     #[inline]
@@ -117,9 +96,9 @@ impl MulticastAttributes {
     }
 
     #[doc(hidden)]
-    pub fn fc_rotate_src(&self) -> Option<()> {
-        if let Some(FcRotate::Src) = self.fc_rotate {
-            return Some(());
+    pub fn fc_rotate_src(&self) -> Option<bool> {
+        if let Some(FcRotate::Src(s)) = self.fc_rotate {
+            return Some(s);
         }
         None
     }
@@ -271,7 +250,7 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use crate::multicast::authentication::McAuthType;
-    use crate::multicast::testing::MulticastPipe;
+    use crate::multicast::testing::{FcConfigTest, MulticastPipe};
     use crate::multicast::McClientTp;
     use ring::rand::SystemRandom;
 
@@ -299,7 +278,7 @@ mod tests {
             .multicast
             .as_mut()
             .unwrap()
-            .fc_enable_stream_rotation()
+            .fc_enable_stream_rotation(true)
             .is_ok());
 
         let stream_data = [42u8; 30];
@@ -327,17 +306,21 @@ mod tests {
         // Add a second client.
         let mc_client_tp = McClientTp::default();
         let random = SystemRandom::new();
-        let mc_announce_data = &mc_pipe.mc_announce_data;
         let mc_data_auth = None;
+
+        let fc_config = FcConfigTest {
+            mc_announce_data: mc_pipe.mc_announce_data.clone(),
+            mc_data_auth,
+            probe_mc_path: true,
+            authentication: auth_method,
+            mc_client_tp,
+            ..FcConfigTest::default()
+        };
 
         let new_client = MulticastPipe::setup_client(
             &mut mc_pipe.mc_channel,
-            &mc_client_tp,
-            mc_announce_data,
-            mc_data_auth,
-            auth_method,
+            &fc_config,
             &random,
-            true,
         )
         .unwrap();
         mc_pipe.unicast_pipes.push(new_client);

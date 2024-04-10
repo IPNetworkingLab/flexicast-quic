@@ -99,11 +99,14 @@ impl Connection {
 
 #[doc(hidden)]
 pub mod testing {
+    use ring::rand::SystemRandom;
+
+    use crate::multicast::testing::FcConfigTest;
     use crate::ranges::RangeSet;
 
     use super::*;
 
-    type FcSessionTranslate = (
+    pub type FcSessionTranslate = (
         MulticastPipe,
         Vec<(Connection, Connection)>,
         Connection,
@@ -150,15 +153,19 @@ pub mod testing {
             let random = ring::rand::SystemRandom::new();
             let mut sessions = Vec::with_capacity(nb_clients);
             let fc_client_tp = McClientTp::default();
+            let fc_config = FcConfigTest {
+                mc_client_tp: fc_client_tp,
+                mc_announce_data: fc_pipe.mc_announce_data.clone(),
+                authentication,
+                probe_mc_path,
+                ..FcConfigTest::default()
+            };
+
             for _ in 0..nb_clients {
                 let (pipe, ..) = MulticastPipe::setup_client(
                     &mut fc_pipe.mc_channel,
-                    &fc_client_tp,
-                    &fc_pipe.mc_announce_data,
-                    None,
-                    authentication,
+                    &fc_config,
                     &random,
-                    probe_mc_path,
                 )
                 .ok_or(crate::Error::Multicast(McError::McPipe))?;
 
@@ -367,6 +374,61 @@ pub mod testing {
 
             Ok((fc_session_translate.into(), fin))
         }
+
+        /// Adds a new client with an HTTP/3 session.
+        ///
+        /// Adds the client and the HTTP/3 session in the self structure.
+        /// Do not perform the HTTP/3 handshake.
+        pub fn setup_client_with_session(
+            &mut self, fc_config: &FcConfigTest, random: &SystemRandom,
+            h3_config: &Config,
+        ) -> Result<()> {
+            let (pipe, ..) =
+                MulticastPipe::setup_client(&mut self.fc_pipe, fc_config, random)
+                    .ok_or(crate::Error::Multicast(McError::McPipe))?;
+
+            let client_dgram = pipe.client.dgram_enabled();
+            let server_dgram = pipe.server.dgram_enabled();
+            let session = Session {
+                pipe,
+                client: Connection::new(&h3_config, false, client_dgram)?,
+                server: Connection::new(&h3_config, true, server_dgram)?,
+            };
+
+            self.sessions.push(session);
+
+            Ok(())
+        }
+    }
+
+    impl Session {
+        /// Sends a response from the server with default headers and the
+        /// `stream-offset` header.
+        ///
+        /// On success it returns the headers.
+        pub fn send_responses_with_stream_offset(
+            &mut self, stream: u64, fin: bool, offset: u64,
+        ) -> Result<Vec<Header>> {
+            let resp = vec![
+                Header::new(b":status", b"200"),
+                Header::new(
+                    b":stream-offset",
+                    &format!("{}", offset).into_bytes(),
+                ),
+                Header::new(b"server", b"quiche-test"),
+            ];
+
+            self.server.send_response(
+                &mut self.pipe.server,
+                stream,
+                &resp,
+                fin,
+            )?;
+
+            self.advance().ok();
+
+            Ok(resp)
+        }
     }
 
     impl From<FcSession> for FcSessionTranslate {
@@ -395,12 +457,15 @@ pub mod testing {
     }
 
     impl From<FcSessionTranslate> for FcSession {
-        fn from(mut value: FcSessionTranslate) -> Self {
+        fn from(value: FcSessionTranslate) -> Self {
             let nb_clients = value.1.len();
             let mut sessions = Vec::with_capacity(nb_clients);
 
-            for ((pipe, ..), (client, server)) in
-                value.0.unicast_pipes.drain(..).zip(value.1.drain(..))
+            // for ((pipe, ..), (client, server)) in
+            //     value.0.unicast_pipes.drain(..).zip(value.1.drain(..))
+            let mut pipes = value.0.unicast_pipes;
+            let mut conns = value.1;
+            for ((pipe, ..), (client, server)) in pipes.drain(..).zip(conns.drain(..))
             {
                 let session = Session {
                     pipe,
@@ -423,7 +488,10 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+    use crate::multicast::testing::FcConfigTest;
+
     use super::*;
+    use ring::rand::SystemRandom;
     use testing::*;
 
     #[test]
@@ -506,6 +574,17 @@ mod tests {
         )
         .unwrap();
 
+        // Enable stream rotation but do not send the stream states because they
+        // will be sent through HTTP/3.
+        assert!(fc_session
+            .fc_pipe
+            .channel
+            .multicast
+            .as_mut()
+            .unwrap()
+            .fc_enable_stream_rotation(false)
+            .is_ok());
+
         assert_eq!(fc_session.fc_handshake(), Ok(()));
         assert_eq!(fc_session.handhakes(), Ok(()));
 
@@ -521,40 +600,124 @@ mod tests {
             has_body: false,
         };
 
-        // assert_eq!(fc_session.poll_fc_source(), Ok((fc_stream, ev_headers)));
-        // assert_eq!(
-        //     fc_session.poll_fc_source(),
-        //     Ok((fc_stream, Event::Finished))
-        // );
+        assert_eq!(fc_session.poll_fc_source(), Ok((fc_stream, ev_headers)));
+        assert_eq!(
+            fc_session.poll_fc_source(),
+            Ok((fc_stream, Event::Finished))
+        );
 
-        // let resp = fc_session.fc_send_response(fc_stream, false).unwrap();
-        // let body = fc_session.fc_send_body_source(fc_stream, false).unwrap();
+        let resp = fc_session.fc_send_response(fc_stream, false).unwrap();
+        let body = fc_session.fc_send_body_source(fc_stream, false).unwrap();
 
-        // let ev_headers = Event::Headers {
-        //     list: resp,
-        //     has_body: true,
-        // };
+        let ev_headers = Event::Headers {
+            list: resp,
+            has_body: true,
+        };
 
-        // // Send the data to all clients.
-        // let (fc_session, fin) =
-        //     fc_session.fc_source_send_single(None, 0).unwrap();
-        // assert!(!fin);
+        // Send the data to the first client.
+        let (fc_session, fin) =
+            fc_session.fc_source_send_single(None, 0).unwrap();
+        assert!(!fin);
+        let (mut fc_session, fin) =
+            fc_session.fc_source_send_single(None, 0).unwrap();
+        assert!(fin);
+
+        // The first client received the response through the flexicast path.
+        let mut recv_buf = vec![0; body.len()];
+        let s = &mut fc_session.sessions[0];
+        assert_eq!(s.poll_client(), Ok((fc_stream, ev_headers.clone())));
+        assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
+        assert_eq!(s.recv_body_client(fc_stream, &mut recv_buf), Ok(body.len()));
+
+        // The second client joins the flexicast channel.
+        let fc_config = FcConfigTest::default();
+        let random = SystemRandom::new();
+        let h3_config = Config::new().unwrap();
+        assert_eq!(
+            fc_session.setup_client_with_session(&fc_config, &random, &h3_config),
+            Ok(())
+        );
+
+        // Get the new client to do the handshake and the HTTP/3 request.
+        let s = fc_session.sessions.last_mut().unwrap();
+        s.handshake().unwrap();
+        let (l_stream, l_req) = s.send_request(true).unwrap();
+        assert_eq!(l_stream, 0);
+
+        let ev_headers = Event::Headers {
+            list: l_req,
+            has_body: false,
+        };
+
+        assert_eq!(s.poll_server(), Ok((l_stream, ev_headers)));
+        assert_eq!(s.poll_server(), Ok((l_stream, Event::Finished)));
+
+        // The server sends the response with the HTTP/3 stream-offset header.
+        // First ask to the source the stream and offset.
+        let offset = fc_session
+            .fc_pipe
+            .channel
+            .fc_get_stream_emit_off(l_stream)
+            .unwrap();
+        assert_eq!(offset, 64);
+        let l_resp = s
+            .send_responses_with_stream_offset(l_stream, false, offset)
+            .unwrap();
+
+        let ev_headers = Event::Headers {
+            list: l_resp,
+            has_body: true,
+        };
+
+        assert_eq!(s.poll_client(), Ok((l_stream, ev_headers)));
+
+        // Parse the HTTP/3 streamoffset header and send the information to
+        // quiche. For now we do not parse it because we already have the
+        // data.
+        assert_eq!(s.pipe.client.fc_set_stream_offset(l_stream, offset), Ok(()));
+
+        // Now the flexicast source sends the second part of the stream.
+        let bytes = (11..20).collect::<Vec<u8>>();
+        fc_session
+            .fc_h3_conn
+            .send_body(&mut fc_session.fc_pipe.channel, l_stream, &bytes, true)
+            .unwrap();
         // let (mut fc_session, fin) =
         //     fc_session.fc_source_send_single(None, 0).unwrap();
-        // assert!(fin);
+        let mut fc_session_translate: FcSessionTranslate = fc_session.into();
+        let fin = match fc_session_translate
+            .0
+            .source_send_single(None, 0)
+        {
+            Ok(_) => false,
+            Err(crate::Error::Done) => true,
+            Err(e) => panic!(),
+        };
+        println!("{:?}, {:?}", fc_session_translate.1.len(), fc_session_translate.0.unicast_pipes.len());
+        // let mut fc_session: FcSession = fc_session_translate.into();
+        assert!(false);
+    }
 
-        // // The clients received the response through the flexicast path.
-        // let mut recv_buf = vec![0; body.len()];
-        // for s in fc_session.sessions.iter_mut() {
-        //     assert_eq!(s.poll_client(), Ok((fc_stream, ev_headers.clone())));
-        //     assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
-        //     assert_eq!(
-        //         s.recv_body_client(fc_stream, &mut recv_buf),
-        //         Ok(body.len())
-        //     );
+    #[test]
+    fn dummy_test() {
+        let mut fc_session = FcSession::new(
+            1,
+            "/tmp/fc_h3_out_of_order.txt",
+            McAuthType::StreamAsym,
+            true,
+            true,
+            None,
+        )
+        .unwrap();
 
-        //     assert_eq!(s.poll_client(), Ok((fc_stream, Event::Finished)));
-        //     assert_eq!(s.poll_client(), Err(crate::h3::Error::Done));
-        // }
+        let mut translate: FcSessionTranslate = fc_session.into();
+        fc_session = translate.into();
+        translate = fc_session.into();
+        fc_session = translate.into();
+        translate = fc_session.into();
+        fc_session = translate.into();
+        // translate = fc_session.into();
+        // fc_session = translate.into();
+        assert!(false);
     }
 }
