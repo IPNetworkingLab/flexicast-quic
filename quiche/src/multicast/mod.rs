@@ -1807,13 +1807,6 @@ impl MulticastConnection for Connection {
         // Add the first packet number of interest for the new path if possible.
         if let Some(exp_pkt) = self.multicast.as_ref().unwrap().mc_last_expired {
             if let Some(exp_pn) = exp_pkt.pn {
-                // println!(
-                //     "P1 before: {:?}",
-                //     self.pkt_num_spaces
-                //         .spaces
-                //         .get_mut_or_create(Epoch::Application, pid)
-                //         .recv_pkt_need_ack
-                // );
                 self.pkt_num_spaces
                     .spaces
                     .get_mut_or_create(Epoch::Application, pid)
@@ -1824,13 +1817,6 @@ impl MulticastConnection for Connection {
                     .get_mut_or_create(Epoch::Application, pid)
                     .recv_pkt_need_ack
                     .insert(exp_pn + 1..exp_pn + 2);
-                // println!(
-                //     "P1 after: {:?}",
-                //     self.pkt_num_spaces
-                //         .spaces
-                //         .get_mut_or_create(Epoch::Application, pid)
-                //         .recv_pkt_need_ack
-                // );
             }
         }
 
@@ -2068,10 +2054,6 @@ impl MulticastConnection for Connection {
                 // let uc_path = &self.paths.get(0).unwrap();
                 // let loss_detection_timer =
                 //     uc_path.recovery.loss_detection_timer();
-                // println!(
-                //     "Mais le detection timer du uc_path c'est {:?}",
-                //     loss_detection_timer
-                // );
                 if let Ok(mc_path) = self.paths.get_mut(mc_space_id) {
                     // mc_path.recovery.
                     // mc_set_loss_detection_timer(loss_detection_timer);
@@ -2082,10 +2064,6 @@ impl MulticastConnection for Connection {
                     mc_path.recovery.mc_set_rtt(time::Duration::from_millis(
                         expiration_timer,
                     ));
-                    // println!(
-                    //     "Et le loss detection timer du mc_path est {:?}",
-                    //     mc_path.recovery.loss_detection_timer()
-                    // );
 
                     // Sets the largest acked packet as the maximum between the
                     // largest actually received and the last expired.
@@ -2097,8 +2075,6 @@ impl MulticastConnection for Connection {
                         .and_then(|exp| exp.pn)
                     {
                         mc_path.recovery.set_largest_ack(last_exp);
-                        // println!("Set the largest ack with last expired:
-                        // {:?}", last_exp);
                     }
                 }
             }
@@ -2580,6 +2556,7 @@ impl MulticastChannelSource {
 
         conn_client.multicast = Some(MulticastAttributes {
             mc_role: McRole::Client(McClientStatus::Unspecified),
+            fc_rotate: Some(FcRotate::Src(false)),
             ..MulticastAttributes::default()
         });
         conn_client.multicast.as_mut().unwrap().mc_space_id = Some(pid_c2s_1);

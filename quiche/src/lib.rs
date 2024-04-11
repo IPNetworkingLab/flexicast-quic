@@ -7167,26 +7167,7 @@ impl Connection {
                 }
             }
 
-            // if let Some(multicast) = self.multicast.as_ref() {
-            //     if Some(path_id) == multicast.get_mc_space_id() &&
-            // matches!(multicast.get_mc_role(),
-            // multicast::McRole::ServerUnicast(_)) {
-            //         println!("Checking for the loss detection timer for the
-            // unicast server for its multicast path");     }
-            // }
-
             if let Some(timer) = p.recovery.loss_detection_timer() {
-                // println!("CHECKING FOR AT LEAST ONE: {:?} = {}", timer,
-                // path_id); if let Some(multicast) =
-                // self.multicast.as_ref() {     if Some(path_id)
-                // == multicast.get_mc_space_id() &&
-                // matches!(multicast.get_mc_role(),
-                // multicast::McRole::ServerUnicast(_)) {
-                //         println!("Loss detection timer for the unicast server
-                // {:?} and difference with now: {:?} so is timer below: {}",
-                // timer, timer.duration_since(now), timer <= now);
-                //     }
-                // }
                 if timer <= now {
                     trace!(
                         "{} loss detection timeout expired for path id={}",
@@ -7201,8 +7182,6 @@ impl Connection {
                         &self.trace_id,
                     );
 
-                    // println!("Lost packets: {} and lost bytes: {}",
-                    // lost_packets, lost_bytes);
                     self.lost_count += lost_packets;
                     self.lost_bytes += lost_bytes as u64;
 

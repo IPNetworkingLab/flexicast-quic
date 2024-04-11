@@ -58,10 +58,15 @@ impl FcRotateServer {
 
 impl MulticastAttributes {
     /// Activate the stream rotation extension at the source.
-    /// 
+    ///
     /// Additionally, sets whether the source must transmit its stream state.
-    pub fn fc_enable_stream_rotation(&mut self, send_stream_state: bool) -> Result<()> {
-        if self.mc_role == McRole::ServerMulticast {
+    pub fn fc_enable_stream_rotation(
+        &mut self, send_stream_state: bool,
+    ) -> Result<()> {
+        if matches!(
+            self.mc_role,
+            McRole::ServerMulticast | McRole::Client(McClientStatus::Unspecified)
+        ) {
             self.fc_rotate = Some(FcRotate::Src(send_stream_state));
             Ok(())
         } else {
@@ -155,7 +160,7 @@ impl Connection {
     /// enabled.
     ///
     /// Flexicast stream rotation extension.
-    fn fc_mark_rotate_stream(
+    pub fn fc_mark_rotate_stream(
         &mut self, stream_id: u64, rotate: bool,
     ) -> Result<()> {
         if self
@@ -176,15 +181,14 @@ impl Connection {
     /// Restart the sending state of a stream.
     ///
     /// Flexicast stream rotation extension.
-    pub fn fc_restart_stream_send(&mut self, stream_id: u64) -> Result<()> {
+    pub fn fc_restart_stream_send_recv(&mut self, stream_id: u64) -> Result<()> {
         if self
             .multicast
             .as_ref()
             .is_some_and(|mc| mc.fc_rotate_src().is_some())
         {
-            // Get the stream.
             if let Some(stream) = self.streams.get_mut(stream_id) {
-                stream.fc_restart_stream_send();
+                stream.fc_restart_stream_send_recv();
                 return Ok(());
             }
             return Err(Error::InvalidStreamState(stream_id));
@@ -250,7 +254,8 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use crate::multicast::authentication::McAuthType;
-    use crate::multicast::testing::{FcConfigTest, MulticastPipe};
+    use crate::multicast::testing::FcConfigTest;
+    use crate::multicast::testing::MulticastPipe;
     use crate::multicast::McClientTp;
     use ring::rand::SystemRandom;
 
@@ -342,7 +347,11 @@ mod tests {
         // TODO: close the connection for the first client?
 
         // Restart the stream for the second client.
-        assert!(mc_pipe.mc_channel.channel.fc_restart_stream_send(3).is_ok());
+        assert!(mc_pipe
+            .mc_channel
+            .channel
+            .fc_restart_stream_send_recv(3)
+            .is_ok());
 
         // Have to send again the data to quiche...
         mc_pipe

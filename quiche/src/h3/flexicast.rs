@@ -95,6 +95,25 @@ impl Connection {
 
         Ok((total, off.unwrap_or(0)))
     }
+
+    /// Resets the state of the stream pointed out by `stream_id`, as if it
+    /// never existed.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub fn fc_reset_stream(
+        &mut self, conn: &mut crate::Connection, stream_id: u64,
+    ) -> Result<()> {
+        // Only authorize to reset the last stream...
+        self.next_request_stream_id = stream_id;
+
+        // Remove the stream.
+        _ = self.streams.remove_entry(&stream_id);
+
+        // Restart the quic stream.
+        conn.fc_restart_stream_send_recv(stream_id)?;
+
+        Ok(())
+    }
 }
 
 #[doc(hidden)]
@@ -106,12 +125,12 @@ pub mod testing {
 
     use super::*;
 
-    pub type FcSessionTranslate = (
-        MulticastPipe,
-        Vec<(Connection, Connection)>,
-        Connection,
-        Connection,
-    );
+    pub struct FcSessionTranslate {
+        pub fc_pipe: MulticastPipe,
+        pub sessions: Vec<(Connection, Connection)>,
+        pub fc_h3_conn: Connection,
+        pub fc_h3_dummy_conn: Connection,
+    }
 
     /// Flexicast equivalent of an HTTP/3 testing session. It holds the server,
     /// the clients and the pipes that allow them to communicate.
@@ -123,7 +142,7 @@ pub mod testing {
         pub fc_h3_conn: Connection,
 
         /// Flexicast dummy client HTTP/3 session.
-        fc_h3_dummy_conn: Connection,
+        pub fc_h3_dummy_conn: Connection,
 
         /// All unicast connections between the clients and the server.
         pub sessions: Vec<Session>,
@@ -318,6 +337,10 @@ pub mod testing {
         ) -> Result<Vec<Header>> {
             let resp = vec![
                 Header::new(b":status", b"200"),
+                Header::new(
+                    b":stream-offset",
+                    &format!("{:0>8}", 0).into_bytes(),
+                ),
                 Header::new(b"server", b"quiche-test"),
             ];
 
@@ -361,10 +384,11 @@ pub mod testing {
         /// [`crate::multicast::testing::MulticastPipe`].
         pub fn fc_source_send_single(
             self, client_loss: Option<&RangeSet>, signature_len: usize,
-        ) -> Result<(Self, bool)> {
-            let mut fc_session_translate: FcSessionTranslate = self.into();
+        ) -> Result<(Box<Self>, bool)> {
+            let mut fc_session_translate: Box<FcSessionTranslate> =
+                Box::new(self).into();
             let fin = match fc_session_translate
-                .0
+                .fc_pipe
                 .source_send_single(client_loss, signature_len)
             {
                 Ok(_) => false,
@@ -413,7 +437,7 @@ pub mod testing {
                 Header::new(b":status", b"200"),
                 Header::new(
                     b":stream-offset",
-                    &format!("{}", offset).into_bytes(),
+                    &format!("{:0>8}", offset).into_bytes(),
                 ),
                 Header::new(b"server", b"quiche-test"),
             ];
@@ -431,20 +455,20 @@ pub mod testing {
         }
     }
 
-    impl From<FcSession> for FcSessionTranslate {
-        fn from(value: FcSession) -> Self {
+    impl From<Box<FcSession>> for Box<FcSessionTranslate> {
+        fn from(value: Box<FcSession>) -> Self {
             let nb_clients = value.sessions.len();
             let mut pipes = Vec::with_capacity(nb_clients);
             let mut h3_conns = Vec::with_capacity(nb_clients);
 
-            // for session in value.sessions {
-            //     h3_conns.push((session.client, session.server));
-            //     pipes.push((
-            //         session.pipe,
-            //         "127.0.0.1:5678".parse().unwrap(),
-            //         crate::testing::Pipe::server_addr(),
-            //     ));
-            // }
+            for session in value.sessions {
+                h3_conns.push((session.client, session.server));
+                pipes.push((
+                    session.pipe,
+                    "127.0.0.1:5678".parse().unwrap(),
+                    crate::testing::Pipe::server_addr(),
+                ));
+            }
 
             let fc_pipe = MulticastPipe {
                 unicast_pipes: pipes,
@@ -452,37 +476,40 @@ pub mod testing {
                 mc_announce_data: value.mc_announce_data,
             };
 
-            (fc_pipe, h3_conns, value.fc_h3_conn, value.fc_h3_dummy_conn)
+            Box::new(FcSessionTranslate {
+                fc_pipe,
+                sessions: h3_conns,
+                fc_h3_conn: value.fc_h3_conn,
+                fc_h3_dummy_conn: value.fc_h3_dummy_conn,
+            })
         }
     }
 
-    impl From<FcSessionTranslate> for FcSession {
-        fn from(value: FcSessionTranslate) -> Self {
-            let nb_clients = value.1.len();
+    impl From<Box<FcSessionTranslate>> for Box<FcSession> {
+        fn from(value: Box<FcSessionTranslate>) -> Self {
+            let nb_clients = value.sessions.len();
             let mut sessions = Vec::with_capacity(nb_clients);
 
-            // for ((pipe, ..), (client, server)) in
-            //     value.0.unicast_pipes.drain(..).zip(value.1.drain(..))
-            // let mut pipes = value.0.unicast_pipes;
-            // let mut conns = value.1;
-            // for ((pipe, ..), (client, server)) in
-            //     pipes.drain(..).zip(conns.drain(..))
-            // {
-            //     let session = Session {
-            //         pipe,
-            //         client,
-            //         server,
-            //     };
-            //     sessions.push(session);
-            // }
-
-            FcSession {
-                fc_pipe: value.0.mc_channel,
-                fc_h3_conn: value.2,
-                fc_h3_dummy_conn: value.3,
-                sessions,
-                mc_announce_data: value.0.mc_announce_data,
+            let mut pipes = value.fc_pipe.unicast_pipes;
+            let mut conns = value.sessions;
+            for ((pipe, ..), (client, server)) in
+                pipes.drain(..).zip(conns.drain(..))
+            {
+                let session = Session {
+                    pipe,
+                    client,
+                    server,
+                };
+                sessions.push(session);
             }
+
+            Box::new(FcSession {
+                fc_pipe: value.fc_pipe.mc_channel,
+                fc_h3_conn: value.fc_h3_conn,
+                fc_h3_dummy_conn: value.fc_h3_dummy_conn,
+                sessions,
+                mc_announce_data: value.fc_pipe.mc_announce_data,
+            })
         }
     }
 }
@@ -583,7 +610,15 @@ mod tests {
             .multicast
             .as_mut()
             .unwrap()
-            .fc_enable_stream_rotation(false)
+            .fc_enable_stream_rotation(true)
+            .is_ok());
+        assert!(fc_session
+            .fc_pipe
+            .client_backup
+            .multicast
+            .as_mut()
+            .unwrap()
+            .fc_enable_stream_rotation(true)
             .is_ok());
 
         assert_eq!(fc_session.fc_handshake(), Ok(()));
@@ -595,6 +630,17 @@ mod tests {
         for (stream, ..) in requests.iter() {
             assert_eq!(*stream, 0);
         }
+
+        fc_session
+            .fc_pipe
+            .channel
+            .fc_mark_rotate_stream(fc_stream, true)
+            .unwrap();
+        fc_session
+            .fc_pipe
+            .client_backup
+            .fc_mark_rotate_stream(fc_stream, true)
+            .unwrap();
 
         let ev_headers = Event::Headers {
             list: fc_req,
@@ -616,21 +662,28 @@ mod tests {
         };
 
         // Send the data to the first client.
-        let mut fin;
-        (fc_session, fin) = fc_session.fc_source_send_single(None, 0).unwrap();
+        let (mut fc_session, mut fin) =
+            fc_session.fc_source_send_single(None, 0).unwrap();
         assert!(!fin);
         (fc_session, fin) = fc_session.fc_source_send_single(None, 0).unwrap();
         assert!(fin);
 
         // The first client received the response through the flexicast path.
-        let mut recv_buf = vec![0; body.len()];
+        let mut recv_buf = vec![0; 100];
         let s = &mut fc_session.sessions[0];
         assert_eq!(s.poll_client(), Ok((fc_stream, ev_headers.clone())));
         assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
         assert_eq!(s.recv_body_client(fc_stream, &mut recv_buf), Ok(body.len()));
 
         // The second client joins the flexicast channel.
-        let fc_config = FcConfigTest::default();
+        let fc_config = FcConfigTest {
+            mc_client_tp: McClientTp::default(),
+            mc_announce_data: fc_session.mc_announce_data.clone(),
+            mc_data_auth: None,
+            authentication: McAuthType::AsymSign,
+            probe_mc_path: true,
+            ..FcConfigTest::default()
+        };
         let random = SystemRandom::new();
         let h3_config = Config::new().unwrap();
         assert_eq!(
@@ -659,7 +712,7 @@ mod tests {
             .channel
             .fc_get_stream_emit_off(l_stream)
             .unwrap();
-        assert_eq!(offset, 64);
+        assert_eq!(offset, 82);
         let l_resp = s
             .send_responses_with_stream_offset(l_stream, false, offset)
             .unwrap();
@@ -682,45 +735,76 @@ mod tests {
             .fc_h3_conn
             .send_body(&mut fc_session.fc_pipe.channel, l_stream, &bytes, true)
             .unwrap();
-        // let (mut fc_session, fin) =
-        //     fc_session.fc_source_send_single(None, 0).unwrap();
-        let mut fc_session_translate: FcSessionTranslate = fc_session.into();
-        fin = match fc_session_translate.0.source_send_single(None, 0) {
-            Ok(_) => false,
-            Err(crate::Error::Done) => true,
-            Err(e) => panic!(),
-        };
-        println!(
-            "{:?}, {:?}",
-            fc_session_translate.1.len(),
-            fc_session_translate.0.unicast_pipes.len()
+        let (mut fc_session, _fin) =
+            fc_session.fc_source_send_single(None, 0).unwrap();
+        assert!(fin);
+
+        // The first client received the whole HTTP/3 response.
+        let s = &mut fc_session.sessions[0];
+        assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
+        assert_eq!(
+            s.recv_body_client(fc_stream, &mut recv_buf),
+            Ok(bytes.len())
         );
-        fc_session = fc_session_translate.into();
-        assert!(false);
-    }
+        assert_eq!(&recv_buf[..bytes.len()], &bytes);
 
-    #[test]
-    fn dummy_test() {
-        let mut fc_session = FcSession::new(
-            0,
-            "/tmp/fc_h3_out_of_order.txt",
-            McAuthType::StreamAsym,
-            true,
-            true,
-            None,
-        )
-        .unwrap();
+        // The second client only received the second part.
+        let s = &mut fc_session.sessions[1];
+        assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
+        assert_eq!(
+            s.client
+                .recv_body_ooo(&mut s.pipe.client, fc_stream, &mut recv_buf),
+            Ok((bytes.len(), 82))
+        );
+        assert_eq!(&recv_buf[..bytes.len()], &bytes);
 
-        let mut translate: FcSessionTranslate;
-        translate = fc_session.into();
-        fc_session = translate.into();
-        translate = fc_session.into();
-        fc_session = translate.into();
-        translate = fc_session.into();
-        fc_session = translate.into();
-        // for _ in 0..100 {
-        //     translate = fc_session.into();
-        //     fc_session = translate.into();
-        // }
+        // The source restarts the transmission. Do the same for HTTP/3.
+        assert_eq!(
+            fc_session
+                .fc_h3_conn
+                .fc_reset_stream(&mut fc_session.fc_pipe.channel, l_stream),
+            Ok(())
+        );
+        // Same for the dummy connection.
+        assert_eq!(
+            fc_session
+                .fc_h3_dummy_conn
+                .fc_reset_stream(&mut fc_session.fc_pipe.client_backup, l_stream),
+            Ok(())
+        );
+
+        // Send again the data on the stream... We repeat the same process as
+        // before on the flexicast source.
+        let (fc_stream, _fc_req) = fc_session.fc_send_request(true).unwrap();
+        assert!(fc_session.poll_fc_source().is_ok());
+        assert_eq!(
+            fc_session.poll_fc_source(),
+            Ok((fc_stream, Event::Finished))
+        );
+        let _resp = fc_session.fc_send_response(fc_stream, false).unwrap();
+        let body = fc_session.fc_send_body_source(fc_stream, false).unwrap();
+
+        let (fc_session, fin) =
+            fc_session.fc_source_send_single(None, 0).unwrap();
+        assert!(!fin);
+        let (mut fc_session, fin) =
+            fc_session.fc_source_send_single(None, 0).unwrap();
+        assert!(fin);
+
+        // The first client does not have any new data to receive.
+        let s = &mut fc_session.sessions[0];
+        assert_eq!(s.poll_client(), Ok((fc_stream, Event::Finished)));
+
+        // The second client reads the start of the body.
+        let s = &mut fc_session.sessions[1];
+        // Headers again..
+        assert!(s.poll_client().is_ok());
+        assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
+        assert_eq!(
+            s.client
+                .recv_body_ooo(&mut s.pipe.client, fc_stream, &mut recv_buf),
+            Ok((body.len(), 82))
+        );
+        assert_eq!(&recv_buf[..body.len()], &body);
     }
 }

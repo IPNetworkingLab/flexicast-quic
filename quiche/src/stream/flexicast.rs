@@ -78,7 +78,7 @@ impl Stream {
         self.send.fc_stream_rotate = v;
     }
 
-    /// Restart the sending state of a stream.
+    /// Restart the sending and receiving state of a stream.
     /// This will restart the stream state to send again the same data.
     /// Returns true if the stream is started again.
     /// FC-TODO: URGENT!!!
@@ -86,20 +86,13 @@ impl Stream {
     /// because we do not buffer the data, we consume it.
     ///
     /// Flexicast with stream rotation extension.
-    pub(crate) fn fc_restart_stream_send(&mut self) -> bool {
-        // self.send.fc_restart_state()
+    pub(crate) fn fc_restart_stream_send_recv(&mut self) -> bool {
         if !self.send.fc_stream_rotate {
             return false;
         }
         self.send = SendBuf::new(self.send.max_off());
+        self.recv = RecvBuf::new(self.recv.max_data(), self.recv.max_data());
         true
-    }
-
-    /// Whether the sending-side of the stream uses rotation.
-    ///
-    /// Flexicast with stream rotation extension.
-    pub(crate) fn fc_send_use_rotation(&self) -> bool {
-        self.send.fc_stream_rotate
     }
 }
 
@@ -209,7 +202,7 @@ mod tests {
         assert_eq!(stream.send.emit(&mut buf[..]), Ok((0, true)));
 
         // Restart the stream.
-        assert!(stream.fc_restart_stream_send());
+        assert!(stream.fc_restart_stream_send_recv());
 
         // Send again the data.
         let first = b"hello";
