@@ -752,7 +752,6 @@ impl Stream {
     /// side is complete, depending on whether the stream was created locally
     /// or not.
     pub fn is_complete(&self) -> bool {
-        println!("Is complete: {} {} and {} {}", self.bidi, self.local, self.recv.is_fin(), self.send.is_complete());
         match (self.bidi, self.local) {
             // For bidirectional streams we need to check both receive and send
             // sides for completion.

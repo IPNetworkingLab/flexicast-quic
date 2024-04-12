@@ -1391,7 +1391,6 @@ impl Connection {
         // While body is being received, the stream is marked as finished only
         // when all data is read by the application.
         if conn.stream_finished(stream_id) {
-            println!("Here consider the stream as finished");
             self.process_finished_stream(stream_id);
         }
 
@@ -1606,7 +1605,6 @@ impl Connection {
 
         // Process finished streams list.
         if let Some(finished) = self.finished_streams.pop_front() {
-            println!("Here it is finished");
             return Ok((finished, Event::Finished));
         }
 
@@ -1641,11 +1639,9 @@ impl Connection {
         // events are returned when receiving empty stream frames with the fin
         // flag set.
         if let Some(finished) = self.finished_streams.pop_front() {
-            println!("Here it is finished 2");
             return Ok((finished, Event::Finished));
         }
 
-        println!("Here error done");
         Err(Error::Done)
     }
 
@@ -2497,7 +2493,6 @@ impl Connection {
     }
 
     fn process_finished_stream(&mut self, stream_id: u64) {
-        println!("Call finished stream!");
         let stream = match self.streams.get_mut(&stream_id) {
             Some(v) => v,
 
@@ -6531,8 +6526,8 @@ mod tests {
 
 #[cfg(feature = "ffi")]
 mod ffi;
+mod flexicast;
 mod frame;
 #[doc(hidden)]
 pub mod qpack;
 mod stream;
-mod flexicast;

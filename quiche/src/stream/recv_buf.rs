@@ -422,8 +422,6 @@ impl RecvBuf {
             return true;
         }
 
-        println!("Stream recv is fin: {:?} {} and self={:?}", self.fin_off, self.off, self);
-
         false
     }
 

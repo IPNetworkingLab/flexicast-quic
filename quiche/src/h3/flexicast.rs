@@ -86,7 +86,6 @@ impl Connection {
         // While body is being received, the stream is marked as finished only
         // when all data is read by the application.
         if conn.stream_finished(stream_id) {
-            println!("Here consider the stream as finished");
             self.process_finished_stream(stream_id);
         }
 
@@ -109,6 +108,10 @@ impl Connection {
 
         // Remove the stream.
         _ = self.streams.remove_entry(&stream_id);
+
+        // Reset the grease for the stream... This will be a problem if some
+        // clients don't use it and others do.
+        self.frames_greased = false;
 
         // Restart the quic stream.
         conn.fc_restart_stream_send_recv(stream_id)?;
@@ -743,12 +746,10 @@ mod tests {
         // The first client received the whole HTTP/3 response.
         let s = &mut fc_session.sessions[0];
         assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
-        println!("Before first client recv body end");
         assert_eq!(
             s.recv_body_client(fc_stream, &mut recv_buf),
             Ok(bytes.len())
         );
-        println!("After first client recv body end");
         assert_eq!(&recv_buf[..bytes.len()], &bytes);
 
         // The second client only received the second part.
@@ -796,17 +797,13 @@ mod tests {
 
         // The first client does not have any new data to receive.
         let s = &mut fc_session.sessions[0];
-        println!("Before poll client 0 finished");
         assert_eq!(s.poll_client(), Ok((fc_stream, Event::Finished)));
-        println!("------ After first client ------");
 
         // The second client reads the start of the body.
         let s = &mut fc_session.sessions[1];
         // Headers again..
         assert!(s.poll_client().is_ok());
-        println!("After first poll client");
         assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
-        println!("After second poll client");
         assert_eq!(
             s.client
                 .recv_body_ooo(&mut s.pipe.client, fc_stream, &mut recv_buf),
@@ -815,9 +812,6 @@ mod tests {
         assert_eq!(&recv_buf[..body.len()], &body);
 
         // No more data to read.
-        let e = s.pipe.client.stream_recv_ooo(0, &mut recv_buf);
-        println!("E={:?}", e);
-        println!("Before poll client 1 finished");
         assert_eq!(s.poll_client(), Ok((fc_stream, Event::Finished)));
     }
 }

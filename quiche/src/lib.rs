@@ -6022,7 +6022,6 @@ impl Connection {
         }
 
         if complete {
-            println!("Quiche says stream complete, collect");
             self.streams.collect(stream_id, local);
         }
 
@@ -6552,7 +6551,7 @@ impl Connection {
         let stream = match self.streams.get(stream_id) {
             Some(v) => v,
 
-            None => {println!("Stream collected"); return true},
+            None => return true,
         };
 
         stream.recv.is_fin()
@@ -8521,7 +8520,6 @@ impl Connection {
             frame::Frame::NewToken { .. } => (),
 
             frame::Frame::Stream { stream_id, data } => {
-                println!("Received stream frame: {:?} and {:?}", stream_id, data);
                 // Peer can't send on our unidirectional streams.
                 if !stream::is_bidi(stream_id) &&
                     stream::is_local(stream_id, self.is_server)
