@@ -422,6 +422,8 @@ impl RecvBuf {
             return true;
         }
 
+        println!("Stream recv is fin: {:?} {} and self={:?}", self.fin_off, self.off, self);
+
         false
     }
 
@@ -1354,6 +1356,9 @@ mod tests {
 
         // All data is read.
         assert_eq!(recv.emit(&mut buf), Err(Error::Done));
+
+        // The receiving part of the stream is complete.
+        assert!(recv.is_fin());
     }
 
     #[test]
@@ -1389,6 +1394,9 @@ mod tests {
         assert_eq!(&buf[..len], b"somethinghello");
         assert_eq!(recv.len, off);
         assert_eq!(recv.off, off);
+
+        // The receiving part of the stream is complete.
+        assert!(recv.is_fin());
     }
 
     #[test]
@@ -1424,6 +1432,9 @@ mod tests {
         assert_eq!(&buf[..len], b"somethinghello");
         assert_eq!(recv.len, off);
         assert_eq!(recv.off, off);
+
+        // The receiving part of the stream is complete.
+        assert!(recv.is_fin());
     }
 
     #[test]
