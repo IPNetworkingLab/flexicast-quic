@@ -156,6 +156,16 @@ pub struct Stream {
 
     /// The last `PRIORITY_UPDATE` frame encoded field value, if any.
     last_priority_update: Option<Vec<u8>>,
+
+    /// The offset of data sent on this stream by the application, without the HTTP/3 overhead.
+    /// 
+    /// Flexicast with stream rotation extension.
+    fc_off: u64,
+
+    /// The offset of the QUIC stream the last time the application sent data to HTTP/3. Used for the mapping between the QUIC stream and the HTTP/3 stream.
+    /// 
+    /// Flexicast with stream rotation extension.
+    fc_quic_off: u64, 
 }
 
 impl Stream {
@@ -196,6 +206,9 @@ impl Stream {
             data_event_triggered: false,
 
             last_priority_update: None,
+            
+            fc_off: 0,
+            fc_quic_off: 0,
         }
     }
 
@@ -674,6 +687,23 @@ impl Stream {
         }
 
         Ok((len, fin, off))
+    }
+}
+
+impl Stream {
+    /// Set the Flexicast emit offset of the stream. This means:
+    /// 1) Update the length of data sent through HTTP/3 on this stream,
+    /// 2) Keep track of the highest offset of the FC-QUIC stream for this new DATA frame.
+    /// 
+    /// Flexicast with stream rotation extension.
+    pub(super) fn fc_set_emit_off(&mut self, len: u64, quic_off: u64) {
+        self.fc_off += len;
+        self.fc_quic_off = quic_off;
+    }
+
+    /// Returns the HTTP/3 and QUIC stream offsets.
+    pub(super) fn fc_get_emit_off(&self) -> (u64, u64) {
+        (self.fc_off, self.fc_quic_off)
     }
 }
 

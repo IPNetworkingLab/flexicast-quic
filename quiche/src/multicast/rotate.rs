@@ -249,6 +249,13 @@ impl Connection {
             .map(|stream| stream.recv.fc_set_offset_at(off))
             .ok_or(Error::InvalidStreamState(stream_id))?
     }
+
+    /// Returns the maximum offset buffered in the specified stream.
+    /// 
+    /// Flexicast with stream rotation extension.
+    pub(crate) fn fc_get_stream_off_back(&self, stream_id: u64) -> Option<u64> {
+        self.streams.get(stream_id).map(|s| s.send.off_back())
+    }
 }
 
 #[cfg(test)]
@@ -330,8 +337,6 @@ mod tests {
         .unwrap();
         mc_pipe.unicast_pipes.push(new_client);
 
-        // TODO: test the state of the stream on the new client.
-
         // Send the remaining of the stream to both clients.
         mc_pipe
             .source_send_single_from_buf(None, 0, &mut buf[..])
@@ -341,10 +346,6 @@ mod tests {
             mc_pipe.source_send_single_from_buf(None, 0, &mut buf[..]),
             Err(Error::Done)
         );
-
-        // TODO: read the stream on the clients.
-
-        // TODO: close the connection for the first client?
 
         // Restart the stream for the second client.
         assert!(mc_pipe

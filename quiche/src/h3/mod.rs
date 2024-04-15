@@ -1291,6 +1291,15 @@ impl Connection {
 
         if fin && written == body.len() && conn.stream_finished(stream_id) {
             self.streams.remove(&stream_id);
+        } else if let Some(stream) = self.streams.get_mut(&stream_id) {
+            // Get FC-QUIC highest offset for this stream, which is correlated
+            // to the last HTTP/3 frame sent.
+            let quic_off = conn.fc_get_stream_off_back(stream_id);
+            // FC-TODO: what will happen if the stream is finished?
+            if let Some(off) = quic_off {
+                // Clients that join will only be concerned starting the next HTTP/3 DATA frame.
+                stream.fc_set_emit_off(written as u64, off);
+            }
         }
 
         Ok(written)
