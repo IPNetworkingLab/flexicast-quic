@@ -267,3 +267,4 @@ impl AppDataServer {
 
 pub mod file_transfer;
 pub mod tixeo;
+pub mod http3;

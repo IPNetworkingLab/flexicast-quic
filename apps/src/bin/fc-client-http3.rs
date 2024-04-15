@@ -3,6 +3,7 @@ extern crate log;
 
 use clap::Parser;
 use quiche::h3;
+use quiche::h3::Header;
 use quiche::h3::NameValue;
 use quiche::multicast;
 use quiche::multicast::reliable::ReliableMulticastConnection;
@@ -12,12 +13,19 @@ use quiche::multicast::McPathType;
 use quiche::multicast::McRole;
 use quiche::multicast::MulticastConnection;
 use quiche::ConnectionId;
+use quiche_apps::mc_app::http3::FcH3Error;
+use quiche_apps::mc_app::http3::Result;
+use quiche_apps::mc_app::http3::FC_H3_OFF_HDR;
+use quiche_apps::mc_app::http3::FC_H3_QUIC_OFF_HDR;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
+use std::convert::TryInto;
+use std::io::Write;
 use std::net;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
+use std::path::Path;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -51,6 +59,9 @@ struct Args {
     /// client will listen to its own address and the port advertised by the
     /// source.
     proxy_uc: bool,
+
+    #[clap(short = 'o', long = "output", value_parser)]
+    output_file: Option<Box<Path>>,
 }
 
 fn main() {
@@ -156,6 +167,9 @@ fn main() {
     let h3_request = get_h3_request(&url);
     let h3_request_start = std::time::Instant::now();
     let mut h3_request_sent = false;
+
+    // Prepare the response.
+    let mut h3_resp = Http3Response::default();
 
     'main_loop: loop {
         // Compute (FC-)QUIC timeout.
@@ -440,11 +454,13 @@ fn main() {
             loop {
                 match h3_conn.poll(&mut conn) {
                     Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
-                        info!(
+                        debug!(
                             "Got response headers {:?} on stream id {}",
                             hdrs_to_strings(&list),
                             stream_id,
                         );
+
+                        h3_resp.recv_hdr(&list).unwrap();
                     },
 
                     Ok((stream_id, quiche::h3::Event::Data)) => {
@@ -456,7 +472,7 @@ fn main() {
                                 read, stream_id
                             );
 
-                            // TODO: do something with the data.
+                            h3_resp.recv_body(&buf[..read]).unwrap();
                         }
                     },
 
@@ -541,6 +557,14 @@ fn main() {
             break;
         }
     }
+
+    // Write data into the file.
+    let output_file = args
+        .output_file
+        .as_ref()
+        .map(|o| o.as_ref())
+        .unwrap_or(&Path::new(url.path()));
+    h3_resp.write_all(output_file).unwrap();
 }
 
 fn get_config(
@@ -619,4 +643,126 @@ pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
             (name, value)
         })
         .collect()
+}
+
+#[derive(Debug, Default)]
+/// HTTP/3 response state.
+///
+/// TODO: replace by directly writing the data on disk, especially for large
+/// files...
+struct Http3Response {
+    /// Initial offset of the HTTP3 response. Used because we might receive at
+    /// the middle if we join the flexicast group later.
+    h3_off: u64,
+
+    /// Initial offset of the response for QUIC.
+    quic_off: u64,
+
+    /// Whether the client received the reponse headers.
+    recv_hdr: bool,
+
+    /// Data buffer.
+    data: Vec<u8>,
+
+    /// Offset of the data buffer.
+    off: usize,
+}
+
+impl Http3Response {
+    pub fn recv_hdr(&mut self, headers: &[Header]) -> Result<()> {
+        if self.recv_hdr {
+            return Err(FcH3Error::Header);
+        }
+
+        // Whether the HTTP3 and QUIC offset headers are received.
+        let mut recv_h3_off = false;
+        let mut recv_quic_off = false;
+        let mut recv_content_length = false;
+
+        for header in headers.iter() {
+            match header.name() {
+                FC_H3_OFF_HDR => {
+                    if recv_h3_off {
+                        return Err(FcH3Error::Header);
+                    }
+                    recv_h3_off = true;
+
+                    self.h3_off = u64::from_be_bytes(
+                        header
+                            .value()
+                            .try_into()
+                            .map_err(|_| FcH3Error::Header)?,
+                    );
+
+                    self.off = self.h3_off as usize;
+                },
+
+                FC_H3_QUIC_OFF_HDR => {
+                    if recv_quic_off {
+                        return Err(FcH3Error::Header);
+                    }
+                    recv_quic_off = true;
+
+                    self.quic_off = u64::from_be_bytes(
+                        header
+                            .value()
+                            .try_into()
+                            .map_err(|_| FcH3Error::Header)?,
+                    );
+                },
+
+                b":content-length" => {
+                    if recv_content_length {
+                        return Err(FcH3Error::Header);
+                    }
+                    recv_content_length = true;
+
+                    let len = u64::from_be_bytes(
+                        header
+                            .value()
+                            .try_into()
+                            .map_err(|_| FcH3Error::Header)?,
+                    ) as usize;
+
+                    self.data = vec![0u8; len];
+                },
+
+                _ => (),
+            }
+        }
+
+        if !(recv_h3_off && recv_quic_off) {
+            return Err(FcH3Error::Header);
+        }
+
+        self.recv_hdr = true;
+
+        Ok(())
+    }
+
+    pub fn recv_body(&mut self, data: &[u8]) -> Result<()> {
+        // Maybe the data wraps up (it should not because of the design of stream
+        // rotation). First part.
+        let off = data.len().min(self.data.len() - self.off);
+        self.data[self.off..self.off + off].copy_from_slice(&data[..off]);
+
+        // Second part.
+        if data.len() > self.data.len() - self.off {
+            let off_end = data.len() - (self.data.len() - self.off);
+            self.data[..off_end].copy_from_slice(&data[..data.len() - off]);
+        }
+
+        self.off += data.len();
+
+        Ok(())
+    }
+
+    pub fn write_all(&self, output: &Path) -> Result<()> {
+        let mut file =
+            std::fs::File::create(output).map_err(|e| FcH3Error::Io(e))?;
+
+        file.write_all(&self.data).map_err(|e| FcH3Error::Io(e))?;
+
+        Ok(())
+    }
 }
