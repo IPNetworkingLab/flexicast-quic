@@ -2591,7 +2591,7 @@ impl MulticastChannelSource {
 
     /// Copy of the Pipe::advance method. Used for the setup
     /// to create the source multicast channel.
-    pub(crate) fn advance(
+    pub fn advance(
         server: &mut Connection, client: &mut Connection,
     ) -> Result<()> {
         let mut client_done = false;

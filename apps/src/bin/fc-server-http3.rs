@@ -6,6 +6,7 @@ use std::net;
 use std::path::Path;
 
 use clap::Parser;
+use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::McAnnounceData;
@@ -13,7 +14,6 @@ use quiche::multicast::McClientTp;
 use quiche::multicast::McConfig;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastConnection;
-use quiche::multicast::{self,};
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
 use quiche_apps::common::ClientIdMap;
@@ -89,6 +89,13 @@ struct Args {
     /// Expiration timer on the flexicast path.
     #[clap(long, value_parser, default_value = "600")]
     expiration_timer: u64,
+
+    /// File path to read and transmit through HTTP/3.
+    ///
+    /// FC-TODO: This should be updated if we want to deliver different files at
+    /// the same time.
+    #[clap(long = "file")]
+    file: Box<String>,
 }
 
 fn main() {
