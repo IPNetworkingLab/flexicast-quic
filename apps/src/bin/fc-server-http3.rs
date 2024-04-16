@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate log;
 
+use core::time;
 use std::collections::HashMap;
 use std::net;
 use std::path::Path;
@@ -17,6 +18,7 @@ use quiche::multicast::MulticastConnection;
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
 use quiche_apps::common::ClientIdMap;
+use quiche_apps::mc_app::http3::Http3Server;
 use quiche_apps::sendto::send_to;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
@@ -28,6 +30,7 @@ struct Client {
     client_id: u64,
     active_client: bool, // TODO: define what it is?
     listen_fc_channel: bool,
+    http3_conn: Option<quiche::h3::Connection>,
 }
 
 type ClientMap = HashMap<u64, Client>;
@@ -122,6 +125,11 @@ fn main() {
     // Create the configuration for the QUIC connections.
     let mut config = get_config(&args);
     let h3_config = quiche::h3::Config::new().unwrap();
+    let mut h3_resp = Http3Server::new(&args.file).unwrap();
+
+    // Flexicast HTTP/3 connections.
+    let mut fh3_conn = None;
+    let mut fh3_back = None;
 
     let rng = SystemRandom::new();
     let conn_id_seed =
@@ -133,7 +141,7 @@ fn main() {
 
     let local_addr = socket.local_addr().unwrap();
 
-    let (mut mc_socket_opt, mut mc_channel_opt, mut mc_announce_dta_opt) =
+    let (mut mc_socket_opt, mut mc_channel_opt, mc_announce_data_opt) =
         if args.flexicast {
             get_multicast_channel(&args, &rng)
         } else {
@@ -157,6 +165,33 @@ fn main() {
         }
     }
 
+    // Setup flexicast HTTP/3 connections.
+    if let Some(fc_chan) = mc_channel_opt.as_mut() {
+        fh3_conn = Some(
+            quiche::h3::Connection::with_transport(
+                &mut fc_chan.channel,
+                &h3_config,
+            )
+            .unwrap(),
+        );
+        fh3_back = Some(
+            quiche::h3::Connection::with_transport(
+                &mut fc_chan.client_backup,
+                &h3_config,
+            )
+            .unwrap(),
+        );
+
+        // Do the handshake for the source.
+        h3_resp
+            .start_request_on_fc_source(
+                fh3_conn.as_mut().unwrap(),
+                fc_chan,
+                fh3_back.as_mut().unwrap(),
+            )
+            .unwrap();
+    }
+
     debug!("AFTER MULTICAST CHANNEL SETUP");
 
     if let Some(mc_socket) = mc_socket_opt.as_mut() {
@@ -173,11 +208,15 @@ fn main() {
         let now = std::time::Instant::now();
         let mut timeout = clients.values().filter_map(|c| c.conn.timeout()).min();
 
-        // FC-TODO: application timeout and timeout when the application did not
-        // start.
         if let Some(mc_channel) = mc_channel_opt.as_ref() {
             let mc_timeout = mc_channel.channel.mc_timeout(now);
             timeout = [timeout, mc_timeout].iter().flatten().min().copied();
+        }
+
+        if h3_resp.is_active() {
+            // Send data as quickly as possible.
+            // FC-TODO: maybe not optimal to do it like this.
+            timeout = Some(time::Duration::ZERO);
         }
 
         poll.poll(&mut events, timeout).unwrap();
@@ -326,6 +365,7 @@ fn main() {
                     client_id,
                     active_client: false,
                     listen_fc_channel: false,
+                    http3_conn: None,
                 };
 
                 next_client_id += 1;
@@ -339,35 +379,38 @@ fn main() {
 
                 let client = clients.get_mut(&client_id).unwrap();
 
-                // Add the multicast channel announcement for the new client.
-                if let (Some(mc_announce_data), Some(mc_channel)) =
-                    (mc_announce_dta_opt.as_ref(), mc_channel_opt.as_ref())
-                {
-                    // Only advertise the MC_ANNOUNCE data directly to the clients
-                    // if no dymanic scaling (i.e., creation of the multicast
-                    // group when enough receivers are connected).
-                    client
-                        .conn
-                        .mc_set_mc_announce_data(mc_announce_data)
-                        .unwrap();
-                    client
-                        .conn
-                        .mc_set_multicast_receiver(
-                            &mc_channel.master_secret,
-                            mc_channel
-                                .channel
-                                .get_multicast_attributes()
-                                .unwrap()
-                                .get_mc_space_id()
-                                .unwrap(),
-                            mc_channel
-                                .channel
-                                .get_multicast_attributes()
-                                .unwrap()
-                                .get_decryption_key_algo(),
-                        )
-                        .unwrap();
-                }
+                // FC-TODO: this piece of code should be inserted whenever the
+                // client asked for the correct ressource that can be sent over
+                // flexicast. // Add the multicast channel
+                // announcement for the new client.
+                // if let (Some(mc_announce_data), Some(mc_channel)) =
+                //     (mc_announce_data_opt.as_ref(), mc_channel_opt.as_ref())
+                // {
+                //     // Only advertise the MC_ANNOUNCE data directly to the
+                // clients     // if no dymanic scaling (i.e.,
+                // creation of the multicast     // group when
+                // enough receivers are connected).     client
+                //         .conn
+                //         .mc_set_mc_announce_data(mc_announce_data)
+                //         .unwrap();
+                //     client
+                //         .conn
+                //         .mc_set_multicast_receiver(
+                //             &mc_channel.master_secret,
+                //             mc_channel
+                //                 .channel
+                //                 .get_multicast_attributes()
+                //                 .unwrap()
+                //                 .get_mc_space_id()
+                //                 .unwrap(),
+                //             mc_channel
+                //                 .channel
+                //                 .get_multicast_attributes()
+                //                 .unwrap()
+                //                 .get_decryption_key_algo(),
+                //         )
+                //         .unwrap();
+                // }
 
                 // Only bother with qlog if the user specified it.
                 #[cfg(feature = "qlog")]
@@ -410,6 +453,31 @@ fn main() {
                     continue 'uc_read;
                 },
             };
+
+            // Create a new HTTP/3 connection as soon as the QUIC connection is
+            // established.
+            if (client.conn.is_in_early_data() || client.conn.is_established()) &&
+                client.http3_conn.is_none()
+            {
+                debug!(
+                    "{} QUIC handshake completed, now trying HTTP/3",
+                    client.conn.trace_id()
+                );
+
+                let h3_conn = match quiche::h3::Connection::with_transport(
+                    &mut client.conn,
+                    &h3_config,
+                ) {
+                    Ok(v) => v,
+
+                    Err(e) => {
+                        error!("Failed to create HTTP/3 connection: {}", e);
+                        continue 'uc_read;
+                    },
+                };
+
+                client.http3_conn = Some(h3_conn);
+            }
 
             // FC-TODO: process readable streams?
 

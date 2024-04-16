@@ -1,6 +1,7 @@
 use std::convert::TryInto;
 use std::io::Write;
 use std::path::Path;
+use std::rc::Rc;
 
 use quiche::h3::Connection as H3Conn;
 use quiche::h3::Header;
@@ -199,10 +200,13 @@ pub struct Http3Server {
     offset: u64,
 
     /// The actual data.
-    data: Vec<u8>,
+    data: Rc<Vec<u8>>,
 
     /// The HTTP/3 and QUIC stream ID for this response.
     stream_id: u64,
+
+    /// Whether the transfer is active.
+    active: bool,
 }
 
 impl Http3Server {
@@ -213,8 +217,9 @@ impl Http3Server {
         Ok(Self {
             filepath: filepath.to_string(),
             offset: 0,
-            data,
+            data: Rc::new(data),
             stream_id: 0, // Fc-TODO: Maybe an error here because we assume 0?
+            active: false,
         })
     }
 
@@ -346,5 +351,25 @@ impl Http3Server {
         assert_eq!(self.stream_id, stream_id);
 
         Ok(())
+    }
+
+    /// Used in case a client exists the flexicast channel, so that it can
+    /// continue the transfer at its own pace.
+    pub fn new_unicast(offset: u64, stream_id: u64, other: &Self) -> Self {
+        Self {
+            filepath: other.filepath.clone(),
+            offset,
+            data: Rc::clone(&other.data),
+            stream_id,
+            active: true,
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn set_active(&mut self, v: bool) {
+        self.active = v;
     }
 }
