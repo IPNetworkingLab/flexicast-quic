@@ -7,6 +7,7 @@ use quiche::h3::Connection as H3Conn;
 use quiche::h3::Header;
 use quiche::h3::NameValue;
 use quiche::multicast::MulticastChannelSource;
+use quiche::Connection;
 use std::time::Instant;
 use url::Url;
 
@@ -33,6 +34,22 @@ pub enum FcH3Error {
 
     /// Quiche error.
     QUIC(quiche::Error),
+
+    /// Finished to transmit the data.
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Flexicast action that the client must perform based on its HTTP/3 query.
+pub enum FH3Action {
+    /// Join the flexicast channel.
+    Join,
+
+    /// Do nothing.
+    Nothing,
+
+    /// Leave the flexicast channel.
+    Leave,
 }
 
 pub type Result<T> = core::result::Result<T, FcH3Error>;
@@ -202,11 +219,21 @@ pub struct Http3Server {
     /// The actual data.
     data: Rc<Vec<u8>>,
 
+    /// HTTP/3 headers sent to the client.
+    pub headers: Option<Vec<Header>>,
+
     /// The HTTP/3 and QUIC stream ID for this response.
     stream_id: u64,
 
     /// Whether the transfer is active.
     active: bool,
+
+    /// Status of the client regarding the flexicast channel for this HTTP/3
+    /// response.
+    fh3_action: FH3Action,
+
+    /// Whether the HTTP/3 response headers can be sent.
+    pub send_h3_headers: bool,
 }
 
 impl Http3Server {
@@ -218,16 +245,34 @@ impl Http3Server {
             filepath: filepath.to_string(),
             offset: 0,
             data: Rc::new(data),
+            headers: None,
             stream_id: 0, // Fc-TODO: Maybe an error here because we assume 0?
             active: false,
+            fh3_action: FH3Action::Join,
+            send_h3_headers: true, // True for the flexicast channel.
         })
     }
 
-    pub fn send_hdr(
-        &self, headers: &[Header], fh3_conn: &H3Conn,
-    ) -> Result<Vec<Header>> {
+    pub fn handle_request(
+        headers: &[Header], fh3_conn: &mut H3Conn, conn: &mut Connection,
+        stream_id: u64, filepath: &str, data: &Rc<Vec<u8>>,
+        h3_conn: Option<&mut H3Conn>,
+    ) -> Result<Self> {
         let mut method = None;
         let mut path = vec![];
+
+        info!(
+            "{} got request {:?} on stream id {}",
+            conn.trace_id(),
+            headers,
+            stream_id,
+        );
+
+        // We decide the response based on headers alone, so stop reading the
+        // request stream so that any body is ignored and pointless Data events
+        // are not generated.
+        conn.stream_shutdown(stream_id, quiche::Shutdown::Read, 0)
+            .unwrap();
 
         for header in headers.iter() {
             match header.name() {
@@ -237,30 +282,27 @@ impl Http3Server {
             }
         }
 
-        let status = match method {
+        let (status, action) = match method {
             Some(b"GET") =>
-                if &path == self.filepath.as_bytes() {
-                    200
+                if &path == filepath.as_bytes() {
+                    (200, FH3Action::Join)
                 } else {
-                    404
+                    (404, FH3Action::Nothing)
                 },
 
-            _ => 405,
+            _ => (405, FH3Action::Nothing),
         };
 
         // Get the HTTP/3 and FC-QUIC offset to advertise to the client to allow
         // for out-of-order delivery.
         let (h3_off, quic_off) = fh3_conn
-            .fc_get_emit_off(self.stream_id)
-            .ok_or(FcH3Error::StreamId(self.stream_id))?;
+            .fc_get_emit_off(stream_id)
+            .ok_or(FcH3Error::StreamId(stream_id))?;
 
         let resp_headers = vec![
             Header::new(b":status", status.to_string().as_bytes()),
             Header::new(b"server", b"quiche"),
-            Header::new(
-                b"content-length",
-                self.data.len().to_string().as_bytes(),
-            ),
+            Header::new(b"content-length", data.len().to_string().as_bytes()),
             Header::new(FC_H3_OFF_HDR, &format!("{:0>8}", h3_off).into_bytes()),
             Header::new(
                 FC_H3_QUIC_OFF_HDR,
@@ -268,15 +310,56 @@ impl Http3Server {
             ),
         ];
 
-        Ok(resp_headers)
+        let mut h3_resp = Self {
+            filepath: filepath.to_string(),
+            offset: 0,
+            data: Rc::clone(data),
+            headers: None,
+            stream_id,
+            // By default the HTTP/3 response is not active for the unicast
+            // server.
+            active: if action == FH3Action::Join {
+                false
+            } else {
+                true
+            },
+            fh3_action: action,
+            send_h3_headers: if action == FH3Action::Join {
+                false
+            } else {
+                true
+            },
+        };
+
+        // Send the response headers to the client.
+        let h3_conn_to_use = h3_conn.unwrap_or(fh3_conn);
+        match h3_conn_to_use.send_response(conn, stream_id, headers, false) {
+            Ok(v) => v,
+
+            Err(quiche::h3::Error::StreamBlocked) => {
+                // Store headers for later delivery.
+                h3_resp.headers = Some(resp_headers);
+            },
+
+            Err(e) => {
+                error!("{} stream send failed: {:?}", conn.trace_id(), e);
+                return Err(FcH3Error::HTTP3(e));
+            },
+        }
+
+        Ok(h3_resp)
     }
 
     pub fn send_body(
-        &mut self, fh3_conn: &mut H3Conn, fc_conn: &mut quiche::Connection,
+        &mut self, h3_conn: &mut H3Conn, conn: &mut quiche::Connection,
     ) -> Result<usize> {
-        let written = fh3_conn
+        if !self.is_active() {
+            return Ok(0);
+        }
+        
+        let written = h3_conn
             .send_body(
-                fc_conn,
+                conn,
                 self.stream_id,
                 &self.data[self.offset as usize..],
                 true,
@@ -293,9 +376,9 @@ impl Http3Server {
     }
 
     pub fn restart_stream(
-        &mut self, fh3_conn: &mut H3Conn, fc_chan: &mut MulticastChannelSource,
+        self, fh3_conn: &mut H3Conn, fc_chan: &mut MulticastChannelSource,
         fh3_back: &mut H3Conn,
-    ) -> Result<()> {
+    ) -> Result<Self> {
         // Reset the state of the flexicast source.
         fh3_conn
             .fc_reset_stream(&mut fc_chan.channel, self.stream_id)
@@ -304,20 +387,17 @@ impl Http3Server {
             .fc_reset_stream(&mut fc_chan.client_backup, self.stream_id)
             .map_err(|e| FcH3Error::HTTP3(e))?;
 
-        // Reset the state of the response.
-        self.offset = 0;
-
         // The dummy client has to send again the request.
         // This is ugly, but it should work.
-        self.start_request_on_fc_source(fh3_conn, fc_chan, fh3_back)?;
+        let out = self.start_request_on_fc_source(fh3_conn, fc_chan, fh3_back)?;
 
-        Ok(())
+        Ok(out)
     }
 
     pub fn start_request_on_fc_source(
-        &mut self, fh3_conn: &mut H3Conn, fc_chan: &mut MulticastChannelSource,
+        self, fh3_conn: &mut H3Conn, fc_chan: &mut MulticastChannelSource,
         fh3_back: &mut H3Conn,
-    ) -> Result<()> {
+    ) -> Result<Self> {
         // Backup client sends the request.
         let url: Url = format!("https://localhost:4433/{}", self.filepath)
             .parse()
@@ -343,25 +423,18 @@ impl Http3Server {
 
         // Send the response from the flexicast source.
         if let quiche::h3::Event::Headers { list, .. } = event {
-            let _headers = self.send_hdr(&list, &fh3_conn)?;
+            let out = Http3Server::handle_request(
+                &list,
+                fh3_conn,
+                &mut fc_chan.channel,
+                stream_id,
+                &self.filepath,
+                &self.data,
+                None,
+            )?;
+            Ok(out)
         } else {
-            return Err(FcH3Error::Request);
-        }
-
-        assert_eq!(self.stream_id, stream_id);
-
-        Ok(())
-    }
-
-    /// Used in case a client exists the flexicast channel, so that it can
-    /// continue the transfer at its own pace.
-    pub fn new_unicast(offset: u64, stream_id: u64, other: &Self) -> Self {
-        Self {
-            filepath: other.filepath.clone(),
-            offset,
-            data: Rc::clone(&other.data),
-            stream_id,
-            active: true,
+            Err(FcH3Error::Request)
         }
     }
 
@@ -371,5 +444,17 @@ impl Http3Server {
 
     pub fn set_active(&mut self, v: bool) {
         self.active = v;
+    }
+
+    pub fn data(&self) -> &Rc<Vec<u8>> {
+        &self.data
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset as usize
+    }
+
+    pub fn action(&self) -> FH3Action {
+        self.fh3_action
     }
 }

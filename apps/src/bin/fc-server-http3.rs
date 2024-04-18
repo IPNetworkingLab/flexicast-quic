@@ -13,11 +13,15 @@ use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::McClientTp;
 use quiche::multicast::McConfig;
+use quiche::multicast::McRole;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastConnection;
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
 use quiche_apps::common::ClientIdMap;
+use quiche_apps::mc_app::http3;
+use quiche_apps::mc_app::http3::FH3Action;
+use quiche_apps::mc_app::http3::FcH3Error;
 use quiche_apps::mc_app::http3::Http3Server;
 use quiche_apps::sendto::send_to;
 use ring::rand::SecureRandom;
@@ -28,9 +32,9 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 struct Client {
     conn: quiche::Connection,
     client_id: u64,
-    active_client: bool, // TODO: define what it is?
     listen_fc_channel: bool,
     http3_conn: Option<quiche::h3::Connection>,
+    partial_responses: HashMap<u64, Http3Server>,
 }
 
 type ClientMap = HashMap<u64, Client>;
@@ -183,7 +187,7 @@ fn main() {
         );
 
         // Do the handshake for the source.
-        h3_resp
+        h3_resp = h3_resp
             .start_request_on_fc_source(
                 fh3_conn.as_mut().unwrap(),
                 fc_chan,
@@ -363,9 +367,9 @@ fn main() {
                 let client = Client {
                     conn,
                     client_id,
-                    active_client: false,
                     listen_fc_channel: false,
                     http3_conn: None,
+                    partial_responses: HashMap::new(),
                 };
 
                 next_client_id += 1;
@@ -378,39 +382,6 @@ fn main() {
                 );
 
                 let client = clients.get_mut(&client_id).unwrap();
-
-                // FC-TODO: this piece of code should be inserted whenever the
-                // client asked for the correct ressource that can be sent over
-                // flexicast. // Add the multicast channel
-                // announcement for the new client.
-                // if let (Some(mc_announce_data), Some(mc_channel)) =
-                //     (mc_announce_data_opt.as_ref(), mc_channel_opt.as_ref())
-                // {
-                //     // Only advertise the MC_ANNOUNCE data directly to the
-                // clients     // if no dymanic scaling (i.e.,
-                // creation of the multicast     // group when
-                // enough receivers are connected).     client
-                //         .conn
-                //         .mc_set_mc_announce_data(mc_announce_data)
-                //         .unwrap();
-                //     client
-                //         .conn
-                //         .mc_set_multicast_receiver(
-                //             &mc_channel.master_secret,
-                //             mc_channel
-                //                 .channel
-                //                 .get_multicast_attributes()
-                //                 .unwrap()
-                //                 .get_mc_space_id()
-                //                 .unwrap(),
-                //             mc_channel
-                //                 .channel
-                //                 .get_multicast_attributes()
-                //                 .unwrap()
-                //                 .get_decryption_key_algo(),
-                //         )
-                //         .unwrap();
-                // }
 
                 // Only bother with qlog if the user specified it.
                 #[cfg(feature = "qlog")]
@@ -479,13 +450,142 @@ fn main() {
                 client.http3_conn = Some(h3_conn);
             }
 
-            // FC-TODO: process readable streams?
+            // Sets the client listens to the flexicast channel.
+            if !client.listen_fc_channel &&
+                client
+                    .conn
+                    .get_multicast_attributes()
+                    .map(|mc| {
+                        mc.get_mc_role() ==
+                            McRole::Client(
+                                multicast::McClientStatus::ListenMcPath(true),
+                            )
+                    })
+                    .unwrap_or(false)
+            {
+                client.listen_fc_channel = true;
+                nb_active_fc_clients += 1;
+            }
 
-            // FC-TODO: consider the client as active if either (1) it listens to
-            // unicast and connection is established or (2) it listens to
-            // flexicast and the flexicast path is active.
-            // FC-TODO: start the content delivery when all intended clients
-            // joined the channel.
+            // Handle HTTP/3 events.
+            if client.http3_conn.is_some() {
+                // Handle writable streams.
+                for stream_id in client.conn.writable() {
+                    // If the client joined the flexicast path and is ready to
+                    // receive data through this path, we can respond to the
+                    // HTTP/3 request.
+                    handle_fc_ready_h3_response(client, stream_id);
+
+                    handle_writable_client(client, stream_id);
+                }
+
+                // Process HTTP/3 events.
+                loop {
+                    let http3_conn = client.http3_conn.as_mut().unwrap();
+
+                    match http3_conn.poll(&mut client.conn) {
+                        Ok((
+                            stream_id,
+                            quiche::h3::Event::Headers { list, .. },
+                        )) => {
+                            let new_h3_response = Http3Server::handle_request(
+                                &list,
+                                fh3_conn.as_mut().unwrap(), /* FC-TODO: will
+                                                             * fail if flexicast
+                                                             * is disabled. */
+                                &mut client.conn,
+                                stream_id,
+                                &args.file,
+                                h3_resp.data(),
+                                client.http3_conn.as_mut(),
+                            )
+                            .unwrap();
+
+                            // If the client asked for some piece of data that can
+                            // be received through flexicast, advertise the
+                            // channel information.
+                            // Add the multicast channel
+                            // announcement for the new client.
+                            if new_h3_response.action() == FH3Action::Join {
+                                if let (
+                                    Some(mc_announce_data),
+                                    Some(mc_channel),
+                                ) = (
+                                    mc_announce_data_opt.as_ref(),
+                                    mc_channel_opt.as_ref(),
+                                ) {
+                                    // Only advertise the MC_ANNOUNCE data
+                                    // directly to
+                                    // the clients
+                                    // if no dymanic scaling (i.e., creation of
+                                    // the
+                                    // multicast group
+                                    // when enough receivers are connected).
+                                    client
+                                        .conn
+                                        .mc_set_mc_announce_data(mc_announce_data)
+                                        .unwrap();
+                                    client
+                                        .conn
+                                        .mc_set_multicast_receiver(
+                                            &mc_channel.master_secret,
+                                            mc_channel
+                                                .channel
+                                                .get_multicast_attributes()
+                                                .unwrap()
+                                                .get_mc_space_id()
+                                                .unwrap(),
+                                            mc_channel
+                                                .channel
+                                                .get_multicast_attributes()
+                                                .unwrap()
+                                                .get_decryption_key_algo(),
+                                        )
+                                        .unwrap();
+                                }
+                            }
+
+                            client
+                                .partial_responses
+                                .insert(stream_id, new_h3_response);
+                        },
+
+                        Ok((stream_id, quiche::h3::Event::Data)) => {
+                            info!(
+                                "{} got data on stream id {}",
+                                client.conn.trace_id(),
+                                stream_id
+                            );
+                            unreachable!();
+                        },
+
+                        Ok((_stream_id, quiche::h3::Event::Finished)) => (),
+
+                        Ok((_stream_id, quiche::h3::Event::Reset { .. })) => (),
+
+                        Ok((
+                            _prioritized_element_id,
+                            quiche::h3::Event::PriorityUpdate,
+                        )) => (),
+
+                        Ok((_goaway_id, quiche::h3::Event::GoAway)) => (),
+
+                        Err(quiche::h3::Error::Done) => {
+                            break;
+                        },
+
+                        Err(e) => {
+                            error!(
+                                "{} HTTP/3 error {:?}",
+                                client.conn.trace_id(),
+                                e
+                            );
+
+                            break;
+                        },
+                    }
+                }
+            }
 
             handle_path_events(client);
 
@@ -512,6 +612,33 @@ fn main() {
             }
         }
 
+        // Start the delivery on the flexicast path if all intended clients joined
+        // the flexicast channel.
+        if Some(nb_active_fc_clients) >= args.wait_clients {
+            h3_resp.set_active(true);
+        }
+
+        // If the HTTP/3 response sent on the flexicast path is finished, restart
+        // the stream to enable rotation for late clients.
+        if let (Some(mc_channel), Some(fh3_conn), Some(fh3_back)) = (
+            mc_channel_opt.as_mut(),
+            fh3_conn.as_mut(),
+            fh3_back.as_mut(),
+        ) {
+            h3_resp = h3_resp
+                .restart_stream(fh3_conn, mc_channel, fh3_back)
+                .unwrap();
+        }
+
+        // Send as much HTTP/3 response data as possible on the flexicast path.
+        if let (Some(mc_channel), Some(fh3_conn)) =
+            (mc_channel_opt.as_mut(), fh3_conn.as_mut())
+        {
+            h3_resp
+                .send_body(fh3_conn, &mut mc_channel.channel)
+                .unwrap();
+        }
+
         // Handle time to live timeout of data of the multicast channel.
         let now = std::time::Instant::now();
         if let Some(mc_channel) = mc_channel_opt.as_mut() {
@@ -523,15 +650,9 @@ fn main() {
             let expired_pkt = mc_channel.channel.on_mc_timeout(now).unwrap();
             if expired_pkt.pn.is_some() {
                 // FC-TODO: On application expiring.
+                debug!("Expired packet, do something?");
             }
         }
-
-        // Send as much application data as possible.
-        // FC-TODO.
-
-        // For each client, try to send as much stream data as
-        // possible.
-        // FC-TODO.
 
         // Generate outgoing Flexicast QUIC packets for the flexicast channel.
         if let (Some(mc_socket), Some(mc_channel)) =
@@ -965,5 +1086,92 @@ fn handle_path_events(client: &mut Client) {
                     .ok();
             },
         }
+    }
+}
+
+fn handle_writable_client(client: &mut Client, stream_id: u64) {
+    if !client.partial_responses.contains_key(&stream_id) {
+        return;
+    }
+
+    let h3_resp = &mut client.partial_responses.get_mut(&stream_id).unwrap();
+    match handle_writable(
+        &mut client.conn,
+        &mut client.http3_conn.as_mut().unwrap(),
+        h3_resp,
+        stream_id,
+    ) {
+        Ok(_) => (),
+
+        Err(FcH3Error::Finished) => {
+            client.partial_responses.remove(&stream_id);
+        },
+
+        Err(_e) => {
+            client.partial_responses.remove(&stream_id);
+        },
+    }
+}
+
+fn handle_writable(
+    conn: &mut quiche::Connection, h3_conn: &mut quiche::h3::Connection,
+    h3_resp: &mut Http3Server, stream_id: u64,
+) -> http3::Result<usize> {
+    debug!("{} strea {} is writable", conn.trace_id(), stream_id);
+
+    if h3_resp.send_h3_headers {
+        if let Some(ref headers) = h3_resp.headers {
+            match h3_conn.send_response(conn, stream_id, headers, false) {
+                Ok(_) => (),
+
+                Err(quiche::h3::Error::StreamBlocked) => return Ok(0),
+
+                Err(e) => {
+                    error!("{} stream send failed {:?}", conn.trace_id(), e);
+                    return Ok(0);
+                },
+            }
+        }
+        h3_resp.headers = None;
+    }
+
+    // Send data if this response is active.
+    if h3_resp.is_active() {
+        let written = match h3_resp.send_body(h3_conn, conn) {
+            Ok(v) => v,
+
+            Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => 0,
+
+            Err(e) => {
+                error!("{} stream send failed {:?}", conn.trace_id(), e);
+                return Err(e);
+            },
+        };
+
+        if h3_resp.offset() + written == h3_resp.data().len() {
+            // Finished to transmit.
+            h3_resp.set_active(false);
+
+            return Err(FcH3Error::Finished);
+        }
+
+        return Ok(written);
+    }
+
+    Ok(0)
+}
+
+fn handle_fc_ready_h3_response(client: &mut Client, stream_id: u64) {
+    if !client.partial_responses.contains_key(&stream_id) {
+        return;
+    }
+
+    let h3_resp = client.partial_responses.get_mut(&stream_id).unwrap();
+
+    if h3_resp.headers.is_some() &&
+        !h3_resp.send_h3_headers &&
+        client.listen_fc_channel
+    {
+        h3_resp.send_h3_headers = true;
     }
 }
