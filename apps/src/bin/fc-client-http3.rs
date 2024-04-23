@@ -11,6 +11,8 @@ use quiche::multicast::McPathType;
 use quiche::multicast::McRole;
 use quiche::multicast::MulticastConnection;
 use quiche::ConnectionId;
+#[cfg(feature = "qlog")]
+use quiche_apps::common::make_qlog_writer;
 use quiche_apps::mc_app::http3::Http3Client;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
@@ -611,4 +613,3 @@ pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
         })
         .collect()
 }
-

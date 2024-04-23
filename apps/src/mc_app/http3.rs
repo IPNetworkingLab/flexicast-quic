@@ -284,7 +284,7 @@ impl Http3Server {
 
         let (status, action) = match method {
             Some(b"GET") =>
-                if &path == filepath.as_bytes() {
+                if &path[1..] == filepath.as_bytes() {
                     (200, FH3Action::Join)
                 } else {
                     (404, FH3Action::Nothing)
@@ -356,7 +356,7 @@ impl Http3Server {
         if !self.is_active() {
             return Ok(0);
         }
-        
+
         let written = h3_conn
             .send_body(
                 conn,
@@ -379,6 +379,13 @@ impl Http3Server {
         self, fh3_conn: &mut H3Conn, fc_chan: &mut MulticastChannelSource,
         fh3_back: &mut H3Conn,
     ) -> Result<Self> {
+        // Finish exchanging data.
+        MulticastChannelSource::advance(
+            &mut fc_chan.channel,
+            &mut fc_chan.client_backup,
+        )
+        .map_err(|e| FcH3Error::QUIC(e))?;
+
         // Reset the state of the flexicast source.
         fh3_conn
             .fc_reset_stream(&mut fc_chan.channel, self.stream_id)
@@ -416,10 +423,23 @@ impl Http3Server {
         )
         .map_err(|e| FcH3Error::QUIC(e))?;
 
+        // Mark the stream to be able to rotate.
+        fc_chan
+            .channel
+            .fc_mark_rotate_stream(stream_id, true)
+            .map_err(|e| FcH3Error::QUIC(e))?;
+        fc_chan
+            .client_backup
+            .fc_mark_rotate_stream(stream_id, true)
+            .map_err(|e| FcH3Error::QUIC(e))?;
+
         // Poll the flexicast source connection.
         let (stream_id, event) = fh3_conn
             .poll(&mut fc_chan.channel)
             .map_err(|e| FcH3Error::HTTP3(e))?;
+
+        // Poll a second time to remove the finished stream.
+        _ = fh3_conn.poll(&mut fc_chan.channel);
 
         // Send the response from the flexicast source.
         if let quiche::h3::Event::Headers { list, .. } = event {
@@ -432,6 +452,7 @@ impl Http3Server {
                 &self.data,
                 None,
             )?;
+
             Ok(out)
         } else {
             Err(FcH3Error::Request)
@@ -456,5 +477,10 @@ impl Http3Server {
 
     pub fn action(&self) -> FH3Action {
         self.fh3_action
+    }
+
+    #[inline]
+    pub fn stream_id(&self) -> u64 {
+        self.stream_id
     }
 }

@@ -1297,7 +1297,8 @@ impl Connection {
             let quic_off = conn.fc_get_stream_off_back(stream_id);
             // FC-TODO: what will happen if the stream is finished?
             if let Some(off) = quic_off {
-                // Clients that join will only be concerned starting the next HTTP/3 DATA frame.
+                // Clients that join will only be concerned starting the next
+                // HTTP/3 DATA frame.
                 stream.fc_set_emit_off(written as u64, off);
             }
         }
@@ -1759,7 +1760,7 @@ impl Connection {
             qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
                 let ev_data = EventData::H3FrameCreated(H3FrameCreated {
                     stream_id,
-                    length: Some(octets::varint_len(id) as u64),
+                    length: Some(octets::varint_len(0) as u64),
                     frame: frame.to_qlog(),
                     raw: None,
                 });

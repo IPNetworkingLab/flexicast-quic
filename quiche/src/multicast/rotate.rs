@@ -251,10 +251,37 @@ impl Connection {
     }
 
     /// Returns the maximum offset buffered in the specified stream.
-    /// 
+    ///
     /// Flexicast with stream rotation extension.
     pub(crate) fn fc_get_stream_off_back(&self, stream_id: u64) -> Option<u64> {
         self.streams.get(stream_id).map(|s| s.send.off_back())
+    }
+
+    /// Activate the stream rotation extension at the source.
+    ///
+    /// Additionally, sets whether the source must transmit its stream state.
+    pub fn fc_enable_stream_rotation(
+        &mut self, send_stream_state: bool,
+    ) -> Result<()> {
+        if let Some(fc) = self.multicast.as_mut() {
+            fc.fc_enable_stream_rotation(send_stream_state)
+        } else {
+            Err(Error::Multicast(McError::McDisabled))
+        }
+    }
+
+    /// Whether the sending stream is expired on the flexicast path.
+    ///
+    /// Flexicast extension.
+    pub fn fc_is_stream_expired(&self, stream_id: u64) -> Result<bool> {
+        if self.multicast.is_none() {
+            return Err(Error::Multicast(McError::McDisabled));
+        }
+
+        self.streams
+            .get(stream_id)
+            .ok_or(Error::InvalidStreamState(stream_id))
+            .map(|s| s.send.fc_is_stream_expired())
     }
 }
 

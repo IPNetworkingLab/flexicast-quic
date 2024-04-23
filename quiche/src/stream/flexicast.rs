@@ -91,6 +91,7 @@ impl Stream {
             return false;
         }
         self.send = SendBuf::new(self.send.max_off());
+        self.send.fc_stream_rotate = true;
         self.recv = RecvBuf::new(self.recv.max_data(), self.recv.max_data());
         true
     }

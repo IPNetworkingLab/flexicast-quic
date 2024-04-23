@@ -58,10 +58,10 @@ macro_rules! ucs_to_mc_cwnd {
                 cwnd
             })
             .min();
-        debug!(
-            "MC-DEBUG: This is the source new congestion window: {:?}",
-            min_cwnd
-        );
+        // debug!(
+        //     "MC-DEBUG: This is the source new congestion window: {:?}",
+        //     min_cwnd
+        // );
         if let Some(cwnd) = min_cwnd {
             $mc.mc_set_cwnd(cwnd);
         }
@@ -1598,6 +1598,14 @@ impl MulticastConnection for Connection {
             }
         }
 
+        // Mark expired streams.
+        for &exp_stream_id in expired_streams.iter() {
+            if let Some(stream) = self.streams.get_mut(exp_stream_id) {
+                debug!("Set stream {} as totally expired.", exp_stream_id);
+                stream.send.fc_set_stream_expired(true);
+            }
+        }
+
         // Remove from the inner structure the expired packet number - stream ID
         // mapping.
         if !self.is_server {
@@ -1954,7 +1962,8 @@ impl MulticastConnection for Connection {
             // Ideally, this should be computed based on the expired packet
             // number, but for simplicity now, just look at the current stream
             // state of the flexicast source.
-            // Additionally, only forward the stream states if the source is authorised to.
+            // Additionally, only forward the stream states if the source is
+            // authorised to.
             if (multicast
                 .fc_rotate_server()
                 .is_some_and(|s| !s.already_drained()) ||

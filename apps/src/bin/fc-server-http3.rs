@@ -1,7 +1,6 @@
 #[macro_use]
 extern crate log;
 
-use core::time;
 use std::collections::HashMap;
 use std::net;
 use std::path::Path;
@@ -18,6 +17,8 @@ use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastConnection;
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
+#[cfg(feature = "qlog")]
+use quiche_apps::common::make_qlog_writer;
 use quiche_apps::common::ClientIdMap;
 use quiche_apps::mc_app::http3;
 use quiche_apps::mc_app::http3::FH3Action;
@@ -44,10 +45,6 @@ struct Args {
     /// Activate flexicast extension.
     #[clap(long)]
     flexicast: bool,
-
-    /// Path to the directory containing the files for the transfer.
-    #[clap(long)]
-    root: Box<Path>,
 
     /// Keylog file for flexicast channel.
     #[clap(long = "keylog", value_parser, default_value = "/tmp/fc-server.txt")]
@@ -101,8 +98,25 @@ struct Args {
     ///
     /// FC-TODO: This should be updated if we want to deliver different files at
     /// the same time.
-    #[clap(long = "file")]
     file: Box<String>,
+
+    /// Sent video frames results (timestamps sent on the wire).
+    #[clap(
+        short = 'r',
+        long,
+        value_parser,
+        default_value = "mc-server-result-wire.txt"
+    )]
+    result_wire_trace: String,
+
+    /// Keylog file for multicast channel.
+    #[clap(
+        short = 'k',
+        long,
+        value_parser,
+        default_value = "/tmp/mc-server.txt"
+    )]
+    mc_keylog_file: String,
 }
 
 fn main() {
@@ -169,6 +183,15 @@ fn main() {
         }
     }
 
+    // Enable stream rotation.
+    if let Some(fc_chan) = mc_channel_opt.as_mut() {
+        fc_chan.channel.fc_enable_stream_rotation(true).unwrap();
+        fc_chan
+            .client_backup
+            .fc_enable_stream_rotation(true)
+            .unwrap();
+    }
+
     // Setup flexicast HTTP/3 connections.
     if let Some(fc_chan) = mc_channel_opt.as_mut() {
         fh3_conn = Some(
@@ -220,7 +243,7 @@ fn main() {
         if h3_resp.is_active() {
             // Send data as quickly as possible.
             // FC-TODO: maybe not optimal to do it like this.
-            timeout = Some(time::Duration::ZERO);
+            // timeout = Some(time::Duration::ZERO);
         }
 
         poll.poll(&mut events, timeout).unwrap();
@@ -614,7 +637,8 @@ fn main() {
 
         // Start the delivery on the flexicast path if all intended clients joined
         // the flexicast channel.
-        if Some(nb_active_fc_clients) >= args.wait_clients {
+        if Some(nb_active_fc_clients) >= args.wait_clients && !h3_resp.is_active()
+        {
             h3_resp.set_active(true);
         }
 
@@ -625,18 +649,27 @@ fn main() {
             fh3_conn.as_mut(),
             fh3_back.as_mut(),
         ) {
-            h3_resp = h3_resp
-                .restart_stream(fh3_conn, mc_channel, fh3_back)
-                .unwrap();
+            if mc_channel.channel.stream_complete(h3_resp.stream_id()) &&
+                mc_channel.channel.fc_is_stream_expired(h3_resp.stream_id()) ==
+                    Ok(true)
+            {
+                info!("RESTART STREAM WITH ID {:?}", h3_resp.stream_id());
+                h3_resp = h3_resp
+                    .restart_stream(fh3_conn, mc_channel, fh3_back)
+                    .unwrap();
+            }
         }
 
         // Send as much HTTP/3 response data as possible on the flexicast path.
-        if let (Some(mc_channel), Some(fh3_conn)) =
-            (mc_channel_opt.as_mut(), fh3_conn.as_mut())
-        {
-            h3_resp
-                .send_body(fh3_conn, &mut mc_channel.channel)
-                .unwrap();
+        if h3_resp.is_active() && !h3_resp.is_fin() {
+            if let (Some(mc_channel), Some(fh3_conn)) =
+                (mc_channel_opt.as_mut(), fh3_conn.as_mut())
+            {
+                info!("SEND BODY!!!");
+                h3_resp
+                    .send_body(fh3_conn, &mut mc_channel.channel)
+                    .unwrap();
+            }
         }
 
         // Handle time to live timeout of data of the multicast channel.
@@ -825,13 +858,15 @@ fn get_multicast_channel(
     Option<MulticastChannelSource>,
     Option<McAnnounceData>,
 ) {
+    let mut src_addr = args.src_addr;
+    src_addr.set_port(4434);
     let mc_addr = args.mc_addr;
     let mc_addr_bytes = match mc_addr {
         net::SocketAddr::V4(ip) => ip.ip().octets(),
         _ => unreachable!("Only support IPv4 multicast addresses"),
     };
     let mc_port = mc_addr.port();
-    let socket = mio::net::UdpSocket::bind(args.mc_addr).unwrap();
+    let socket = mio::net::UdpSocket::bind(src_addr).unwrap();
     socket.set_multicast_ttl_v4(56).unwrap();
 
     let mc_client_tp = McClientTp::default();
@@ -858,8 +893,8 @@ fn get_multicast_channel(
     let channel_id_vec = channel_id.as_ref().to_vec();
 
     let mc_path_info = multicast::McPathInfo {
-        local: args.mc_addr,
-        peer: args.mc_addr,
+        local: src_addr,
+        peer: src_addr,
         cid: channel_id,
     };
 
@@ -879,7 +914,7 @@ fn get_multicast_channel(
         channel_id: channel_id_vec,
         path_type: multicast::McPathType::Data,
         auth_type: args.authentication,
-        is_ipv6: false,
+        is_ipv6: true,
         full_reliability: true,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,
@@ -940,7 +975,7 @@ pub fn get_mc_config(
         quiche::FECSchedulerAlgorithm::RetransmissionFec,
     );
     config.enable_pacing(false);
-    config.set_real_time(true);
+    config.set_real_time(false);
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     config.set_fec_symbol_size(1280 - 64); // MC-TODO: make dynamic with auth.
     config.set_fec_window_size(2000);

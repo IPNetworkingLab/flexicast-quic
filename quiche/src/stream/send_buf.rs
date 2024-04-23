@@ -102,6 +102,13 @@ pub struct SendBuf {
     ///
     /// Flexicast with stream rotation extension.
     pub(super) fc_stream_rotate: bool,
+
+    /// Whether the stream is completely expired on the flexicast path
+    /// (emitter), i.e., the last frame of the stream (with `fin` set) is
+    /// expired.
+    ///
+    /// Flexicasst extension.
+    fc_expired: bool,
 }
 
 impl SendBuf {
@@ -264,6 +271,14 @@ impl SendBuf {
     }
 
     pub fn ack_and_drop(&mut self, off: u64, len: usize) {
+        // Flexicast.
+        // Maybe this is an ACK generated because of the `on_mc_timeout` but since
+        // the stream may have restarted (stream rotation extension) so do not
+        // consider this ack.
+        if self.fc_stream_rotate && self.off < off + len as u64 {
+            return;
+        }
+
         self.ack(off, len);
 
         let ack_off = self.ack_off();
@@ -609,6 +624,22 @@ impl SendBuf {
     /// Sets the fin offset.
     pub fn rmc_set_fin_off(&mut self, off: u64) {
         self.fin_off = Some(off);
+    }
+
+    /// Sets whether all sent stream data is expired on the flexicast channel,
+    /// i.e., the last frame of the stream (with `fin`) is expired on the
+    /// flexicast path.
+    ///
+    /// Flexicast extension.
+    pub fn fc_set_stream_expired(&mut self, v: bool) {
+        self.fc_expired = v;
+    }
+
+    /// Whether the stream is fully expired.
+    ///
+    /// Flexicast extension.
+    pub(crate) fn fc_is_stream_expired(&self) -> bool {
+        self.fc_expired
     }
 }
 
