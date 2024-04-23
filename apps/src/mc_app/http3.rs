@@ -1,4 +1,3 @@
-use std::convert::TryInto;
 use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
@@ -124,12 +123,10 @@ impl Http3Client {
                     }
                     recv_h3_off = true;
 
-                    self.h3_off = u64::from_be_bytes(
-                        header
-                            .value()
-                            .try_into()
-                            .map_err(|_| FcH3Error::Header)?,
-                    );
+                    self.h3_off = std::str::from_utf8(header.value())
+                        .unwrap()
+                        .parse()
+                        .map_err(|_| FcH3Error::Header)?;
 
                     self.off = self.h3_off as usize;
                 },
@@ -140,12 +137,10 @@ impl Http3Client {
                     }
                     recv_quic_off = true;
 
-                    self.quic_off = u64::from_be_bytes(
-                        header
-                            .value()
-                            .try_into()
-                            .map_err(|_| FcH3Error::Header)?,
-                    );
+                    self.quic_off = std::str::from_utf8(header.value())
+                        .unwrap()
+                        .parse()
+                        .map_err(|_| FcH3Error::Header)?;
                 },
 
                 b":content-length" => {
@@ -154,12 +149,12 @@ impl Http3Client {
                     }
                     recv_content_length = true;
 
-                    let len = u64::from_be_bytes(
-                        header
-                            .value()
-                            .try_into()
-                            .map_err(|_| FcH3Error::Header)?,
-                    ) as usize;
+                    let len = std::str::from_utf8(header.value())
+                        .unwrap()
+                        .parse()
+                        .map_err(|_| FcH3Error::Header)?;
+
+                    println!("Recv content length: {}", len);
 
                     self.data = vec![0u8; len];
                 },
@@ -302,7 +297,7 @@ impl Http3Server {
         let resp_headers = vec![
             Header::new(b":status", status.to_string().as_bytes()),
             Header::new(b"server", b"quiche"),
-            Header::new(b"content-length", data.len().to_string().as_bytes()),
+            Header::new(b":content-length", data.len().to_string().as_bytes()),
             Header::new(FC_H3_OFF_HDR, &format!("{:0>8}", h3_off).into_bytes()),
             Header::new(
                 FC_H3_QUIC_OFF_HDR,
@@ -333,7 +328,8 @@ impl Http3Server {
 
         // Send the response headers to the client.
         let h3_conn_to_use = h3_conn.unwrap_or(fh3_conn);
-        match h3_conn_to_use.send_response(conn, stream_id, headers, false) {
+        match h3_conn_to_use.send_response(conn, stream_id, &resp_headers, false)
+        {
             Ok(v) => v,
 
             Err(quiche::h3::Error::StreamBlocked) => {

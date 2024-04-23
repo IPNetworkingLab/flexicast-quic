@@ -1205,7 +1205,6 @@ impl MulticastConnection for Connection {
         if !self.is_server {
             return None;
         }
-
         if !(self.local_transport_params.multicast_server_params &&
             self.peer_transport_params.multicast_client_params.is_some())
         {

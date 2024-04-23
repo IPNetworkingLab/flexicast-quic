@@ -17,7 +17,6 @@ use crate::frame::Frame;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::multicast::ExpiredPkt;
 use crate::multicast::ExpiredStream;
-use crate::multicast::McError;
 use crate::packet::Epoch;
 use crate::ranges;
 use crate::ranges::RangeSet;
@@ -277,7 +276,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let mut max_exp_ss: Option<u64> = None;
 
         'per_packet: for packet in expired_sent {
-            debug!("This is a packet that is expired now: {:?}", packet.pkt_num);
+            debug!("This is a packet that is expired now: {:?} with frames: {:?}", packet.pkt_num, packet.frames);
             max_exp_pn = if let Some(c) = max_exp_pn {
                 Some(c.max(packet.pkt_num.1))
             } else {
@@ -429,13 +428,11 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         // authenticates is an error.
                         // RMC-TODO: maybe the StreamHeader frame follows this
                         // frame?
-                        let stream_id = protected_stream_id.ok_or(
-                            Error::Multicast(McError::McInvalidAuth),
-                        )?;
-
-                        let stream = uc.get_or_create_stream(stream_id, true)?;
-
-                        stream.mc_set_asym_sign(signature);
+                        if let Some(stream_id) = protected_stream_id {
+                            let stream = uc.get_or_create_stream(stream_id, true)?;
+    
+                            stream.mc_set_asym_sign(signature);
+                        }
                     },
                     _ => (),
                 }

@@ -423,7 +423,8 @@ impl ReliableMulticastConnection for Connection {
                 // println!("Lost packets: {:?}", out);
             }
         } else {
-            return Err(Error::Multicast(McError::McDisabled));
+            return Ok(())
+            // return Err(Error::Multicast(McError::McDisabled));
         }
 
         Ok(())

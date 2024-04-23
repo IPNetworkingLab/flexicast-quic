@@ -27,8 +27,8 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 #[derive(Parser)]
 struct Args {
     /// Activate multicast extension.
-    #[clap(short = 'm', long)]
-    multicast: bool,
+    #[clap(long)]
+    flexicast: bool,
 
     /// URL of the server to contact.
     url: url::Url,
@@ -107,7 +107,7 @@ fn main() {
         .unwrap();
 
     // Create the configuration for the QUIC connection.
-    let mut config = get_config(args.multicast, &mc_client_params);
+    let mut config = get_config(args.flexicast, &mc_client_params);
 
     // Generate a random source connection ID for the connection.
     let mut scid = [0; 16];
@@ -371,8 +371,8 @@ fn main() {
                                 .join_multicast_v4(
                                     &net::Ipv4Addr::from(
                                         mc_announce_data.group_ip.to_owned(),
-                                    ),
-                                    &args.local_ip,
+                                    ), // &args.local_ip
+                                    &"11.1.5.1".parse().unwrap(),
                                 )
                                 .unwrap();
                         }
@@ -412,15 +412,7 @@ fn main() {
         // Create a new HTTP/3 connection once the QUIC connection is established.
         // Further waits for the flexicast path establishment if flexicast is
         // enabled.
-        if conn.is_established() &&
-            (args.multicast &&
-                conn.get_multicast_attributes().is_some_and(|mc| {
-                    mc.get_mc_role() ==
-                        McRole::Client(McClientStatus::ListenMcPath(true))
-                }) ||
-                !args.multicast) &&
-            h3_conn.is_none()
-        {
+        if conn.is_established() && h3_conn.is_none() {
             h3_conn = Some(
                 quiche::h3::Connection::with_transport(&mut conn, &h3_config)
                 .expect("Unable to create HTTP/3 connection, check the server's uni stream limit and window size"),
@@ -437,6 +429,7 @@ fn main() {
                 h3_conn.send_request(&mut conn, &h3_request, true).unwrap();
 
                 h3_resp.request_sent = true;
+                h3_resp.request_start = Some(std::time::Instant::now());
             }
         }
 

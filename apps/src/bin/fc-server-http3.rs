@@ -479,10 +479,12 @@ fn main() {
                     .conn
                     .get_multicast_attributes()
                     .map(|mc| {
-                        mc.get_mc_role() ==
-                            McRole::Client(
-                                multicast::McClientStatus::ListenMcPath(true),
+                        matches!(
+                            mc.get_mc_role(),
+                            McRole::ServerUnicast(
+                                multicast::McClientStatus::ListenMcPath(_),
                             )
+                        )
                     })
                     .unwrap_or(false)
             {
@@ -639,6 +641,7 @@ fn main() {
         // the flexicast channel.
         if Some(nb_active_fc_clients) >= args.wait_clients && !h3_resp.is_active()
         {
+            println!("SET APPLICATION ACTIVE");
             h3_resp.set_active(true);
         }
 
@@ -738,10 +741,16 @@ fn main() {
             'uc_send: loop {
                 // Communication between the unicast and flexicast channels.
                 if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                    client
+                    match client
                         .conn
                         .uc_to_mc_control(&mut mc_channel.channel, now)
-                        .unwrap();
+                    {
+                        Ok(()) => (),
+                        Err(quiche::Error::Multicast(
+                            quiche::multicast::McError::McDisabled,
+                        )) => debug!("uc_to_mc_control with flexicast disabled"),
+                        Err(e) => panic!("error: {:?}", e),
+                    }
                 }
 
                 let (write, send_info) = match client.conn.send(&mut out) {
@@ -771,10 +780,13 @@ fn main() {
 
             // Communication between the unicast and flexicast channels.
             if let Some(mc_channel) = mc_channel_opt.as_mut() {
-                client
-                    .conn
-                    .uc_to_mc_control(&mut mc_channel.channel, now)
-                    .unwrap();
+                match client.conn.uc_to_mc_control(&mut mc_channel.channel, now) {
+                    Ok(()) => (),
+                    Err(quiche::Error::Multicast(
+                        quiche::multicast::McError::McDisabled,
+                    )) => debug!("uc_to_mc_control with flexicast disabled"),
+                    Err(e) => panic!("error: {:?}", e),
+                }
             }
         }
 
@@ -1152,7 +1164,7 @@ fn handle_writable(
     conn: &mut quiche::Connection, h3_conn: &mut quiche::h3::Connection,
     h3_resp: &mut Http3Server, stream_id: u64,
 ) -> http3::Result<usize> {
-    debug!("{} strea {} is writable", conn.trace_id(), stream_id);
+    debug!("{} stream {} is writable", conn.trace_id(), stream_id);
 
     if h3_resp.send_h3_headers {
         if let Some(ref headers) = h3_resp.headers {
