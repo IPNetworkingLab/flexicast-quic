@@ -120,11 +120,11 @@ impl Connection {
     }
 
     /// Returns the HTTP/3 and QUIC offset of the stream.
-        /// 
-        /// Flexicast with stream rotation extension.
-        pub fn fc_get_emit_off(&self, stream_id: u64) -> Option<(u64, u64)> {
-            self.streams.get(&stream_id).map(|s| s.fc_get_emit_off())
-        }
+    ///
+    /// Flexicast with stream rotation extension.
+    pub fn fc_get_emit_off(&self, stream_id: u64) -> Option<(u64, u64)> {
+        self.streams.get(&stream_id).map(|s| s.fc_get_emit_off())
+    }
 }
 
 #[doc(hidden)]
@@ -718,7 +718,8 @@ mod tests {
 
         // The server sends the response with the HTTP/3 stream-offset header.
         // First ask to the source the stream and offset.
-        let (h3_off, quic_off) = fc_session.fc_h3_conn.fc_get_emit_off(l_stream).unwrap();
+        let (h3_off, quic_off) =
+            fc_session.fc_h3_conn.fc_get_emit_off(l_stream).unwrap();
         assert_eq!(h3_off, 10);
         assert_eq!(quic_off, 82);
         let l_resp = s
@@ -735,7 +736,10 @@ mod tests {
         // Parse the HTTP/3 streamoffset header and send the information to
         // quiche. For now we do not parse it because we already have the
         // data.
-        assert_eq!(s.pipe.client.fc_set_stream_offset(l_stream, quic_off), Ok(()));
+        assert_eq!(
+            s.pipe.client.fc_set_stream_offset(l_stream, quic_off),
+            Ok(())
+        );
 
         // Now the flexicast source sends the second part of the stream.
         let bytes = (11..20).collect::<Vec<u8>>();

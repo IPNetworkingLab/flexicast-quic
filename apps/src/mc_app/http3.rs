@@ -290,9 +290,8 @@ impl Http3Server {
 
         // Get the HTTP/3 and FC-QUIC offset to advertise to the client to allow
         // for out-of-order delivery.
-        let (h3_off, quic_off) = fh3_conn
-            .fc_get_emit_off(stream_id)
-            .ok_or(FcH3Error::StreamId(stream_id))?;
+        let (h3_off, quic_off) =
+            fh3_conn.fc_get_emit_off(stream_id).unwrap_or((0, 0));
 
         let resp_headers = vec![
             Header::new(b":status", status.to_string().as_bytes()),
