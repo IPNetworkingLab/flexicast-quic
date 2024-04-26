@@ -444,12 +444,12 @@ fn main() {
                             stream_id,
                         );
 
-                        h3_resp.recv_hdr(&list).unwrap();
+                        h3_resp.recv_hdr(&list, stream_id, &mut conn).unwrap();
                     },
 
                     Ok((stream_id, quiche::h3::Event::Data)) => {
-                        while let Ok(read) =
-                            h3_conn.recv_body(&mut conn, stream_id, &mut buf)
+                        while let Ok((read, _)) =
+                            h3_conn.recv_body_ooo(&mut conn, stream_id, &mut buf)
                         {
                             debug!(
                                 "Got {} bytes of response data on stream {}",

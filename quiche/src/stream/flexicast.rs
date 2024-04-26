@@ -114,9 +114,10 @@ pub(crate) struct FcRecvBuf {
     fc_recv_buf: Option<Box<RecvBuf>>,
 
     /// Whether the stream can be read with [`crate::Connection::stream_recv`].
-    ///
-    /// Flexicast with stream rotation extension.
     fc_can_read: bool,
+
+    /// Original fin offset.
+    fc_fin_off: Option<u64>,
 }
 
 #[allow(missing_docs)]
@@ -127,6 +128,7 @@ impl FcRecvBuf {
             fc_looped: false,
             fc_recv_buf: Some(Box::new(RecvBuf::new(max_data, max_window))),
             fc_can_read: false,
+            fc_fin_off: None,
         }
     }
 
@@ -162,6 +164,14 @@ impl FcRecvBuf {
 
     pub(super) fn fc_set_can_read(&mut self, v: bool) {
         self.fc_can_read = v;
+    }
+
+    pub(super) fn fc_set_fin_off(&mut self, off: Option<u64>) {
+        self.fc_fin_off = off;
+    }
+
+    pub(super) fn fc_fin_off(&self) -> Option<u64> {
+        self.fc_fin_off
     }
 
     #[cfg(test)]

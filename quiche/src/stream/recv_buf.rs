@@ -96,6 +96,24 @@ impl RecvBuf {
             return Err(Error::FlowControl);
         }
 
+        // Flexicast with stream rotation extension.
+        // If we already looped, we may receive duplicate data (i.e., before
+        // looping) that goes beyond the new fin offset. In that case, we split
+        // the buffer to only keep interesting data.
+        let mut buf = buf;
+        if let (Some(fc_data), Some(fin_off)) = (self.fc_data.as_ref(), self.fin_off) {
+            if fc_data.looped() && buf.max_off() > fin_off {
+                // Check if duplicate, i.e., the buffer maximum offset is below the original maximum offset.
+                if fc_data.fc_fin_off().is_some_and(|off| off >= buf.max_off()) {
+                    // Allowed. Strip the buffer to only keep the interesting part.
+                    _ = buf.split_off((fin_off.saturating_sub(buf.off)) as usize);
+                } else {
+                    // Definitely above the maximum size.
+                    return Err(Error::FinalSize);
+                }
+            }
+        }
+
         if let Some(fin_off) = self.fin_off {
             // Stream's size is known, forbid data beyond that point.
             if buf.max_off() > fin_off {
@@ -538,6 +556,9 @@ impl RecvBuf {
             if !fc_data.looped() {
                 // We looped back to the beginning of the stream.
                 fc_data.set_looped(true);
+
+                // Store the maximum offset (i.e., the offset before we looped).
+                fc_data.fc_set_fin_off(self.fin_off);
 
                 // Change the data to read the beginning of the stream.
                 let fc_recv_buf = *fc_data
@@ -1455,5 +1476,57 @@ mod tests {
         assert_eq!(recv.data.len(), 0);
 
         assert_eq!(recv.write(second), Err(Error::FinalSize));
+    }
+
+    #[test]
+    /// Flexicast setting the offset at a correct value. Some of the data is
+    /// duplicated because the source emits with a larger buffer than the first
+    /// time.
+    fn fc_set_offset_with_over_final_size() {
+        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
+        let off = 9;
+        assert_eq!(recv.len, 0);
+        assert!(recv.fc_set_offset_at(off).is_ok());
+        assert_eq!(recv.off, off);
+
+        let mut buf = [0; 11];
+
+        // The first part has some overlap with the second part.
+        let first = RangeBuf::from(b"somethinghe", 0, false);
+        let second = RangeBuf::from(b"hello", 9, true);
+
+        assert!(recv.write(second).is_ok());
+        assert_eq!(recv.len, 14);
+        assert_eq!(recv.off, off);
+        assert_eq!(recv.data.len(), 1);
+
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 5);
+        assert!(!fin);
+        assert_eq!(&buf[..len], b"hello");
+        assert_eq!(recv.len, 0);
+        assert_eq!(recv.off, 0);
+
+        assert_eq!(recv.write(first), Ok(()));
+        assert_eq!(recv.len, 9);
+        assert_eq!(recv.off, 0);
+        assert_eq!(recv.data.len(), 1);
+
+        // Loop back to the beginning.
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(len, 9);
+        assert!(fin);
+        assert_eq!(&buf[..len], b"something");
+        assert_eq!(recv.len, off);
+        assert_eq!(recv.off, off);
+
+        // The flexicast RecvBuf is now empty because we took it.
+        assert!(recv.fc_data.as_mut().unwrap().peek_recv_buf().is_none());
+
+        // All data is read.
+        assert_eq!(recv.emit(&mut buf), Err(Error::Done));
+
+        // The receiving part of the stream is complete.
+        assert!(recv.is_fin());
     }
 }

@@ -61,10 +61,10 @@ pub type Result<T> = core::result::Result<T, FcH3Error>;
 pub struct Http3Client {
     /// Initial offset of the HTTP3 response. Used because we might receive at
     /// the middle if we join the flexicast group later.
-    h3_off: u64,
+    pub h3_off: u64,
 
     /// Initial offset of the response for QUIC.
-    quic_off: u64,
+    pub quic_off: u64,
 
     /// Whether the client received the reponse headers.
     recv_hdr: bool,
@@ -105,9 +105,13 @@ impl Http3Client {
         request
     }
 
-    pub fn recv_hdr(&mut self, headers: &[Header]) -> Result<()> {
+    pub fn recv_hdr(
+        &mut self, headers: &[Header], stream_id: u64,
+        conn: &mut quiche::Connection,
+    ) -> Result<()> {
         if self.recv_hdr {
-            return Err(FcH3Error::Header);
+            // Because we looped.
+            return Ok(());
         }
 
         // Whether the HTTP3 and QUIC offset headers are received.
@@ -167,6 +171,9 @@ impl Http3Client {
             return Err(FcH3Error::Header);
         }
 
+        // Sets the offsets.
+        conn.fc_set_stream_offset(stream_id, self.quic_off).unwrap();
+
         self.recv_hdr = true;
 
         Ok(())
@@ -184,7 +191,7 @@ impl Http3Client {
             self.data[..off_end].copy_from_slice(&data[..data.len() - off]);
         }
 
-        self.off += data.len();
+        self.off = (self.off + data.len()) % self.data.len();
 
         Ok(())
     }
@@ -347,17 +354,23 @@ impl Http3Server {
 
     pub fn send_body(
         &mut self, h3_conn: &mut H3Conn, conn: &mut quiche::Connection,
+        h3_chunk_size: Option<usize>,
     ) -> Result<usize> {
         if !self.is_active() {
             return Ok(0);
         }
 
+        let max_off = h3_chunk_size
+            .map(|s| self.offset as usize + s)
+            .unwrap_or(self.data.len())
+            .min(self.data.len());
+
         let written = h3_conn
             .send_body(
                 conn,
                 self.stream_id,
-                &self.data[self.offset as usize..],
-                true,
+                &self.data[self.offset as usize..max_off],
+                max_off == self.data.len(),
             )
             .map_err(|e| FcH3Error::HTTP3(e))?;
 

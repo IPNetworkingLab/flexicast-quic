@@ -2337,6 +2337,7 @@ impl Connection {
                 Err(e) => {
                     // In case of error processing the incoming packet, close
                     // the connection.
+                    println!("Application close");
                     self.close(false, e.to_wire(), b"").ok();
                     return Err(e);
                 },

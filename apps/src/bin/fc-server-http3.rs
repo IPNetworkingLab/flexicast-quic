@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate log;
 
+use core::time;
 use std::collections::HashMap;
 use std::net;
 use std::path::Path;
@@ -117,6 +118,14 @@ struct Args {
         default_value = "/tmp/mc-server.txt"
     )]
     mc_keylog_file: String,
+
+    /// Delay between two HTTP/3 response chunks in ms.
+    #[clap(long = "h3-chunk-delay")]
+    h3_chunk_delay: Option<u64>,
+
+    /// Potential maximum chunk size of data to send through HTTP/3.
+    #[clap(long = "h3-chunk-size")]
+    h3_chunk_size: Option<usize>,
 }
 
 fn main() {
@@ -185,10 +194,10 @@ fn main() {
 
     // Enable stream rotation.
     if let Some(fc_chan) = mc_channel_opt.as_mut() {
-        fc_chan.channel.fc_enable_stream_rotation(true).unwrap();
+        fc_chan.channel.fc_enable_stream_rotation(false).unwrap();
         fc_chan
             .client_backup
-            .fc_enable_stream_rotation(true)
+            .fc_enable_stream_rotation(false)
             .unwrap();
     }
 
@@ -244,7 +253,17 @@ fn main() {
             // Send data as quickly as possible.
             // FC-TODO: maybe not optimal to do it like this.
             // timeout = Some(time::Duration::ZERO);
+            timeout = [
+                timeout,
+                args.h3_chunk_delay.map(|d| time::Duration::from_millis(d)),
+            ]
+            .iter()
+            .flatten()
+            .min()
+            .copied();
         }
+
+        println!("TIMEOUT: {:?}", timeout);
 
         poll.poll(&mut events, timeout).unwrap();
 
@@ -501,7 +520,7 @@ fn main() {
                     // HTTP/3 request.
                     handle_fc_ready_h3_response(client, stream_id);
 
-                    handle_writable_client(client, stream_id);
+                    handle_writable_client(client, stream_id, args.h3_chunk_size);
                 }
 
                 // Process HTTP/3 events.
@@ -670,7 +689,11 @@ fn main() {
             {
                 info!("SEND BODY!!!");
                 h3_resp
-                    .send_body(fh3_conn, &mut mc_channel.channel)
+                    .send_body(
+                        fh3_conn,
+                        &mut mc_channel.channel,
+                        args.h3_chunk_size,
+                    )
                     .unwrap();
             }
         }
@@ -1136,7 +1159,9 @@ fn handle_path_events(client: &mut Client) {
     }
 }
 
-fn handle_writable_client(client: &mut Client, stream_id: u64) {
+fn handle_writable_client(
+    client: &mut Client, stream_id: u64, h3_chunk_size: Option<usize>,
+) {
     if !client.partial_responses.contains_key(&stream_id) {
         return;
     }
@@ -1147,6 +1172,7 @@ fn handle_writable_client(client: &mut Client, stream_id: u64) {
         &mut client.http3_conn.as_mut().unwrap(),
         h3_resp,
         stream_id,
+        h3_chunk_size,
     ) {
         Ok(_) => (),
 
@@ -1162,7 +1188,7 @@ fn handle_writable_client(client: &mut Client, stream_id: u64) {
 
 fn handle_writable(
     conn: &mut quiche::Connection, h3_conn: &mut quiche::h3::Connection,
-    h3_resp: &mut Http3Server, stream_id: u64,
+    h3_resp: &mut Http3Server, stream_id: u64, h3_chunk_size: Option<usize>,
 ) -> http3::Result<usize> {
     debug!("{} stream {} is writable", conn.trace_id(), stream_id);
 
@@ -1184,7 +1210,7 @@ fn handle_writable(
 
     // Send data if this response is active.
     if h3_resp.is_active() {
-        let written = match h3_resp.send_body(h3_conn, conn) {
+        let written = match h3_resp.send_body(h3_conn, conn, h3_chunk_size) {
             Ok(v) => v,
 
             Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => 0,
