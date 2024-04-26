@@ -71,7 +71,7 @@ pub trait MulticastRecovery {
 
 impl crate::recovery::Recovery {
     pub fn dump_sent(&self, s: &str) {
-        info!(
+        debug!(
             "{}: {:?}",
             s,
             self.sent[Epoch::Application]

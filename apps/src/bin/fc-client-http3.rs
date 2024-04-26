@@ -438,7 +438,7 @@ fn main() {
             loop {
                 match h3_conn.poll(&mut conn) {
                     Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
-                        debug!(
+                        info!(
                             "Got response headers {:?} on stream id {}",
                             hdrs_to_strings(&list),
                             stream_id,
@@ -566,12 +566,12 @@ fn get_config(
     }
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(100_000_000);
-    config.set_initial_max_stream_data_bidi_local(10_000_000);
-    config.set_initial_max_stream_data_bidi_remote(10_000_000);
-    config.set_initial_max_stream_data_uni(10_000_000);
-    config.set_initial_max_streams_bidi(10_000_000);
-    config.set_initial_max_streams_uni(10_000_000);
+    config.set_initial_max_data(100_000_000_000);
+    config.set_initial_max_stream_data_bidi_local(100_000_000_000);
+    config.set_initial_max_stream_data_bidi_remote(100_000_000_000);
+    config.set_initial_max_stream_data_uni(100_000_000_000);
+    config.set_initial_max_streams_bidi(100_000_000_000);
+    config.set_initial_max_streams_uni(100_000_000_000);
     config.set_active_connection_id_limit(5);
     config.verify_peer(false);
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
@@ -584,7 +584,7 @@ fn get_config(
             quiche::FECSchedulerAlgorithm::RetransmissionFec,
         );
         config.set_fec_symbol_size(1280 - 64);
-        config.set_fec_window_size(2000);
+        config.set_fec_window_size(50_000);
     }
 
     config

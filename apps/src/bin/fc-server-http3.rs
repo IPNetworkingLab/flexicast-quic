@@ -74,11 +74,6 @@ struct Args {
     #[clap(long = "proxy")]
     proxy_addr: Option<net::SocketAddr>,
 
-    /// Disable the congestion control for the multicast channel. In practice,
-    /// set the congestion window of the multicast channel to the maximum value.
-    #[clap(long = "disable-cc")]
-    disable_cc: bool,
-
     /// Multicast address.
     #[clap(
         long = "mc-addr",
@@ -126,6 +121,10 @@ struct Args {
     /// Potential maximum chunk size of data to send through HTTP/3.
     #[clap(long = "h3-chunk-size")]
     h3_chunk_size: Option<usize>,
+
+    /// Sets the flexicast source congestion window to a fixed value.
+    #[clap(long = "fc-cwnd")]
+    fc_cwnd: Option<usize>,
 }
 
 fn main() {
@@ -263,7 +262,7 @@ fn main() {
             .copied();
         }
 
-        println!("TIMEOUT: {:?}", timeout);
+        debug!("TIMEOUT: {:?}", timeout);
 
         poll.poll(&mut events, timeout).unwrap();
 
@@ -660,7 +659,7 @@ fn main() {
         // the flexicast channel.
         if Some(nb_active_fc_clients) >= args.wait_clients && !h3_resp.is_active()
         {
-            println!("SET APPLICATION ACTIVE");
+            info!("SET APPLICATION ACTIVE");
             h3_resp.set_active(true);
         }
 
@@ -687,14 +686,19 @@ fn main() {
             if let (Some(mc_channel), Some(fh3_conn)) =
                 (mc_channel_opt.as_mut(), fh3_conn.as_mut())
             {
-                info!("SEND BODY!!!");
-                h3_resp
+                debug!("SEND BODY!!!");
+                match h3_resp
                     .send_body(
                         fh3_conn,
                         &mut mc_channel.channel,
                         args.h3_chunk_size,
-                    )
-                    .unwrap();
+                    ) {
+                        Ok(_) => (),
+
+                        Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => (),
+
+                        Err(e) => panic!("Error while sending the body: {:?}", e),
+                    }
             }
         }
 
@@ -830,8 +834,8 @@ fn main() {
         // Set the congestion window of the multicast channel.
         if let Some(mc_channel) = mc_channel_opt.as_mut() {
             let clients_conn = clients.iter_mut().map(|c| &mut c.1.conn);
-            if args.disable_cc {
-                mc_channel.channel.mc_set_cwnd(usize::MAX - 2);
+            if let Some(fc_cwnd) = args.fc_cwnd {
+                mc_channel.channel.mc_set_cwnd(fc_cwnd);
             } else {
                 ucs_to_mc_cwnd!(&mut mc_channel.channel, clients_conn, now, None);
             }
@@ -865,12 +869,12 @@ fn get_config(args: &Args) -> quiche::Config {
 
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(10_000_000);
-    config.set_initial_max_stream_data_bidi_local(1_000_000);
-    config.set_initial_max_stream_data_bidi_remote(1_000_000);
-    config.set_initial_max_stream_data_uni(1_000_000);
-    config.set_initial_max_streams_bidi(1_000_000);
-    config.set_initial_max_streams_uni(1_000_000);
+    config.set_initial_max_data(100_000_000_000);
+    config.set_initial_max_stream_data_bidi_local(100_000_000_000);
+    config.set_initial_max_stream_data_bidi_remote(100_000_000_000);
+    config.set_initial_max_stream_data_uni(100_000_000_000);
+    config.set_initial_max_streams_bidi(100_000_000_000);
+    config.set_initial_max_streams_uni(100_000_000_000);
     config.set_disable_active_migration(true);
     config.set_active_connection_id_limit(5);
     config.enable_early_data();
@@ -990,14 +994,15 @@ pub fn get_mc_config(
     config
         .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
         .unwrap();
+    // let use_fec = false;
     config.set_max_recv_udp_payload_size(1350);
     config.set_max_send_udp_payload_size(1350);
-    config.set_initial_max_data(10_000_000);
-    config.set_initial_max_stream_data_bidi_local(1_000_000);
-    config.set_initial_max_stream_data_bidi_remote(1_000_000);
-    config.set_initial_max_stream_data_uni(1_000_000);
-    config.set_initial_max_streams_bidi(1_000_000);
-    config.set_initial_max_streams_uni(1_000_000);
+    config.set_initial_max_data(100_000_000_000);
+    config.set_initial_max_stream_data_bidi_local(100_000_000_000);
+    config.set_initial_max_stream_data_bidi_remote(100_000_000_000);
+    config.set_initial_max_stream_data_uni(100_000_000_000);
+    config.set_initial_max_streams_bidi(100_000_000_000);
+    config.set_initial_max_streams_uni(100_000_000_000);
     config.set_active_connection_id_limit(5);
     config.verify_peer(false);
     config.set_multipath(true);
@@ -1013,7 +1018,7 @@ pub fn get_mc_config(
     config.set_real_time(false);
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     config.set_fec_symbol_size(1280 - 64); // MC-TODO: make dynamic with auth.
-    config.set_fec_window_size(2000);
+    config.set_fec_window_size(50_000);
     config
 }
 

@@ -262,7 +262,6 @@ impl ReliableMulticastConnection for Connection {
     }
 
     fn on_rmc_timeout(&mut self, now: time::Instant) -> Result<()> {
-        info!("Call on_rmc_timeout");
         if let Some(time::Duration::ZERO) = self.rmc_timeout(now) {
             // Should be the client.
             assert!(!self.is_server);
