@@ -288,7 +288,7 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use crate::multicast::authentication::McAuthType;
-    use crate::multicast::testing::FcConfigTest;
+    use crate::multicast::testing::FcConfig;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::McClientTp;
     use ring::rand::SystemRandom;
@@ -347,13 +347,14 @@ mod tests {
         let random = SystemRandom::new();
         let mc_data_auth = None;
 
-        let fc_config = FcConfigTest {
+        let fc_config = FcConfig {
             mc_announce_data: mc_pipe.mc_announce_data.clone(),
             mc_data_auth,
             probe_mc_path: true,
             authentication: auth_method,
             mc_client_tp,
-            ..FcConfigTest::default()
+            fec_window_size: 1,
+            ..FcConfig::default()
         };
 
         let new_client = MulticastPipe::setup_client(

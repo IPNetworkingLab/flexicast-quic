@@ -131,7 +131,7 @@ impl Connection {
 pub mod testing {
     use ring::rand::SystemRandom;
 
-    use crate::multicast::testing::FcConfigTest;
+    use crate::multicast::testing::FcConfig;
     use crate::ranges::RangeSet;
 
     use super::*;
@@ -171,7 +171,7 @@ pub mod testing {
         ) -> std::result::Result<Self, Box<dyn std::error::Error>> {
             // First create the pipe with 0 client, then add the clients with the
             // HTTP/3 sessions.
-            let mut fc_pipe = MulticastPipe::new(
+            let mut fc_pipe = MulticastPipe::new_reliable(
                 0,
                 keylog_filename,
                 authentication,
@@ -183,12 +183,12 @@ pub mod testing {
             let random = ring::rand::SystemRandom::new();
             let mut sessions = Vec::with_capacity(nb_clients);
             let fc_client_tp = McClientTp::default();
-            let fc_config = FcConfigTest {
+            let fc_config = FcConfig {
                 mc_client_tp: fc_client_tp,
                 mc_announce_data: fc_pipe.mc_announce_data.clone(),
                 authentication,
                 probe_mc_path,
-                ..FcConfigTest::default()
+                ..FcConfig::default()
             };
 
             for _ in 0..nb_clients {
@@ -415,7 +415,7 @@ pub mod testing {
         /// Adds the client and the HTTP/3 session in the self structure.
         /// Do not perform the HTTP/3 handshake.
         pub fn setup_client_with_session(
-            &mut self, fc_config: &FcConfigTest, random: &SystemRandom,
+            &mut self, fc_config: &FcConfig, random: &SystemRandom,
             h3_config: &Config,
         ) -> Result<()> {
             let (pipe, ..) =
@@ -527,11 +527,13 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use crate::multicast::testing::FcConfigTest;
+    use crate::multicast::testing::FcConfig;
 
     use super::*;
     use ring::rand::SystemRandom;
     use testing::*;
+    use std::time;
+    use crate::multicast::MulticastConnection;
 
     #[test]
     /// Test a simple HTTP/3 request/response sent on the flexicast channel with
@@ -621,7 +623,7 @@ mod tests {
             .multicast
             .as_mut()
             .unwrap()
-            .fc_enable_stream_rotation(true)
+            .fc_enable_stream_rotation(false)
             .is_ok());
         assert!(fc_session
             .fc_pipe
@@ -629,7 +631,7 @@ mod tests {
             .multicast
             .as_mut()
             .unwrap()
-            .fc_enable_stream_rotation(true)
+            .fc_enable_stream_rotation(false)
             .is_ok());
 
         assert_eq!(fc_session.fc_handshake(), Ok(()));
@@ -685,15 +687,28 @@ mod tests {
         assert_eq!(s.poll_client(), Ok((fc_stream, ev_headers.clone())));
         assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
         assert_eq!(s.recv_body_client(fc_stream, &mut recv_buf), Ok(body.len()));
+        
+        // Timeout of the first part of the data.
+        let expiration_timer = fc_session.mc_announce_data.expiration_timer;
+        let now = time::Instant::now();
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+
+        let res = fc_session.fc_pipe.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(6), Some(4)).into()));
+
+        // The multicast source sends an MC_EXPIRE to the client.
+        let (mut fc_session, _) = fc_session.fc_source_send_single(None, 0).unwrap();
 
         // The second client joins the flexicast channel.
-        let fc_config = FcConfigTest {
+        let fc_config = FcConfig {
             mc_client_tp: McClientTp::default(),
             mc_announce_data: fc_session.mc_announce_data.clone(),
             mc_data_auth: None,
             authentication: McAuthType::AsymSign,
             probe_mc_path: true,
-            ..FcConfigTest::default()
+            ..FcConfig::default()
         };
         let random = SystemRandom::new();
         let h3_config = Config::new().unwrap();
@@ -769,6 +784,15 @@ mod tests {
             Ok((bytes.len(), 82))
         );
         assert_eq!(&recv_buf[..bytes.len()], &bytes);
+
+        let expired = expired
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+        let res = fc_session.fc_pipe.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(8), Some(5)).into()));
+
+        // The multicast source sends an MC_EXPIRE to the client.
+        let (mut fc_session, _) = fc_session.fc_source_send_single(None, 0).unwrap();
 
         // The source restarts the transmission. Do the same for HTTP/3.
         assert_eq!(
