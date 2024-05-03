@@ -10,6 +10,7 @@ use quiche::multicast::MulticastConnection;
 use quiche::testing::Pipe;
 use quiche::Connection;
 use quiche::RecvInfo;
+use quiche::multicast::FcConfig;
 
 use criterion::criterion_group;
 use criterion::criterion_main;
@@ -37,8 +38,14 @@ fn setup_mc(
     RecvInfo,
     Option<(VecDeque<Vec<u8>>, RecvInfo)>,
 ) {
+    let mut fc_config = FcConfig {
+        use_fec: false,
+        probe_mc_path: false,
+        authentication: auth,
+        ..FcConfig::default()
+    };
     let mut pipe =
-        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None).unwrap();
+        MulticastPipe::new(nb_recv, "/tmp/bench", &mut fc_config).unwrap();
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
     // Generate the packets all at once.
@@ -86,7 +93,7 @@ fn setup_mc(
 }
 
 fn setup_uc(buf: &[u8]) -> (Connection, VecDeque<Vec<u8>>, RecvInfo) {
-    let mut config = get_test_mc_config(false, None, false, McAuthType::None);
+    let mut config = get_test_mc_config(false, &FcConfig::default());
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
     let mut pipe = Pipe::with_config(&mut config).unwrap();
     pipe.handshake().unwrap();

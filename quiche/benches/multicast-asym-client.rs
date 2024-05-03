@@ -2,6 +2,7 @@ use std::fmt::Display;
 
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::testing::MulticastPipe;
+use quiche::multicast::FcConfig;
 use quiche::multicast::McPathType;
 use quiche::multicast::MulticastConnection;
 use quiche::Connection;
@@ -27,25 +28,27 @@ const NB_RECV: usize = 1;
 /// is used.
 fn setup_mc(
     buf: &[u8], stream_size: usize, auth: McAuthType,
-) -> (
-    Connection,
-    VecDeque<Vec<u8>>,
-    RecvInfo,
-) {
+) -> (Connection, VecDeque<Vec<u8>>, RecvInfo) {
+    let mut fc_config = FcConfig {
+        use_fec: false,
+        probe_mc_path: false,
+        authentication: auth,
+        ..FcConfig::default()
+    };
     let mut pipe =
-        MulticastPipe::new(NB_RECV, "/tmp/bench", auth, false, false, None).unwrap();
-    
-        let nb_streams = buf.len() / stream_size;
-        for i in 0..nb_streams {
-            pipe.mc_channel
-                .channel
-                .stream_send(
-                    i as u64 * 4 + 1,
-                    &buf[i * stream_size..(i + 1) * stream_size],
-                    true,
-                )
-                .unwrap();
-        }
+        MulticastPipe::new(NB_RECV, "/tmp/bench", &mut fc_config).unwrap();
+
+    let nb_streams = buf.len() / stream_size;
+    for i in 0..nb_streams {
+        pipe.mc_channel
+            .channel
+            .stream_send(
+                i as u64 * 4 + 1,
+                &buf[i * stream_size..(i + 1) * stream_size],
+                true,
+            )
+            .unwrap();
+    }
 
     // Generate the packets all at once.
     let mut packets = VecDeque::with_capacity(buf.len() / 2000);
@@ -103,11 +106,11 @@ fn mc_client_bench(c: &mut Criterion) {
     // let stream_sizes = vec![BENCH_STREAM_TOTAL_SIZE];
 
     let mut group = c.benchmark_group("multicast-client-asym");
-    // for &auth in &[McAuthType::AsymSign, McAuthType::None, McAuthType::StreamAsym] {
+    // for &auth in &[McAuthType::AsymSign, McAuthType::None,
+    // McAuthType::StreamAsym] {
     for &auth in &[McAuthType::None, McAuthType::StreamAsym] {
-    // for &auth in &[McAuthType::StreamAsym] {
-        for &stream_size in
-            stream_sizes.iter() {
+        // for &auth in &[McAuthType::StreamAsym] {
+        for &stream_size in stream_sizes.iter() {
             group.bench_with_input(
                 BenchmarkId::from_parameter(McTuple::from((auth, stream_size))),
                 &(auth, stream_size),
@@ -127,7 +130,6 @@ fn mc_client_bench(c: &mut Criterion) {
                             for stream_id in conn.readable() {
                                 conn.mc_stream_recv(stream_id, &mut buf).unwrap();
                             }
-
                         },
                         PerIteration,
                     );

@@ -2,6 +2,7 @@ use std::fmt::Display;
 
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::testing::MulticastPipe;
+use quiche::multicast::FcConfig;
 use quiche::multicast::MulticastChannelSource;
 
 use criterion::criterion_group;
@@ -17,9 +18,14 @@ const NB_RECV: usize = 1;
 fn setup_mc_only_source(
     buf: &[u8], auth: McAuthType, stream_size: usize,
 ) -> MulticastChannelSource {
+    let mut fc_config = FcConfig {
+        use_fec: false,
+        probe_mc_path: false,
+        authentication: auth,
+        ..FcConfig::default()
+    };
     let mut pipe =
-        MulticastPipe::new(NB_RECV, "/tmp/bench", auth, false, false, None)
-            .unwrap();
+        MulticastPipe::new(NB_RECV, "/tmp/bench", &mut fc_config).unwrap();
 
     let nb_streams = buf.len() / stream_size;
     for i in 0..nb_streams {
@@ -73,9 +79,7 @@ fn mc_channel_bench(c: &mut Criterion) {
         // McAuthType::None,
         McAuthType::StreamAsym,
     ] {
-        for &stream_size in
-            stream_sizes.iter()
-        {
+        for &stream_size in stream_sizes.iter() {
             group.bench_with_input(
                 BenchmarkId::from_parameter(McTuple::from((auth, stream_size))),
                 &(auth, stream_size),

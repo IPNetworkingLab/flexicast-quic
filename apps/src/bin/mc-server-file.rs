@@ -28,7 +28,6 @@
 extern crate log;
 
 use std::collections::VecDeque;
-use std::io;
 use std::net;
 use std::path::Path;
 use std::rc::Rc;
@@ -37,13 +36,14 @@ use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::authentication::McSymAuth;
 use quiche::multicast::reliable::ReliableMulticastConnection;
+use quiche::multicast::FcConfig;
 use quiche::multicast::McAnnounceData;
+use quiche::multicast::McClientTp;
 use quiche::multicast::McConfig;
 use quiche::multicast::McPathType;
-use quiche::multicast::MulticastChannelSource;
-use quiche::multicast::McClientTp;
-use quiche::multicast::MulticastConnection;
 use quiche::multicast::McRole;
+use quiche::multicast::MulticastChannelSource;
+use quiche::multicast::MulticastConnection;
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
 #[cfg(feature = "qlog")]
@@ -249,9 +249,7 @@ fn main() {
             as usize
     });
     let mut app_start = None;
-    let leave_bw_delay = args
-        .leave_bw_delay
-        .map(time::Duration::from_millis);
+    let leave_bw_delay = args.leave_bw_delay.map(time::Duration::from_millis);
     debug!("Leave mc below cwin={:?}", leave_mc_below_cwin);
 
     // Log every packet sent on unicast and multicast.
@@ -1457,15 +1455,21 @@ fn get_multicast_channel(
         None
     };
 
+    let fc_config = FcConfig {
+        authentication,
+        use_fec: true,
+        probe_mc_path: true,
+        ..Default::default()
+    };
+
     let mut mc_channel = MulticastChannelSource::new_with_tls(
         mc_path_info,
         &mut server_config,
         &mut client_config,
         mc_addr,
         mc_keylog_file,
-        authentication,
         mc_auth_info,
-        mc_cwnd,
+        &fc_config,
     )
     .unwrap();
 

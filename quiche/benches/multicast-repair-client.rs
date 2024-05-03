@@ -4,6 +4,7 @@ use std::fmt::Display;
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::testing::MulticastPipe;
 use quiche::multicast::testing::OpenRangeSet;
+use quiche::multicast::FcConfig;
 use quiche::multicast::McPathType;
 use quiche::multicast::MulticastConnection;
 use quiche::Connection;
@@ -40,9 +41,14 @@ fn setup_mc(
     buf: &[u8], auth: McAuthType, lost_gap: u64,
     remove_source_symbols: FecResetFreq,
 ) -> (Connection, VecDeque<Vec<u8>>, RecvInfo) {
+    let mut fc_config = FcConfig {
+        use_fec: false,
+        probe_mc_path: false,
+        authentication: auth,
+        ..FcConfig::default()
+    };
     let mut pipe =
-        MulticastPipe::new(NB_RECV, "/tmp/bench", auth, true, false, None)
-            .unwrap();
+        MulticastPipe::new(NB_RECV, "/tmp/bench", &mut fc_config).unwrap();
 
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
@@ -68,7 +74,9 @@ fn setup_mc(
                 nack_ranges.populate(nb_sent - 3..nb_sent - 2);
 
                 if matches!(remove_source_symbols, FecResetFreq::Sliding(_)) {
-                    pipe.mc_channel.set_source_nack_range(&nack_ranges, u64::MAX).unwrap();
+                    pipe.mc_channel
+                        .set_source_nack_range(&nack_ranges, u64::MAX)
+                        .unwrap();
                 }
 
                 // Use this time to remove old source symbols that are not in the

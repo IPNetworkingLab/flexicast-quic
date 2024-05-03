@@ -380,10 +380,9 @@ impl McSymAuth for Connection {
                 let mut signatures = Vec::with_capacity(map.cid_to_id.len());
 
                 for conn in clients.iter() {
-                    let mc_client_id =
-                        map.get_client_id(conn.source_id().as_ref()).ok_or(
-                            Error::Multicast(McError::McInvalidClientId),
-                        );
+                    let mc_client_id = map
+                        .get_client_id(conn.source_id().as_ref())
+                        .ok_or(Error::Multicast(McError::McInvalidClientId));
                     let mc_client_id = match mc_client_id {
                         Ok(v) => v,
                         Err(_) => {
@@ -412,6 +411,7 @@ impl McSymAuth for Connection {
 
 #[cfg(test)]
 mod tests {
+    use crate::multicast::FcConfig;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::McPathType;
     use crate::multicast::MulticastConnection;
@@ -421,16 +421,15 @@ mod tests {
 
     #[test]
     fn test_mc_get_pn() {
-        let mut mc_pipe = MulticastPipe::new(
-            1,
-            "/tmp/test_mc_get_pn.txt",
-            McAuthType::SymSign,
-            false,
-            false,
-            None,
-        )
-        .unwrap();
-        assert_eq!(mc_pipe.source_send_single_stream(false, None, 0, 1), Ok(0));
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::SymSign,
+            use_fec: false,
+            probe_mc_path: false,
+            ..Default::default()
+        };
+        let mut mc_pipe =
+            MulticastPipe::new(1, "/tmp/test_mc_get_pn.txt", &mut fc_config).unwrap();
+        assert_eq!(mc_pipe.source_send_single_stream(false, None, 1), Ok(0));
 
         let mut buf = [0u8; 1500];
         let written = mc_pipe.mc_channel.mc_send(&mut buf).map(|(w, _)| w);
@@ -466,26 +465,24 @@ mod tests {
     /// that the packets are correctly authenticated.
     fn test_mc_sym_auth_sign() {
         for probe_mc_path in [true, false] {
-            let use_auth = McAuthType::SymSign;
+            let mut fc_config = FcConfig {
+                authentication: McAuthType::SymSign,
+                use_fec: false,
+                probe_mc_path,
+                ..Default::default()
+            };
             let mut mc_pipe = MulticastPipe::new(
                 5,
                 "/tmp/test_mc_sym_auth_sign.txt",
-                use_auth,
-                false,
-                probe_mc_path,
-                None,
+                &mut fc_config,
             )
             .unwrap();
 
             let mut mc_buf = [0u8; 1500];
 
             // Multicast source sends a multicast stream.
-            assert_eq!(
-                mc_pipe.source_send_single_stream(false, None, 0, 1),
-                Ok(0)
-            );
-            let written =
-                mc_pipe.source_send_single_from_buf(None, 0, &mut mc_buf);
+            assert_eq!(mc_pipe.source_send_single_stream(false, None, 1), Ok(0));
+            let written = mc_pipe.source_send_single_from_buf(None, &mut mc_buf);
             assert_eq!(written, Ok(339));
 
             // Multicast source generates the AEAD tags for the clients.
@@ -546,14 +543,16 @@ mod tests {
     /// This tests is added to correct an existing bug where the source does not
     /// send all the MC_AUTH frames that they should.
     fn test_mc_sym_lot_of_data() {
-        let use_auth = McAuthType::SymSign;
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::SymSign,
+            use_fec: true,
+            probe_mc_path: false,
+            ..Default::default()
+        };
         let mut mc_pipe = MulticastPipe::new(
             10,
             "/tmp/test_mc_sym_lot_of_data.txt",
-            use_auth,
-            true,
-            false,
-            None,
+            &mut fc_config,
         )
         .unwrap();
 

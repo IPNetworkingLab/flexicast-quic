@@ -5,10 +5,8 @@ use crate::h3::Error;
 use crate::h3::Event;
 use crate::h3::Header;
 use crate::h3::Result;
-use crate::multicast::authentication::McAuthType;
 use crate::multicast::testing::MulticastPipe;
 use crate::multicast::McAnnounceData;
-use crate::multicast::McClientTp;
 use crate::multicast::McError;
 use crate::multicast::MulticastChannelSource;
 
@@ -131,7 +129,7 @@ impl Connection {
 pub mod testing {
     use ring::rand::SystemRandom;
 
-    use crate::multicast::testing::FcConfig;
+    use crate::multicast::FcConfig;
     use crate::ranges::RangeSet;
 
     use super::*;
@@ -166,30 +164,15 @@ pub mod testing {
         /// Generates a new flexicast session with already defined
         /// configuration.
         pub fn new(
-            nb_clients: usize, keylog_filename: &str, authentication: McAuthType,
-            use_fec: bool, probe_mc_path: bool, max_cwnd: Option<usize>,
+            nb_clients: usize, keylog_filename: &str, fc_config: &mut FcConfig,
         ) -> std::result::Result<Self, Box<dyn std::error::Error>> {
             // First create the pipe with 0 client, then add the clients with the
             // HTTP/3 sessions.
-            let mut fc_pipe = MulticastPipe::new_reliable(
-                0,
-                keylog_filename,
-                authentication,
-                use_fec,
-                probe_mc_path,
-                max_cwnd,
-            )?;
+            let mut fc_pipe =
+                MulticastPipe::new_reliable(0, keylog_filename, fc_config)?;
             let h3_config = Config::new()?;
             let random = ring::rand::SystemRandom::new();
             let mut sessions = Vec::with_capacity(nb_clients);
-            let fc_client_tp = McClientTp::default();
-            let fc_config = FcConfig {
-                mc_client_tp: fc_client_tp,
-                mc_announce_data: fc_pipe.mc_announce_data.clone(),
-                authentication,
-                probe_mc_path,
-                ..FcConfig::default()
-            };
 
             for _ in 0..nb_clients {
                 let (pipe, ..) = MulticastPipe::setup_client(
@@ -394,13 +377,13 @@ pub mod testing {
         /// because we need to wrap the structures inside a
         /// [`crate::multicast::testing::MulticastPipe`].
         pub fn fc_source_send_single(
-            self, client_loss: Option<&RangeSet>, signature_len: usize,
+            self, client_loss: Option<&RangeSet>,
         ) -> Result<(Box<Self>, bool)> {
             let mut fc_session_translate: Box<FcSessionTranslate> =
                 Box::new(self).into();
             let fin = match fc_session_translate
                 .fc_pipe
-                .source_send_single(client_loss, signature_len)
+                .source_send_single(client_loss)
             {
                 Ok(_) => false,
                 Err(crate::Error::Done) => true,
@@ -527,27 +510,27 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use crate::multicast::testing::FcConfig;
+    use crate::multicast::FcConfig;
+    use crate::multicast::authentication::McAuthType;
 
     use super::*;
-    use ring::rand::SystemRandom;
-    use testing::*;
-    use std::time;
     use crate::multicast::MulticastConnection;
+    use ring::rand::SystemRandom;
+    use std::time;
+    use testing::*;
 
     #[test]
     /// Test a simple HTTP/3 request/response sent on the flexicast channel with
     /// data received in-order.
     fn fc_h3_simple() {
-        let mut fc_session = FcSession::new(
-            2,
-            "/tmp/fc_h3_simple.txt",
-            McAuthType::StreamAsym,
-            true,
-            true,
-            None,
-        )
-        .unwrap();
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_session =
+            FcSession::new(2, "/tmp/fc_h3_simple.txt", &mut fc_config).unwrap();
 
         assert_eq!(fc_session.fc_handshake(), Ok(()));
         assert_eq!(fc_session.handhakes(), Ok(()));
@@ -579,11 +562,10 @@ mod tests {
         };
 
         // Send the data to all clients.
-        let (fc_session, fin) =
-            fc_session.fc_source_send_single(None, 0).unwrap();
+        let (fc_session, fin) = fc_session.fc_source_send_single(None).unwrap();
         assert!(!fin);
         let (mut fc_session, fin) =
-            fc_session.fc_source_send_single(None, 0).unwrap();
+            fc_session.fc_source_send_single(None).unwrap();
         assert!(fin);
 
         // The clients received the response through the flexicast path.
@@ -605,15 +587,14 @@ mod tests {
     /// Test a simple HTTP/3 request/response sent on the flexicast channel with
     /// data received in-order.
     fn fc_h3_out_of_order() {
-        let mut fc_session = FcSession::new(
-            1,
-            "/tmp/fc_h3_out_of_order.txt",
-            McAuthType::StreamAsym,
-            true,
-            true,
-            None,
-        )
-        .unwrap();
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_session =
+            FcSession::new(1, "/tmp/fc_h3_out_of_order.txt", &mut fc_config).unwrap();
 
         // Enable stream rotation but do not send the stream states because they
         // will be sent through HTTP/3.
@@ -676,9 +657,9 @@ mod tests {
 
         // Send the data to the first client.
         let (mut fc_session, mut fin) =
-            fc_session.fc_source_send_single(None, 0).unwrap();
+            fc_session.fc_source_send_single(None).unwrap();
         assert!(!fin);
-        (fc_session, fin) = fc_session.fc_source_send_single(None, 0).unwrap();
+        (fc_session, fin) = fc_session.fc_source_send_single(None).unwrap();
         assert!(fin);
 
         // The first client received the response through the flexicast path.
@@ -687,7 +668,7 @@ mod tests {
         assert_eq!(s.poll_client(), Ok((fc_stream, ev_headers.clone())));
         assert_eq!(s.poll_client(), Ok((fc_stream, Event::Data)));
         assert_eq!(s.recv_body_client(fc_stream, &mut recv_buf), Ok(body.len()));
-        
+
         // Timeout of the first part of the data.
         let expiration_timer = fc_session.mc_announce_data.expiration_timer;
         let now = time::Instant::now();
@@ -699,11 +680,10 @@ mod tests {
         assert_eq!(res, Ok((Some(6), Some(4)).into()));
 
         // The multicast source sends an MC_EXPIRE to the client.
-        let (mut fc_session, _) = fc_session.fc_source_send_single(None, 0).unwrap();
+        let (mut fc_session, _) = fc_session.fc_source_send_single(None).unwrap();
 
         // The second client joins the flexicast channel.
         let fc_config = FcConfig {
-            mc_client_tp: McClientTp::default(),
             mc_announce_data: fc_session.mc_announce_data.clone(),
             mc_data_auth: None,
             authentication: McAuthType::AsymSign,
@@ -763,7 +743,7 @@ mod tests {
             .send_body(&mut fc_session.fc_pipe.channel, l_stream, &bytes, true)
             .unwrap();
         let (mut fc_session, _fin) =
-            fc_session.fc_source_send_single(None, 0).unwrap();
+            fc_session.fc_source_send_single(None).unwrap();
         assert!(fin);
 
         // The first client received the whole HTTP/3 response.
@@ -792,7 +772,7 @@ mod tests {
         assert_eq!(res, Ok((Some(8), Some(5)).into()));
 
         // The multicast source sends an MC_EXPIRE to the client.
-        let (mut fc_session, _) = fc_session.fc_source_send_single(None, 0).unwrap();
+        let (mut fc_session, _) = fc_session.fc_source_send_single(None).unwrap();
 
         // The source restarts the transmission. Do the same for HTTP/3.
         assert_eq!(
@@ -820,11 +800,10 @@ mod tests {
         let _resp = fc_session.fc_send_response(fc_stream, false).unwrap();
         let body = fc_session.fc_send_body_source(fc_stream, false).unwrap();
 
-        let (fc_session, fin) =
-            fc_session.fc_source_send_single(None, 0).unwrap();
+        let (fc_session, fin) = fc_session.fc_source_send_single(None).unwrap();
         assert!(!fin);
         let (mut fc_session, fin) =
-            fc_session.fc_source_send_single(None, 0).unwrap();
+            fc_session.fc_source_send_single(None).unwrap();
         assert!(fin);
 
         // The first client does not have any new data to receive.

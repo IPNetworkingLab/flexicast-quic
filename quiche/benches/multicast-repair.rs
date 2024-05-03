@@ -4,6 +4,7 @@ use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::testing::MulticastPipe;
 use quiche::multicast::testing::OpenRangeSet;
 use quiche::multicast::MulticastChannelSource;
+use quiche::multicast::FcConfig;
 
 use criterion::criterion_group;
 use criterion::criterion_main;
@@ -33,9 +34,14 @@ impl Display for FecResetFreq {
 }
 
 fn setup_mc_only_source(buf: &[u8], auth: McAuthType) -> MulticastChannelSource {
-    // !matches!(fec, FecResetFreq::NoFec(_))
+    let mut fc_config = FcConfig {
+        use_fec: true,
+        probe_mc_path: false,
+        authentication: auth,
+        ..FcConfig::default()
+    };
     let mut pipe =
-        MulticastPipe::new(NB_RECV, "/tmp/bench", auth, true, false, None)
+        MulticastPipe::new(NB_RECV, "/tmp/bench", &mut fc_config)
             .unwrap();
 
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();

@@ -4,6 +4,7 @@ use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::authentication::McSymAuth;
 use quiche::multicast::testing::get_test_mc_config;
 use quiche::multicast::testing::MulticastPipe;
+use quiche::multicast::FcConfig;
 use quiche::multicast::MulticastChannelSource;
 use quiche::testing::Pipe;
 
@@ -18,9 +19,14 @@ const BENCH_NB_RECV_MAX: usize = 40;
 const BENCH_STEP_RECV: usize = 5;
 
 fn setup_mc(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastPipe {
+    let mut fc_config = FcConfig {
+        use_fec: false,
+        probe_mc_path: false,
+        authentication: auth,
+        ..FcConfig::default()
+    };
     let mut pipe =
-        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None)
-            .unwrap();
+        MulticastPipe::new(nb_recv, "/tmp/bench", &mut fc_config).unwrap();
 
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
@@ -30,9 +36,14 @@ fn setup_mc(buf: &[u8], nb_recv: usize, auth: McAuthType) -> MulticastPipe {
 fn setup_mc_only_source(
     buf: &[u8], nb_recv: usize, auth: McAuthType,
 ) -> MulticastChannelSource {
+    let mut fc_config = FcConfig {
+        use_fec: false,
+        probe_mc_path: false,
+        authentication: auth,
+        ..FcConfig::default()
+    };
     let mut pipe =
-        MulticastPipe::new(nb_recv, "/tmp/bench", auth, false, false, None)
-            .unwrap();
+        MulticastPipe::new(nb_recv, "/tmp/bench", &mut fc_config).unwrap();
 
     pipe.mc_channel.channel.stream_send(1, buf, true).unwrap();
 
@@ -42,8 +53,7 @@ fn setup_mc_only_source(
 fn setup_uc(buf: &[u8], nb_recv: usize) -> Vec<quiche::Connection> {
     (0..nb_recv)
         .map(|_| {
-            let mut config =
-                get_test_mc_config(false, None, false, McAuthType::None);
+            let mut config = get_test_mc_config(false, &FcConfig::default());
             config.set_cc_algorithm(quiche::CongestionControlAlgorithm::DISABLED);
             let mut pipe = Pipe::with_config(&mut config).unwrap();
             pipe.handshake().unwrap();

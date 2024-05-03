@@ -16,6 +16,7 @@ use quiche::multicast::McConfig;
 use quiche::multicast::McRole;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastConnection;
+use quiche::multicast::FcConfig;
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
 #[cfg(feature = "qlog")]
@@ -937,15 +938,21 @@ fn get_multicast_channel(
         cid: channel_id,
     };
 
+    let fc_config = FcConfig {
+        authentication: args.authentication,
+        use_fec: true,
+        probe_mc_path: true,
+        ..Default::default()
+    };
+
     let mut mc_channel = MulticastChannelSource::new_with_tls(
         mc_path_info,
         &mut server_config,
         &mut client_config,
         mc_addr,
         args.fc_keylog_file.as_ref().to_str().unwrap(),
-        args.authentication,
         None,
-        None,
+        &fc_config,
     )
     .unwrap();
 

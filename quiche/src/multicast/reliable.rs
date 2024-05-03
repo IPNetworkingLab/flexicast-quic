@@ -1,8 +1,8 @@
 //! Reliability extension for Multicast QUIC.
 
+use super::McError;
 use super::MulticastAttributes;
 use super::MulticastConnection;
-use super::McError;
 use crate::multicast::MissingRangeSet;
 use crate::ranges::RangeSet;
 use crate::recovery::multicast::ReliableMulticastRecovery;
@@ -318,9 +318,7 @@ impl ReliableMulticastConnection for Connection {
             .as_ref()
             .ok_or(Error::Multicast(McError::McReliableDisabled))?
             .client()
-            .ok_or(Error::Multicast(McError::McInvalidRole(
-                McRole::Undefined,
-            )))
+            .ok_or(Error::Multicast(McError::McInvalidRole(McRole::Undefined)))
             .map(|c| c.rmc_client_send_ack)
     }
 
@@ -332,9 +330,7 @@ impl ReliableMulticastConnection for Connection {
             .as_ref()
             .ok_or(Error::Multicast(McError::McReliableDisabled))?
             .client()
-            .ok_or(Error::Multicast(McError::McInvalidRole(
-                McRole::Undefined,
-            )))
+            .ok_or(Error::Multicast(McError::McInvalidRole(McRole::Undefined)))
             .map(|c| c.rmc_client_send_ssa)
     }
 
@@ -422,7 +418,7 @@ impl ReliableMulticastConnection for Connection {
                 // println!("Lost packets: {:?}", out);
             }
         } else {
-            return Ok(())
+            return Ok(());
             // return Err(Error::Multicast(McError::McDisabled));
         }
 
@@ -522,34 +518,29 @@ impl MulticastAttributes {
 /// extension of QUIC.
 pub mod testing {
     use super::*;
-    use crate::multicast::testing::*;
     use crate::multicast::*;
+    use crate::multicast::testing::*;
 
-    /// Simple McAnnounceData for testing the reliable multicast extension only.
-    pub fn get_test_rmc_announce_data() -> McAnnounceData {
-        let mut mc_announce_data = get_test_mc_announce_data();
-        mc_announce_data.full_reliability = true;
-        mc_announce_data.expiration_timer = 500;
-
-        mc_announce_data
+    impl FcConfig {
+        /// Simple McAnnounceData for testing the reliable multicast extension
+        /// only.
+        pub fn enable_reliable(&mut self) {
+            self.mc_announce_data.full_reliability = true;
+            self.mc_announce_data.expiration_timer = 500;
+        }
     }
 
     impl MulticastPipe {
         /// Generates a new reliable multicast pipe with already defined
         /// configuration.
         pub fn new_reliable(
-            nb_clients: usize, keylog_filename: &str, authentication: McAuthType,
-            use_fec: bool, probe_mc_path: bool, max_cwnd: Option<usize>,
+            nb_clients: usize, keylog_filename: &str, fc_config: &mut FcConfig,
         ) -> Result<MulticastPipe> {
-            let mc_announce_data = get_test_rmc_announce_data();
-            Self::new_from_mc_announce_data(
+            fc_config.enable_reliable();
+            Self::new(
                 nb_clients,
                 keylog_filename,
-                authentication,
-                use_fec,
-                probe_mc_path,
-                max_cwnd,
-                mc_announce_data,
+                fc_config,
             )
         }
 
@@ -595,7 +586,7 @@ mod tests {
     use crate::multicast::reliable::RMcClient;
     use crate::multicast::reliable::RMcServer;
     use crate::multicast::reliable::ReliableMc;
-    use crate::multicast::testing::FcConfig;
+    use crate::multicast::FcConfig;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::McAuthType;
     use crate::multicast::McClientTp;
@@ -606,13 +597,16 @@ mod tests {
 
     #[test]
     fn test_rmc_next_timeout() {
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::None,
+            use_fec: true,
+            probe_mc_path: true,
+            ..Default::default()
+        };
         let mut mc_pipe = MulticastPipe::new_reliable(
             1,
             "/tmp/test_rmc_next_timeout.txt",
-            McAuthType::None,
-            true,
-            true,
-            None,
+            &mut fc_config,
         )
         .unwrap();
         let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
@@ -704,22 +698,23 @@ mod tests {
 
     #[test]
     fn test_rmc_client_send_ack() {
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::None,
+            use_fec: true,
+            probe_mc_path: true,
+            ..Default::default()
+        };
         let mut mc_pipe = MulticastPipe::new_reliable(
             1,
             "/tmp/test_rmc_client_send_ack.txt",
-            McAuthType::None,
-            true,
-            true,
-            None,
+            &mut fc_config,
         )
         .unwrap();
 
-        mc_pipe.source_send_single_stream(true, None, 0, 1).unwrap();
-        mc_pipe.source_send_single_stream(true, None, 0, 5).unwrap();
-        mc_pipe.source_send_single_stream(true, None, 0, 9).unwrap();
-        mc_pipe
-            .source_send_single_stream(true, None, 0, 13)
-            .unwrap();
+        mc_pipe.source_send_single_stream(true, None, 1).unwrap();
+        mc_pipe.source_send_single_stream(true, None, 5).unwrap();
+        mc_pipe.source_send_single_stream(true, None, 9).unwrap();
+        mc_pipe.source_send_single_stream(true, None, 13).unwrap();
 
         let now = time::Instant::now();
         let random = SystemRandom::new();
@@ -766,18 +761,21 @@ mod tests {
     /// * Asymmetric signatures,
     /// * Per-stream asymmetric signatures.
     fn test_on_rmc_timeout_server_small_streams() {
-        for (auth_method, sign_len) in [
-            (McAuthType::None, 0),
-            (McAuthType::AsymSign, 64),
-            (McAuthType::StreamAsym, 0),
+        for auth_method in [
+            McAuthType::None,
+            McAuthType::AsymSign,
+            McAuthType::StreamAsym,
         ] {
+            let mut fc_config = FcConfig {
+                authentication: auth_method,
+                use_fec: true,
+                probe_mc_path: true,
+                ..Default::default()
+            };
             let mut mc_pipe = MulticastPipe::new_reliable(
                 2,
                 "/tmp/test_on_rmc_timeout_server_small_streams.txt",
-                auth_method,
-                true,
-                true,
-                None,
+                &mut fc_config,
             )
             .unwrap();
 
@@ -789,21 +787,16 @@ mod tests {
             // Source sends four small streams. Second and last are not received
             // on the client.
             assert!(mc_pipe
-                .source_send_single_stream(true, Some(&client_loss2), sign_len, 1)
+                .source_send_single_stream(true, Some(&client_loss2), 1)
                 .is_ok());
             assert!(mc_pipe
-                .source_send_single_stream(true, Some(&client_loss1), sign_len, 5)
+                .source_send_single_stream(true, Some(&client_loss1), 5)
                 .is_ok());
             assert!(mc_pipe
-                .source_send_single_stream(true, Some(&client_loss2), sign_len, 9)
+                .source_send_single_stream(true, Some(&client_loss2), 9)
                 .is_ok());
             assert!(mc_pipe
-                .source_send_single_stream(
-                    true,
-                    Some(&client_loss1),
-                    sign_len,
-                    13
-                )
+                .source_send_single_stream(true, Some(&client_loss1), 13)
                 .is_ok());
 
             let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
@@ -897,13 +890,17 @@ mod tests {
             (McAuthType::AsymSign, 64),
             (McAuthType::StreamAsym, 0),
         ] {
+            println!("Auth method: {:?}", auth_method);
+            let mut fc_config = FcConfig {
+                authentication: auth_method,
+                use_fec: true,
+                probe_mc_path: true,
+                ..Default::default()
+            };
             let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
                 2,
                 "/tmp/test_on_rmc_timeout_large_stream.txt",
-                auth_method,
-                true,
-                true,
-                None,
+                &mut fc_config,
             )
             .unwrap();
 
@@ -927,14 +924,11 @@ mod tests {
             // packet is lost.
             let mut erase = true;
             loop {
-                if let Err(Error::Done) = mc_pipe.source_send_single(
-                    if erase {
-                        Some(&client_loss1)
-                    } else {
-                        Some(&client_loss2)
-                    },
-                    sign_len,
-                ) {
+                if let Err(Error::Done) = mc_pipe.source_send_single(if erase {
+                    Some(&client_loss1)
+                } else {
+                    Some(&client_loss2)
+                }) {
                     break;
                 }
                 erase = !erase;
@@ -1014,14 +1008,11 @@ mod tests {
             // packet is lost.
             let mut erase = false;
             loop {
-                if let Err(Error::Done) = mc_pipe.source_send_single(
-                    if erase {
-                        Some(&client_loss1)
-                    } else {
-                        Some(&client_loss2)
-                    },
-                    sign_len,
-                ) {
+                if let Err(Error::Done) = mc_pipe.source_send_single(if erase {
+                    Some(&client_loss1)
+                } else {
+                    Some(&client_loss2)
+                }) {
                     break;
                 }
                 erase = !erase;
@@ -1115,17 +1106,17 @@ mod tests {
     #[test]
     fn test_rmc_cc2() {
         let max_datagram_size = 1350;
-        let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
-        let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
-            1,
-            "/tmp/test_rmc_cc.txt",
-            auth_method,
-            true,
-            true,
-            Some(mc_cwnd),
-        )
-        .unwrap();
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            mc_cwnd: Some(mc_cwnd),
+            ..Default::default()
+        };
+        let mut mc_pipe: MulticastPipe =
+            MulticastPipe::new_reliable(1, "/tmp/test_rmc_cc.txt", &mut fc_config)
+                .unwrap();
 
         let cwnd = mc_pipe
             .mc_channel
@@ -1151,7 +1142,7 @@ mod tests {
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
             Ok(10 * max_datagram_size * 4)
         ); // 27,000 because of the two paths.
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+        while let Ok(_) = mc_pipe.source_send_single(None) {}
         let now = time::Instant::now();
         assert_eq!(mc_pipe.server_control_to_mc_source(now), Ok(()));
 
@@ -1213,7 +1204,7 @@ mod tests {
         let mut loss_1 = RangeSet::default();
         loss_1.insert(0..1);
         std::thread::sleep(expired.duration_since(time::Instant::now()));
-        while let Ok(_) = mc_pipe.source_send_single(Some(&loss_1), 0) {}
+        while let Ok(_) = mc_pipe.source_send_single(Some(&loss_1)) {}
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
 
         let now = expired;
@@ -1260,10 +1251,6 @@ mod tests {
             .cwnd();
         assert_eq!(cwnd, exp_cwin);
 
-        println!(
-            "Previous cwin: {} and current cwin: {}",
-            previous_cwin, exp_cwin
-        );
         assert!(exp_cwin < previous_cwin);
     }
 
@@ -1273,16 +1260,19 @@ mod tests {
     /// must decrease its congestion window in response.
     fn test_rmc_cc_empty_ack() {
         let max_datagram_size = 1350;
-        let auth_method = McAuthType::StreamAsym;
         let mc_cwnd = 15;
         let mut buf = [0u8; 15000];
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            mc_cwnd: Some(mc_cwnd),
+            ..Default::default()
+        };
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
             4,
             "/tmp/test_rmc_cc_no_ack.txt",
-            auth_method,
-            true,
-            true,
-            Some(mc_cwnd),
+            &mut fc_config,
         )
         .unwrap();
 
@@ -1301,7 +1291,7 @@ mod tests {
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
             Ok(10 * max_datagram_size * 4)
         ); // 27,000 because of the two paths.
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+        while let Ok(_) = mc_pipe.source_send_single(None) {}
 
         let random = SystemRandom::new();
         let now = time::Instant::now();
@@ -1334,7 +1324,7 @@ mod tests {
         let mut loss = RangeSet::default();
         loss.insert(0..4);
         loop {
-            match mc_pipe.source_send_single(Some(&loss), 0) {
+            match mc_pipe.source_send_single(Some(&loss)) {
                 Err(Error::Done) => {
                     break;
                 },
@@ -1383,15 +1373,18 @@ mod tests {
     #[test]
     fn test_rmc_no_retransmit_on_mc_source() {
         let max_datagram_size = 1350;
-        let auth_method = McAuthType::StreamAsym;
         let mut buf = [0u8; 15000];
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::None,
+            use_fec: true,
+            probe_mc_path: true,
+            mc_cwnd: Some(10),
+            ..Default::default()
+        };
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
             1,
             "/tmp/test_rmc_no_retransmit_on_mc_source.txt",
-            auth_method,
-            true,
-            true,
-            Some(10),
+            &mut fc_config,
         )
         .unwrap();
 
@@ -1400,7 +1393,7 @@ mod tests {
             mc_pipe.mc_channel.channel.stream_send(1, &stream, true),
             Ok(54_000)
         ); // 27,000 because of the two paths.
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+        while let Ok(_) = mc_pipe.source_send_single(None) {}
 
         // Multicast source deleguates streams without feedback from the clients.
         let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
@@ -1417,7 +1410,7 @@ mod tests {
 
         // Now able to send the remaining of the stream.
         for _ in 0..11 {
-            assert!(mc_pipe.source_send_single(None, 0).is_ok());
+            assert!(mc_pipe.source_send_single(None).is_ok());
         }
 
         assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
@@ -1426,15 +1419,18 @@ mod tests {
     #[test]
     fn test_rmc_not_all_expired() {
         let max_datagram_size = 1350;
-        let auth_method = McAuthType::StreamAsym;
         let mut buf = [0u8; 15000];
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            mc_cwnd: Some(10),
+            ..Default::default()
+        };
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
             1,
             "/tmp/test_rmc_not_all_expired.txt",
-            auth_method,
-            true,
-            true,
-            Some(10),
+            &mut fc_config,
         )
         .unwrap();
 
@@ -1448,7 +1444,7 @@ mod tests {
 
         // Send first packets.
         for _ in 0..5 {
-            mc_pipe.source_send_single(None, 0).unwrap();
+            mc_pipe.source_send_single(None).unwrap();
         }
 
         // Wait (e.g., some kind of weird pacing).
@@ -1456,7 +1452,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(expiration_timer - 100));
 
         for _ in 0..6 {
-            mc_pipe.source_send_single(None, 0).unwrap();
+            mc_pipe.source_send_single(None).unwrap();
         }
 
         assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
@@ -1474,7 +1470,7 @@ mod tests {
 
         // Now able to send the remaining of the stream.
         for _ in 0..8 {
-            assert!(mc_pipe.source_send_single(None, 0).is_ok());
+            assert!(mc_pipe.source_send_single(None).is_ok());
         }
 
         assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
@@ -1482,15 +1478,18 @@ mod tests {
 
     #[test]
     fn test_rmc_not_all_expired_multiple_small() {
-        let auth_method = McAuthType::StreamAsym;
         let mut buf = [0u8; 15000];
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            mc_cwnd: Some(10_000),
+            ..Default::default()
+        };
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
             1,
             "/tmp/test_rmc_not_all_expired_multiple_small.txt",
-            auth_method,
-            true,
-            true,
-            Some(10_000),
+            &mut fc_config,
         )
         .unwrap();
 
@@ -1499,7 +1498,7 @@ mod tests {
         // First send 3 streams that will be expired.
         for i in 0..3 {
             mc_pipe
-                .source_send_single_stream(true, None, 0, 1 + i * 4)
+                .source_send_single_stream(true, None, 1 + i * 4)
                 .unwrap();
         }
 
@@ -1508,7 +1507,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(expiration_timer - 100));
 
         mc_pipe
-            .source_send_single_stream(true, None, 0, 1 + 3 * 4)
+            .source_send_single_stream(true, None, 1 + 3 * 4)
             .unwrap();
 
         assert_eq!(mc_pipe.mc_channel.mc_send(&mut buf), Err(Error::Done));
@@ -1546,15 +1545,17 @@ mod tests {
     /// the congestion window state since they MUST NOT be considered as lost.
     fn test_rmc_cc_with_mc_expire_before() {
         let max_datagram_size = 1350;
-        let auth_method = McAuthType::StreamAsym;
-        let mc_cwnd = 15;
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            mc_cwnd: Some(15),
+            ..Default::default()
+        };
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
             0,
             "/tmp/test_rmc_cc_with_mc_expire_before.txt",
-            auth_method,
-            true,
-            true,
-            Some(mc_cwnd),
+            &mut fc_config,
         )
         .unwrap();
 
@@ -1574,28 +1575,28 @@ mod tests {
             expired = expired
                 .checked_add(time::Duration::from_millis(expiration_timer + 100))
                 .unwrap();
-            mc_pipe.source_send_single(None, 0).unwrap();
+            mc_pipe.source_send_single(None).unwrap();
         }
         assert_eq!(res, Ok((Some(100), None).into()));
 
         // A new client joins the channel.
-        let mc_client_tp = McClientTp::default();
+        let mc_client_tp = Some(McClientTp::default());
         let random = SystemRandom::new();
         let mc_announce_data = &mc_pipe.mc_announce_data;
         let mc_data_auth = None;
 
-        let fc_config = FcConfig {
+        let mut fc_config = FcConfig {
             mc_client_tp,
             mc_announce_data: mc_announce_data.clone(),
             mc_data_auth,
-            authentication: auth_method,
+            authentication: McAuthType::StreamAsym,
             probe_mc_path: true,
             ..FcConfig::default()
         };
 
         let new_client = MulticastPipe::setup_client(
             &mut mc_pipe.mc_channel,
-            &fc_config,
+            &mut fc_config,
             &random,
         )
         .unwrap();
@@ -1626,7 +1627,7 @@ mod tests {
             .channel
             .stream_send(1, &stream, true)
             .is_ok(),);
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+        while let Ok(_) = mc_pipe.source_send_single(None) {}
 
         assert_eq!(mc_pipe.server_control_to_mc_source(expired), Ok(()));
 
@@ -1658,15 +1659,17 @@ mod tests {
     #[test]
     fn test_rmc_cc_multiple_clients() {
         let max_datagram_size = 1350;
-        let auth_method = McAuthType::StreamAsym;
-        let mc_cwnd = 15;
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            mc_cwnd: Some(15),
+            ..Default::default()
+        };
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
             2,
             "/tmp/test_rmc_cc_multiple_clients.txt",
-            auth_method,
-            true,
-            true,
-            Some(mc_cwnd),
+            &mut fc_config,
         )
         .unwrap();
         let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
@@ -1684,7 +1687,7 @@ mod tests {
             .channel
             .stream_send(1, &stream, true)
             .is_ok(),);
-        while let Ok(_) = mc_pipe.source_send_single(None, 0) {}
+        while let Ok(_) = mc_pipe.source_send_single(None) {}
 
         let random = SystemRandom::new();
         let now = time::Instant::now();
@@ -1724,15 +1727,17 @@ mod tests {
     /// stream after unicast retransmission, and the unicast server must drop
     /// state after ACK.
     fn test_rmc_retransmit_start_of_stream() {
-        let auth_method = McAuthType::StreamAsym;
-        let mc_cwnd = 15;
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            mc_cwnd: Some(15),
+            ..Default::default()
+        };
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
             1,
             "/tmp/test_rmc_retransmit_start_of_stream.txt",
-            auth_method,
-            true,
-            true,
-            Some(mc_cwnd),
+            &mut fc_config,
         )
         .unwrap();
 
@@ -1744,8 +1749,8 @@ mod tests {
             .unwrap();
         let mut client_1 = RangeSet::default();
         client_1.insert(0..1);
-        mc_pipe.source_send_single(Some(&client_1), 0).unwrap();
-        mc_pipe.source_send_single(None, 0).unwrap();
+        mc_pipe.source_send_single(Some(&client_1)).unwrap();
+        mc_pipe.source_send_single(None).unwrap();
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
@@ -1776,15 +1781,17 @@ mod tests {
 
     #[test]
     fn test_rmc_retransmit_lost_stream_different_timeout() {
-        let auth_method = McAuthType::StreamAsym;
-        let mc_cwnd = 15;
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            mc_cwnd: Some(15),
+            ..Default::default()
+        };
         let mut mc_pipe: MulticastPipe = MulticastPipe::new_reliable(
             1,
             "/tmp/test_rmc_retransmit_lost_stream_different_timeout.txt",
-            auth_method,
-            true,
-            true,
-            Some(mc_cwnd),
+            &mut fc_config,
         )
         .unwrap();
 
@@ -1798,11 +1805,11 @@ mod tests {
             .unwrap();
         let mut client_1 = RangeSet::default();
         client_1.insert(0..1);
-        mc_pipe.source_send_single(Some(&client_1), 0).unwrap();
+        mc_pipe.source_send_single(Some(&client_1)).unwrap();
         let now = time::Instant::now();
         std::thread::sleep(time::Duration::from_millis(200));
         // mc_pipe.source_send_single(Some(&client_1), 0).unwrap();
-        mc_pipe.source_send_single(None, 0).unwrap();
+        mc_pipe.source_send_single(None).unwrap();
         assert_eq!(mc_pipe.clients_send(), Ok(()));
 
         let expired = now

@@ -288,7 +288,7 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use crate::multicast::authentication::McAuthType;
-    use crate::multicast::testing::FcConfig;
+    use crate::multicast::FcConfig;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::McClientTp;
     use ring::rand::SystemRandom;
@@ -299,14 +299,16 @@ mod tests {
     fn test_fc_rotate_stream() {
         let mut buf = [0u8; 50];
 
-        let auth_method = McAuthType::None;
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::None,
+            use_fec: true,
+            probe_mc_path: true,
+            ..Default::default()
+        };
         let mut mc_pipe = MulticastPipe::new_reliable(
             1,
             "/tmp/test_fc_rotate_stream",
-            auth_method,
-            true,
-            true,
-            None,
+            &mut fc_config,
         )
         .unwrap();
 
@@ -336,14 +338,14 @@ mod tests {
 
         // Send some of the data to the client.
         mc_pipe
-            .source_send_single_from_buf(None, 0, &mut buf[..])
+            .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
         mc_pipe
-            .source_send_single_from_buf(None, 0, &mut buf[..])
+            .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
 
         // Add a second client.
-        let mc_client_tp = McClientTp::default();
+        let mc_client_tp = Some(McClientTp::default());
         let random = SystemRandom::new();
         let mc_data_auth = None;
 
@@ -351,7 +353,7 @@ mod tests {
             mc_announce_data: mc_pipe.mc_announce_data.clone(),
             mc_data_auth,
             probe_mc_path: true,
-            authentication: auth_method,
+            authentication: McAuthType::None,
             mc_client_tp,
             fec_window_size: 1,
             ..FcConfig::default()
@@ -367,11 +369,11 @@ mod tests {
 
         // Send the remaining of the stream to both clients.
         mc_pipe
-            .source_send_single_from_buf(None, 0, &mut buf[..])
+            .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
         // No more data to send.
         assert_eq!(
-            mc_pipe.source_send_single_from_buf(None, 0, &mut buf[..]),
+            mc_pipe.source_send_single_from_buf(None, &mut buf[..]),
             Err(Error::Done)
         );
 
@@ -391,16 +393,16 @@ mod tests {
 
         // Send the content of the stream.
         mc_pipe
-            .source_send_single_from_buf(None, 0, &mut buf[..])
+            .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
         mc_pipe
-            .source_send_single_from_buf(None, 0, &mut buf[..])
+            .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
         mc_pipe
-            .source_send_single_from_buf(None, 0, &mut buf[..])
+            .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
         assert_eq!(
-            mc_pipe.source_send_single_from_buf(None, 0, &mut buf[..]),
+            mc_pipe.source_send_single_from_buf(None, &mut buf[..]),
             Err(Error::Done)
         );
 
