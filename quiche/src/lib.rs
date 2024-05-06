@@ -9019,7 +9019,8 @@ impl Connection {
                                 "received a source symbol unused by the decoder"
                             );
                         },
-                        Err(err) => return Err(Error::from(err)),
+                        // Err(err) => return Err(Error::from(err)),
+                        Err(_err) => (),
                         Ok(decoded_symbols) => {
                             for decoded_symbol in decoded_symbols {
                                 self.recov_count += 1;
@@ -9375,6 +9376,9 @@ impl Connection {
 
                     // Sets the initial stream states.
                     self.fc_set_stream_states(&stream_states)?;
+
+                    // Set the initial FEC reception window.
+                    self.fec_decoder.set_first_symbol_id(source_symbol_metadata_from_u64(first_pn));
                 } else {
                     return Err(Error::Multicast(
                         multicast::McError::McInvalidSymKey,

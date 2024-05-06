@@ -3063,7 +3063,7 @@ pub mod testing {
             mc_channel: &mut MulticastChannelSource, fc_config: &FcConfig,
             random: &SystemRandom,
         ) -> Option<(Pipe, SocketAddr, SocketAddr)> {
-            let mut config = get_test_mc_config(true, fc_config);
+            let mut config = get_test_mc_config(false, fc_config);
             let mut pipe =
                 Pipe::with_config_and_scid_lengths(&mut config, 16, 16).ok()?;
             pipe.handshake().ok()?;
@@ -3356,9 +3356,9 @@ pub mod testing {
         config.set_active_connection_id_limit(5);
         config.verify_peer(false);
         config.set_multipath(true);
-        config.set_enable_server_multicast(mc_server);
+        config.set_enable_server_multicast(fc_config.fc_server_tp);
         config.set_enable_client_multicast(fc_config.mc_client_tp.as_ref());
-        config.send_fec(fc_config.use_fec);
+        config.send_fec(mc_server && fc_config.use_fec);
         config.receive_fec(fc_config.use_fec);
         config.set_fec_window_size(fc_config.fec_window_size);
         config.set_mc_max_nb_repair_symbols(Some(std::u32::MAX));
@@ -3555,7 +3555,7 @@ mod tests {
             ..Default::default()
         };
         let mc_announce_data = &fc_config.mc_announce_data;
-        let mut config = get_test_mc_config(true, &fc_config);
+        let mut config = get_test_mc_config(false, &fc_config);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -3599,7 +3599,7 @@ mod tests {
             use_fec: false,
             ..Default::default()
         };
-        let mut config = get_test_mc_config(true, &fc_config);
+        let mut config = get_test_mc_config(false, &fc_config);
         let mc_announce_data = &mut fc_config.mc_announce_data;
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
@@ -3657,7 +3657,7 @@ mod tests {
             ..Default::default()
         };
         let mc_announce_data = &fc_config.mc_announce_data;
-        let mut config = get_test_mc_config(true, &fc_config);
+        let mut config = get_test_mc_config(false, &fc_config);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -3767,7 +3767,7 @@ mod tests {
             ..Default::default()
         };
         let mc_announce_data = &fc_config.mc_announce_data;
-        let mut config = get_test_mc_config(true, &fc_config);
+        let mut config = get_test_mc_config(false, &fc_config);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -3818,7 +3818,7 @@ mod tests {
             use_fec: false,
             ..Default::default()
         };
-        let mut server_config = get_test_mc_config(true, &fc_config);
+        let mut server_config = get_test_mc_config(false, &fc_config);
         let mut client_config = get_test_mc_config(false, &fc_config);
 
         let mc_channel = get_test_mc_channel_source(
@@ -3839,7 +3839,7 @@ mod tests {
             use_fec: false,
             ..Default::default()
         };
-        let mut server_config = get_test_mc_config(true, &fc_config);
+        let mut server_config = get_test_mc_config(false, &fc_config);
         let mut client_config = get_test_mc_config(false, &fc_config);
         let mut mc_channel = get_test_mc_channel_source(
             &mut server_config,
@@ -5990,7 +5990,7 @@ mod tests {
         // source.
         let mut out = [0u8; 2048];
         assert_eq!(uc_pipe.client.stream_send(2, &out[..100], true), Ok(100));
-        assert_eq!(uc_pipe.client.send(&mut out).map(|(w, _)| w), Ok(148));
+        assert_eq!(uc_pipe.client.send(&mut out).map(|(w, _)| w), Ok(139));
         // The client does not send ACK_MP frames for the authentication path.
     }
 

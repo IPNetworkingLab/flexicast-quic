@@ -510,8 +510,8 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use crate::multicast::FcConfig;
     use crate::multicast::authentication::McAuthType;
+    use crate::multicast::FcConfig;
 
     use super::*;
     use crate::multicast::MulticastConnection;
@@ -591,10 +591,12 @@ mod tests {
             authentication: McAuthType::StreamAsym,
             use_fec: true,
             probe_mc_path: true,
-            ..Default::default()
+            fec_window_size: 5,
+            ..FcConfig::default()
         };
         let mut fc_session =
-            FcSession::new(1, "/tmp/fc_h3_out_of_order.txt", &mut fc_config).unwrap();
+            FcSession::new(1, "/tmp/fc_h3_out_of_order.txt", &mut fc_config)
+                .unwrap();
 
         // Enable stream rotation but do not send the stream states because they
         // will be sent through HTTP/3.
@@ -688,6 +690,7 @@ mod tests {
             mc_data_auth: None,
             authentication: McAuthType::AsymSign,
             probe_mc_path: true,
+            fec_window_size: 5,
             ..FcConfig::default()
         };
         let random = SystemRandom::new();
