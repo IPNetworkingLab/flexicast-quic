@@ -288,10 +288,12 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use crate::multicast::authentication::McAuthType;
-    use crate::multicast::FcConfig;
     use crate::multicast::testing::MulticastPipe;
+    use crate::multicast::FcConfig;
     use crate::multicast::McClientTp;
+    use crate::multicast::MulticastConnection;
     use ring::rand::SystemRandom;
+    use std::time;
 
     use super::*;
 
@@ -303,6 +305,8 @@ mod tests {
             authentication: McAuthType::None,
             use_fec: true,
             probe_mc_path: true,
+            fec_window_size: 5,
+            max_data: 30,
             ..Default::default()
         };
         let mut mc_pipe = MulticastPipe::new_reliable(
@@ -344,6 +348,19 @@ mod tests {
             .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
 
+        // Timeout of the first part of the data.
+        let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
+        let now = time::Instant::now();
+        let expired = now
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(3), None).into()));
+
+        // The multicast source sends an MC_EXPIRE to the client.
+        mc_pipe.source_send_single_from_buf(None, &mut buf[..]).unwrap();
+
         // Add a second client.
         let mc_client_tp = Some(McClientTp::default());
         let random = SystemRandom::new();
@@ -383,6 +400,17 @@ mod tests {
             .channel
             .fc_restart_stream_send_recv(3)
             .is_ok());
+
+        // Timeout of the first part of the data.
+        let expired = expired
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert_eq!(res, Ok((Some(5), None).into()));
+
+        // The multicast source sends an MC_EXPIRE to the client.
+        mc_pipe.source_send_single(None).unwrap();
 
         // Have to send again the data to quiche...
         mc_pipe

@@ -649,6 +649,24 @@ impl StreamMap {
     pub fn len(&self) -> usize {
         self.streams.len()
     }
+
+    /// Updates the flow control of the sending part of the streams for the
+    /// source.
+    ///
+    /// Flexicast extension.
+    pub(crate) fn fc_update_send_flow_control(&mut self, window: u64) {
+        for (_id, stream) in self.streams.iter_mut() {
+            let new_max_data = cmp::max(
+                stream.send.fc_emit_off() + window,
+                stream.send.max_off(),
+            );
+            debug!(
+                "Give back credit for the server to the stream {}: {}",
+                _id, new_max_data
+            );
+            stream.send.update_max_data(new_max_data);
+        }
+    }
 }
 
 /// A QUIC stream.

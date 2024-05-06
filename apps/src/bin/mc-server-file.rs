@@ -1576,7 +1576,7 @@ pub fn get_test_mc_config(
 }
 
 #[cfg(target_os = "linux")]
-fn _set_max_pacing(sock: &mio::net::UdpSocket) -> io::Result<()> {
+fn _set_max_pacing(sock: &mio::net::UdpSocket) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
 
     let rate: u32 = 1000;

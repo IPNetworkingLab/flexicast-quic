@@ -1605,9 +1605,52 @@ impl MulticastConnection for Connection {
             }
         }
 
+        // Give back credits for flow control since we expired the data.
+        if self.is_server {
+            // FC-TODO: use value from McAnnounceData instead of TP.
+            let prev = self.max_tx_data;
+            self.max_tx_data += self.local_transport_params.initial_max_data;
+            self.mc_update_tx_cap();
+            debug!(
+                "Give back credits to the server: {} -> {}",
+                prev, self.max_tx_data
+            );
+        } else {
+            self.flow_control.add_consumed(30);
+            let prev = self.flow_control.max_data();
+            self.flow_control.update_max_data(now);
+            debug!(
+                "Give back credits to the client: {} -> {}",
+                prev,
+                self.flow_control.max_data()
+            );
+        }
+
+        // Give back credits for per-stream flow control since we expired the
+        // data.
+        if self.is_server {
+            // Add credit to all streams because it is simpler.
+            self.streams.fc_update_send_flow_control(
+                self.local_transport_params
+                    .initial_max_stream_data_bidi_local,
+            );
+        } else {
+            for stream_id in expired_streams.iter() {
+                if let Some(stream) = self.streams.get_mut(*stream_id) {
+                    stream.recv.update_max_data(now);
+                    debug!(
+                        "Give back credits to the client for the stream {:?}, now is {:?}",
+                        stream_id,
+                        stream.recv.max_data(),
+                    );
+                }
+            }
+        }
+
         // Remove from the inner structure the expired packet number - stream ID
         // mapping.
         if !self.is_server {
+            let multicast = self.multicast.as_mut().unwrap();
             if let Some(exp_pn) = expired_pkt.pn {
                 multicast.mc_rm_recv_expired_pns(exp_pn)?;
             }
@@ -1706,7 +1749,6 @@ impl MulticastConnection for Connection {
                                 .mc_last_expired_needs_notif = !exp_pkt.is_none();
                             self.multicast.as_mut().unwrap().mc_last_expired =
                                 Some(exp_pkt);
-                            self.mc_update_tx_cap();
 
                             // Update last time a timeout event occured.
                             self.multicast.as_mut().unwrap().mc_last_recv_time =
@@ -2142,7 +2184,7 @@ impl MulticastConnection for Connection {
                 if let Some(space_id) = multicast.mc_space_id {
                     if let Ok(path) = self.paths.get(space_id) {
                         let cwin_available = path.recovery.cwnd_available();
-                        self.max_tx_data += self.tx_data;
+                        // self.max_tx_data += self.tx_data;
                         self.tx_cap = cmp::min(
                             cwin_available,
                             (self.max_tx_data - self.tx_data)
@@ -2832,6 +2874,10 @@ pub struct FcConfig {
     pub fec_window_size: usize,
 
     pub mc_cwnd: Option<usize>,
+
+    pub max_data: u64,
+
+    pub max_stream_data: u64,
 }
 
 impl Default for FcConfig {
@@ -2846,6 +2892,8 @@ impl Default for FcConfig {
             use_fec: true,
             fec_window_size: 500_000,
             mc_cwnd: None,
+            max_data: 5_000_000_000,
+            max_stream_data: 1_000_000_000,
         }
     }
 }
@@ -2915,18 +2963,18 @@ pub mod testing {
 
             // Create a new announce data if the channel uses symetric
             // authentication.
-            let mc_data_auth =
-                if fc_config.authentication == McAuthType::SymSign {
-                    let mut data = get_test_mc_announce_data();
-                    data.udp_port += 10;
-                    data.path_type = McPathType::Authentication;
-                    data.channel_id =
-                        [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x44].to_vec();
+            let mc_data_auth = if fc_config.authentication == McAuthType::SymSign
+            {
+                let mut data = get_test_mc_announce_data();
+                data.udp_port += 10;
+                data.path_type = McPathType::Authentication;
+                data.channel_id =
+                    [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x44].to_vec();
 
-                    Some(data)
-                } else {
-                    None
-                };
+                Some(data)
+            } else {
+                None
+            };
 
             fc_config.mc_data_auth = mc_data_auth;
 
@@ -3347,10 +3395,10 @@ pub mod testing {
         config.set_max_idle_timeout(5000);
         config.set_max_recv_udp_payload_size(1350);
         config.set_max_send_udp_payload_size(1350);
-        config.set_initial_max_data(5_000_000_000);
-        config.set_initial_max_stream_data_bidi_local(1_000_000_000);
-        config.set_initial_max_stream_data_bidi_remote(1_000_000_000);
-        config.set_initial_max_stream_data_uni(1_000_000_000);
+        config.set_initial_max_data(fc_config.max_data);
+        config.set_initial_max_stream_data_bidi_local(fc_config.max_stream_data);
+        config.set_initial_max_stream_data_bidi_remote(fc_config.max_stream_data);
+        config.set_initial_max_stream_data_uni(fc_config.max_stream_data);
         config.set_initial_max_streams_bidi(1_000_000_000);
         config.set_initial_max_streams_uni(1_000_000_000);
         config.set_active_connection_id_limit(5);
@@ -3900,8 +3948,11 @@ mod tests {
             probe_mc_path: false,
             ..Default::default()
         };
-        let mc_pipe =
-            MulticastPipe::new(1, "/tmp/test_mc_channel_auth.txt", &mut fc_config);
+        let mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_channel_auth.txt",
+            &mut fc_config,
+        );
         assert!(mc_pipe.is_ok());
         let mut mc_pipe = mc_pipe.unwrap();
 
@@ -3978,7 +4029,8 @@ mod tests {
             ..Default::default()
         };
         let mut mc_pipe =
-            MulticastPipe::new(1, "/tmp/test_mc_nack.txt", &mut fc_config).unwrap();
+            MulticastPipe::new(1, "/tmp/test_mc_nack.txt", &mut fc_config)
+                .unwrap();
 
         let mc_channel = &mut mc_pipe.mc_channel;
         let uc_pipe = &mut mc_pipe.unicast_pipes[0];
@@ -5126,7 +5178,6 @@ mod tests {
             probe_mc_path: false,
             ..Default::default()
         };
-        println!("Before MC channel setup");
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_client_leave_mc_channel.txt",
@@ -5138,7 +5189,6 @@ mod tests {
         } else {
             0
         };
-        println!("After MC channel setup");
 
         assert_eq!(
             mc_pipe.unicast_pipes[0]
@@ -5289,9 +5339,12 @@ mod tests {
             probe_mc_path: false,
             ..Default::default()
         };
-        let mc_pipe =
-            MulticastPipe::new(1, "/tmp/test_mc_channel_cwnd.txt", &mut fc_config)
-                .unwrap();
+        let mc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_mc_channel_cwnd.txt",
+            &mut fc_config,
+        )
+        .unwrap();
 
         let mc_path_id = mc_pipe
             .mc_channel
@@ -5821,7 +5874,8 @@ mod tests {
             probe_mc_path: false,
             ..Default::default()
         };
-        let mut pipe = MulticastPipe::new(2, "/tmp/bench", &mut fc_config).unwrap();
+        let mut pipe =
+            MulticastPipe::new(2, "/tmp/bench", &mut fc_config).unwrap();
 
         let stream = vec![0u8; 1_000_000];
         pipe.mc_channel
