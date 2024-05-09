@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
 
+use quiche::h3;
 use quiche::h3::Connection as H3Conn;
 use quiche::h3::Header;
 use quiche::h3::NameValue;
@@ -311,11 +312,11 @@ impl Http3Server {
             ),
         ];
 
-        let mut h3_resp = Self {
+        let h3_resp = Self {
             filepath: filepath.to_string(),
             offset: 0,
             data: Rc::clone(data),
-            headers: None,
+            headers: Some(resp_headers),
             stream_id,
             // By default the HTTP/3 response is not active for the unicast
             // server.
@@ -333,20 +334,20 @@ impl Http3Server {
         };
 
         // Send the response headers to the client.
-        let h3_conn_to_use = h3_conn.unwrap_or(fh3_conn);
-        match h3_conn_to_use.send_response(conn, stream_id, &resp_headers, false)
-        {
-            Ok(v) => v,
-
-            Err(quiche::h3::Error::StreamBlocked) => {
-                // Store headers for later delivery.
-                h3_resp.headers = Some(resp_headers);
-            },
-
-            Err(e) => {
-                error!("{} stream send failed: {:?}", conn.trace_id(), e);
-                return Err(FcH3Error::HTTP3(e));
-            },
+        if h3_resp.send_h3_headers {
+            let h3_conn_to_use = h3_conn.unwrap_or(fh3_conn);
+            match h3_conn_to_use.send_response(conn, stream_id, h3_resp.headers.as_ref().unwrap(), false)
+            {
+                Ok(v) => v,
+    
+                Err(quiche::h3::Error::StreamBlocked) => {
+                },
+    
+                Err(e) => {
+                    error!("{} stream send failed: {:?}", conn.trace_id(), e);
+                    return Err(FcH3Error::HTTP3(e));
+                },
+            }
         }
 
         Ok(h3_resp)
@@ -451,7 +452,7 @@ impl Http3Server {
 
         // Send the response from the flexicast source.
         if let quiche::h3::Event::Headers { list, .. } = event {
-            let out = Http3Server::handle_request(
+            let mut out = Http3Server::handle_request(
                 &list,
                 fh3_conn,
                 &mut fc_chan.channel,
@@ -460,6 +461,10 @@ impl Http3Server {
                 &self.data,
                 None,
             )?;
+
+            // Set the response as active because the flexicast server does not wait.
+            out.send_h3_headers = true;
+            fh3_conn.send_response(&mut fc_chan.channel, stream_id, out.headers.as_ref().unwrap(), false).unwrap();
 
             Ok(out)
         } else {
@@ -490,5 +495,31 @@ impl Http3Server {
     #[inline]
     pub fn stream_id(&self) -> u64 {
         self.stream_id
+    }
+
+    pub fn update_fc_offsets(
+        &mut self, fh3_conn: &mut h3::Connection, stream_id: u64,
+    ) {
+        // Retrieve offsets.
+        let (h3_off, quic_off) =
+            fh3_conn.fc_get_emit_off(stream_id).unwrap_or((0, 0));
+
+        info!("Replacing offsets of H3: {} and QUIC: {}", h3_off, quic_off);
+
+        // Replace the headers. This is not efficient but it's the simplest
+        // solution.
+        if let Some(headers) = self.headers.as_mut() {
+            for header in headers.iter_mut() {
+                match header.name() {
+                    FC_H3_OFF_HDR => header.fc_replace_hdr_value(
+                        &format!("{:0>8}", h3_off).into_bytes(),
+                    ),
+                    FC_H3_QUIC_OFF_HDR => header.fc_replace_hdr_value(
+                        &format!("{:0>8}", quic_off).into_bytes(),
+                    ),
+                    _ => (),
+                }
+            }
+        }
     }
 }

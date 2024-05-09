@@ -154,7 +154,7 @@ impl MulticastRecovery for crate::recovery::Recovery {
 
                 // self.mc_set_min_cwnd();
 
-                info!(
+                debug!(
                     "Congestion window {} -> {} -> {}. And self sent len: {}",
                     cwnd,
                     cwnd_2,

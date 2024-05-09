@@ -660,7 +660,7 @@ impl StreamMap {
                 stream.send.fc_emit_off() + window,
                 stream.send.max_off(),
             );
-            debug!(
+            info!(
                 "Give back credit for the server to the stream {}: {}",
                 _id, new_max_data
             );

@@ -1605,47 +1605,53 @@ impl MulticastConnection for Connection {
             }
         }
 
-        // Give back credits for flow control since we expired the data.
+        // // Give back credits for flow control since we expired the data.
         if self.is_server {
-            // FC-TODO: use value from McAnnounceData instead of TP.
-            let prev = self.max_tx_data;
-            self.max_tx_data += self.local_transport_params.initial_max_data;
+            //     // FC-TODO: use value from McAnnounceData instead of TP.
+            //     let prev = self.max_tx_data;
+            //     self.max_tx_data +=
+            // self.local_transport_params.initial_max_data;
             self.mc_update_tx_cap();
-            debug!(
-                "Give back credits to the server: {} -> {}",
-                prev, self.max_tx_data
-            );
-        } else {
-            self.flow_control.add_consumed(30);
-            let prev = self.flow_control.max_data();
-            self.flow_control.update_max_data(now);
-            debug!(
-                "Give back credits to the client: {} -> {}",
-                prev,
-                self.flow_control.max_data()
-            );
+            //     info!(
+            //         "Give back credits to the server: {} -> {}",
+            //         prev, self.max_tx_data
+            //     );
         }
+        // } else {
+        //     // self.flow_control.add_consumed(30);
+        //     let prev = self.flow_control.max_data();
+        //     self.flow_control.ensure_window_lower_bound(self.
+        // local_transport_params.initial_max_data);
+        //     self.flow_control.update_max_data(now);
+        //     info!(
+        //         "Give back credits to the client: {} -> {}",
+        //         prev,
+        //         self.flow_control.max_data()
+        //     );
+        // }
 
-        // Give back credits for per-stream flow control since we expired the
-        // data.
-        if self.is_server {
-            // Add credit to all streams because it is simpler.
-            self.streams.fc_update_send_flow_control(
-                self.local_transport_params
-                    .initial_max_stream_data_bidi_local,
-            );
-        } else {
-            for stream_id in expired_streams.iter() {
-                if let Some(stream) = self.streams.get_mut(*stream_id) {
-                    stream.recv.update_max_data(now);
-                    debug!(
-                        "Give back credits to the client for the stream {:?}, now is {:?}",
-                        stream_id,
-                        stream.recv.max_data(),
-                    );
-                }
-            }
-        }
+        // // Give back credits for per-stream flow control since we expired the
+        // // data.
+        // if self.is_server {
+        //     // Add credit to all streams because it is simpler.
+        //     self.streams.fc_update_send_flow_control(
+        //         self.local_transport_params
+        //             .initial_max_stream_data_bidi_local,
+        //     );
+        // } else {
+        //     for stream_id in expired_streams.iter() {
+        //         if let Some(stream) = self.streams.get_mut(*stream_id) {
+        //
+        // stream.recv.fc_ensure_window_lower_bound(self.local_transport_params.
+        // initial_max_stream_data_bidi_remote);
+        // stream.recv.update_max_data(now);             info!(
+        //                 "Give back credits to the client for the stream {:?},
+        // now is {:?}",                 stream_id,
+        //                 stream.recv.max_data(),
+        //             );
+        //         }
+        //     }
+        // }
 
         // Remove from the inner structure the expired packet number - stream ID
         // mapping.
@@ -1658,7 +1664,7 @@ impl MulticastConnection for Connection {
 
         // Reset FEC state to remove old source symbols.
         if let Some(exp_ssid) = expired_pkt.ssid {
-            info!("Remove FEC up to: {}", exp_ssid);
+            debug!("Remove FEC up to: {}", exp_ssid);
             if self.is_server {
                 // Reset FEC encoder state.
                 self.fec_encoder
@@ -1786,8 +1792,6 @@ impl MulticastConnection for Connection {
                 } else if multicast.mc_leave_on_timeout {
                     debug!("Will leave the multicast channel");
                     self.mc_leave_channel()?;
-                } else {
-                    debug!("Cannot leave the multicast channel");
                 }
             }
         }
@@ -2254,14 +2258,16 @@ impl Connection {
     fn mc_notify_sent_packets(&mut self, uc: &mut Connection) {
         if let Some(multicast) = self.multicast.as_ref() {
             // This just delays the problem.
-            // if let Some(mc_uc) = uc.get_multicast_attributes() {
-            //     if !matches!(mc_uc.get_mc_role(),
-            // McRole::ServerUnicast(McClientStatus::ListenMcPath(_)))
-            // {         return;
-            //     }
-            // } else {
-            //     return;
-            // }
+            if let Some(mc_uc) = uc.get_multicast_attributes() {
+                if !matches!(
+                    mc_uc.get_mc_role(),
+                    McRole::ServerUnicast(McClientStatus::ListenMcPath(true))
+                ) {
+                    return;
+                }
+            } else {
+                return;
+            }
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
                 let mc_path = self.paths.get(mc_space_id);
                 let uc_trace_id = uc.trace_id().to_string();

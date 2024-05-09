@@ -7,6 +7,7 @@ use std::net;
 use std::path::Path;
 
 use clap::Parser;
+use quiche::h3;
 use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::reliable::ReliableMulticastConnection;
@@ -501,7 +502,7 @@ fn main() {
                         matches!(
                             mc.get_mc_role(),
                             McRole::ServerUnicast(
-                                multicast::McClientStatus::ListenMcPath(_),
+                                multicast::McClientStatus::ListenMcPath(true),
                             )
                         )
                     })
@@ -518,7 +519,7 @@ fn main() {
                     // If the client joined the flexicast path and is ready to
                     // receive data through this path, we can respond to the
                     // HTTP/3 request.
-                    handle_fc_ready_h3_response(client, stream_id);
+                    handle_fc_ready_h3_response(client, stream_id, fh3_conn.as_mut());
 
                     handle_writable_client(client, stream_id, args.h3_chunk_size);
                 }
@@ -738,24 +739,27 @@ fn main() {
                 // injecting in the multicast network.
                 send_info.to = args.proxy_addr.unwrap_or(mc_channel.mc_send_addr);
 
-                let err = send_to(
-                    mc_socket,
-                    &out[..write],
-                    &send_info,
-                    MAX_DATAGRAM_SIZE,
-                    false,
-                    false,
-                );
-                if let Err(e) = err {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        debug!("mc_send() would block");
-                        break 'flexicast;
+                if Some(nb_active_fc_clients) >= Some(1) {
+                    let err = send_to(
+                        mc_socket,
+                        &out[..write],
+                        &send_info,
+                        MAX_DATAGRAM_SIZE,
+                        false,
+                        false,
+                    );
+                    if let Err(e) = err {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            debug!("mc_send() would block");
+                            break 'flexicast;
+                        }
+    
+                        panic!("mc_send() failed: {:?}", e);
                     }
-
-                    panic!("mc_send() failed: {:?}", e);
+                    debug!("Flexicast written {} bytes to {:?}", write, send_info);
+                } else {
+                    debug!("not actually sending on the wire for flexicast");
                 }
-
-                debug!("Flexicast written {} bytes to {:?}", write, send_info);
             }
         }
 
@@ -942,6 +946,7 @@ fn get_multicast_channel(
         authentication: args.authentication,
         use_fec: true,
         probe_mc_path: true,
+        mc_cwnd: Some(10_000),
         ..Default::default()
     };
 
@@ -1246,7 +1251,7 @@ fn handle_writable(
     Ok(0)
 }
 
-fn handle_fc_ready_h3_response(client: &mut Client, stream_id: u64) {
+fn handle_fc_ready_h3_response(client: &mut Client, stream_id: u64, fc_conn: Option<&mut h3::Connection>) {
     if !client.partial_responses.contains_key(&stream_id) {
         return;
     }
@@ -1258,5 +1263,10 @@ fn handle_fc_ready_h3_response(client: &mut Client, stream_id: u64) {
         client.listen_fc_channel
     {
         h3_resp.send_h3_headers = true;
+
+        // Also update the details for Flexicast stream rotation, because the advertised values may be out-of-date now.
+        if let Some(fc_conn) = fc_conn {
+            h3_resp.update_fc_offsets(fc_conn, stream_id);
+        }
     }
 }

@@ -125,6 +125,15 @@ impl Connection {
     }
 }
 
+impl Header {
+    /// Replace the content of a header.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub fn fc_replace_hdr_value(&mut self, new_value: &[u8]) {
+        self.1 = new_value.to_vec();
+    }
+}
+
 #[doc(hidden)]
 pub mod testing {
     use ring::rand::SystemRandom;

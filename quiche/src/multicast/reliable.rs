@@ -345,10 +345,11 @@ impl ReliableMulticastConnection for Connection {
                     mc_s.get_mc_role(),
                 )));
             }
-            if !matches!(mc_u.get_mc_role(), McRole::ServerUnicast(_)) {
-                return Err(Error::Multicast(McError::McInvalidRole(
-                    mc_u.get_mc_role(),
-                )));
+            if !matches!(mc_u.get_mc_role(), McRole::ServerUnicast(McClientStatus::ListenMcPath(true))) {
+                // return Err(Error::Multicast(McError::McInvalidRole(
+                //     mc_u.get_mc_role(),
+                // )));
+                return Ok(());
             }
 
             // Deleguate streams sent on the multicast path.
@@ -457,13 +458,13 @@ impl ReliableMulticastConnection for Connection {
                 if let Some(exp) = exp_pn {
                     s.recv_pn_mc.remove_until(exp);
                 } else {
-                    s.recv_pn_mc = RangeSet::default();
+                    // s.recv_pn_mc = RangeSet::default();
                 }
 
                 if let Some(exp) = exp_ss {
                     s.recv_fec_mc.remove_until(exp);
                 } else {
-                    s.recv_fec_mc = RangeSet::default();
+                    // s.recv_fec_mc = RangeSet::default();
                 }
             }
         }

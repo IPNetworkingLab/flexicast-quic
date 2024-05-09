@@ -615,6 +615,13 @@ impl RecvBuf {
             .map(|d| d.fc_set_can_read(v))
             .ok_or(Error::Multicast(McError::FcStreamRotation))
     }
+
+    /// Custom the reception FlowControl window.
+    /// 
+    /// Flexicast with stream rotation extension.
+    pub(crate) fn fc_ensure_window_lower_bound(&mut self, v: u64) {
+        self.flow_control.ensure_window_lower_bound(v);
+    }
 }
 
 #[cfg(test)]

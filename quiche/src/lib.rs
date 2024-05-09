@@ -4483,9 +4483,7 @@ impl Connection {
             // Bytes consumed by ACK frames.
             cwnd_available.saturating_sub(left_before_packing_ack_frame - left),
         );
-        if ack_elicit_required {
-            debug!("After congestion application: {} -> {}", left_before, left);
-        }
+        println!("After congestion application: {} -> {}", left_before, left);
 
         let mut challenge_data = None;
 
@@ -9020,7 +9018,7 @@ impl Connection {
                             );
                         },
                         // Err(err) => return Err(Error::from(err)),
-                        Err(_err) => (),
+                        Err(_err) => println!("Error FEC: {:?}", _err),
                         Ok(decoded_symbols) => {
                             for decoded_symbol in decoded_symbols {
                                 self.recov_count += 1;
@@ -9135,7 +9133,7 @@ impl Connection {
                         if let Some(ReliableMc::Server(s)) =
                             multicast.rmc_get_mut()
                         {
-                            info!("Recv ranges from the client: {:?}", ranges);
+                            debug!("Recv ranges from the client: {:?}", ranges);
                             s.set_rmc_received_pn(ranges.clone());
                         }
                     }

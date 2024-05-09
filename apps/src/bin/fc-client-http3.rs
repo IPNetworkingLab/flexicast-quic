@@ -80,6 +80,7 @@ fn main() {
     let mut probe_mc_path = false;
 
     let mut mc_socket_opt: Option<mio::net::UdpSocket> = None;
+    let mut joined_mc_ip = false;
     let mc_addr: SocketAddr = "0.0.0.0:8889".parse().unwrap();
 
     // Setup the event loop.
@@ -173,7 +174,6 @@ fn main() {
             conn.rmc_timeout(now), // Reliable FC-QUIC timeout
         ];
         let timeout = timers.iter().flatten().min().copied();
-        debug!("Next timeout: {:?}", timeout);
 
         poll.poll(&mut events, timeout).unwrap();
 
@@ -184,8 +184,6 @@ fn main() {
             // has expired, so handle it without attempting to read packets. We
             // will then proceed with the send loop.
             if events.is_empty() {
-                debug!("timed out");
-
                 conn.on_timeout();
 
                 let now = std::time::Instant::now();
@@ -217,7 +215,7 @@ fn main() {
                     panic!("recv() failed: {:?}", e);
                 },
             };
-            debug!("Recv from socket unicast");
+            info!("Recv from socket unicast");
 
             let recv_info = quiche::RecvInfo {
                 to: socket.local_addr().unwrap(),
@@ -253,7 +251,6 @@ fn main() {
                         panic!("recv() failed: {:?}", e);
                     },
                 };
-                debug!("Recv from socket multicast");
 
                 let recv_info = quiche::RecvInfo {
                     to: mc_addr,
@@ -279,6 +276,7 @@ fn main() {
                         continue 'mc_read;
                     },
                 };
+                debug!("Recv from socket multicast processed");
             }
         }
 
@@ -366,20 +364,36 @@ fn main() {
                             .unwrap();
                         probe_mc_path = true;
                         conn.mc_join_channel(false).unwrap();
-                        if !args.proxy_uc {
-                            mc_socket
-                                .join_multicast_v4(
-                                    &net::Ipv4Addr::from(
-                                        mc_announce_data.group_ip.to_owned(),
-                                    ), // &args.local_ip
-                                    &"11.1.5.1".parse().unwrap(),
-                                )
-                                .unwrap();
-                        }
                         mc_socket_opt = Some(mc_socket);
                     }
                 }
                 added_mc_cid = true;
+            }
+
+            // Join the multicast socket.
+            if let Some(multicast) = conn.get_multicast_attributes() {
+                if multicast.get_mc_role() ==
+                    McRole::Client(McClientStatus::ListenMcPath(true)) &&
+                    !joined_mc_ip
+                {
+                    if !args.proxy_uc {
+                        mc_socket_opt
+                            .as_mut()
+                            .unwrap()
+                            .join_multicast_v4(
+                                &net::Ipv4Addr::from(
+                                    multicast
+                                        .get_mc_announce_data(0)
+                                        .unwrap()
+                                        .group_ip
+                                        .to_owned(),
+                                ), // &args.local_ip
+                                &"11.1.5.1".parse().unwrap(),
+                            )
+                            .unwrap();
+                    }
+                    joined_mc_ip = true;
+                }
             }
 
             // Stop the socket if the client left the group and it was

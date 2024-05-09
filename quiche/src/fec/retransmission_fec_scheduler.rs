@@ -45,7 +45,7 @@ impl RetransmissionFecScheduler {
     }
 
     pub fn reset_fec_state(&mut self) {
-        info!("Reset FEC state");
+        debug!("Reset FEC state");
         self.n_repair_in_flight = 0;
         self.n_repair_to_send = 0;
     }
