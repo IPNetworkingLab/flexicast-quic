@@ -336,6 +336,7 @@ impl Http3Server {
         // Send the response headers to the client.
         if h3_resp.send_h3_headers {
             let h3_conn_to_use = h3_conn.unwrap_or(fh3_conn);
+            println!("Headers 1: {:?}", h3_resp.headers.as_ref().unwrap());
             match h3_conn_to_use.send_response(conn, stream_id, h3_resp.headers.as_ref().unwrap(), false)
             {
                 Ok(v) => v,
@@ -464,6 +465,7 @@ impl Http3Server {
 
             // Set the response as active because the flexicast server does not wait.
             out.send_h3_headers = true;
+            println!("Headers 1: {:?}", out.headers.as_ref().unwrap());
             fh3_conn.send_response(&mut fc_chan.channel, stream_id, out.headers.as_ref().unwrap(), false).unwrap();
 
             Ok(out)

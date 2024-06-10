@@ -69,8 +69,8 @@ qlog = { version = "0.9", path = "../qlog", optional = true }
 sfv = { version = "0.9", optional = true }
 smallvec = { version = "1.10", features = ["serde", "union"] }
 # networkcoding = { git = "https://cloudlab:Ecdb8poZqfE83szx89s9@forge.uclouvain.be/inl/multicast-quic/fec/networkcoding.git", branch = "missing-degrees" }
-# networkcoding = { path = "/home/louisna/networkcoding" }
-networkcoding = { path = "/Users/louisnavarre/Documents/Github/networkcoding" }
+networkcoding = { path = "/home/louisna/networkcoding" }
+# networkcoding = { path = "/Users/louisnavarre/Documents/Github/networkcoding" }
 env_logger = "0.6"
 
 [target."cfg(windows)".dependencies]
