@@ -180,14 +180,14 @@ fn main() {
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
         'uc_read: loop {
+            let now = std::time::Instant::now();
+            conn.on_rmc_timeout(now).unwrap();
+
             // If the event loop reported no events, it means that the timeout
             // has expired, so handle it without attempting to read packets. We
             // will then proceed with the send loop.
             if events.is_empty() {
                 conn.on_timeout();
-
-                let now = std::time::Instant::now();
-                conn.on_rmc_timeout(now).unwrap();
                 if conn.on_mc_timeout(now) ==
                     Err(quiche::Error::Multicast(
                         multicast::McError::McInvalidRole(McRole::Client(
