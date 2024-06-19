@@ -100,13 +100,14 @@ impl RecvBuf {
         // If we already looped, we may receive duplicate data (i.e., before
         // looping) that goes beyond the new fin offset. In that case, we split
         // the buffer to only keep interesting data.
-        let mut buf = buf;
+        let buf = buf;
         if let (Some(fc_data), Some(fin_off)) = (self.fc_data.as_ref(), self.fin_off) {
             if fc_data.looped() && buf.max_off() > fin_off {
                 // Check if duplicate, i.e., the buffer maximum offset is below the original maximum offset.
                 if fc_data.fc_fin_off().is_some_and(|off| off >= buf.max_off()) {
+                    self.fin_off = Some(buf.max_off());
                     // Allowed. Strip the buffer to only keep the interesting part.
-                    _ = buf.split_off((fin_off.saturating_sub(buf.off)) as usize);
+                    // _ = buf.split_off((fin_off.saturating_sub(buf.off)) as usize);
                 } else {
                     // Definitely above the maximum size.
                     return Err(Error::FinalSize);
@@ -165,7 +166,7 @@ impl RecvBuf {
                     let buf_is_fin = buf.fin();
                     let buf_max_off = buf.max_off();
 
-                    fc_data.write(buf)?;
+                    // fc_data.write(buf)?;
 
                     // In the unlikely case the flexicast init offset is the fin
                     // offset, we must directly wrap around the receiving buffer
@@ -542,6 +543,8 @@ impl RecvBuf {
             self.flow_control.max_data(),
             DEFAULT_STREAM_WINDOW,
         ));
+        self.data = BTreeMap::new();
+        self.fin_off = None;
 
         self.off = offset;
 
@@ -619,6 +622,7 @@ impl RecvBuf {
     /// Custom the reception FlowControl window.
     /// 
     /// Flexicast with stream rotation extension.
+    #[allow(unused)]
     pub(crate) fn fc_ensure_window_lower_bound(&mut self, v: u64) {
         self.flow_control.ensure_window_lower_bound(v);
     }

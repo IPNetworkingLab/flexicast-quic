@@ -11,13 +11,13 @@ use quiche::h3;
 use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
 use quiche::multicast::reliable::ReliableMulticastConnection;
+use quiche::multicast::FcConfig;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::McClientTp;
 use quiche::multicast::McConfig;
 use quiche::multicast::McRole;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastConnection;
-use quiche::multicast::FcConfig;
 use quiche::on_rmc_timeout_server;
 use quiche::ucs_to_mc_cwnd;
 #[cfg(feature = "qlog")]
@@ -27,7 +27,9 @@ use quiche_apps::mc_app::http3;
 use quiche_apps::mc_app::http3::FH3Action;
 use quiche_apps::mc_app::http3::FcH3Error;
 use quiche_apps::mc_app::http3::Http3Server;
+use quiche_apps::mc_app::quic_stream::FcQuicStreamReplay;
 use quiche_apps::sendto::send_to;
+
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 
@@ -202,6 +204,15 @@ fn main() {
             .unwrap();
     }
 
+    // Setup the stream rotation handler.
+    let mut fcquic_stream_replay = FcQuicStreamReplay::new(
+        "/tmp/fcquic_stream_replay.txt",
+        args.h3_chunk_size.unwrap_or(1500),
+    )
+    .unwrap();
+    // Whether the HTTP/3 application alredy delivered once the whole data.
+    let mut h3_complete = false;
+
     // Setup flexicast HTTP/3 connections.
     if let Some(fc_chan) = mc_channel_opt.as_mut() {
         fh3_conn = Some(
@@ -225,6 +236,7 @@ fn main() {
                 fh3_conn.as_mut().unwrap(),
                 fc_chan,
                 fh3_back.as_mut().unwrap(),
+                &mut fcquic_stream_replay,
             )
             .unwrap();
     }
@@ -313,8 +325,8 @@ fn main() {
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
-            let client = if !clients_ids.contains_key(&hdr.dcid) &&
-                !clients_ids.contains_key(&hdr.dcid)
+            let client = if !clients_ids.contains_key(&hdr.dcid)
+                && !clients_ids.contains_key(&hdr.dcid)
             {
                 if hdr.ty != quiche::Type::Initial {
                     error!("Packet is not Initial");
@@ -470,8 +482,8 @@ fn main() {
 
             // Create a new HTTP/3 connection as soon as the QUIC connection is
             // established.
-            if (client.conn.is_in_early_data() || client.conn.is_established()) &&
-                client.http3_conn.is_none()
+            if (client.conn.is_in_early_data() || client.conn.is_established())
+                && client.http3_conn.is_none()
             {
                 debug!(
                     "{} QUIC handshake completed, now trying HTTP/3",
@@ -494,8 +506,8 @@ fn main() {
             }
 
             // Sets the client listens to the flexicast channel.
-            if !client.listen_fc_channel &&
-                client
+            if !client.listen_fc_channel
+                && client
                     .conn
                     .get_multicast_attributes()
                     .map(|mc| {
@@ -519,9 +531,18 @@ fn main() {
                     // If the client joined the flexicast path and is ready to
                     // receive data through this path, we can respond to the
                     // HTTP/3 request.
-                    handle_fc_ready_h3_response(client, stream_id, fh3_conn.as_mut());
+                    handle_fc_ready_h3_response(
+                        client,
+                        stream_id,
+                        fh3_conn.as_mut(),
+                    );
 
-                    handle_writable_client(client, stream_id, args.h3_chunk_size);
+                    handle_writable_client(
+                        client,
+                        stream_id,
+                        args.h3_chunk_size,
+                        &mut fcquic_stream_replay,
+                    );
                 }
 
                 // Process HTTP/3 events.
@@ -543,6 +564,7 @@ fn main() {
                                 &args.file,
                                 h3_resp.data(),
                                 client.http3_conn.as_mut(),
+                                &mut fcquic_stream_replay,
                             )
                             .unwrap();
 
@@ -672,28 +694,66 @@ fn main() {
             fh3_conn.as_mut(),
             fh3_back.as_mut(),
         ) {
-            if mc_channel.channel.stream_complete(h3_resp.stream_id()) &&
-                mc_channel.channel.fc_is_stream_expired(h3_resp.stream_id()) ==
-                    Ok(true)
+            if mc_channel.channel.fc_is_stream_expired(h3_resp.stream_id())
+                == Ok(true)
             {
-                info!("RESTART STREAM WITH ID {:?}", h3_resp.stream_id());
-                h3_resp = h3_resp
-                    .restart_stream(fh3_conn, mc_channel, fh3_back)
+                debug!("RESTART STREAM WITH ID {:?}", h3_resp.stream_id());
+                h3_resp
+                    .restart_stream(
+                        fh3_conn,
+                        mc_channel,
+                        fh3_back,
+                        &mut fcquic_stream_replay,
+                    )
                     .unwrap();
+                h3_complete = true; // Won't send HTTP/3 data anymore on the flexicast path.
+                fcquic_stream_replay.repeat_stream().unwrap();
             }
         }
 
         // Send as much HTTP/3 response data as possible on the flexicast path.
-        if h3_resp.is_active() && !h3_resp.is_fin() {
+        if h3_resp.is_active() && !h3_resp.is_fin() || h3_complete {
             if let (Some(mc_channel), Some(fh3_conn)) =
                 (mc_channel_opt.as_mut(), fh3_conn.as_mut())
             {
-                debug!("SEND BODY!!!");
-                match h3_resp
-                    .send_body(
+                // Only actually send data on HTTP/3 if it is the first time.
+                // Otherwise, we only replay the QUIC stream.
+                if h3_complete {
+                    // Read as much data as possible directly from the FC-QUIC stream replay structure.
+                    'read_replay: loop {
+                        if fcquic_stream_replay.is_fin() {
+                            break 'read_replay;
+                        }
+
+                        // Feed directly in quiche.
+                        let (stream_data, fin) =
+                            fcquic_stream_replay.read_stream().unwrap();
+                        let written = match mc_channel.channel.stream_send(
+                            h3_resp.stream_id(),
+                            stream_data,
+                            fin,
+                        ) {
+                            Ok(v) => v,
+                            Err(quiche::Error::Done) => {
+                                println!("Quiche says done");
+                                break 'read_replay;
+                            },
+                            Err(e) => panic!(
+                                "Error while replaying the stream: {:?}",
+                                e
+                            ),
+                        };
+
+                        fcquic_stream_replay.partial_stream(written);
+
+                        break 'read_replay;
+                    }
+                } else {
+                    match h3_resp.send_body(
                         fh3_conn,
                         &mut mc_channel.channel,
                         args.h3_chunk_size,
+                        &mut fcquic_stream_replay,
                     ) {
                         Ok(_) => (),
 
@@ -701,6 +761,7 @@ fn main() {
 
                         Err(e) => panic!("Error while sending the body: {:?}", e),
                     }
+                }
             }
         }
 
@@ -753,10 +814,13 @@ fn main() {
                             debug!("mc_send() would block");
                             break 'flexicast;
                         }
-    
+
                         panic!("mc_send() failed: {:?}", e);
                     }
-                    debug!("Flexicast written {} bytes to {:?}", write, send_info);
+                    debug!(
+                        "Flexicast written {} bytes to {:?}",
+                        write, send_info
+                    );
                 } else {
                     debug!("not actually sending on the wire for flexicast");
                 }
@@ -1178,6 +1242,7 @@ fn handle_path_events(client: &mut Client) {
 
 fn handle_writable_client(
     client: &mut Client, stream_id: u64, h3_chunk_size: Option<usize>,
+    fcquic_stream_replay: &mut FcQuicStreamReplay,
 ) {
     if !client.partial_responses.contains_key(&stream_id) {
         return;
@@ -1190,6 +1255,7 @@ fn handle_writable_client(
         h3_resp,
         stream_id,
         h3_chunk_size,
+        fcquic_stream_replay,
     ) {
         Ok(_) => (),
 
@@ -1206,6 +1272,7 @@ fn handle_writable_client(
 fn handle_writable(
     conn: &mut quiche::Connection, h3_conn: &mut quiche::h3::Connection,
     h3_resp: &mut Http3Server, stream_id: u64, h3_chunk_size: Option<usize>,
+    fcquic_stream_replay: &mut FcQuicStreamReplay,
 ) -> http3::Result<usize> {
     debug!("{} stream {} is writable", conn.trace_id(), stream_id);
 
@@ -1227,7 +1294,12 @@ fn handle_writable(
 
     // Send data if this response is active.
     if h3_resp.is_active() {
-        let written = match h3_resp.send_body(h3_conn, conn, h3_chunk_size) {
+        let written = match h3_resp.send_body(
+            h3_conn,
+            conn,
+            h3_chunk_size,
+            fcquic_stream_replay,
+        ) {
             Ok(v) => v,
 
             Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => 0,
@@ -1251,16 +1323,18 @@ fn handle_writable(
     Ok(0)
 }
 
-fn handle_fc_ready_h3_response(client: &mut Client, stream_id: u64, fc_conn: Option<&mut h3::Connection>) {
+fn handle_fc_ready_h3_response(
+    client: &mut Client, stream_id: u64, fc_conn: Option<&mut h3::Connection>,
+) {
     if !client.partial_responses.contains_key(&stream_id) {
         return;
     }
 
     let h3_resp = client.partial_responses.get_mut(&stream_id).unwrap();
 
-    if h3_resp.headers.is_some() &&
-        !h3_resp.send_h3_headers &&
-        client.listen_fc_channel
+    if h3_resp.headers.is_some()
+        && !h3_resp.send_h3_headers
+        && client.listen_fc_channel
     {
         h3_resp.send_h3_headers = true;
 

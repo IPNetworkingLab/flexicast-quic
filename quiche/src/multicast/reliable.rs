@@ -345,7 +345,7 @@ impl ReliableMulticastConnection for Connection {
                     mc_s.get_mc_role(),
                 )));
             }
-            if !matches!(mc_u.get_mc_role(), McRole::ServerUnicast(McClientStatus::ListenMcPath(true))) {
+            if !matches!(mc_u.get_mc_role(), McRole::ServerUnicast(McClientStatus::ListenMcPath(true))) || true {
                 // return Err(Error::Multicast(McError::McInvalidRole(
                 //     mc_u.get_mc_role(),
                 // )));

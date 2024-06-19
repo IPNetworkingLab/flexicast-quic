@@ -4477,13 +4477,11 @@ impl Connection {
         let path = self.paths.get_mut(send_pid)?;
 
         // Limit output packet size by congestion window size.
-        let left_before = left;
         left = cmp::min(
             left,
             // Bytes consumed by ACK frames.
             cwnd_available.saturating_sub(left_before_packing_ack_frame - left),
         );
-        println!("After congestion application: {} -> {}", left_before, left);
 
         let mut challenge_data = None;
 

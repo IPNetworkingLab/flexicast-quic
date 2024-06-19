@@ -6536,7 +6536,7 @@ mod tests {
 
 #[cfg(feature = "ffi")]
 mod ffi;
-mod flexicast;
+pub mod flexicast;
 mod frame;
 #[doc(hidden)]
 pub mod qpack;

@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
 
+use super::quic_stream::FcQuicStreamReplay;
 use quiche::h3;
 use quiche::h3::Connection as H3Conn;
 use quiche::h3::Header;
@@ -260,6 +261,7 @@ impl Http3Server {
         headers: &[Header], fh3_conn: &mut H3Conn, conn: &mut Connection,
         stream_id: u64, filepath: &str, data: &Rc<Vec<u8>>,
         h3_conn: Option<&mut H3Conn>,
+        quic_stream_replay: &mut FcQuicStreamReplay,
     ) -> Result<Self> {
         let mut method = None;
         let mut path = vec![];
@@ -286,12 +288,13 @@ impl Http3Server {
         }
 
         let (status, action) = match method {
-            Some(b"GET") =>
+            Some(b"GET") => {
                 if &path[1..] == filepath.as_bytes() {
                     (200, FH3Action::Join)
                 } else {
                     (404, FH3Action::Nothing)
-                },
+                }
+            },
 
             _ => (405, FH3Action::Nothing),
         };
@@ -300,6 +303,7 @@ impl Http3Server {
         // for out-of-order delivery.
         let (h3_off, quic_off) =
             fh3_conn.fc_get_emit_off(stream_id).unwrap_or((0, 0));
+        debug!("Voici les offsets: {} and {}", h3_off, quic_off);
 
         let resp_headers = vec![
             Header::new(b":status", status.to_string().as_bytes()),
@@ -336,13 +340,17 @@ impl Http3Server {
         // Send the response headers to the client.
         if h3_resp.send_h3_headers {
             let h3_conn_to_use = h3_conn.unwrap_or(fh3_conn);
-            match h3_conn_to_use.send_response(conn, stream_id, h3_resp.headers.as_ref().unwrap(), false)
-            {
+            match h3_conn_to_use.send_response_quic_stream_writer(
+                conn,
+                stream_id,
+                h3_resp.headers.as_ref().unwrap(),
+                false,
+                quic_stream_replay,
+            ) {
                 Ok(v) => v,
-    
-                Err(quiche::h3::Error::StreamBlocked) => {
-                },
-    
+
+                Err(quiche::h3::Error::StreamBlocked) => {},
+
                 Err(e) => {
                     error!("{} stream send failed: {:?}", conn.trace_id(), e);
                     return Err(FcH3Error::HTTP3(e));
@@ -356,6 +364,7 @@ impl Http3Server {
     pub fn send_body(
         &mut self, h3_conn: &mut H3Conn, conn: &mut quiche::Connection,
         h3_chunk_size: Option<usize>,
+        quic_stream_replay: &mut FcQuicStreamReplay,
     ) -> Result<usize> {
         if !self.is_active() {
             return Ok(0);
@@ -367,11 +376,12 @@ impl Http3Server {
             .min(self.data.len());
 
         let written = h3_conn
-            .send_body(
+            .send_body_quic_stream_writer(
                 conn,
                 self.stream_id,
                 &self.data[self.offset as usize..max_off],
                 max_off == self.data.len(),
+                quic_stream_replay,
             )
             .map_err(|e| FcH3Error::HTTP3(e))?;
 
@@ -385,9 +395,9 @@ impl Http3Server {
     }
 
     pub fn restart_stream(
-        self, fh3_conn: &mut H3Conn, fc_chan: &mut MulticastChannelSource,
-        fh3_back: &mut H3Conn,
-    ) -> Result<Self> {
+        &mut self, fh3_conn: &mut H3Conn, fc_chan: &mut MulticastChannelSource,
+        fh3_back: &mut H3Conn, quic_stream_replay: &mut FcQuicStreamReplay,
+    ) -> Result<()> {
         // Finish exchanging data.
         MulticastChannelSource::advance(
             &mut fc_chan.channel,
@@ -405,14 +415,19 @@ impl Http3Server {
 
         // The dummy client has to send again the request.
         // This is ugly, but it should work.
-        let out = self.start_request_on_fc_source(fh3_conn, fc_chan, fh3_back)?;
+        // let out = self.start_request_on_fc_source(
+        //     fh3_conn,
+        //     fc_chan,
+        //     fh3_back,
+        //     quic_stream_replay,
+        // )?;
 
-        Ok(out)
+        Ok(())
     }
 
     pub fn start_request_on_fc_source(
         self, fh3_conn: &mut H3Conn, fc_chan: &mut MulticastChannelSource,
-        fh3_back: &mut H3Conn,
+        fh3_back: &mut H3Conn, quic_stream_replay: &mut FcQuicStreamReplay,
     ) -> Result<Self> {
         // Backup client sends the request.
         let url: Url = format!("https://localhost:4433/{}", self.filepath)
@@ -460,11 +475,19 @@ impl Http3Server {
                 &self.filepath,
                 &self.data,
                 None,
+                quic_stream_replay,
             )?;
 
             // Set the response as active because the flexicast server does not wait.
             out.send_h3_headers = true;
-            fh3_conn.send_response(&mut fc_chan.channel, stream_id, out.headers.as_ref().unwrap(), false).unwrap();
+            fh3_conn
+                .send_response(
+                    &mut fc_chan.channel,
+                    stream_id,
+                    out.headers.as_ref().unwrap(),
+                    false,
+                )
+                .unwrap();
 
             Ok(out)
         } else {

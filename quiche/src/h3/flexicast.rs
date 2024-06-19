@@ -1,3 +1,7 @@
+//! Flexicast extension for HTTP/3.
+//! It enables stream rotation.
+
+use crate::h3::frame;
 use crate::h3::testing::Session;
 use crate::h3::Config;
 use crate::h3::Connection;
@@ -10,7 +14,38 @@ use crate::multicast::McAnnounceData;
 use crate::multicast::McError;
 use crate::multicast::MulticastChannelSource;
 
+#[cfg(feature = "qlog")]
+use qlog::events::h3::H3FrameCreated;
+#[cfg(feature = "qlog")]
+use qlog::events::h3::H3FrameParsed;
+#[cfg(feature = "qlog")]
+use qlog::events::h3::H3Owner;
+#[cfg(feature = "qlog")]
+use qlog::events::h3::H3PriorityTargetStreamType;
+#[cfg(feature = "qlog")]
+use qlog::events::h3::H3StreamType;
+#[cfg(feature = "qlog")]
+use qlog::events::h3::H3StreamTypeSet;
+#[cfg(feature = "qlog")]
+use qlog::events::h3::Http3EventType;
+#[cfg(feature = "qlog")]
+use qlog::events::h3::Http3Frame;
+#[cfg(feature = "qlog")]
+use qlog::events::EventData;
+#[cfg(feature = "qlog")]
+use qlog::events::EventImportance;
+#[cfg(feature = "qlog")]
+use qlog::events::EventType;
+#[cfg(feature = "qlog")]
+const QLOG_FRAME_CREATED: EventType =
+    EventType::Http3EventType(Http3EventType::FrameCreated);
+
 use super::stream;
+use super::NameValue;
+use super::Priority;
+use super::PRIORITY_URGENCY_LOWER_BOUND;
+use super::PRIORITY_URGENCY_OFFSET;
+use super::PRIORITY_URGENCY_UPPER_BOUND;
 
 impl Connection {
     /// Reads request or response body data into the provided buffer,
@@ -123,6 +158,265 @@ impl Connection {
     pub fn fc_get_emit_off(&self, stream_id: u64) -> Option<(u64, u64)> {
         self.streams.get(&stream_id).map(|s| s.fc_get_emit_off())
     }
+
+    /// Sends an HTTP/3 body chunk on the given stream.
+    ///
+    /// On success the number of bytes written is returned, or [`Done`] if no
+    /// bytes could be written (e.g. because the stream is blocked).
+    ///
+    /// Note that the number of written bytes returned can be lower than the
+    /// length of the input buffer when the underlying QUIC stream doesn't have
+    /// enough capacity for the operation to complete.
+    ///
+    /// When a partial write happens (including when [`Done`] is returned) the
+    /// application should retry the operation once the stream is reported as
+    /// writable again.
+    ///
+    /// [`Done`]: enum.Error.html#variant.Done
+    pub fn send_body_quic_stream_writer<T>(
+        &mut self, conn: &mut crate::Connection, stream_id: u64, body: &[u8],
+        fin: bool, quic_writer: &mut T
+    ) -> Result<usize> where T: QuicStreamWriter {
+        let mut d = [42; 10];
+        let mut b = octets::OctetsMut::with_slice(&mut d);
+
+        // Validate that it is sane to send data on the stream.
+        if stream_id % 4 != 0 {
+            return Err(Error::FrameUnexpected);
+        }
+
+        match self.streams.get(&stream_id) {
+            Some(s) =>
+                if !s.local_initialized() {
+                    return Err(Error::FrameUnexpected);
+                },
+
+            None => {
+                return Err(Error::FrameUnexpected);
+            },
+        };
+
+        // Avoid sending 0-length DATA frames when the fin flag is false.
+        if body.is_empty() && !fin {
+            return Err(Error::Done);
+        }
+
+        let overhead = octets::varint_len(frame::DATA_FRAME_TYPE_ID) +
+            octets::varint_len(body.len() as u64);
+
+        let stream_cap = match conn.stream_capacity(stream_id) {
+            Ok(v) => v,
+
+            Err(e) => {
+                if conn.stream_finished(stream_id) {
+                    self.streams.remove(&stream_id);
+                }
+
+                return Err(e.into());
+            },
+        };
+
+        // Make sure there is enough capacity to send the DATA frame header.
+        if stream_cap < overhead {
+            let _ = conn.stream_writable(stream_id, overhead + 1);
+            return Err(Error::Done);
+        }
+
+        // Cap the frame payload length to the stream's capacity.
+        let body_len = std::cmp::min(body.len(), stream_cap - overhead);
+
+        // If we can't send the entire body, set the fin flag to false so the
+        // application can try again later.
+        let fin = if body_len != body.len() { false } else { fin };
+
+        // Again, avoid sending 0-length DATA frames when the fin flag is false.
+        if body_len == 0 && !fin {
+            let _ = conn.stream_writable(stream_id, overhead + 1);
+            return Err(Error::Done);
+        }
+
+        b.put_varint(frame::DATA_FRAME_TYPE_ID)?;
+        b.put_varint(body_len as u64)?;
+        let off = b.off();
+        conn.stream_send(stream_id, &d[..off], false)?;
+        quic_writer.write_quic_stream(&d[..off])?;
+
+        // Return how many bytes were written, excluding the frame header.
+        // Sending body separately avoids unnecessary copy.
+        let written = conn.stream_send(stream_id, &body[..body_len], fin)?;
+        quic_writer.write_quic_stream(&body[..body_len])?;
+
+        trace!(
+            "{} tx frm DATA stream={} len={} fin={}",
+            conn.trace_id(),
+            stream_id,
+            written,
+            fin
+        );
+
+        qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
+            let frame = Http3Frame::Data { raw: None };
+            let ev_data = EventData::H3FrameCreated(H3FrameCreated {
+                stream_id,
+                length: Some(written as u64),
+                frame,
+                raw: None,
+            });
+
+            q.add_event_data_now(ev_data).ok();
+        });
+
+        if written < body.len() {
+            // Ensure the peer is notified that the connection or stream is
+            // blocked when the stream's capacity is limited by flow control.
+            //
+            // We only need enough capacity to send a few bytes, to make sure
+            // the stream doesn't hang due to congestion window not growing
+            // enough.
+            let _ = conn.stream_writable(stream_id, overhead + 1);
+        }
+
+        if fin && written == body.len() && conn.stream_finished(stream_id) {
+            self.streams.remove(&stream_id);
+        } else if let Some(stream) = self.streams.get_mut(&stream_id) {
+            // Get FC-QUIC highest offset for this stream, which is correlated
+            // to the last HTTP/3 frame sent.
+            let quic_off = conn.fc_get_stream_off_back(stream_id);
+            // FC-TODO: what will happen if the stream is finished?
+            if let Some(off) = quic_off {
+                // Clients that join will only be concerned starting the next
+                // HTTP/3 DATA frame.
+                stream.fc_set_emit_off(written as u64, off);
+            }
+        }
+
+        Ok(written)
+    }
+
+    /// Equivalent of the `quiche::h3::Connection::send_response` method with QUIC stream writer.
+    pub fn send_response_quic_stream_writer<T: NameValue, S: QuicStreamWriter>(
+        &mut self, conn: &mut crate::Connection, stream_id: u64, headers: &[T],
+        fin: bool, quic_writer: &mut S,
+    ) -> Result<()> {
+        let priority = Default::default();
+
+        self.send_response_with_priority_quic_stream_writer(
+            conn, stream_id, headers, &priority, fin, quic_writer,
+        )?;
+
+        Ok(())
+    }
+
+    fn send_response_with_priority_quic_stream_writer<T: NameValue, S: QuicStreamWriter>(
+        &mut self, conn: &mut crate::Connection, stream_id: u64, headers: &[T],
+        priority: &Priority, fin: bool, quic_writer: &mut S,
+    ) -> Result<()> {
+        if !self.streams.contains_key(&stream_id) {
+            return Err(Error::FrameUnexpected);
+        }
+
+        // Clamp and shift urgency into quiche-priority space
+        let urgency = priority
+            .urgency
+            .clamp(PRIORITY_URGENCY_LOWER_BOUND, PRIORITY_URGENCY_UPPER_BOUND) +
+            PRIORITY_URGENCY_OFFSET;
+
+        conn.stream_priority(stream_id, urgency, priority.incremental)?;
+
+        self.send_headers_quic_stream_writer(conn, stream_id, headers, fin, quic_writer)?;
+
+        Ok(())
+    }
+
+    fn send_headers_quic_stream_writer<T: NameValue, S: QuicStreamWriter>(
+        &mut self, conn: &mut crate::Connection, stream_id: u64, headers: &[T],
+        fin: bool, quic_writer: &mut S,
+    ) -> Result<()> {
+        let mut d = [42; 10];
+        let mut b = octets::OctetsMut::with_slice(&mut d);
+
+        if !self.frames_greased && conn.grease {
+            self.send_grease_frames(conn, stream_id)?;
+            self.frames_greased = true;
+        }
+
+        let header_block = self.encode_header_block(headers)?;
+
+        let overhead = octets::varint_len(frame::HEADERS_FRAME_TYPE_ID) +
+            octets::varint_len(header_block.len() as u64);
+
+        // Headers need to be sent atomically, so make sure the stream has
+        // enough capacity.
+        match conn.stream_writable(stream_id, overhead + header_block.len()) {
+            Ok(true) => (),
+
+            Ok(false) => return Err(Error::StreamBlocked),
+
+            Err(e) => {
+                if conn.stream_finished(stream_id) {
+                    self.streams.remove(&stream_id);
+                }
+
+                return Err(e.into());
+            },
+        };
+
+        b.put_varint(frame::HEADERS_FRAME_TYPE_ID)?;
+        b.put_varint(header_block.len() as u64)?;
+        let off = b.off();
+        conn.stream_send(stream_id, &d[..off], false)?;
+        quic_writer.write_quic_stream(&d[..off])?;
+
+        // Sending header block separately avoids unnecessary copy.
+        conn.stream_send(stream_id, &header_block, fin)?;
+        quic_writer.write_quic_stream(&header_block)?;
+
+        trace!(
+            "{} tx frm HEADERS stream={} len={} fin={}",
+            conn.trace_id(),
+            stream_id,
+            header_block.len(),
+            fin
+        );
+
+        qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
+            let qlog_headers = headers
+                .iter()
+                .map(|h| qlog::events::h3::HttpHeader {
+                    name: String::from_utf8_lossy(h.name()).into_owned(),
+                    value: String::from_utf8_lossy(h.value()).into_owned(),
+                })
+                .collect();
+
+            let frame = Http3Frame::Headers {
+                headers: qlog_headers,
+            };
+            let ev_data = EventData::H3FrameCreated(H3FrameCreated {
+                stream_id,
+                length: Some(header_block.len() as u64),
+                frame,
+                raw: None,
+            });
+
+            q.add_event_data_now(ev_data).ok();
+        });
+
+        if let Some(s) = self.streams.get_mut(&stream_id) {
+            s.initialize_local();
+        }
+
+        if fin && conn.stream_finished(stream_id) {
+            self.streams.remove(&stream_id);
+        }
+
+        Ok(())
+    }
+}
+
+/// Writes the content of the QUIC stream into the external writer.
+pub trait QuicStreamWriter {
+    /// Write the content of the QUIC stream into its external log material.
+    fn write_quic_stream(&mut self, data: &[u8]) -> Result<usize>;
 }
 
 impl Header {
