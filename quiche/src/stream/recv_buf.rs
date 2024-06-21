@@ -100,14 +100,14 @@ impl RecvBuf {
         // If we already looped, we may receive duplicate data (i.e., before
         // looping) that goes beyond the new fin offset. In that case, we split
         // the buffer to only keep interesting data.
-        let buf = buf;
+        let mut buf = buf;
         if let (Some(fc_data), Some(fin_off)) = (self.fc_data.as_ref(), self.fin_off) {
             if fc_data.looped() && buf.max_off() > fin_off {
                 // Check if duplicate, i.e., the buffer maximum offset is below the original maximum offset.
                 if fc_data.fc_fin_off().is_some_and(|off| off >= buf.max_off()) {
-                    self.fin_off = Some(buf.max_off());
                     // Allowed. Strip the buffer to only keep the interesting part.
-                    // _ = buf.split_off((fin_off.saturating_sub(buf.off)) as usize);
+                    _ = buf.split_off((fin_off.saturating_sub(buf.off)) as usize);
+                    self.fin_off = Some(buf.max_off());
                 } else {
                     // Definitely above the maximum size.
                     return Err(Error::FinalSize);
@@ -166,7 +166,7 @@ impl RecvBuf {
                     let buf_is_fin = buf.fin();
                     let buf_max_off = buf.max_off();
 
-                    // fc_data.write(buf)?;
+                    fc_data.write(buf)?;
 
                     // In the unlikely case the flexicast init offset is the fin
                     // offset, we must directly wrap around the receiving buffer
@@ -1539,5 +1539,52 @@ mod tests {
 
         // The receiving part of the stream is complete.
         assert!(recv.is_fin());
+    }
+
+    #[test]
+    /// Flexicast with losses in the rotation and we rotate again.
+    fn fc_rotation_with_losses() {
+        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW);
+        let off = 3;
+        recv.fc_set_offset_at(off).unwrap();
+
+        let mut buf = [0; 10];
+
+        // All data that will be delivered.
+        let d_0 = RangeBuf::from(b"0", 0, false);
+        let d_1 = RangeBuf::from(b"1", 1, false);
+        let d_2 = RangeBuf::from(b"2", 2, false);
+        let d_3 = RangeBuf::from(b"3", 3, false);
+        let d_4 = RangeBuf::from(b"4", 4, true);
+
+        // First deliver a bit before the offset.
+        assert!(recv.write(d_2.clone()).is_ok());
+
+        // Then the end of the data in order.
+        assert!(recv.write(d_3.clone()).is_ok());
+        assert!(recv.write(d_4.clone()).is_ok());
+
+        // We can receive the data.
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(&buf[..len], b"34");
+        assert!(!fin);
+
+        // Deliver the beginning of the data but we lose d_1.
+        assert!(recv.write(d_0.clone()).is_ok());
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(&buf[..len], b"0");
+        assert!(!fin);
+
+        // We loop again before we get the retransmission of d_1.
+        assert!(recv.write(d_2.clone()).is_ok());
+        assert!(recv.write(d_3.clone()).is_ok());
+        assert!(recv.write(d_4.clone()).is_ok());
+        assert!(recv.write(d_0.clone()).is_ok());
+
+        // And finally d_1.
+        assert!(recv.write(d_1).is_ok());
+        let (len, fin) = recv.emit(&mut buf).unwrap();
+        assert_eq!(&buf[..len], b"12");
+        assert!(fin);
     }
 }

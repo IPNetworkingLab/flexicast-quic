@@ -53,14 +53,14 @@ pub static DISABLED_CC: CongestionControlOps = CongestionControlOps {
 pub fn on_init(r: &mut Recovery) {
     r.congestion_window = match r.mc_cwnd {
         Some(v) => cmp::max(v * r.max_datagram_size, r.congestion_window),
-        None => r.congestion_window,
+        None => std::usize::MAX - 1,
     };
 }
 
 pub fn reset(r: &mut Recovery) {
     r.congestion_window = match r.mc_cwnd {
         Some(v) => cmp::max(v * r.max_datagram_size, r.congestion_window),
-        None => r.congestion_window,
+        None => std::usize::MAX - 1,
     };
 }
 
@@ -97,12 +97,12 @@ fn on_packet_acked(
 
         r.congestion_window = match r.mc_cwnd {
             Some(v) => cmp::max(v * r.max_datagram_size, r.congestion_window),
-            None => r.congestion_window,
+            None => std::usize::MAX - 1,
         };
 
         if r.hystart.on_packet_acked(epoch, packet, r.latest_rtt, now) {
             // Exit to congestion avoidance if CSS ends.
-            r.ssthresh = r.congestion_window;
+            r.ssthresh = std::usize::MAX - 1;
         }
     } else {
         // Congestion avoidance.
@@ -112,7 +112,7 @@ fn on_packet_acked(
             r.bytes_acked_ca -= r.congestion_window;
             r.congestion_window = match r.mc_cwnd {
                 Some(v) => cmp::max(v * r.max_datagram_size, r.congestion_window),
-                None => r.congestion_window,
+                None => std::usize::MAX - 1,
             };
         }
     }
@@ -124,14 +124,14 @@ fn congestion_event(
 ) {
     r.congestion_window = match r.mc_cwnd {
         Some(v) => cmp::max(v * r.max_datagram_size, r.congestion_window),
-        None => r.congestion_window,
+        None => std::usize::MAX - 1,
     };
 }
 
 pub fn collapse_cwnd(r: &mut Recovery) {
     r.congestion_window = match r.mc_cwnd {
         Some(v) => cmp::max(v * r.max_datagram_size, r.congestion_window),
-        None => r.congestion_window,
+        None => std::usize::MAX - 1,
     };
 }
 

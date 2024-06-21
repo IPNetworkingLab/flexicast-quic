@@ -152,9 +152,10 @@ impl FcRecvBuf {
         if let Some(recv) = self.fc_recv_buf.as_mut() {
             recv.write(buf)
         } else {
-            Err(crate::Error::Multicast(
-                crate::multicast::McError::FcStreamRotation,
-            ))
+            Ok(())
+            // Err(crate::Error::Multicast(
+            //     crate::multicast::McError::FcStreamRotation,
+            // ))
         }
     }
 

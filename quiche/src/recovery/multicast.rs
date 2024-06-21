@@ -49,6 +49,7 @@ pub trait MulticastRecovery {
         pns_client: Option<(RangeSet, RangeSet)>, only_complete_streams: bool,
     ) -> Result<(ExpiredPkt, ExpiredStream)>;
 
+    #[allow(unused)]
     /// Returns the next expiring event.
     fn mc_next_timeout(
         &self, expiration_timer: std::time::Duration,
@@ -234,6 +235,7 @@ pub trait ReliableMulticastRecovery {
         space_id: u32, local_streams: &mut StreamMap,
     ) -> Result<(u64, (RangeSet, RangeSet))>;
 
+    #[allow(unused)]
     /// Mark all packets in flight in [`Epoch::Application`] up to the precised
     /// packet number.
     fn mark_inflight_as_lost_app_up_to(

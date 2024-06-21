@@ -2,6 +2,7 @@
 //! It enables stream rotation.
 
 use crate::h3::frame;
+use crate::h3::grease_value;
 use crate::h3::testing::Session;
 use crate::h3::Config;
 use crate::h3::Connection;
@@ -239,12 +240,12 @@ impl Connection {
         b.put_varint(body_len as u64)?;
         let off = b.off();
         conn.stream_send(stream_id, &d[..off], false)?;
-        quic_writer.write_quic_stream(&d[..off])?;
+        quic_writer.write_quic_stream(&d[..off], 0)?;
 
         // Return how many bytes were written, excluding the frame header.
         // Sending body separately avoids unnecessary copy.
         let written = conn.stream_send(stream_id, &body[..body_len], fin)?;
-        quic_writer.write_quic_stream(&body[..body_len])?;
+        quic_writer.write_quic_stream(&body[..body_len], body_len as u64)?;
 
         trace!(
             "{} tx frm DATA stream={} len={} fin={}",
@@ -287,6 +288,7 @@ impl Connection {
                 // Clients that join will only be concerned starting the next
                 // HTTP/3 DATA frame.
                 stream.fc_set_emit_off(written as u64, off);
+                quic_writer.write_quic_h3_offsets(off);
             }
         }
 
@@ -336,7 +338,7 @@ impl Connection {
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
         if !self.frames_greased && conn.grease {
-            self.send_grease_frames(conn, stream_id)?;
+            self.send_grease_frames_quic_stream_writer(conn, stream_id, quic_writer)?;
             self.frames_greased = true;
         }
 
@@ -365,11 +367,11 @@ impl Connection {
         b.put_varint(header_block.len() as u64)?;
         let off = b.off();
         conn.stream_send(stream_id, &d[..off], false)?;
-        quic_writer.write_quic_stream(&d[..off])?;
+        quic_writer.write_quic_stream(&d[..off], 0)?;
 
         // Sending header block separately avoids unnecessary copy.
         conn.stream_send(stream_id, &header_block, fin)?;
-        quic_writer.write_quic_stream(&header_block)?;
+        quic_writer.write_quic_stream(&header_block, 0)?;
 
         trace!(
             "{} tx frm HEADERS stream={} len={} fin={}",
@@ -411,12 +413,116 @@ impl Connection {
 
         Ok(())
     }
+
+    /// Send GREASE frames on the provided stream ID.
+    fn send_grease_frames_quic_stream_writer<T>(
+        &mut self, conn: &mut crate::Connection, stream_id: u64, quic_writer: &mut T
+    ) -> Result<()> where T: QuicStreamWriter {
+        let mut d = [0; 8];
+
+        let stream_cap = match conn.stream_capacity(stream_id) {
+            Ok(v) => v,
+
+            Err(e) => {
+                if conn.stream_finished(stream_id) {
+                    self.streams.remove(&stream_id);
+                }
+
+                return Err(e.into());
+            },
+        };
+
+        let grease_frame1 = grease_value();
+        let grease_frame2 = grease_value();
+        let grease_payload = b"GREASE is the word";
+
+        let overhead = octets::varint_len(grease_frame1) + // frame type
+            1 + // payload len
+            octets::varint_len(grease_frame2) + // frame type
+            1 + // payload len
+            grease_payload.len(); // payload
+
+        // Don't send GREASE if there is not enough capacity for it. Greasing
+        // will _not_ be attempted again later on.
+        if stream_cap < overhead {
+            return Ok(());
+        }
+
+        // Empty GREASE frame.
+        let mut b = octets::OctetsMut::with_slice(&mut d);
+        let b_ref = b.put_varint(grease_frame1)?;
+        conn.stream_send(stream_id, b_ref, false)?;
+        quic_writer.write_quic_stream(b_ref, 0)?;
+
+        let mut b = octets::OctetsMut::with_slice(&mut d);
+        let b_ref = b.put_varint(0)?;
+        conn.stream_send(stream_id, b_ref, false)?;
+        quic_writer.write_quic_stream(b_ref, 0)?;
+
+        trace!(
+            "{} tx frm GREASE stream={} len=0",
+            conn.trace_id(),
+            stream_id
+        );
+
+        qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
+            let frame = Http3Frame::Reserved { length: Some(0) };
+            let ev_data = EventData::H3FrameCreated(H3FrameCreated {
+                stream_id,
+                length: Some(0),
+                frame,
+                raw: None,
+            });
+
+            q.add_event_data_now(ev_data).ok();
+        });
+
+        // GREASE frame with payload.
+        let mut b = octets::OctetsMut::with_slice(&mut d);
+        let b_ref = b.put_varint(grease_frame2)?;
+        conn.stream_send(stream_id, b_ref, false)?;
+        quic_writer.write_quic_stream(b_ref, 0)?;
+
+        let mut b = octets::OctetsMut::with_slice(&mut d);
+        let b_ref = b.put_varint(18)?;
+        conn.stream_send(stream_id, b_ref, false)?;
+        quic_writer.write_quic_stream(b_ref, 0)?;
+
+        conn.stream_send(stream_id, grease_payload, false)?;
+        quic_writer.write_quic_stream(grease_payload, 0)?;
+
+        trace!(
+            "{} tx frm GREASE stream={} len={}",
+            conn.trace_id(),
+            stream_id,
+            grease_payload.len()
+        );
+
+        qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
+            let frame = Http3Frame::Reserved {
+                length: Some(grease_payload.len() as u64),
+            };
+            let ev_data = EventData::H3FrameCreated(H3FrameCreated {
+                stream_id,
+                length: Some(grease_payload.len() as u64),
+                frame,
+                raw: None,
+            });
+
+            q.add_event_data_now(ev_data).ok();
+        });
+
+        Ok(())
+    }
 }
 
 /// Writes the content of the QUIC stream into the external writer.
 pub trait QuicStreamWriter {
     /// Write the content of the QUIC stream into its external log material.
-    fn write_quic_stream(&mut self, data: &[u8]) -> Result<usize>;
+    fn write_quic_stream(&mut self, data: &[u8], h3_off: u64) -> Result<usize>;
+
+    /// Write the offsets of the QUIC-stream and HTTP/3-stream.
+    fn write_quic_h3_offsets(&mut self, quic_off: u64);
 }
 
 impl Header {

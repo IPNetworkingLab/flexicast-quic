@@ -292,6 +292,7 @@ mod tests {
     use crate::multicast::FcConfig;
     use crate::multicast::McClientTp;
     use crate::multicast::MulticastConnection;
+    use crate::ranges::RangeSet;
     use ring::rand::SystemRandom;
     use std::time;
 
@@ -306,7 +307,7 @@ mod tests {
             use_fec: true,
             probe_mc_path: true,
             fec_window_size: 5,
-            max_data: 30,
+            max_data: 100000000,
             ..Default::default()
         };
         let mut mc_pipe = MulticastPipe::new_reliable(
@@ -366,6 +367,9 @@ mod tests {
         let random = SystemRandom::new();
         let mc_data_auth = None;
 
+        let mut client_loss = RangeSet::default();
+        client_loss.insert(1..2);
+
         let fc_config = FcConfig {
             mc_announce_data: mc_pipe.mc_announce_data.clone(),
             mc_data_auth,
@@ -385,8 +389,9 @@ mod tests {
         mc_pipe.unicast_pipes.push(new_client);
 
         // Send the remaining of the stream to both clients.
+        // The second client loses the packet containing the last frame of the stream.
         mc_pipe
-            .source_send_single_from_buf(None, &mut buf[..])
+            .source_send_single_from_buf(Some(&client_loss), &mut buf[..])
             .unwrap();
         // No more data to send.
         assert_eq!(
@@ -394,23 +399,40 @@ mod tests {
             Err(Error::Done)
         );
 
-        // Restart the stream for the second client.
-        assert!(mc_pipe
-            .mc_channel
-            .channel
-            .fc_restart_stream_send_recv(3)
-            .is_ok());
-
         // Timeout of the first part of the data.
         let expired = expired
             .checked_add(time::Duration::from_millis(expiration_timer + 100))
             .unwrap();
+
+        // ACK from clients.
+        assert_eq!(mc_pipe.client_rmc_timeout(expired, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        mc_pipe.server_control_to_mc_source(expired).unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+
+        // The unicast server sends the retransmissions.
+        assert_eq!(
+            mc_pipe
+                .unicast_pipes
+                .iter_mut()
+                .map(|(pipe, ..)| pipe.advance())
+                .collect::<Result<()>>(),
+            Ok(())
+        );
 
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert_eq!(res, Ok((Some(5), None).into()));
 
         // The multicast source sends an MC_EXPIRE to the client.
         mc_pipe.source_send_single(None).unwrap();
+
+        // Restart the stream for the second client.
+        assert!(mc_pipe
+            .mc_channel
+            .channel
+            .fc_restart_stream_send_recv(3)
+            .is_ok());
 
         // Have to send again the data to quiche...
         mc_pipe
@@ -420,11 +442,12 @@ mod tests {
             .unwrap();
 
         // Send the content of the stream.
+        // The second client sees a packet loss that will be retransmitted through unicast.
         mc_pipe
             .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
         mc_pipe
-            .source_send_single_from_buf(None, &mut buf[..])
+            .source_send_single_from_buf(Some(&client_loss), &mut buf[..])
             .unwrap();
         mc_pipe
             .source_send_single_from_buf(None, &mut buf[..])
@@ -459,10 +482,44 @@ mod tests {
         assert_eq!(off, 22);
         assert_eq!(&recv_buf[..len], &stream_data[..len]);
 
+        // The stream is not finished because of the loss.
         let (len_2, fin, off) = client.stream_recv_ooo(3, &mut recv_buf).unwrap();
-        assert!(fin);
-        assert_eq!(len_2, 22);
+        assert!(!fin);
+        assert_eq!(len_2, 11);
         assert_eq!(off, 22);
-        assert_eq!(&recv_buf[..len_2], &stream_data[len..]);
+        assert_eq!(&recv_buf[..11], &stream_data[len..len+11]);
+
+        // ACK from clients.
+        assert_eq!(mc_pipe.client_rmc_timeout(expired, &random), Ok(()));
+        assert_eq!(mc_pipe.clients_send(), Ok(()));
+
+        // Unicast retransmission because of the (R)MC timeout.
+        let expired = expired
+            .checked_add(time::Duration::from_millis(expiration_timer + 100))
+            .unwrap();
+
+        // mc_pipe.server_control_to_mc_source(expired).unwrap();
+        assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
+        let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
+        assert!(res.is_ok());
+
+        // The unicast server sends the retransmissions.
+        assert_eq!(
+            mc_pipe
+                .unicast_pipes
+                .iter_mut()
+                .map(|(pipe, ..)| pipe.advance())
+                .collect::<Result<()>>(),
+            Ok(())
+        );
+
+        // The second client can now read everything.
+        let client = &mut mc_pipe.unicast_pipes[1].0.client;
+        let (len_2, fin, off) = client.stream_recv_ooo(3, &mut recv_buf[..]).unwrap();
+        assert!(fin);
+        assert_eq!(len_2, 11);
+        assert_eq!(off, 22);
+        assert_eq!(&recv_buf[..len_2], &stream_data[11..22]);
+        assert!(false);
     }
 }

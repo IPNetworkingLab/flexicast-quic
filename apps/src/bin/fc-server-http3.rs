@@ -535,6 +535,7 @@ fn main() {
                         client,
                         stream_id,
                         fh3_conn.as_mut(),
+                        &mut fcquic_stream_replay,
                     );
 
                     handle_writable_client(
@@ -735,7 +736,6 @@ fn main() {
                         ) {
                             Ok(v) => v,
                             Err(quiche::Error::Done) => {
-                                println!("Quiche says done");
                                 break 'read_replay;
                             },
                             Err(e) => panic!(
@@ -1010,7 +1010,7 @@ fn get_multicast_channel(
         authentication: args.authentication,
         use_fec: true,
         probe_mc_path: true,
-        mc_cwnd: Some(10_000),
+        mc_cwnd: args.fc_cwnd,
         ..Default::default()
     };
 
@@ -1325,6 +1325,7 @@ fn handle_writable(
 
 fn handle_fc_ready_h3_response(
     client: &mut Client, stream_id: u64, fc_conn: Option<&mut h3::Connection>,
+    fcquic_stream_replay: &mut FcQuicStreamReplay,
 ) {
     if !client.partial_responses.contains_key(&stream_id) {
         return;
@@ -1340,7 +1341,7 @@ fn handle_fc_ready_h3_response(
 
         // Also update the details for Flexicast stream rotation, because the advertised values may be out-of-date now.
         if let Some(fc_conn) = fc_conn {
-            h3_resp.update_fc_offsets(fc_conn, stream_id);
+            h3_resp.update_fc_offsets(fc_conn, stream_id, fcquic_stream_replay);
         }
     }
 }

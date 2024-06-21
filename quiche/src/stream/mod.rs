@@ -650,6 +650,7 @@ impl StreamMap {
         self.streams.len()
     }
 
+    #[allow(unused)]
     /// Updates the flow control of the sending part of the streams for the
     /// source.
     ///

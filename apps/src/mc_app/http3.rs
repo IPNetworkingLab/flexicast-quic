@@ -160,7 +160,7 @@ impl Http3Client {
                         .parse()
                         .map_err(|_| FcH3Error::Header)?;
 
-                    println!("Recv content length: {}", len);
+                    debug!("Recv content length: {}", len);
 
                     self.data = vec![0u8; len];
                 },
@@ -182,6 +182,7 @@ impl Http3Client {
     }
 
     pub fn recv_body(&mut self, data: &[u8]) -> Result<()> {
+        println!("Recv data of length {}", data.len());
         // Maybe the data wraps up (it should not because of the design of stream
         // rotation). First part.
         let off = data.len().min(self.data.len() - self.off);
@@ -301,8 +302,18 @@ impl Http3Server {
 
         // Get the HTTP/3 and FC-QUIC offset to advertise to the client to allow
         // for out-of-order delivery.
-        let (h3_off, quic_off) =
-            fh3_conn.fc_get_emit_off(stream_id).unwrap_or((0, 0));
+        let (h3_off, quic_off) = fh3_conn
+            .fc_get_emit_off(stream_id)
+            .map(|offs| {
+                debug!("Try to gt next offsets with current={:?}", offs);
+                if offs == (0, 0) {
+                    quic_stream_replay.get_next_quic_h3_off()
+                } else {
+                    Some(offs)
+                }
+            })
+            .flatten()
+            .unwrap_or((0, 0));
         debug!("Voici les offsets: {} and {}", h3_off, quic_off);
 
         let resp_headers = vec![
@@ -481,11 +492,12 @@ impl Http3Server {
             // Set the response as active because the flexicast server does not wait.
             out.send_h3_headers = true;
             fh3_conn
-                .send_response(
+                .send_response_quic_stream_writer(
                     &mut fc_chan.channel,
                     stream_id,
                     out.headers.as_ref().unwrap(),
                     false,
+                    quic_stream_replay,
                 )
                 .unwrap();
 
@@ -521,13 +533,23 @@ impl Http3Server {
     }
 
     pub fn update_fc_offsets(
-        &mut self, fh3_conn: &mut h3::Connection, stream_id: u64,
+        &mut self, fh3_conn: &mut h3::Connection, stream_id: u64, quic_stream_replay: &mut FcQuicStreamReplay,
     ) {
         // Retrieve offsets.
-        let (h3_off, quic_off) =
-            fh3_conn.fc_get_emit_off(stream_id).unwrap_or((0, 0));
+        let (h3_off, quic_off) = fh3_conn
+            .fc_get_emit_off(stream_id)
+            .map(|offs| {
+                debug!("Try to gt next offsets with current={:?}", offs);
+                if offs == (0, 0) {
+                    quic_stream_replay.get_next_quic_h3_off()
+                } else {
+                    Some(offs)
+                }
+            })
+            .flatten()
+            .unwrap_or(quic_stream_replay.get_next_quic_h3_off().unwrap_or((0, 0)));
 
-        info!("Replacing offsets of H3: {} and QUIC: {}", h3_off, quic_off);
+        println!("Replacing offsets of H3: {} and QUIC: {}", h3_off, quic_off);
 
         // Replace the headers. This is not efficient but it's the simplest
         // solution.
