@@ -1575,12 +1575,25 @@ impl MulticastConnection for Connection {
                         (multicast.mc_is_reliable() && stream.send.is_fin() ||
                             !multicast.mc_is_reliable())
                     {
+                        // Do not collect the stream if it is a unicast server
+                        // instance that uses flexicast with stream rotation.
+                        if matches!(
+                            multicast.mc_role,
+                            McRole::ServerUnicast(McClientStatus::ListenMcPath(
+                                true
+                            ))
+                        ) && stream.fc_use_stream_rotation()
+                        {
+                            continue;
+                        }
+
                         // Only reset the sending stream if:
                         // * Non-reliable multicast,
                         // * Reliable multicast and the sending stream is
                         //   complete.
                         stream.send.reset();
                         let local = stream.local;
+
                         self.streams.collect(exp_stream_id, local);
                     } else if !self.is_server {
                         // Maybe the final size is already known.

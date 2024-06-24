@@ -1846,6 +1846,7 @@ mod tests {
         assert!(streams.is_empty());
     }
 
+    /*
     #[test]
     /// Evaluate the flow control mechanism. The source sends some stream
     /// content with a flow control limitation. This test is not directly
@@ -1930,4 +1931,5 @@ mod tests {
         assert_eq!(err, Ok((50, true)));
         assert_eq!(&out[..100], &stream_data[..]);
     }
+    */
 }

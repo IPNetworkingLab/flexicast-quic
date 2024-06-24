@@ -218,7 +218,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_get_sent_pkt(&self, pn: u64) -> Option<Sent> {
         self.sent[Epoch::Application]
             .iter()
-            .find(|pkt| pkt.pkt_num.1 == pn).cloned()
+            .find(|pkt| pkt.pkt_num.1 == pn)
+            .cloned()
     }
 }
 
@@ -278,7 +279,10 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let mut max_exp_ss: Option<u64> = None;
 
         'per_packet: for packet in expired_sent {
-            debug!("This is a packet that is expired now: {:?} with frames: {:?}", packet.pkt_num, packet.frames);
+            debug!(
+                "This is a packet that is expired now: {:?} with frames: {:?}",
+                packet.pkt_num, packet.frames
+            );
             max_exp_pn = if let Some(c) = max_exp_pn {
                 Some(c.max(packet.pkt_num.1))
             } else {
@@ -337,10 +341,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
                         // This STREAM frame was lost. Retransmit in a (new)
                         // stream on unicast path.
-                        debug!(
-                            "Before getting the stream {} with pn={}",
-                            *stream_id, packet.pkt_num.1
-                        );
+                        debug!("Lost STREAM frame. ID={:?}, offset={:?}, length={:?}, fin={:?}", stream_id, offset, length, fin);
                         let is_stream_collected =
                             uc.streams.is_collected(*stream_id);
                         let stream: &mut crate::stream::Stream = match uc
@@ -373,6 +374,13 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                             continue;
                         }
 
+                        // First mark the stream as rotable for unicast
+                        // retransmission if it is the case for the flexicast
+                        // source.
+                        if local_stream.fc_use_stream_rotation() {
+                            stream.fc_mark_rotate_retransmission();
+                        }
+
                         let _written = match stream.send.write_at_offset(
                             &buf[..],
                             *offset,
@@ -382,7 +390,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                             Err(Error::FinalSize) => continue,
                             Err(e) => return Err(e),
                         };
-                        // assert_eq!(written, *length);
 
                         // Mark the stream as flushable. We do not take into
                         // account flow limits because the
@@ -431,8 +438,9 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         // RMC-TODO: maybe the StreamHeader frame follows this
                         // frame?
                         if let Some(stream_id) = protected_stream_id {
-                            let stream = uc.get_or_create_stream(stream_id, true)?;
-    
+                            let stream =
+                                uc.get_or_create_stream(stream_id, true)?;
+
                             stream.mc_set_asym_sign(signature);
                         }
                     },
@@ -574,9 +582,9 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             .back()
             .map(|s| s.pkt_num.1)
             .unwrap_or(0);
-        let sent_pkts = self.sent[epoch].iter().filter(|s| {
-            s.pkt_num.0 == space_id && s.pkt_num.1 >= cur_max_pn
-        });
+        let sent_pkts = self.sent[epoch]
+            .iter()
+            .filter(|s| s.pkt_num.0 == space_id && s.pkt_num.1 >= cur_max_pn);
         // uc.sent[epoch].extend(sent_pkts.map(|s| s.clone()));
         let mut first = true;
         for pkt in sent_pkts {

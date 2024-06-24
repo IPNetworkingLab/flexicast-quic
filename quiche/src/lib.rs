@@ -3198,6 +3198,13 @@ impl Connection {
                         // stream_recv() is used.
                         if stream.is_complete() && !stream.is_readable() {
                             let local = stream.local;
+                            
+                            // Do not collect the stream if it is a unicast server
+                            // instance that uses flexicast with stream rotation.
+                            if stream.send.fc_rotate_retransmission() {
+                                continue;
+                            }
+
                             self.streams.collect(stream_id, local);
                         }
                     },
@@ -5387,7 +5394,8 @@ impl Connection {
                     },
                 };
 
-                let stream_off = stream.send.off_front();
+                // let stream_off = stream.send.off_front();
+                let stream_off = stream.send.fc_off_front();
 
                 // Encode the frame.
                 //

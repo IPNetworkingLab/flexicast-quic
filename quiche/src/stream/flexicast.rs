@@ -3,6 +3,8 @@ use super::send_buf::SendBuf;
 use super::RangeBuf;
 use super::Stream;
 use super::StreamMap;
+use crate::multicast::McError;
+use crate::Error;
 use crate::Result;
 use octets;
 
@@ -78,6 +80,15 @@ impl Stream {
         self.send.fc_stream_rotate = v;
     }
 
+    /// Mark the stream as rotable for retransmission.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub fn fc_mark_rotate_retransmission(&mut self) {
+        if !self.send.fc_rotate_retransmission() {
+            self.send.fc_send_buf = Some(FcSendBuf::new(self.send.max_off()));
+        }
+    }
+
     /// Restart the sending and receiving state of a stream.
     /// This will restart the stream state to send again the same data.
     /// Returns true if the stream is started again.
@@ -94,6 +105,13 @@ impl Stream {
         self.send.fc_stream_rotate = true;
         self.recv = RecvBuf::new(self.recv.max_data(), self.recv.max_data());
         true
+    }
+
+    /// Whether the stream uses rotation at the source.
+    /// 
+    /// Flexicast with stream rotation extension.
+    pub fn fc_use_stream_rotation(&self) -> bool {
+        self.send.fc_stream_rotate
     }
 }
 
@@ -181,6 +199,74 @@ impl FcRecvBuf {
     }
 }
 
+#[derive(Debug, Default)]
+/// Flexicast sending buffer extension.
+///
+/// Alows the unicast server to retransmit chunks of data, even in partial
+/// orders. This happens whenever the unicast server must retransmit STREAM
+/// frames before AND after the flexicast source looped.
+pub(super) struct FcSendBuf {
+    fc_send_buf: Option<Box<SendBuf>>,
+}
+
+impl FcSendBuf {
+    /// Creates a new flexicast send buffer.
+    pub fn new(max_data: u64) -> Self {
+        Self {
+            fc_send_buf: Some(Box::new(SendBuf::new(max_data))),
+        }
+    }
+
+    /// Equivalent of [`crate::stream::send_buf::SendBuf::write_at_offset`] for
+    /// the flexicast sending buffer. Internally call this function.
+    pub fn write_at_offset(
+        &mut self, data: &[u8], offset: u64, fin: bool,
+    ) -> Result<usize> {
+        if let Some(send_buf) = self.fc_send_buf.as_mut() {
+            send_buf.write_at_offset(data, offset, fin)
+        } else {
+            return Err(Error::Multicast(McError::FcStreamRotation));
+        }
+    }
+
+    /// Equivalent of [`crate::stream::send_buf::SendBuf::emit`] for the
+    /// flexicast sending buffer.
+    pub fn emit(&mut self, out: &mut [u8]) -> Result<(usize, bool)> {
+        if let Some(send_buf) = self.fc_send_buf.as_mut() {
+            send_buf.emit(out)
+        } else {
+            Err(Error::Multicast(McError::FcStreamRotation))
+        }
+    }
+
+    /// Equivalent of [`crate::stream::send_buf::SendBuf::ack_and_drop`] for the
+    /// flexicast sending buffer.
+    pub fn ack_and_drop(&mut self, off: u64, len: usize) {
+        if let Some(fc_send_buf) = self.fc_send_buf.as_mut() {
+            fc_send_buf.ack_and_drop(off, len);
+        }
+    }
+
+    /// Equivalent of [`crate::stream::send_buf::SendBuf::is_complete`] for the
+    /// flexicast sending buffer.
+    pub fn is_complete(&self) -> bool {
+        if let Some(fc_send_buf) = self.fc_send_buf.as_ref() {
+            fc_send_buf.is_complete()
+        } else {
+            true
+        }
+    }
+
+    /// Get access to the inner `SendBuf`.
+    pub fn get_send_buf(&self) -> Option<&Box<SendBuf>> {
+        self.fc_send_buf.as_ref()
+    }
+
+    pub fn take_send_buf(&mut self) -> Option<Box<SendBuf>> {
+        self.fc_send_buf.take()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::stream::DEFAULT_STREAM_WINDOW;
@@ -234,5 +320,117 @@ mod tests {
 
         // Should not send any more data.
         assert_eq!(stream.send.emit(&mut buf[..]), Ok((0, true)));
+    }
+
+    #[test]
+    /// Tests the hability for the unicast server to retransmit chunks of
+    /// streams with rotation that was sent over Flexicast.
+    ///
+    /// It does not test the retransmission mechanism, but whether the `SendBuf`
+    /// is able to retransmit chunks of streams.
+    fn test_fc_send_buf_uc() {
+        let mut buf = [0; 20];
+
+        let first = b"first";
+        let second = b"second";
+        let third = b"third";
+
+        let mut stream =
+            Stream::new(0, 0, 10_000, true, false, DEFAULT_STREAM_WINDOW);
+        stream.fc_mark_rotate_retransmission();
+
+        // We write offsets at different places. The initial offset is determined
+        // by the first retransmission.
+        assert_eq!(
+            stream.send.write_at_offset(second, 100, false),
+            Ok(second.len())
+        );
+        assert_eq!(
+            stream.send.write_at_offset(first, 10, false),
+            Ok(first.len())
+        );
+        assert_eq!(
+            stream.send.write_at_offset(third, 1000, true),
+            Ok(third.len())
+        );
+
+        // We receive the data out-of-order.
+        assert_eq!(stream.send.emit(&mut buf), Ok((second.len(), false)));
+        assert_eq!(&buf[..second.len()], second);
+
+        assert_eq!(stream.send.emit(&mut buf), Ok((third.len(), true)));
+        assert_eq!(&buf[..third.len()], third);
+
+        assert_eq!(stream.send.emit(&mut buf), Ok((first.len(), false)));
+        assert_eq!(&buf[..first.len()], first);
+
+        assert!(!stream.send.is_complete());
+
+        // Ack data in the same order in which the data was sent.
+        stream.send.ack_and_drop(100, second.len());
+        stream.send.ack_and_drop(1000, third.len());
+
+        stream.send.rmc_set_fin_off(10 + first.len() as u64);
+
+        // While we do not ack the last piece which is in the flexicast buffer, we
+        // cannot consider the stream as complete.
+        assert!(!stream.send.is_complete());
+
+        stream.send.ack_and_drop(10, first.len());
+        assert!(stream.send.is_complete());
+    }
+
+    #[test]
+    /// Unicast retransmission in the flexicast with stream rotation test.
+    /// We also retransmit data in the unicast buffer with out-of-order delivery.
+    fn test_fc_send_buf_uc_with_retransmissions() {
+        let mut buf = [0; 20];
+
+        let first = b"first";
+        let second = b"second";
+        let third = b"third";
+
+        let mut stream =
+            Stream::new(0, 0, 10_000, true, false, DEFAULT_STREAM_WINDOW);
+        stream.fc_mark_rotate_retransmission();
+
+        // We write offsets at different places. The initial offset is determined
+        // by the first retransmission.
+        assert_eq!(
+            stream.send.write_at_offset(second, 100, false),
+            Ok(second.len())
+        );
+        assert_eq!(
+            stream.send.write_at_offset(first, 10, false),
+            Ok(first.len())
+        );
+        assert_eq!(
+            stream.send.write_at_offset(third, 1000, true),
+            Ok(third.len())
+        );
+
+        // We receive the data out-of-order.
+        assert_eq!(stream.send.emit(&mut buf), Ok((second.len(), false)));
+        assert_eq!(&buf[..second.len()], second);
+
+        assert_eq!(stream.send.emit(&mut buf), Ok((third.len(), true)));
+        assert_eq!(&buf[..third.len()], third);
+
+        assert_eq!(stream.send.emit(&mut buf), Ok((first.len(), false)));
+        assert_eq!(&buf[..first.len()], first);
+
+        assert!(!stream.send.is_complete());
+
+        // Ack data in the same order in which the data was sent.
+        stream.send.ack_and_drop(100, second.len());
+        stream.send.ack_and_drop(10, first.len());
+        assert!(!stream.send.is_complete());
+
+        stream.send.retransmit(1000, third.len());
+        assert_eq!(stream.send.emit(&mut buf), Ok((third.len(), true)));
+        assert_eq!(&buf[..third.len()], third);
+        stream.send.ack_and_drop(1000, third.len());
+        stream.send.rmc_set_close_offset();
+        assert!(stream.send.is_complete());
     }
 }

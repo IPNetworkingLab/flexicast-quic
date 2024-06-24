@@ -34,6 +34,7 @@ use crate::Result;
 
 use crate::ranges;
 
+use super::flexicast::FcSendBuf;
 use super::RangeBuf;
 
 #[cfg(test)]
@@ -107,8 +108,13 @@ pub struct SendBuf {
     /// (emitter), i.e., the last frame of the stream (with `fin` set) is
     /// expired.
     ///
-    /// Flexicasst extension.
+    /// Flexicast extension.
     fc_expired: bool,
+
+    /// Allows to rotate for unicast retransmission.
+    ///
+    /// Flexicast with stream rotation extension.
+    pub(super) fc_send_buf: Option<FcSendBuf>,
 }
 
 impl SendBuf {
@@ -247,6 +253,15 @@ impl SendBuf {
         // report final_size
         self.emit_off = cmp::max(self.emit_off, next_off);
 
+        // Flexicast with stream rotation and unicast retransmission.
+        // Maybe we emitted all data from the initial buffer, but some data must
+        // be retransmitted at a lower offset.
+        if out.len() - out_len == 0 && fin {
+            if let Some(fc_send) = self.fc_send_buf.as_mut() {
+                return fc_send.emit(out);
+            }
+        }
+
         Ok((out.len() - out_len, fin))
     }
 
@@ -277,6 +292,15 @@ impl SendBuf {
         // consider this ack.
         if self.fc_stream_rotate && self.off < off + len as u64 {
             return;
+        }
+
+        // With Flexicast, stream rotation and unicast retransmission
+        // extension, this may happen if we buffer data for looping.
+        // Simply feed the ack to the inner buffer.
+        if off < self.ack_off() {
+            if let Some(fc_send_buf) = self.fc_send_buf.as_mut() {
+                fc_send_buf.ack_and_drop(off, len);
+            }
         }
 
         self.ack(off, len);
@@ -318,6 +342,23 @@ impl SendBuf {
             // it could be retransmitted, we might end up decreasing the SendBuf
             // position too much, so make sure that doesn't happen.
             self.pos = self.pos.saturating_sub(drop + 1);
+        }
+
+        // Flexicast with stream rotation and unicast retransmissions extension.
+        // If we acked all data but we still have some data that must be acked at
+        // a lower offset, we can take this internal buffer as the main buffer.
+        // We only perform this move if we do not have any more data to ack at the
+        // current offset before looping.
+        if self.data.is_empty() &&
+            self.fc_send_buf.as_ref().is_some_and(|s| {
+                s.get_send_buf().is_some_and(|s| !s.data.is_empty())
+            })
+        {
+            let fc_data = self.fc_send_buf.as_mut().unwrap();
+            let fc_send_buf = fc_data.take_send_buf();
+            if let Some(send_buf) = fc_send_buf {
+                self.fc_copy(*send_buf);
+            }
         }
     }
 
@@ -461,15 +502,26 @@ impl SendBuf {
     /// This happens when the stream's send final size is known, and the peer
     /// has already acked all stream data up to that point.
     pub fn is_complete(&self) -> bool {
+        let fc_rotation_is_complete =
+            if let Some(fc_send_buf) = self.fc_send_buf.as_ref() {
+                fc_send_buf.is_complete() ||
+                    fc_send_buf
+                        .get_send_buf()
+                        .map(|s| s.data.is_empty())
+                        .unwrap_or(true)
+            } else {
+                true
+            };
+
         if let Some(fin_off) = self.fin_off {
             if self.acked == (0..fin_off) {
-                return true;
+                return true && fc_rotation_is_complete;
             }
         }
 
         if let Some(rmc_fin_off) = self.rmc_max_offset {
             if self.acked == (0..rmc_fin_off) {
-                return true;
+                return true && fc_rotation_is_complete;
             }
         }
 
@@ -602,7 +654,13 @@ impl SendBuf {
         // This "no data" is never sent, and we ask to retransmit this chunk of
         // data only.
         if self.off > offset {
-            return Err(Error::FinalSize);
+            // If the data offset is lower than the current offset, we can try to
+            // buffer it if stream rotation is enabled.
+            if let Some(fc_send) = self.fc_send_buf.as_mut() {
+                return fc_send.write_at_offset(data, offset, fin);
+            } else {
+                return Err(Error::FinalSize);
+            }
         } else if self.off != offset {
             self.reset_at(offset)?;
         }
@@ -640,6 +698,56 @@ impl SendBuf {
     /// Flexicast extension.
     pub(crate) fn fc_is_stream_expired(&self) -> bool {
         self.fc_expired
+    }
+
+    /// Copies the sate of another [`SendBuf`] into self.
+    ///
+    /// Flexicast with stream rotation and unicast retransmission extension.
+    fn fc_copy(&mut self, other: SendBuf) {
+        self.data = other.data;
+        self.acked = other.acked;
+        self.off = other.off;
+        self.len = other.len;
+        self.pos = other.pos;
+        self.emit_off = other.emit_off;
+        self.max_data = other.max_data;
+        self.blocked_at = other.blocked_at;
+        self.fin_off = other.fin_off;
+        self.shutdown = other.shutdown;
+        self.error = other.error;
+        self.rmc_max_offset = other.rmc_max_offset; // RFC-TODO: not sure about this one.
+        self.fc_stream_rotate = other.fc_stream_rotate;
+        self.fc_expired = other.fc_expired;
+        self.fc_send_buf = Some(FcSendBuf::new(self.max_data));
+    }
+
+    /// Whether the structure already contains an
+    /// [`crate::stream::flexicast::FcSendBuf`] structure.
+    pub fn fc_rotate_retransmission(&self) -> bool {
+        self.fc_send_buf.is_some()
+    }
+
+    /// Returns the offset of the stream when considering flexicast stream
+    /// rotation with unicast retransmission.
+    pub fn fc_off_front(&self) -> u64 {
+        let mut pos = self.pos;
+
+        // Skip empty buffers from the start of the queue.
+        while let Some(b) = self.data.get(pos) {
+            if !b.is_empty() {
+                return b.off();
+            }
+
+            pos += 1;
+        }
+
+        if let Some(fc_send_buf) = self.fc_send_buf.as_ref() {
+            if let Some(send_buf) = fc_send_buf.get_send_buf() {
+                return send_buf.off_front();
+            }
+        }
+
+        self.off
     }
 }
 

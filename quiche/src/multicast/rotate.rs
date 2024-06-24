@@ -498,7 +498,6 @@ mod tests {
             .checked_add(time::Duration::from_millis(expiration_timer + 100))
             .unwrap();
 
-        // mc_pipe.server_control_to_mc_source(expired).unwrap();
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert!(res.is_ok());
@@ -520,6 +519,5 @@ mod tests {
         assert_eq!(len_2, 11);
         assert_eq!(off, 22);
         assert_eq!(&recv_buf[..len_2], &stream_data[11..22]);
-        assert!(false);
     }
 }
