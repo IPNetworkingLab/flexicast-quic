@@ -407,7 +407,7 @@ impl Http3Server {
 
     pub fn restart_stream(
         &mut self, fh3_conn: &mut H3Conn, fc_chan: &mut MulticastChannelSource,
-        fh3_back: &mut H3Conn, quic_stream_replay: &mut FcQuicStreamReplay,
+        fh3_back: &mut H3Conn, _quic_stream_replay: &mut FcQuicStreamReplay,
     ) -> Result<()> {
         // Finish exchanging data.
         MulticastChannelSource::advance(

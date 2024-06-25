@@ -140,7 +140,7 @@ fn main() {
 
     let args = Args::parse();
 
-    let mut nb_active_fc_clients = 0;
+    let mut nb_active_fc_clients = None;
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
@@ -521,7 +521,7 @@ fn main() {
                     .unwrap_or(false)
             {
                 client.listen_fc_channel = true;
-                nb_active_fc_clients += 1;
+                nb_active_fc_clients = Some(nb_active_fc_clients.unwrap_or(0) + 1);
             }
 
             // Handle HTTP/3 events.
@@ -682,7 +682,7 @@ fn main() {
 
         // Start the delivery on the flexicast path if all intended clients joined
         // the flexicast channel.
-        if Some(nb_active_fc_clients) >= args.wait_clients && !h3_resp.is_active()
+        if nb_active_fc_clients >= args.wait_clients && !h3_resp.is_active()
         {
             info!("SET APPLICATION ACTIVE");
             h3_resp.set_active(true);
@@ -800,7 +800,7 @@ fn main() {
                 // injecting in the multicast network.
                 send_info.to = args.proxy_addr.unwrap_or(mc_channel.mc_send_addr);
 
-                if Some(nb_active_fc_clients) >= Some(1) {
+                if nb_active_fc_clients >= Some(1) {
                     let err = send_to(
                         mc_socket,
                         &out[..write],
@@ -894,6 +894,9 @@ fn main() {
                     c.conn.trace_id(),
                     c.conn.stats(),
                 );
+                if nb_active_fc_clients.is_some() {
+                    nb_active_fc_clients = Some(nb_active_fc_clients.unwrap() - 1);
+                }
             }
 
             !c.conn.is_closed()
@@ -907,6 +910,13 @@ fn main() {
                 mc_channel.channel.mc_set_cwnd(fc_cwnd);
             } else {
                 ucs_to_mc_cwnd!(&mut mc_channel.channel, clients_conn, now, None);
+            }
+        }
+
+        // Stop sending data if all clients left the communication.
+        if let Some(nb) = nb_active_fc_clients {
+            if nb == 0 {
+                break;
             }
         }
     }

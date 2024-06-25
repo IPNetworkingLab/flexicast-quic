@@ -3198,7 +3198,7 @@ impl Connection {
                         // stream_recv() is used.
                         if stream.is_complete() && !stream.is_readable() {
                             let local = stream.local;
-                            
+
                             // Do not collect the stream if it is a unicast server
                             // instance that uses flexicast with stream rotation.
                             if stream.send.fc_rotate_retransmission() {
@@ -8525,6 +8525,12 @@ impl Connection {
             frame::Frame::NewToken { .. } => (),
 
             frame::Frame::Stream { stream_id, data } => {
+                let use_flexicast = self.multicast.as_ref().is_some_and(|fc| {
+                    fc.get_mc_role() ==
+                        multicast::McRole::Client(
+                            multicast::McClientStatus::ListenMcPath(true),
+                        )
+                });
                 // Peer can't send on our unidirectional streams.
                 if !stream::is_bidi(stream_id) &&
                     stream::is_local(stream_id, self.is_server)
@@ -8558,9 +8564,18 @@ impl Connection {
                 let max_off_delta =
                     data.max_off().saturating_sub(stream.recv.max_off());
 
-                if max_off_delta > max_rx_data_left {
+                if max_off_delta > max_rx_data_left && !use_flexicast {
+                    // debug!("Flow control 3: {} vs {} because data.max_off={}
+                    // and stream.recv.max_off()={}. Also self.max_rx_data()={}
+                    // and self.rx_data={}", max_off_delta, max_rx_data_left,
+                    // data.max_off(), stream.recv.max_off(), self.max_rx_data(),
+                    // self.rx_data);
                     return Err(Error::FlowControl);
                 }
+
+                // println!("max_off_delta={} because data.max_off={} and
+                // stream.recv.max_off={}", max_off_delta, data.max_off(),
+                // stream.recv.max_off());
 
                 let was_readable = stream.is_readable();
                 let priority_key = Arc::clone(&stream.priority_key);
@@ -9382,7 +9397,9 @@ impl Connection {
                     self.fc_set_stream_states(&stream_states)?;
 
                     // Set the initial FEC reception window.
-                    self.fec_decoder.set_first_symbol_id(source_symbol_metadata_from_u64(first_pn));
+                    self.fec_decoder.set_first_symbol_id(
+                        source_symbol_metadata_from_u64(first_pn),
+                    );
                 } else {
                     return Err(Error::Multicast(
                         multicast::McError::McInvalidSymKey,
