@@ -2880,7 +2880,9 @@ pub struct FcConfig {
 
     pub fc_server_tp: bool,
 
-    pub mc_announce_data: McAnnounceData,
+    pub mc_announce_data: Vec<McAnnounceData>,
+
+    pub mc_announce_to_join: usize,
 
     pub mc_data_auth: Option<McAnnounceData>,
 
@@ -2902,7 +2904,8 @@ pub struct FcConfig {
 impl Default for FcConfig {
     fn default() -> Self {
         Self {
-            mc_announce_data: testing::get_test_mc_announce_data(),
+            mc_announce_data: vec![testing::get_test_mc_announce_data()],
+            mc_announce_to_join: 0,
             authentication: McAuthType::None,
             probe_mc_path: true,
             mc_client_tp: Some(McClientTp::default()),
@@ -2936,7 +2939,7 @@ pub mod testing {
     #[doc(hidden)]
     pub const CLIENT_AUTH_ADDR: &str = "127.0.0.1:5679";
 
-    /// Multicast extension of crate::testing::Pipe.
+    /// Multicast extension of [`crate::testing::Pipe`].
     ///
     /// Contains a Pipe for each unicast connection and multicast source
     /// channel. Performs the multicast extension negociation for each client
@@ -2957,7 +2960,8 @@ pub mod testing {
         pub fn new(
             nb_clients: usize, keylog_filename: &str, fc_config: &mut FcConfig,
         ) -> Result<MulticastPipe> {
-            fc_config.mc_announce_data.auth_type = fc_config.authentication;
+            fc_config.mc_announce_data[fc_config.mc_announce_to_join].auth_type =
+                fc_config.authentication;
             Self::new_from_mc_announce_data(
                 nb_clients,
                 keylog_filename,
@@ -3006,7 +3010,8 @@ pub mod testing {
             )
             .unwrap();
 
-            let mc_announce_data = &mut fc_config.mc_announce_data;
+            let mc_announce_data =
+                &mut fc_config.mc_announce_data[fc_config.mc_announce_to_join];
 
             mc_channel
                 .channel
@@ -3075,7 +3080,7 @@ pub mod testing {
             Ok(MulticastPipe {
                 unicast_pipes: pipes,
                 mc_channel,
-                mc_announce_data: fc_config.mc_announce_data.clone(),
+                mc_announce_data: fc_config.mc_announce_data[fc_config.mc_announce_to_join].clone(),
             })
         }
 
@@ -3135,9 +3140,11 @@ pub mod testing {
                 Pipe::with_config_and_scid_lengths(&mut config, 16, 16).ok()?;
             pipe.handshake().ok()?;
 
-            pipe.server
-                .mc_set_mc_announce_data(&fc_config.mc_announce_data)
-                .unwrap();
+            for mc_announce_data in fc_config.mc_announce_data.iter() {
+                pipe.server
+                    .mc_set_mc_announce_data(mc_announce_data)
+                    .unwrap();
+            }
             if let Some(mc_data) = &fc_config.mc_data_auth {
                 pipe.server.mc_set_mc_announce_data(mc_data).unwrap();
             }
@@ -3185,7 +3192,7 @@ pub mod testing {
             pipe.advance().unwrap();
 
             let scid =
-                ConnectionId::from_ref(&fc_config.mc_announce_data.channel_id);
+                ConnectionId::from_ref(&fc_config.mc_announce_data[fc_config.mc_announce_to_join].channel_id);
             pipe.client.add_mc_cid(&scid).unwrap();
             assert_eq!(pipe.advance(), Ok(()));
 
@@ -3220,7 +3227,7 @@ pub mod testing {
                 .as_ref()
                 .unwrap()
                 .get_mc_announce_data(1)
-                .is_some()
+                .is_some() && fc_config.mc_data_auth.is_some()
             {
                 let scid = crate::ConnectionId::from_ref(
                     &fc_config.mc_data_auth.as_ref().unwrap().channel_id,
@@ -3621,7 +3628,7 @@ mod tests {
             use_fec: false,
             ..Default::default()
         };
-        let mc_announce_data = &fc_config.mc_announce_data;
+        let mc_announce_data = &fc_config.mc_announce_data[fc_config.mc_announce_to_join];
         let mut config = get_test_mc_config(false, &fc_config);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
@@ -3667,7 +3674,7 @@ mod tests {
             ..Default::default()
         };
         let mut config = get_test_mc_config(false, &fc_config);
-        let mc_announce_data = &mut fc_config.mc_announce_data;
+        let mc_announce_data = &mut fc_config.mc_announce_data[fc_config.mc_announce_to_join];
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -3723,7 +3730,7 @@ mod tests {
             use_fec: false,
             ..Default::default()
         };
-        let mc_announce_data = &fc_config.mc_announce_data;
+        let mc_announce_data = &fc_config.mc_announce_data[fc_config.mc_announce_to_join];
         let mut config = get_test_mc_config(false, &fc_config);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
@@ -3833,7 +3840,7 @@ mod tests {
             use_fec: false,
             ..Default::default()
         };
-        let mc_announce_data = &fc_config.mc_announce_data;
+        let mc_announce_data = &fc_config.mc_announce_data[fc_config.mc_announce_to_join];
         let mut config = get_test_mc_config(false, &fc_config);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
@@ -5983,7 +5990,7 @@ mod tests {
             probe_mc_path: true,
             ..Default::default()
         };
-        fc_config.mc_announce_data.is_ipv6 = true;
+        fc_config.mc_announce_data[fc_config.mc_announce_to_join].is_ipv6 = true;
 
         let mc_pipe = MulticastPipe::new(
             1,
@@ -6010,7 +6017,7 @@ mod tests {
             probe_mc_path: false,
             ..Default::default()
         };
-        fc_config.mc_announce_data.is_ipv6 = false;
+        fc_config.mc_announce_data[fc_config.mc_announce_to_join].is_ipv6 = false;
 
         let mc_pipe = MulticastPipe::new(
             1,
@@ -6041,7 +6048,7 @@ mod tests {
             probe_mc_path: false,
             ..Default::default()
         };
-        fc_config.mc_announce_data.is_ipv6 = true;
+        fc_config.mc_announce_data[fc_config.mc_announce_to_join].is_ipv6 = true;
         let mut mc_pipe = MulticastPipe::new(
             1,
             "/tmp/test_mc_symmetric_auth_path.txt",
@@ -6083,7 +6090,7 @@ mod tests {
             probe_mc_path: true,
             ..Default::default()
         };
-        fc_config.mc_announce_data.is_ipv6 = true;
+        fc_config.mc_announce_data[fc_config.mc_announce_to_join].is_ipv6 = true;
         let mut mc_pipe =
             MulticastPipe::new(1, "/tmp/test_mc_stream_asym.txt", &mut fc_config)
                 .unwrap();
@@ -6503,6 +6510,7 @@ mod tests {
 
 pub mod authentication;
 use authentication::McAuthType;
+pub mod multi_channel;
 pub mod reliable;
 pub mod rotate;
 

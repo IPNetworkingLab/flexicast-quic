@@ -345,7 +345,10 @@ impl ReliableMulticastConnection for Connection {
                     mc_s.get_mc_role(),
                 )));
             }
-            if !matches!(mc_u.get_mc_role(), McRole::ServerUnicast(McClientStatus::ListenMcPath(true))) {
+            if !matches!(
+                mc_u.get_mc_role(),
+                McRole::ServerUnicast(McClientStatus::ListenMcPath(true))
+            ) {
                 // return Err(Error::Multicast(McError::McInvalidRole(
                 //     mc_u.get_mc_role(),
                 // )));
@@ -524,8 +527,10 @@ pub mod testing {
         /// Simple McAnnounceData for testing the reliable multicast extension
         /// only.
         pub fn enable_reliable(&mut self) {
-            self.mc_announce_data.full_reliability = true;
-            self.mc_announce_data.expiration_timer = 500;
+            self.mc_announce_data.iter_mut().for_each(|announce| {
+                announce.full_reliability = true;
+                announce.expiration_timer = 500;
+            });
         }
     }
 
@@ -1584,7 +1589,7 @@ mod tests {
 
         let mut fc_config = FcConfig {
             mc_client_tp,
-            mc_announce_data: mc_announce_data.clone(),
+            mc_announce_data: vec![mc_announce_data.clone()],
             mc_data_auth,
             authentication: McAuthType::StreamAsym,
             probe_mc_path: true,
@@ -1846,90 +1851,88 @@ mod tests {
         assert!(streams.is_empty());
     }
 
-    /*
-    #[test]
-    /// Evaluate the flow control mechanism. The source sends some stream
-    /// content with a flow control limitation. This test is not directly
-    /// related to full reliable Flexicast QUIC, but we use the reliable pipe.
-    fn test_fc_flow_control() {
-        let mut fc_config = FcConfig {
-            authentication: McAuthType::StreamAsym,
-            use_fec: true,
-            probe_mc_path: true,
-            fec_window_size: 5,
-            max_data: 55,
-            max_stream_data: 50,
-            ..FcConfig::default()
-        };
-
-        let mut fc_pipe = MulticastPipe::new_reliable(
-            1,
-            "/tmp/test_fc_flow_control",
-            &mut fc_config,
-        )
-        .unwrap();
-
-        // All stream data that cannot be send in a single expiration period.
-        let stream_data: Vec<_> = (0..100).collect();
-        assert_eq!(
-            fc_pipe
-                .mc_channel
-                .channel
-                .stream_send(3, &stream_data[..], true),
-            Ok(50)
-        );
-
-        // Send all the content.
-        while let Ok(_) = fc_pipe.source_send_single(None) {}
-
-        // We have to wait to be able to send more data.
-        assert_eq!(
-            fc_pipe
-                .mc_channel
-                .channel
-                .stream_send(3, &stream_data[50..], true),
-            Err(Error::Done)
-        );
-
-        // Read the first received part to release memory from QUIC for the flow
-        // control.
-        let mut out = [0u8; 101];
-        let err = fc_pipe.unicast_pipes[0]
-            .0
-            .client
-            .stream_recv(3, &mut out[..]);
-        assert_eq!(err, Ok((50, false)));
-
-        // Timer expiration.
-        let now = time::Instant::now();
-        let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
-        let expired = now
-            .checked_add(time::Duration::from_millis(expiration_timer + 100))
-            .unwrap();
-
-        let res = fc_pipe.mc_channel.channel.on_mc_timeout(expired);
-        assert_eq!(res, Ok((Some(2), Some(0)).into()));
-
-        // The multicast source sends an MC_EXPIRE to the client.
-        fc_pipe.source_send_single(None).unwrap();
-
-        // Can send the remaining of the stream.
-        assert_eq!(
-            fc_pipe
-                .mc_channel
-                .channel
-                .stream_send(3, &stream_data[50..], true),
-            Ok(50)
-        );
-        while let Ok(_) = fc_pipe.source_send_single(None) {}
-
-        // The client received all content.
-        let err = fc_pipe.unicast_pipes[0]
-            .0
-            .client
-            .stream_recv(3, &mut out[50..]);
-        assert_eq!(err, Ok((50, true)));
-        assert_eq!(&out[..100], &stream_data[..]);
-    }
-    */
+    // #[test]
+    // Evaluate the flow control mechanism. The source sends some stream
+    // content with a flow control limitation. This test is not directly
+    // related to full reliable Flexicast QUIC, but we use the reliable pipe.
+    // fn test_fc_flow_control() {
+    // let mut fc_config = FcConfig {
+    // authentication: McAuthType::StreamAsym,
+    // use_fec: true,
+    // probe_mc_path: true,
+    // fec_window_size: 5,
+    // max_data: 55,
+    // max_stream_data: 50,
+    // ..FcConfig::default()
+    // };
+    //
+    // let mut fc_pipe = MulticastPipe::new_reliable(
+    // 1,
+    // "/tmp/test_fc_flow_control",
+    // &mut fc_config,
+    // )
+    // .unwrap();
+    //
+    // All stream data that cannot be send in a single expiration period.
+    // let stream_data: Vec<_> = (0..100).collect();
+    // assert_eq!(
+    // fc_pipe
+    // .mc_channel
+    // .channel
+    // .stream_send(3, &stream_data[..], true),
+    // Ok(50)
+    // );
+    //
+    // Send all the content.
+    // while let Ok(_) = fc_pipe.source_send_single(None) {}
+    //
+    // We have to wait to be able to send more data.
+    // assert_eq!(
+    // fc_pipe
+    // .mc_channel
+    // .channel
+    // .stream_send(3, &stream_data[50..], true),
+    // Err(Error::Done)
+    // );
+    //
+    // Read the first received part to release memory from QUIC for the flow
+    // control.
+    // let mut out = [0u8; 101];
+    // let err = fc_pipe.unicast_pipes[0]
+    // .0
+    // .client
+    // .stream_recv(3, &mut out[..]);
+    // assert_eq!(err, Ok((50, false)));
+    //
+    // Timer expiration.
+    // let now = time::Instant::now();
+    // let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
+    // let expired = now
+    // .checked_add(time::Duration::from_millis(expiration_timer + 100))
+    // .unwrap();
+    //
+    // let res = fc_pipe.mc_channel.channel.on_mc_timeout(expired);
+    // assert_eq!(res, Ok((Some(2), Some(0)).into()));
+    //
+    // The multicast source sends an MC_EXPIRE to the client.
+    // fc_pipe.source_send_single(None).unwrap();
+    //
+    // Can send the remaining of the stream.
+    // assert_eq!(
+    // fc_pipe
+    // .mc_channel
+    // .channel
+    // .stream_send(3, &stream_data[50..], true),
+    // Ok(50)
+    // );
+    // while let Ok(_) = fc_pipe.source_send_single(None) {}
+    //
+    // The client received all content.
+    // let err = fc_pipe.unicast_pipes[0]
+    // .0
+    // .client
+    // .stream_recv(3, &mut out[50..]);
+    // assert_eq!(err, Ok((50, true)));
+    // assert_eq!(&out[..100], &stream_data[..]);
+    // }
 }

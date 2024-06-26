@@ -371,7 +371,7 @@ mod tests {
         client_loss.insert(1..2);
 
         let fc_config = FcConfig {
-            mc_announce_data: mc_pipe.mc_announce_data.clone(),
+            mc_announce_data: vec![mc_pipe.mc_announce_data.clone()],
             mc_data_auth,
             probe_mc_path: true,
             authentication: McAuthType::None,
