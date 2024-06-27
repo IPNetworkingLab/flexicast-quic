@@ -1491,6 +1491,7 @@ fn get_multicast_channel(
             .map(|i| i.to_vec()),
         expiration_timer,
         is_processed: false,
+        bitrate: None,
     };
 
     mc_channel
@@ -1512,6 +1513,7 @@ fn get_multicast_channel(
             public_key: None,
             expiration_timer,
             is_processed: false,
+            bitrate: None,
         };
 
         mc_channel.channel.mc_set_mc_announce_data(&data).unwrap();

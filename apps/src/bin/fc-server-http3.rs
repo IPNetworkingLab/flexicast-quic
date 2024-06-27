@@ -1052,6 +1052,7 @@ fn get_multicast_channel(
             .map(|i| i.to_vec()),
         expiration_timer: args.expiration_timer,
         is_processed: false,
+        bitrate: None,
     };
 
     mc_channel
