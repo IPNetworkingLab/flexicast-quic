@@ -11,19 +11,15 @@
 
 #[cfg(test)]
 pub mod testing {
-    use super::*;
     use crate::multicast::testing::get_test_mc_announce_data;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::FcConfig;
     use crate::multicast::McAnnounceData;
-    use crate::multicast::McClientTp;
     use crate::multicast::McError;
     use crate::testing::Pipe;
     use crate::Error;
     use crate::Result;
     use core::net::SocketAddr;
-
-    type PipeAddr = (Pipe, SocketAddr, SocketAddr);
 
     /// Extension of the [`crate::multicast::testing::MulticastPipe`].
     /// It contains several Flexicast pipes, one for each MC_ANNOUNCE frame, and
