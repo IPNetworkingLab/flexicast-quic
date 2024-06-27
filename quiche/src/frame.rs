@@ -37,6 +37,7 @@ use crate::Result;
 use crate::crypto::Algorithm;
 use crate::multicast::authentication::McSymSignature;
 use crate::multicast::MC_ANNOUNCE_CODE;
+use crate::multicast::MC_ANNOUNCE_BW_CODE;
 use crate::multicast::MC_ASYM_CODE;
 use crate::multicast::MC_AUTH_CODE;
 use crate::multicast::MC_EXPIRE_CODE;
@@ -231,6 +232,7 @@ pub enum Frame {
         udp_port: u16,
         expiration_timer: u64, // In ms
         public_key: Vec<u8>,
+        bitrate: Option<u64>,
     },
 
     McState {
@@ -430,7 +432,7 @@ impl Frame {
 
             0x30 | 0x31 => parse_datagram_frame(frame_type, b)?,
 
-            MC_ANNOUNCE_CODE => {
+            MC_ANNOUNCE_CODE..=MC_ANNOUNCE_BW_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
                 let path_type = b.get_varint()?;
                 let auth_type = b.get_varint()?;
@@ -455,6 +457,13 @@ impl Frame {
                     .try_into()
                     .map_err(|_| Error::BufferTooShort)?;
 
+                // Parse the eventual bitrate information.
+                let bitrate = if frame_type == MC_ANNOUNCE_BW_CODE {
+                    Some(b.get_varint()?)
+                } else {
+                    None
+                };
+
                 Frame::McAnnounce {
                     channel_id,
                     path_type,
@@ -466,6 +475,7 @@ impl Frame {
                     udp_port,
                     expiration_timer,
                     public_key,
+                    bitrate,
                 }
             },
 
@@ -889,10 +899,14 @@ impl Frame {
                 udp_port,
                 expiration_timer,
                 public_key,
+                bitrate,
             } => {
-                debug!("Going to encode the MC_ANNOUNCE frame");
-                debug!("Before putting the frame: {}", b.off());
-                b.put_varint(MC_ANNOUNCE_CODE)?;
+                let ty = if bitrate.is_some() {
+                    MC_ANNOUNCE_BW_CODE
+                } else {
+                    MC_ANNOUNCE_CODE
+                };
+                b.put_varint(ty)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
                 b.put_varint(*path_type)?;
@@ -905,7 +919,9 @@ impl Frame {
                 b.put_u64(*expiration_timer)?;
                 b.put_varint(public_key.len() as u64)?;
                 b.put_bytes(public_key)?;
-                debug!("After putting the frame: {}", b.off());
+                if let Some(bw) = bitrate {
+                    b.put_varint(*bw)?;
+                }
             },
 
             Frame::McState {
@@ -1296,12 +1312,17 @@ impl Frame {
                 udp_port: _,
                 expiration_timer: _,
                 public_key,
+                bitrate,
             } => {
                 let public_key_len_size =
                     octets::varint_len(public_key.len() as u64);
                 let path_type_size = octets::varint_len(*path_type);
                 let auth_type_size = octets::varint_len(*auth_type);
-                let frame_type_size = octets::varint_len(MC_ANNOUNCE_CODE);
+                let frame_type_size = if bitrate.is_some() {
+                    octets::varint_len(MC_ANNOUNCE_BW_CODE)
+                } else {
+                    octets::varint_len(MC_ANNOUNCE_CODE)
+                };
                 frame_type_size + // frame type
                 1 + // channel_id len
                 channel_id.len() +
@@ -2018,8 +2039,9 @@ impl std::fmt::Debug for Frame {
                 udp_port,
                 expiration_timer,
                 public_key: _,
+                bitrate,
             } => {
-                write!(f, "MC_ANNOUNCE channel ID={:?}, path_type={} auth_type={} is_ipv6={}, full_reliability={} source_ip={:?}, group_ip={:?}, udp_port={}, expiration_timer={}", channel_id, path_type, auth_type, is_ipv6, full_reliability, source_ip, group_ip, udp_port, expiration_timer)?;
+                write!(f, "MC_ANNOUNCE channel ID={:?}, path_type={} auth_type={} is_ipv6={}, full_reliability={} source_ip={:?}, group_ip={:?}, udp_port={}, expiration_timer={}, bitrate={:?}", channel_id, path_type, auth_type, is_ipv6, full_reliability, source_ip, group_ip, udp_port, expiration_timer, bitrate)?;
             },
 
             Frame::McState {
@@ -3700,6 +3722,7 @@ mod tests {
             udp_port: 8889,
             expiration_timer: 350,
             public_key: vec![64, 33, 53, 127],
+            bitrate: None,
         };
 
         let wire_len = {
@@ -3708,6 +3731,62 @@ mod tests {
         };
 
         assert_eq!(wire_len, 46);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
+                .is_err()
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(
+            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
+                .is_ok()
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            &get_decoder()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mc_announce_with_bw() {
+        let mut d = [42; 128];
+
+        let frame = Frame::McAnnounce {
+            channel_id: [
+                180, 12, 104, 233, 220, 221, 226, 11, 141, 195, 27, 5, 100, 51,
+                58, 220,
+            ]
+            .to_vec(),
+            path_type: 0,
+            auth_type: 3,
+            is_ipv6: 0,
+            full_reliability: 1,
+            source_ip: [127, 0, 0, 1],
+            group_ip: [239, 239, 239, 35],
+            udp_port: 8889,
+            expiration_timer: 350,
+            public_key: vec![64, 33, 53, 127],
+            bitrate: Some(10_000_000),
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 50);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

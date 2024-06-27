@@ -129,7 +129,9 @@ pub enum McError {
 }
 
 /// MC_ANNOUNCE frame type.
-pub const MC_ANNOUNCE_CODE: u64 = 0xf3;
+pub const MC_ANNOUNCE_CODE: u64 = 0xf2;
+/// MC_ANNOUNCE with bandwidth information frame type.
+pub const MC_ANNOUNCE_BW_CODE: u64 = 0xf3;
 /// MC_STATE frame type.
 pub const MC_STATE_CODE: u64 = 0xf4;
 /// MC_KEY frame type.
@@ -1013,6 +1015,10 @@ pub struct McAnnounceData {
 
     /// Whether this multicast channel uses full reliability.
     pub full_reliability: bool,
+
+    /// Bitrate of this channel in bits per second.
+    /// If `None`, it means that the channel uses a classical congestion control.
+    pub bitrate: Option<u64>,
 }
 
 impl McAnnounceData {
@@ -3461,6 +3467,7 @@ pub mod testing {
             is_processed: false,
             auth_type: McAuthType::None,
             full_reliability: false,
+            bitrate: None,
         }
     }
 

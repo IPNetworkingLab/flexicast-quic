@@ -4878,6 +4878,7 @@ impl Connection {
                     } else {
                         Vec::new()
                     },
+                    bitrate: mc_announce_data.bitrate,
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
@@ -9293,8 +9294,9 @@ impl Connection {
                 udp_port,
                 expiration_timer,
                 public_key,
+                bitrate,
             } => {
-                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}", channel_id, path_type, auth_type, is_ipv6, source_ip, group_ip, udp_port);
+                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}, bitrate={:?}", channel_id, path_type, auth_type, is_ipv6, source_ip, group_ip, udp_port, bitrate);
                 if self.is_server {
                     error!("The server should not receive an MC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -9316,6 +9318,7 @@ impl Connection {
                     },
                     expiration_timer,
                     is_processed: true,
+                    bitrate,
                 };
 
                 self.mc_set_mc_announce_data(&mc_announce_data)?;
