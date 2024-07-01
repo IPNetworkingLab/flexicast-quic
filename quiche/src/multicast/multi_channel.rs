@@ -121,65 +121,67 @@ mod tests {
     /// possible flexicast channel. The client receives them all. It then
     /// joins one of them, correctly.
     fn test_fc_multiple_announces() {
-        let mut mfc_pipe =
-            MultiFcPipe::new_defaults("/tmp/test_fc_multiple_announces", 3)
-                .unwrap();
-        let random = SystemRandom::new();
+        for idx_to_join in 0..3 {
+            let mut mfc_pipe =
+                MultiFcPipe::new_defaults("/tmp/test_fc_multiple_announces", 3)
+                    .unwrap();
+            let random = SystemRandom::new();
 
-        // Add a new client that will listen to the second channel.
-        let fc_config = FcConfig {
-            mc_announce_data: mfc_pipe
-                .fc_configs
-                .iter()
-                .map(|f| f.mc_announce_data[0].clone())
-                .collect(),
-            probe_mc_path: true,
-            mc_announce_to_join: 1, // Join second index.
-            ..FcConfig::default()
-        };
-        let new_client = MulticastPipe::setup_client(
-            &mut mfc_pipe.fc_pipes.get_mut(1).unwrap().mc_channel,
-            &fc_config,
-            &random,
-        )
-        .unwrap();
+            // Add a new client that will listen to the second channel.
+            let fc_config = FcConfig {
+                mc_announce_data: mfc_pipe
+                    .fc_configs
+                    .iter()
+                    .map(|f| f.mc_announce_data[0].clone())
+                    .collect(),
+                probe_mc_path: true,
+                mc_announce_to_join: idx_to_join,
+                ..FcConfig::default()
+            };
+            let new_client = MulticastPipe::setup_client(
+                &mut mfc_pipe.fc_pipes.get_mut(idx_to_join).unwrap().mc_channel,
+                &fc_config,
+                &random,
+            )
+            .unwrap();
 
-        // The new client has the list of all channels, even though it joined only
-        // one.
-        let mc_announces = &new_client
-            .0
-            .client
-            .get_multicast_attributes()
-            .unwrap()
-            .mc_announce_data;
-        assert_eq!(mc_announces.len(), 3);
-        for i in 0..3 {
-            assert_eq!(
-                mc_announces[i].channel_id,
-                mfc_pipe.fc_configs[i].mc_announce_data[0].channel_id
-            );
-            assert_eq!(
-                mc_announces[i].group_ip,
-                mfc_pipe.fc_configs[i].mc_announce_data[0].group_ip
-            );
-            assert_eq!(
-                mc_announces[i].udp_port,
-                mfc_pipe.fc_configs[i].mc_announce_data[0].udp_port
-            );
+            // The new client has the list of all channels, even though it joined only
+            // one.
+            let mc_announces = &new_client
+                .0
+                .client
+                .get_multicast_attributes()
+                .unwrap()
+                .mc_announce_data;
+            assert_eq!(mc_announces.len(), 3);
+            for i in 0..3 {
+                assert_eq!(
+                    mc_announces[i].channel_id,
+                    mfc_pipe.fc_configs[i].mc_announce_data[0].channel_id
+                );
+                assert_eq!(
+                    mc_announces[i].group_ip,
+                    mfc_pipe.fc_configs[i].mc_announce_data[0].group_ip
+                );
+                assert_eq!(
+                    mc_announces[i].udp_port,
+                    mfc_pipe.fc_configs[i].mc_announce_data[0].udp_port
+                );
+            }
+
+            // Since the client joined the second channel, we add it to the
+            // corresponding flexicast pipe.
+            mfc_pipe.add_client(new_client, idx_to_join).unwrap();
+
+            // And the client start receiving data.
+            let fc_pipe = &mut mfc_pipe.fc_pipes[idx_to_join];
+            assert_eq!(fc_pipe.source_send_single_stream(true, None, 3), Ok(348));
+
+            let client = &mut fc_pipe.unicast_pipes[0].0.client;
+            let readables: Vec<_> = client.readable().collect();
+            assert_eq!(readables, vec![3]);
+            let mut buf = [0; 500];
+            assert_eq!(client.stream_recv(3, &mut buf), Ok((300, true)));
         }
-
-        // Since the client joined the second channel, we add it to the
-        // corresponding flexicast pipe.
-        mfc_pipe.add_client(new_client, 1).unwrap();
-
-        // And the client start receiving data.
-        let fc_pipe = &mut mfc_pipe.fc_pipes[1];
-        assert!(fc_pipe.source_send_single_stream(true, None, 3).is_ok());
-
-        let client = &mut fc_pipe.unicast_pipes[0].0.client;
-        let readables: Vec<_> = client.readable().collect();
-        assert_eq!(readables, vec![3]);
-        let mut buf = [0; 500];
-        assert_eq!(client.stream_recv(3, &mut buf), Ok((300, true)));
     }
 }

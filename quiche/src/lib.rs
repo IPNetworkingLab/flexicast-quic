@@ -2777,7 +2777,7 @@ impl Connection {
         let aead_tag_len = aead.alg().tag_len();
 
         packet::decrypt_hdr(&mut b, &mut hdr, aead).map_err(|e| {
-            debug!("Here because drop packet decrypt");
+            trace!("Here because drop packet decrypt");
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
 
@@ -4918,7 +4918,7 @@ impl Connection {
                     };
                     let frame = frame::Frame::McState {
                         channel_id: multicast
-                            .get_mc_announce_data_path()
+                            .get_mc_announce_data_active()
                             .ok_or(Error::Multicast(
                                 multicast::McError::McAnnounce,
                             ))?
@@ -4947,7 +4947,7 @@ impl Connection {
             if let Some(multicast) = self.multicast.as_mut() {
                 if multicast.should_send_mc_key() {
                     let mc_announce_data =
-                        multicast.get_mc_announce_data_path().ok_or(
+                    multicast.get_mc_announce_data_active().ok_or(
                             Error::Multicast(multicast::McError::McAnnounce),
                         )?;
                     let first_pn =
@@ -8810,7 +8810,7 @@ impl Connection {
                     self.multicast
                         .as_ref()
                         .unwrap()
-                        .get_mc_announce_data_path()
+                        .get_mc_announce_data_active()
                         .unwrap()
                         .is_ipv6
                 {
@@ -9319,6 +9319,8 @@ impl Connection {
                     expiration_timer,
                     is_processed: true,
                     bitrate,
+                    fc_channel_algo: None,
+                    fc_channel_secret: None,
                 };
 
                 self.mc_set_mc_announce_data(&mc_announce_data)?;
@@ -9340,6 +9342,14 @@ impl Connection {
                         action.try_into()?,
                         Some(action_data),
                     )?;
+
+                    // Keep track of the flexicast channel ID that the client
+                    // joins.
+                    let idx = multicast
+                        .get_mc_announce_data_index(&channel_id)
+                        .ok_or(Error::Multicast(McError::McAnnounce))?;
+
+                    multicast.fc_chan_id = Some((channel_id.clone(), idx));
                 } else {
                     return Err(Error::Multicast(multicast::McError::McDisabled));
                 }

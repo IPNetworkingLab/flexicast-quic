@@ -68,6 +68,15 @@ macro_rules! ucs_to_mc_cwnd {
     };
 }
 
+macro_rules! fc_chan_idx {
+    ($s:expr) => {
+        $s.fc_chan_id
+            .as_ref()
+            .map(|(_, idx)| *idx)
+            .ok_or(Error::Multicast(McError::McAnnounce))
+    };
+}
+
 /// Multicast extension errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McError {
@@ -325,12 +334,6 @@ pub struct MulticastAttributes {
     /// the client did not receive the MC_ANNOUNCE yet).
     mc_announce_data: Vec<McAnnounceData>,
 
-    /// Multicast channel decryption key secret.
-    mc_channel_key: Option<Vec<u8>>,
-
-    /// Algorithm used for the channel symmetric encryption.
-    mc_channel_algo: Algorithm,
-
     /// Multicast crypto Open. Used for the multicast channel only.
     mc_crypto_open: Option<Open>,
 
@@ -445,6 +448,10 @@ pub struct MulticastAttributes {
 
     /// Flexicast source stream rotation structure.
     fc_rotate: Option<FcRotate>,
+
+    /// Flexicast channel ID that the client joins, and index in the list of
+    /// received McAnnounceData.
+    pub(crate) fc_chan_id: Option<(Vec<u8>, usize)>,
 }
 
 impl MulticastAttributes {
@@ -466,6 +473,13 @@ impl MulticastAttributes {
         self.mc_announce_data
             .iter_mut()
             .find(|mc_data| mc_data.path_type == McPathType::Data)
+    }
+
+    #[inline]
+    /// Returns the Flexicast channel ID that the client joins, and its index in
+    /// the list of received McAnnounceData.
+    pub fn get_fc_chan_id(&self) -> Option<&(Vec<u8>, usize)> {
+        self.fc_chan_id.as_ref()
     }
 
     #[inline]
@@ -491,6 +505,21 @@ impl MulticastAttributes {
     /// Returns a reference to the MC_ANNOUNCE data given by the index.
     pub fn get_mc_announce_data(&self, idx: usize) -> Option<&McAnnounceData> {
         self.mc_announce_data.get(idx)
+    }
+
+    #[inline]
+    /// Returns a reference to the MC_ANNOUNCE data of the flexicast channel that the client listens to.
+    pub fn get_mc_announce_data_active(&self) -> Option<&McAnnounceData> {
+        self.mc_announce_data.get(fc_chan_idx!(self).ok()?)
+    }
+
+    #[inline]
+    /// Returns a the index of an MC_ANNOUNCE data based on the flexicast
+    /// channel ID.
+    pub fn get_mc_announce_data_index(&self, fc_chan_id: &[u8]) -> Option<usize> {
+        self.mc_announce_data
+            .iter()
+            .position(|announce| &announce.channel_id == fc_chan_id)
     }
 
     #[inline]
@@ -648,8 +677,10 @@ impl MulticastAttributes {
     /// but has received not the authentication key yet.
     /// Always false for a client.
     pub fn should_send_mc_key(&self) -> bool {
-        if self.mc_channel_key.is_none() {
-            return false;
+        if let Some((_, idx)) = self.fc_chan_id {
+            if self.mc_announce_data[idx].fc_channel_secret.is_none() {
+                return false;
+            }
         }
         if self.mc_key_up_to_date {
             return false;
@@ -681,16 +712,20 @@ impl MulticastAttributes {
     pub fn get_decryption_key_secret(&self) -> Result<&[u8]> {
         match self.mc_role {
             McRole::ServerUnicast(McClientStatus::JoinedNoKey) => Ok(self
-                .mc_channel_key
-                .as_ref()
-                .ok_or(Error::Multicast(McError::McInvalidSymKey))?),
+                .mc_announce_data[fc_chan_idx!(self)?]
+            .fc_channel_secret
+            .as_ref()
+            .ok_or(Error::Multicast(McError::McInvalidSymKey))?),
             _ => Err(Error::Multicast(McError::McInvalidRole(self.mc_role))),
         }
     }
 
     /// Get the channel decryption algorithm.
     pub fn get_decryption_key_algo(&self) -> Algorithm {
-        self.mc_channel_algo
+        // FC-TODO: panic?
+        self.mc_announce_data[fc_chan_idx!(self).unwrap_or(0)]
+            .fc_channel_algo
+            .unwrap_or(Algorithm::AES128_GCM)
     }
 
     /// Sets the channel decryption key secret.
@@ -705,8 +740,11 @@ impl MulticastAttributes {
                 let aead_seal = Seal::from_secret(algo, &key)?;
                 self.mc_crypto_seal = Some(aead_seal);
 
-                self.mc_channel_key = Some(key);
-                self.mc_channel_algo = algo;
+                self.mc_announce_data[fc_chan_idx!(self)?].fc_channel_secret =
+                    Some(key);
+                self.mc_announce_data[fc_chan_idx!(self)?].fc_channel_algo =
+                    Some(algo);
+
                 Ok(())
             },
             _ => Err(Error::Multicast(McError::McInvalidRole(self.mc_role))),
@@ -941,8 +979,6 @@ impl Default for MulticastAttributes {
         Self {
             mc_role: McRole::Undefined,
             mc_announce_data: Vec::with_capacity(2),
-            mc_channel_key: None,
-            mc_channel_algo: Algorithm::AES128_GCM,
             mc_crypto_open: None,
             mc_crypto_seal: None,
             mc_key_up_to_date: false,
@@ -972,6 +1008,7 @@ impl Default for MulticastAttributes {
             mc_last_recv_pn: 0,
             cur_max_pn: 0,
             fc_rotate: None,
+            fc_chan_id: None,
         }
     }
 }
@@ -1017,8 +1054,20 @@ pub struct McAnnounceData {
     pub full_reliability: bool,
 
     /// Bitrate of this channel in bits per second.
-    /// If `None`, it means that the channel uses a classical congestion control.
+    /// If `None`, it means that the channel uses a classical congestion
+    /// control.
     pub bitrate: Option<u64>,
+
+    /// Flexicast channel decryption key material.
+    ///
+    /// Distributed in the MC_KEY frame.
+    pub fc_channel_secret: Option<Vec<u8>>,
+
+    /// Flexicast channel encryption algorithm.
+    ///
+    /// Distributed in the MC_KEY frame.
+    /// mc_channel_algo: Algorithm::AES128_GCM,
+    pub fc_channel_algo: Option<Algorithm>,
 }
 
 impl McAnnounceData {
@@ -1070,7 +1119,7 @@ pub trait MulticastConnection {
     /// * There is no multicast state with valid MC_ANNOUNCE data
     /// * The status is not AwareUnjoined
     fn mc_join_channel(
-        &mut self, leave_on_timeout: bool,
+        &mut self, leave_on_timeout: bool, fc_chan_id: Option<&[u8]>,
     ) -> Result<McClientStatus>;
 
     /// Leaves a previously joined multicast channel.
@@ -1252,12 +1301,12 @@ impl MulticastConnection for Connection {
                     self.handshake_completed = true;
 
                     // Derive the keys from the secret shared by the receiver.
-                    let aead_open =
-                        Open::from_secret(multicast.mc_channel_algo, secret)
-                            .unwrap();
-                    let aead_seal =
-                        Seal::from_secret(multicast.mc_channel_algo, secret)
-                            .unwrap();
+                    let algo = multicast.mc_announce_data
+                        [fc_chan_idx!(multicast)?]
+                    .fc_channel_algo
+                    .unwrap_or(Algorithm::AES128_GCM);
+                    let aead_open = Open::from_secret(algo, secret).unwrap();
+                    let aead_seal = Seal::from_secret(algo, secret).unwrap();
 
                     // Do not change the global context.
                     // We will use this crypto when needed by manually getting it.
@@ -1267,9 +1316,11 @@ impl MulticastConnection for Connection {
                     Ok(())
                 },
                 McRole::ServerUnicast(_) => {
-                    multicast.mc_channel_key = Some(secret.to_owned());
+                    multicast.mc_announce_data[fc_chan_idx!(multicast)?]
+                        .fc_channel_secret = Some(secret.to_owned());
+                    multicast.mc_announce_data[fc_chan_idx!(multicast)?]
+                        .fc_channel_algo = Some(algo);
                     multicast.mc_space_id = Some(mc_space_id);
-                    multicast.mc_channel_algo = algo;
 
                     Ok(())
                 },
@@ -1297,6 +1348,7 @@ impl MulticastConnection for Connection {
                     if let Some(key_vec) = mc_announce_data.public_key.as_ref() {
                         // Client generates the public key from the received
                         // vector.
+                        error!("FC-TODO: we update the public key for asymmetric authentication everytime we receive a new MC_ANNOUNCE frame. It will not work with multiple channels.");
                         multicast.mc_public_key =
                             Some(signature::UnparsedPublicKey::new(
                                 &signature::ED25519,
@@ -1389,7 +1441,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_join_channel(
-        &mut self, leave_on_timeout: bool,
+        &mut self, leave_on_timeout: bool, fc_chan_id: Option<&[u8]>,
     ) -> Result<McClientStatus> {
         let multicast = match self.multicast.as_mut() {
             None => return Err(Error::Multicast(McError::McDisabled)),
@@ -1401,6 +1453,20 @@ impl MulticastConnection for Connection {
                     ))),
             },
         };
+
+        // Specify the flexicast channel ID that the client joins.
+        multicast.fc_chan_id = Some(if let Some(chan_id) = fc_chan_id {
+            // Find index by flexicast channel ID.
+            let id = multicast
+                .mc_announce_data
+                .iter()
+                .position(|announce| &announce.channel_id == chan_id)
+                .ok_or(Error::Multicast(McError::McAnnounce))?;
+            (chan_id.to_owned(), id)
+        } else {
+            (multicast.mc_announce_data[0].channel_id.clone(), 0)
+        });
+
         multicast.mc_leave_on_timeout = leave_on_timeout;
         multicast.update_client_state(McClientAction::Join, None)
     }
@@ -2465,6 +2531,9 @@ pub struct MulticastChannelSource {
     /// the traffic with the clients.
     pub master_secret: Vec<u8>,
 
+    /// Encryption algorithm.
+    pub algo: Algorithm,
+
     /// Connection ID that the clients use for the multicast path.
     /// This tuple contains the Connection Id and the reset token.
     pub mc_path_conn_id: (ConnectionId<'static>, u128),
@@ -2544,7 +2613,6 @@ impl MulticastChannelSource {
             mc_pn_need_sym_sign: Some(VecDeque::new()),
             mc_last_recv_time: Some(time::Instant::now()),
             mc_sent_repairs: Some(ranges::RangeSet::default()),
-            mc_channel_algo: encryption_algo,
             ..Default::default()
         });
 
@@ -2640,6 +2708,7 @@ impl MulticastChannelSource {
             channel: conn_server,
             client_backup: conn_client,
             master_secret: exporter_secret,
+            algo: encryption_algo,
             mc_path_conn_id: (cid, reset_token),
             mc_path_peer: mc_path_info.peer,
             mc_send_addr: peer,
@@ -3086,7 +3155,9 @@ pub mod testing {
             Ok(MulticastPipe {
                 unicast_pipes: pipes,
                 mc_channel,
-                mc_announce_data: fc_config.mc_announce_data[fc_config.mc_announce_to_join].clone(),
+                mc_announce_data: fc_config.mc_announce_data
+                    [fc_config.mc_announce_to_join]
+                    .clone(),
             })
         }
 
@@ -3155,7 +3226,8 @@ pub mod testing {
                 pipe.server.mc_set_mc_announce_data(mc_data).unwrap();
             }
             let multicast = pipe.server.multicast.as_mut().unwrap();
-            multicast.mc_channel_key = Some(mc_channel.master_secret.clone());
+            multicast.mc_announce_data[fc_config.mc_announce_to_join]
+                .fc_channel_secret = Some(mc_channel.master_secret.clone());
 
             // The server adds the connection IDs of the multicast
             // channel.
@@ -3186,7 +3258,10 @@ pub mod testing {
             pipe.advance().unwrap();
 
             // Client joins the multicast channel.
-            pipe.client.mc_join_channel(true).unwrap();
+            let chan_id = pipe.client.multicast.as_ref().unwrap().mc_announce_data[fc_config.mc_announce_to_join].channel_id.to_owned();
+            pipe.client
+                .mc_join_channel(true, Some(&chan_id))
+                .unwrap();
             pipe.advance().unwrap();
 
             // Server computes the client ID.
@@ -3197,8 +3272,10 @@ pub mod testing {
             // The server gives the master key.
             pipe.advance().unwrap();
 
-            let scid =
-                ConnectionId::from_ref(&fc_config.mc_announce_data[fc_config.mc_announce_to_join].channel_id);
+            let scid = ConnectionId::from_ref(
+                &fc_config.mc_announce_data[fc_config.mc_announce_to_join]
+                    .channel_id,
+            );
             pipe.client.add_mc_cid(&scid).unwrap();
             assert_eq!(pipe.advance(), Ok(()));
 
@@ -3233,7 +3310,8 @@ pub mod testing {
                 .as_ref()
                 .unwrap()
                 .get_mc_announce_data(1)
-                .is_some() && fc_config.mc_data_auth.is_some()
+                .is_some() &&
+                fc_config.mc_data_auth.is_some()
             {
                 let scid = crate::ConnectionId::from_ref(
                     &fc_config.mc_data_auth.as_ref().unwrap().channel_id,
@@ -3468,6 +3546,8 @@ pub mod testing {
             auth_type: McAuthType::None,
             full_reliability: false,
             bitrate: None,
+            fc_channel_algo: None,
+            fc_channel_secret: None,
         }
     }
 
@@ -3635,7 +3715,8 @@ mod tests {
             use_fec: false,
             ..Default::default()
         };
-        let mc_announce_data = &fc_config.mc_announce_data[fc_config.mc_announce_to_join];
+        let mc_announce_data =
+            &fc_config.mc_announce_data[fc_config.mc_announce_to_join];
         let mut config = get_test_mc_config(false, &fc_config);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
@@ -3681,7 +3762,8 @@ mod tests {
             ..Default::default()
         };
         let mut config = get_test_mc_config(false, &fc_config);
-        let mc_announce_data = &mut fc_config.mc_announce_data[fc_config.mc_announce_to_join];
+        let mc_announce_data =
+            &mut fc_config.mc_announce_data[fc_config.mc_announce_to_join];
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
@@ -3737,7 +3819,8 @@ mod tests {
             use_fec: false,
             ..Default::default()
         };
-        let mc_announce_data = &fc_config.mc_announce_data[fc_config.mc_announce_to_join];
+        let mc_announce_data =
+            &fc_config.mc_announce_data[fc_config.mc_announce_to_join];
         let mut config = get_test_mc_config(false, &fc_config);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
@@ -3751,7 +3834,7 @@ mod tests {
         // Client joins the multicast channel.
         // It changes its status to WaitingToJoin.
         // It sends an MC_STATE with a JOIN notification to the server.
-        let res = pipe.client.mc_join_channel(true);
+        let res = pipe.client.mc_join_channel(true, None);
         assert!(res.is_ok());
         assert_eq!(
             pipe.client.multicast.as_ref().unwrap().mc_role,
@@ -3847,7 +3930,8 @@ mod tests {
             use_fec: false,
             ..Default::default()
         };
-        let mc_announce_data = &fc_config.mc_announce_data[fc_config.mc_announce_to_join];
+        let mc_announce_data =
+            &fc_config.mc_announce_data[fc_config.mc_announce_to_join];
         let mut config = get_test_mc_config(false, &fc_config);
 
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
@@ -3857,14 +3941,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(pipe.advance(), Ok(()));
-        assert!(pipe.client.mc_join_channel(true).is_ok());
+        assert!(pipe.client.mc_join_channel(true, None).is_ok());
         assert_eq!(pipe.advance(), Ok(()));
 
         assert!(!pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
 
         let multicast = pipe.server.multicast.as_mut().unwrap();
         let mc_channel_key: Vec<_> = (0..32).collect();
-        multicast.mc_channel_key = Some(mc_channel_key.clone());
+        multicast.mc_announce_data[fc_config.mc_announce_to_join]
+            .fc_channel_secret = Some(mc_channel_key.clone());
 
         assert!(!pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
         assert_eq!(
@@ -3885,7 +3970,9 @@ mod tests {
         );
 
         assert_eq!(
-            pipe.client.multicast.as_ref().unwrap().mc_channel_key,
+            pipe.client.multicast.as_ref().unwrap().mc_announce_data
+                [fc_config.mc_announce_to_join]
+                .fc_channel_secret,
             Some(mc_channel_key.clone())
         );
     }
@@ -6406,7 +6493,7 @@ mod tests {
             );
 
             assert_eq!(
-                client.mc_join_channel(false),
+                client.mc_join_channel(false, None),
                 Ok(McClientStatus::WaitingToJoin)
             );
 
