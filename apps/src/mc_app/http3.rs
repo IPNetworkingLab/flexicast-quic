@@ -263,6 +263,7 @@ impl Http3Server {
         stream_id: u64, filepath: &str, data: &Rc<Vec<u8>>,
         h3_conn: Option<&mut H3Conn>,
         quic_stream_replay: &mut FcQuicStreamReplay,
+        fc_chan_idx: usize,
     ) -> Result<Self> {
         let mut method = None;
         let mut path = vec![];
@@ -307,7 +308,7 @@ impl Http3Server {
             .map(|offs| {
                 debug!("Try to gt next offsets with current={:?}", offs);
                 if offs == (0, 0) {
-                    quic_stream_replay.get_next_quic_h3_off()
+                    quic_stream_replay.get_next_quic_h3_off(fc_chan_idx)
                 } else {
                     Some(offs)
                 }
@@ -478,6 +479,7 @@ impl Http3Server {
 
         // Send the response from the flexicast source.
         if let quiche::h3::Event::Headers { list, .. } = event {
+            error!("ICI erreur qui va arriver si je laisse 0");
             let mut out = Http3Server::handle_request(
                 &list,
                 fh3_conn,
@@ -487,6 +489,7 @@ impl Http3Server {
                 &self.data,
                 None,
                 quic_stream_replay,
+                0,
             )?;
 
             // Set the response as active because the flexicast server does not wait.
@@ -540,14 +543,15 @@ impl Http3Server {
             .fc_get_emit_off(stream_id)
             .map(|offs| {
                 debug!("Try to gt next offsets with current={:?}", offs);
+                error!("SECOND Currently assumes that the client connects to the first flexicast connection. We would need an index to get the correct get_next_quic_h3_off.");
                 if offs == (0, 0) {
-                    quic_stream_replay.get_next_quic_h3_off()
+                    quic_stream_replay.get_next_quic_h3_off(0)
                 } else {
                     Some(offs)
                 }
             })
             .flatten()
-            .unwrap_or(quic_stream_replay.get_next_quic_h3_off().unwrap_or((0, 0)));
+            .unwrap_or(quic_stream_replay.get_next_quic_h3_off(0).unwrap_or((0, 0)));
 
         println!("Replacing offsets of H3: {} and QUIC: {}", h3_off, quic_off);
 

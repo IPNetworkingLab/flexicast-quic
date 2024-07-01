@@ -363,7 +363,7 @@ fn main() {
                             )
                             .unwrap();
                         probe_mc_path = true;
-                        conn.mc_join_channel(false).unwrap();
+                        conn.mc_join_channel(false, None).unwrap();
                         mc_socket_opt = Some(mc_socket);
                     }
                 }

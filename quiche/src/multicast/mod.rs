@@ -1103,9 +1103,14 @@ pub trait MulticastConnection {
     /// Creates the multicast structure if it does not exist.
     ///
     /// Also sets the multicast channel decryption key secret on the unicast
-    /// server. MC-TODO: change the name to be more explicit.
+    /// server.
+    /// Sets the multicast receiver key for the specified MC_ANNOUNCE data, if any.
+    /// Otherwise, rely on the `fc_chan_id`.
+    /// Returns an McAnnounce error if no of the above conditions are met.
+    /// 
+    /// MC-TODO: change the name to be more explicit.
     fn mc_set_multicast_receiver(
-        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm,
+        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm, mc_announce_id: Option<usize>,
     ) -> Result<()>;
 
     /// Returns true if the multicast extension has control data to send.
@@ -1291,7 +1296,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_set_multicast_receiver(
-        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm,
+        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm, mc_announce_id: Option<usize>,
     ) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             match multicast.mc_role {
@@ -1316,9 +1321,17 @@ impl MulticastConnection for Connection {
                     Ok(())
                 },
                 McRole::ServerUnicast(_) => {
-                    multicast.mc_announce_data[fc_chan_idx!(multicast)?]
+                    println!("Before: {:?}", mc_announce_id);
+                    // let id = mc_announce_id.unwrap_or(fc_chan_idx!(multicast)?);
+                    let id = if let Some(idx) = mc_announce_id {
+                        idx
+                    } else {
+                        fc_chan_idx!(multicast)?
+                    };
+                    println!("After? {}", id);
+                    multicast.mc_announce_data[id]
                         .fc_channel_secret = Some(secret.to_owned());
-                    multicast.mc_announce_data[fc_chan_idx!(multicast)?]
+                    multicast.mc_announce_data[id]
                         .fc_channel_algo = Some(algo);
                     multicast.mc_space_id = Some(mc_space_id);
 

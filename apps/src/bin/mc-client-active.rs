@@ -680,7 +680,7 @@ fn main() {
                             )
                             .unwrap();
                         probe_mc_path = true;
-                        conn.mc_join_channel(app_handler.leave_on_mc_timeout())
+                        conn.mc_join_channel(app_handler.leave_on_mc_timeout(), None)
                             .unwrap();
                         if !args.proxy_uc {
                             mc_socket

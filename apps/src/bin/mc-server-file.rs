@@ -630,6 +630,7 @@ fn main() {
                                     .get_multicast_attributes()
                                     .unwrap()
                                     .get_decryption_key_algo(),
+                                None,
                             )
                             .unwrap();
                         debug!("Sets MC_ANNOUNCE data for new client");
@@ -1492,6 +1493,8 @@ fn get_multicast_channel(
         expiration_timer,
         is_processed: false,
         bitrate: None,
+        fc_channel_algo: None,
+        fc_channel_secret: None,
     };
 
     mc_channel
@@ -1514,6 +1517,8 @@ fn get_multicast_channel(
             expiration_timer,
             is_processed: false,
             bitrate: None,
+            fc_channel_algo: None,
+            fc_channel_secret: None,
         };
 
         mc_channel.channel.mc_set_mc_announce_data(&data).unwrap();

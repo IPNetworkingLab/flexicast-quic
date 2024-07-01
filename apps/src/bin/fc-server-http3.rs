@@ -197,6 +197,13 @@ fn main() {
         Vec::new() // Empty.
     };
 
+    // Compute the mapping between Flexicast channel ID and index.
+    let fcid_to_idx: HashMap<Vec<u8>, usize> = fc_channels
+        .iter()
+        .enumerate()
+        .map(|(i, fc_chan)| (fc_chan.mc_announce_data.channel_id.to_owned(), i))
+        .collect();
+
     // FC-TODO: enable QLOG.
     // #[cfg(feature = "qlog")]
     // if let Some(mc_channel) = mc_channel_opt.as_mut() {
@@ -240,10 +247,17 @@ fn main() {
     let mut fcquic_stream_replay = FcQuicStreamReplay::new(
         "/tmp/fcquic_stream_replay.txt",
         args.h3_chunk_size.unwrap_or(1500),
+        fc_channels.len(),
     )
     .unwrap();
     // Whether the HTTP/3 application alredy delivered once the whole data.
     let mut h3_complete = false;
+
+    // Create a dummy flexicast channel to send once the whole HTTP/3 response so that we only replay the QUIC stream.
+    let mut h3_fc_dummy = get_multicast_channel(&args, &rng, Some(100));
+    h3_fc_dummy.fc_chan.channel.fc_enable_stream_rotation(false).unwrap();
+    h3_fc_dummy.fc_chan.client_backup.fc_enable_stream_rotation(false).unwrap();
+    h3_fc_dummy.fc_chan.channel.mc_set_cwnd(usize::MAX - 2);
 
     // Setup flexicast HTTP/3 connections.
     // Same: keep only one instance, e.g., using the first connection.
@@ -252,14 +266,14 @@ fn main() {
     if !fc_channels.is_empty() {
         fh3_conn = Some(
             quiche::h3::Connection::with_transport(
-                &mut fc_channels[0].fc_chan.channel,
+                &mut h3_fc_dummy.fc_chan.channel,
                 &h3_config,
             )
             .unwrap(),
         );
         fh3_back = Some(
             quiche::h3::Connection::with_transport(
-                &mut fc_channels[0].fc_chan.client_backup,
+                &mut h3_fc_dummy.fc_chan.client_backup,
                 &h3_config,
             )
             .unwrap(),
@@ -269,14 +283,49 @@ fn main() {
         h3_resp = h3_resp
             .start_request_on_fc_source(
                 fh3_conn.as_mut().unwrap(),
-                &mut fc_channels[0].fc_chan,
+                &mut h3_fc_dummy.fc_chan,
                 fh3_back.as_mut().unwrap(),
                 &mut fcquic_stream_replay,
             )
             .unwrap();
     }
 
-    debug!("AFTER FLEXICAST CHANNELS SETUP");
+    // Send once the whole HTTP/3 response so that we only replay the stream afterwards. Lol.
+    let mut total_gen = 0;
+    loop {
+        match h3_resp.send_body(
+            fh3_conn.as_mut().unwrap(),
+            &mut fc_channels[0].fc_chan.channel,
+            args.h3_chunk_size,
+            &mut fcquic_stream_replay,
+        ) {
+            Ok(_) => (),
+
+            Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => (),
+
+            Err(e) => panic!("Error while sending the body: {:?}", e),
+        }
+
+        'inner: loop {
+            let (write, _send_info) = match h3_fc_dummy.fc_chan.mc_send(&mut out) {
+                Ok(v) => v,
+
+                Err(quiche::Error::Done) => break,
+
+                Err(e) => {
+                    error!("Flexicast out failed: {:?}", e);
+                    break 'inner;
+                },
+            };
+            total_gen += write;
+        }
+
+        if h3_resp.is_fin() {
+            break;
+        }
+    }
+
+    debug!("AFTER FLEXICAST CHANNELS SETUP. Total gen: {}", total_gen);
 
     // Register the flexicast sockets on the poll.
     // FC-TODO: is it really necessary as we only send data on it?
@@ -595,6 +644,12 @@ fn main() {
                             stream_id,
                             quiche::h3::Event::Headers { list, .. },
                         )) => {
+                            // Get the index of the flexicast channel that the client listens to.
+                            let idx = if let Some(fc_id) = client.conn.get_multicast_attributes().map(|mc| mc.get_fc_chan_id()).flatten().map(|(id, _)| id) {
+                                *fcid_to_idx.get(fc_id).unwrap_or(&0)
+                            } else {
+                                0
+                            };
                             let new_h3_response = Http3Server::handle_request(
                                 &list,
                                 fh3_conn.as_mut().unwrap(), /* FC-TODO: will
@@ -606,6 +661,7 @@ fn main() {
                                 h3_resp.data(),
                                 client.http3_conn.as_mut(),
                                 &mut fcquic_stream_replay,
+                                idx,
                             )
                             .unwrap();
 
@@ -615,7 +671,7 @@ fn main() {
                             // Add all multicast channel
                             // announcements for the new client.
                             if new_h3_response.action() == FH3Action::Join {
-                                for fc_chan in fc_channels.iter() {
+                                for (i, fc_chan) in fc_channels.iter().enumerate() {
                                     client
                                         .conn
                                         .mc_set_mc_announce_data(
@@ -626,22 +682,26 @@ fn main() {
                                     // replaces the decryption key everytime we
                                     // add a new one :/. We should see this in the
                                     // tests but it actually works... lol.
-                                    client.conn.mc_set_multicast_receiver(
-                                        &fc_chan.fc_chan.master_secret,
-                                        fc_chan
-                                            .fc_chan
-                                            .channel
-                                            .get_multicast_attributes()
-                                            .unwrap()
-                                            .get_mc_space_id()
-                                            .unwrap(),
-                                        fc_chan
-                                            .fc_chan
-                                            .channel
-                                            .get_multicast_attributes()
-                                            .unwrap()
-                                            .get_decryption_key_algo(),
-                                    ).unwrap();
+                                    client
+                                        .conn
+                                        .mc_set_multicast_receiver(
+                                            &fc_chan.fc_chan.master_secret,
+                                            fc_chan
+                                                .fc_chan
+                                                .channel
+                                                .get_multicast_attributes()
+                                                .unwrap()
+                                                .get_mc_space_id()
+                                                .unwrap(),
+                                            fc_chan
+                                                .fc_chan
+                                                .channel
+                                                .get_multicast_attributes()
+                                                .unwrap()
+                                                .get_decryption_key_algo(),
+                                            Some(i),
+                                        )
+                                        .unwrap();
                                 }
                             }
 
@@ -722,67 +782,75 @@ fn main() {
         // If the HTTP/3 response sent on the flexicast path is finished, restart
         // the stream to enable rotation for late clients.
         for (i, fc_chann) in fc_channels.iter_mut().enumerate() {
-            // FC-TODO: we do not restart the HTTP/3 response. It should not be necessary, but we have to investiguate if it is actually true.
-            if fc_chann.fc_chan.channel.fc_is_stream_expired(h3_resp.stream_id()) == Ok(true) {
-                info!("Restart stream with ID={:?} for flexicast channel {i}", h3_resp.stream_id());
-                // FC-TODO: we have to replay the stream for each instance, so we need multiple opened pointers to the file to actually repeat for everyone :(.
-                error!("CURRENTLY REPEAT WITH ONLY ONE INSTANCE");
-                fcquic_stream_replay.repeat_stream().unwrap();
+            // FC-TODO: we do not restart the HTTP/3 response. It should not be
+            // necessary, but we have to investiguate if it is actually true.
+            if fc_chann
+                .fc_chan
+                .channel
+                .fc_is_stream_expired(h3_resp.stream_id()) ==
+                Ok(true)
+            {
+                info!(
+                    "Restart stream with ID={:?} for flexicast channel {i}",
+                    h3_resp.stream_id()
+                );
+                fcquic_stream_replay.repeat_stream(i).unwrap();
                 h3_complete = true;
             }
         }
 
         // Send as much HTTP/3 response data as possible on the flexicast path.
-        if (h3_resp.is_active() && !h3_resp.is_fin() || h3_complete) && !fc_channels.is_empty() {
-                // Only actually send data on HTTP/3 if it is the first time.
-                // Otherwise, we only replay the QUIC stream.
-                if h3_complete {
-                    for fc_chan in fc_channels.iter_mut() {
-                        // Read as much data as possible directly from the FC-QUIC
-                        // stream replay structure.
-                        'read_replay: loop {
-                            if fcquic_stream_replay.is_fin() {
-                                break 'read_replay;
-                            }
-    
-                            // Feed directly in quiche.
-                            let (stream_data, fin) =
-                                fcquic_stream_replay.read_stream().unwrap();
-                            let written = match fc_chan.fc_chan.channel.stream_send(
-                                h3_resp.stream_id(),
-                                stream_data,
-                                fin,
-                            ) {
-                                Ok(v) => v,
-                                Err(quiche::Error::Done) => {
-                                    break 'read_replay;
-                                },
-                                Err(e) => panic!(
-                                    "Error while replaying the stream: {:?}",
-                                    e
-                                ),
-                            };
-    
-                            
-                            fcquic_stream_replay.partial_stream(written);
-    
+        if (h3_resp.is_active() && !h3_resp.is_fin() || h3_complete) &&
+            !fc_channels.is_empty()
+        {
+            // Only actually send data on HTTP/3 if it is the first time.
+            // Otherwise, we only replay the QUIC stream.
+            if h3_complete {
+                for (i, fc_chan) in fc_channels.iter_mut().enumerate() {
+                    // Read as much data as possible directly from the FC-QUIC
+                    // stream replay structure.
+                    'read_replay: loop {
+                        if fcquic_stream_replay.is_fin(i) {
                             break 'read_replay;
                         }
-                    }
-                } else {
-                    match h3_resp.send_body(
-                        fh3_conn.as_mut().unwrap(),
-                        &mut fc_channels[0].fc_chan.channel,
-                        args.h3_chunk_size,
-                        &mut fcquic_stream_replay,
-                    ) {
-                        Ok(_) => (),
 
-                        Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => (),
+                        // Feed directly in quiche.
+                        let (stream_data, fin) =
+                            fcquic_stream_replay.read_stream(i).unwrap();
+                        let written = match fc_chan.fc_chan.channel.stream_send(
+                            h3_resp.stream_id(),
+                            stream_data,
+                            fin,
+                        ) {
+                            Ok(v) => v,
+                            Err(quiche::Error::Done) => {
+                                break 'read_replay;
+                            },
+                            Err(e) => panic!(
+                                "Error while replaying the stream: {:?}",
+                                e
+                            ),
+                        };
 
-                        Err(e) => panic!("Error while sending the body: {:?}", e),
+                        fcquic_stream_replay.stream_written(written, i).unwrap();
+
+                        break 'read_replay;
                     }
                 }
+            } else {
+                match h3_resp.send_body(
+                    fh3_conn.as_mut().unwrap(),
+                    &mut fc_channels[0].fc_chan.channel,
+                    args.h3_chunk_size,
+                    &mut fcquic_stream_replay,
+                ) {
+                    Ok(_) => (),
+
+                    Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => (),
+
+                    Err(e) => panic!("Error while sending the body: {:?}", e),
+                }
+            }
         }
 
         // Handle time to live timeout of data of the multicast channel.
@@ -791,9 +859,14 @@ fn main() {
             // Before expiring the data, deleguate to unicast connections if
             // reliable multicast is enabled.
             let clients_conn = clients.iter_mut().map(|c| &mut c.1.conn);
-            on_rmc_timeout_server!(&mut fc_chan.fc_chan.channel, clients_conn, now)
-                .unwrap();
-            let _expired_pkt = fc_chan.fc_chan.channel.on_mc_timeout(now).unwrap();
+            on_rmc_timeout_server!(
+                &mut fc_chan.fc_chan.channel,
+                clients_conn,
+                now
+            )
+            .unwrap();
+            let _expired_pkt =
+                fc_chan.fc_chan.channel.on_mc_timeout(now).unwrap();
         }
 
         // Generate outgoing Flexicast QUIC packets for each flexicast channel.
@@ -852,8 +925,9 @@ fn main() {
 
             'uc_send: loop {
                 // Communication between the unicast and flexicast channels.
-                // FC-TODO: use here the index to determine on which flexicast instance is attached the client.
-                // Currently uses the index 0, if it exists.
+                // FC-TODO: use here the index to determine on which flexicast
+                // instance is attached the client. Currently uses
+                // the index 0, if it exists.
                 if let Some(fc_chan) = fc_channels.get_mut(0) {
                     match client
                         .conn
@@ -893,20 +967,21 @@ fn main() {
             }
 
             // Communication between the unicast and flexicast channels.
-            // FC-TODO: use here the index to determine on which flexicast instance is attached the client.
-                // Currently uses the index 0, if it exists.
-                if let Some(fc_chan) = fc_channels.get_mut(0) {
-                    match client
-                        .conn
-                        .uc_to_mc_control(&mut fc_chan.fc_chan.channel, now)
-                    {
-                        Ok(()) => (),
-                        Err(quiche::Error::Multicast(
-                            quiche::multicast::McError::McDisabled,
-                        )) => debug!("uc_to_mc_control with flexicast disabled"),
-                        Err(e) => panic!("error: {:?}", e),
-                    }
+            // FC-TODO: use here the index to determine on which flexicast
+            // instance is attached the client. Currently uses the
+            // index 0, if it exists.
+            if let Some(fc_chan) = fc_channels.get_mut(0) {
+                match client
+                    .conn
+                    .uc_to_mc_control(&mut fc_chan.fc_chan.channel, now)
+                {
+                    Ok(()) => (),
+                    Err(quiche::Error::Multicast(
+                        quiche::multicast::McError::McDisabled,
+                    )) => debug!("uc_to_mc_control with flexicast disabled"),
+                    Err(e) => panic!("error: {:?}", e),
                 }
+            }
         }
 
         // Garbage collect closed connections.
@@ -931,11 +1006,20 @@ fn main() {
         for (i, fc_chan) in fc_channels.iter_mut().enumerate() {
             if let Some(ref bitrates) = args.bitrates {
                 // Set the bitrate of each channel accordingly.
-                fc_chan.fc_chan.channel.mc_set_cwnd((bitrates[i] / (8 * fc_chan.mc_announce_data.expiration_timer)) as usize);
+                fc_chan.fc_chan.channel.mc_set_cwnd(
+                    (bitrates[i] /
+                        (8 * fc_chan.mc_announce_data.expiration_timer))
+                        as usize,
+                );
             } else {
                 // Rely on the congestion control.
                 let clients_conn = clients.iter_mut().map(|c| &mut c.1.conn);
-                ucs_to_mc_cwnd!(&mut fc_chan.fc_chan.channel, clients_conn, now, None);
+                ucs_to_mc_cwnd!(
+                    &mut fc_chan.fc_chan.channel,
+                    clients_conn,
+                    now,
+                    None
+                );
             }
         }
 
@@ -1097,6 +1181,8 @@ fn get_multicast_channel(
         expiration_timer: args.expiration_timer,
         is_processed: false,
         bitrate: None,
+        fc_channel_algo: None,
+        fc_channel_secret: None,
     };
 
     fc_chan
