@@ -1,0 +1,99 @@
+#!/usr/bin/env -S ipython --
+import argparse
+import os
+import time
+import subprocess
+
+
+CLOUDLAB_PATH = "/users/louisna"
+INGI_PATH = "/home/louisna"
+CARGO_SERVER = "/users/louisna/.cargo/bin/cargo"
+
+
+def ssh_cmd(host, cmd, wait=False):
+    if wait: com = ""
+    else: com = "&"
+    full_cmd = f"ssh {host} '{cmd}' {com}"
+    print("Full command:", full_cmd)
+    os.system(full_cmd)
+
+
+def run(args):
+    # Create dir if not exists.
+    os.makedirs(args.out, exist_ok=True)
+
+    # Manifest paths.
+    toml_path = "multicast-quic/apps/Cargo.toml"
+    server_manifest = os.path.join(CLOUDLAB_PATH, toml_path)
+    client_manifest = os.path.join(INGI_PATH, toml_path)
+
+    # Certificate paths for the server.
+    server_cert = os.path.join(CLOUDLAB_PATH, "multicast-quic/apps/src/bin")
+
+    # Compile multicast quiche on the CloudLab server.
+    print("Compiling multicast quiche app on CloudLab...", end=" ")
+    ssh_cmd(args.server_ssh, f"{CARGO_SERVER} build --bins --manifest-path {server_manifest} {'--release' if args.release else ''}", wait=True)
+    print("Done")
+    print("Compiling multicast quiche app locally...", end=" ")
+    !cargo build --bins --manifest-path {client_manifest} {'--release' if args.release else ''}
+    print("Done")
+    
+    # Communication method.
+    methods = list()
+    if args.method == "both":
+        methods = ["mc", "uc"]
+    else:
+        methods = [args.method]
+    
+    for method in methods:
+        # Authentication methods to execute.
+        # No importance if unicast, so we avoid looping if all methods were asked.
+        auths = list()
+        if args.auth == "all" and method == "mc":
+            auths = ["symmetric", "asymmetric", "none"]
+        elif args.auth == "all" and method == "uc":
+            auths = ["none"]
+        else:
+            auths = [args.auth]
+        
+        for auth in auths:
+            # Output filename of the experiment.
+            output_file = os.path.join(args.out, f"{args.app}-{method}-{auth}-{args.nb_frames}-{args.ttl}-{'wait' if args.wait else 'nowait'}.txt")
+
+            # Start the quiche server on CloudLab.
+            cmd = f"{CARGO_SERVER} run --manifest-path {server_manifest} --bin mc-server {'--release' if args.release else ''} -- --ttl-data {args.ttl} --authentication {auth} {'--multicast' if method == 'mc' else ''} -f {args.file} -s {args.server_addr} --app {args.app} --cert-path {server_cert} {'-w' if args.wait else ''} -u -n {args.nb_frames}"
+            print("Command to start the server on CloudLab:", cmd)
+            ssh_cmd(args.server_ssh, cmd, wait=False)  # Act as a daemon
+
+            print("Wait for the server to setup...", end=" ")
+            time.sleep(3)
+            print("Done")
+
+
+            # Start the client locally and wait for completion.
+            cmd = f"cargo run --manifest-path {client_manifest} --bin mc-client {'--release' if args.release else ''} -- {args.server_addr} -o {output_file} {'--multicast' if method == 'mc' else ''} --app {args.app}"
+            print("Client command:", cmd)
+            !cargo run --manifest-path {client_manifest} --bin mc-client {'--release' if args.release else ''} -- {args.server_addr} -o {output_file} {'--multicast' if method == 'mc' else ''} --app {args.app}
+
+            # Kill the quiche server on CloudLab.
+            ssh_cmd(args.server_ssh, "pkill mc-server")
+            
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("server_ssh", help="Hostname of the server on the Cloudlab platform")
+    parser.add_argument("server_addr", help="IP addr of the CloudLab server", type=str)
+    parser.add_argument("--app", choices=["tixeo", "file"], default="tixeo", help="Application of the test", type=str)
+    parser.add_argument("--nb-frames", type=int, help="Number of frames of the test. Default: all", default=None)
+    parser.add_argument("--file", type=str, help="File name to send/trace", default="../perf/tixeo_trace.repr")
+    parser.add_argument("--wait", help="Make server wait for the client to connect", action="store_true")
+    parser.add_argument("--auth", help="Authentication methods to test. Default: all", choices=["asymmetric", "symmetric", "none", "all"])
+    parser.add_argument("--method", help="Multicast or unicast delivery. Default: both", choices=["mc", "uc", "both"])
+    parser.add_argument("--out", help="Output directory", default="results", type=str)
+    parser.add_argument("--ttl", help="Data expiration for multicast (in ms). Default: 1000", default="1000", type=int)
+    parser.add_argument("--release", help="Compile and execute the code in release mode", action="store_true")
+
+    args = parser.parse_args()
+
+    run(args)
+
