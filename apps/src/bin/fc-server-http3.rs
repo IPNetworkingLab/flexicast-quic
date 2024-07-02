@@ -755,6 +755,8 @@ fn main() {
                     "Restart stream with ID={:?} for flexicast channel {i}",
                     h3_resp.stream_id()
                 );
+                fc_chann.fc_chan.channel.fc_restart_stream_send_recv(h3_resp.stream_id()).unwrap();
+                fc_chann.fc_chan.client_backup.fc_restart_stream_send_recv(h3_resp.stream_id()).unwrap();
                 fcquic_stream_replay.repeat_stream(i).unwrap();
                 h3_complete = true;
             }
