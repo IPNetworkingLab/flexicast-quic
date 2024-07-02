@@ -87,18 +87,23 @@ struct FcQuicStreamRead {
 
     /// Current offset of data delivered to QUIC.
     quic_stream_off: u64,
+
+    /// Whether this instance is the fastest instance, i.e., the one that will write on the first loop.
+    /// This role is important as it must ensure that all other instances are slower than itself.
+    is_writer: bool,
 }
 
 impl FcQuicStreamRead {
-    fn new(buf_size: usize, len: usize, idx: usize) -> Self {
-        Self {
+    fn new(buf_size: usize, len: usize, idx: usize, is_writer: bool, path: &str) -> Result<Self> {
+        Ok(Self {
             buf_off: None,
             buf: vec![0u8; buf_size],
-            file: None,
+            file: if is_writer { None } else { Some(fs::File::open(path).map_err(|e| Error::IO(e.into()))?) },
             len,
             idx,
             quic_stream_off: 0,
-        }
+            is_writer,
+        })
     }
 
     fn repeat_stream(&mut self, path: &str, len: usize) -> Result<()> {
@@ -173,13 +178,13 @@ impl FcQuicStreamRead {
 impl FcQuicStreamReplay {
     /// Creates a new instance from a filename given as argument.
     pub fn new(
-        filename: &str, buf_size: usize, nb_readers: usize,
-    ) -> io::Result<Self> {
+        filename: &str, buf_size: usize, nb_readers: usize, writer_idx: usize,
+    ) -> Result<Self> {
         Ok(Self {
-            file: fs::File::create(filename)?,
+            file: fs::File::create(filename).map_err(|e| Error::IO(e.into()))?,
             readers: (0..nb_readers)
-                .map(|i| FcQuicStreamRead::new(buf_size, 0, i))
-                .collect_vec(),
+                .map(|i| FcQuicStreamRead::new(buf_size, 0, i, i == writer_idx, filename))
+                .collect::<Result<Vec<_>>>()?,
             read_only: false,
             path: filename.to_string(),
             len: 0,
@@ -202,7 +207,10 @@ impl FcQuicStreamReplay {
 
     /// Read some data (in-order) and buffer them into the stream.
     pub fn read_stream(&mut self, idx: usize) -> Result<(&[u8], bool)> {
-        if !self.read_only {
+        let reader = get_reader!(self, idx)?;
+        
+        // The writer cannnot read until everything is written.
+        if !self.read_only && reader.is_writer {
             return Err(Error::WrongMode);
         }
 
@@ -237,11 +245,13 @@ impl FcQuicStreamReplay {
     /// This may return `None` if the next offset is 0, or if it is not in
     /// read-only mode.
     pub fn get_next_quic_h3_off(&self, idx: usize) -> Option<(u64, u64)> {
-        if !self.read_only {
+        let reader = self.readers.get(idx)?;
+
+        if !self.read_only && reader.is_writer {
             return None;
         }
 
-        let quic_stream_off = self.readers.get(idx)?.get_quic_stream_off();
+        let quic_stream_off = reader.get_quic_stream_off();
 
         // Perform a binary search to find the right index.
         // We use the current index of data that has been served to know the next

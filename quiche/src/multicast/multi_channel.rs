@@ -19,7 +19,7 @@ pub mod testing {
     use crate::testing::Pipe;
     use crate::Error;
     use crate::Result;
-    use core::net::SocketAddr;
+    use std::net::SocketAddr;
 
     /// Extension of the [`crate::multicast::testing::MulticastPipe`].
     /// It contains several Flexicast pipes, one for each MC_ANNOUNCE frame, and

@@ -244,20 +244,16 @@ fn main() {
     // client must switch from a channel bitrate to another.
     // We could create a dummy flexicast channel to play once the entire stream
     // and them replay on the real instances.
+    let idx_fc_chan_writer = 0;
     let mut fcquic_stream_replay = FcQuicStreamReplay::new(
         "/tmp/fcquic_stream_replay.txt",
         args.h3_chunk_size.unwrap_or(1500),
         fc_channels.len(),
+        idx_fc_chan_writer, // For now, always assume that the writer is the first index, i.e., the fastest is the first channel.
     )
     .unwrap();
     // Whether the HTTP/3 application alredy delivered once the whole data.
     let mut h3_complete = false;
-
-    // Create a dummy flexicast channel to send once the whole HTTP/3 response so that we only replay the QUIC stream.
-    let mut h3_fc_dummy = get_multicast_channel(&args, &rng, Some(100));
-    h3_fc_dummy.fc_chan.channel.fc_enable_stream_rotation(false).unwrap();
-    h3_fc_dummy.fc_chan.client_backup.fc_enable_stream_rotation(false).unwrap();
-    h3_fc_dummy.fc_chan.channel.mc_set_cwnd(usize::MAX - 2);
 
     // Setup flexicast HTTP/3 connections.
     // Same: keep only one instance, e.g., using the first connection.
@@ -266,14 +262,14 @@ fn main() {
     if !fc_channels.is_empty() {
         fh3_conn = Some(
             quiche::h3::Connection::with_transport(
-                &mut h3_fc_dummy.fc_chan.channel,
+                &mut fc_channels[idx_fc_chan_writer].fc_chan.channel,
                 &h3_config,
             )
             .unwrap(),
         );
         fh3_back = Some(
             quiche::h3::Connection::with_transport(
-                &mut h3_fc_dummy.fc_chan.client_backup,
+                &mut fc_channels[idx_fc_chan_writer].fc_chan.client_backup,
                 &h3_config,
             )
             .unwrap(),
@@ -283,49 +279,14 @@ fn main() {
         h3_resp = h3_resp
             .start_request_on_fc_source(
                 fh3_conn.as_mut().unwrap(),
-                &mut h3_fc_dummy.fc_chan,
+                &mut fc_channels[idx_fc_chan_writer].fc_chan,
                 fh3_back.as_mut().unwrap(),
                 &mut fcquic_stream_replay,
             )
             .unwrap();
     }
 
-    // Send once the whole HTTP/3 response so that we only replay the stream afterwards. Lol.
-    let mut total_gen = 0;
-    loop {
-        match h3_resp.send_body(
-            fh3_conn.as_mut().unwrap(),
-            &mut fc_channels[0].fc_chan.channel,
-            args.h3_chunk_size,
-            &mut fcquic_stream_replay,
-        ) {
-            Ok(_) => (),
-
-            Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => (),
-
-            Err(e) => panic!("Error while sending the body: {:?}", e),
-        }
-
-        'inner: loop {
-            let (write, _send_info) = match h3_fc_dummy.fc_chan.mc_send(&mut out) {
-                Ok(v) => v,
-
-                Err(quiche::Error::Done) => break,
-
-                Err(e) => {
-                    error!("Flexicast out failed: {:?}", e);
-                    break 'inner;
-                },
-            };
-            total_gen += write;
-        }
-
-        if h3_resp.is_fin() {
-            break;
-        }
-    }
-
-    debug!("AFTER FLEXICAST CHANNELS SETUP. Total gen: {}", total_gen);
+    debug!("AFTER FLEXICAST CHANNELS SETUP.");
 
     // Register the flexicast sockets on the poll.
     // FC-TODO: is it really necessary as we only send data on it?
@@ -805,8 +766,8 @@ fn main() {
         {
             // Only actually send data on HTTP/3 if it is the first time.
             // Otherwise, we only replay the QUIC stream.
-            if h3_complete {
-                for (i, fc_chan) in fc_channels.iter_mut().enumerate() {
+            for (i, fc_chan) in fc_channels.iter_mut().enumerate() {
+                    if h3_complete || i != idx_fc_chan_writer {
                     // Read as much data as possible directly from the FC-QUIC
                     // stream replay structure.
                     'read_replay: loop {
@@ -836,19 +797,19 @@ fn main() {
 
                         break 'read_replay;
                     }
-                }
-            } else {
-                match h3_resp.send_body(
-                    fh3_conn.as_mut().unwrap(),
-                    &mut fc_channels[0].fc_chan.channel,
-                    args.h3_chunk_size,
-                    &mut fcquic_stream_replay,
-                ) {
-                    Ok(_) => (),
+                } else {
+                    match h3_resp.send_body(
+                        fh3_conn.as_mut().unwrap(),
+                        &mut fc_chan.fc_chan.channel,
+                        args.h3_chunk_size,
+                        &mut fcquic_stream_replay,
+                    ) {
+                        Ok(_) => (),
 
-                    Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => (),
+                        Err(FcH3Error::HTTP3(quiche::h3::Error::Done)) => (),
 
-                    Err(e) => panic!("Error while sending the body: {:?}", e),
+                        Err(e) => panic!("Error while sending the body: {:?}", e),
+                    }
                 }
             }
         }
