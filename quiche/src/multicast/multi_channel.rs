@@ -11,15 +11,21 @@
 
 #[cfg(test)]
 pub mod testing {
+    use ring::rand::SecureRandom;
+    use ring::rand::SystemRandom;
+
     use crate::multicast::testing::get_test_mc_announce_data;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::FcConfig;
     use crate::multicast::McAnnounceData;
     use crate::multicast::McError;
+    use crate::multicast::MulticastConnection;
     use crate::testing::Pipe;
+    use crate::ConnectionId;
     use crate::Error;
     use crate::Result;
     use std::net::SocketAddr;
+    use std::net::IpAddr;
 
     /// Extension of the [`crate::multicast::testing::MulticastPipe`].
     /// It contains several Flexicast pipes, one for each MC_ANNOUNCE frame, and
@@ -91,6 +97,75 @@ pub mod testing {
                 .push(client);
             Ok(())
         }
+
+        /// Moves client `i` of channel `from` to channel `to`.
+        /// The client leaves the first channel and performs the new path probing to join the second channel.
+        pub fn move_client(&mut self, i: usize, from: usize, to: usize, now: std::time::Instant, random: &SystemRandom) -> Result<()> {
+            let (mut pipe, sock_from, sock_to) = self.fc_pipes[from].unicast_pipes.remove(i);
+            
+            // Leave the channel.
+            pipe.client.mc_leave_channel()?;
+            pipe.advance()?;
+
+            // Remove the path.
+            pipe.client.abandon_path(sock_from, sock_to, 0, b"change-channel".to_vec())?;
+
+            pipe.advance()?;
+
+            // Give the new key to the server.
+            let secret = self.fc_pipes[to].mc_channel.master_secret.clone();
+            let algo = self.fc_pipes[to].mc_channel.algo;
+            pipe.server.multicast.as_mut().unwrap().mc_announce_data[to].fc_channel_secret = Some(secret);
+            pipe.server.multicast.as_mut().unwrap().mc_announce_data[to].fc_channel_algo = Some(algo);
+
+            // Join the other channel.
+            let fc_chan_id = pipe.client.multicast.as_ref().unwrap().mc_announce_data[to].channel_id.to_owned();
+            pipe.client.mc_join_channel(false, Some(&fc_chan_id))?;
+            pipe.advance()?;
+
+            // Just to be sure, the server communicates with the flexicast source.
+            let fc_chan = &mut self.fc_pipes[to].mc_channel.channel;
+            pipe.server.uc_to_mc_control(fc_chan, now)?;
+
+            // And again a small pipe advance to be sure.
+            pipe.advance()?;
+
+            // The server adds the connection IDs of the multicast
+            // channel.
+            let mut scid = [0; 16];
+            random.fill(&mut scid[..]).unwrap();
+            let scid = ConnectionId::from_ref(&scid);
+            let mut reset_token = [0; 16];
+            random.fill(&mut reset_token).unwrap();
+            let reset_token = u128::from_be_bytes(reset_token);
+            pipe.server
+                .new_source_cid(&scid, reset_token, true)
+                .unwrap();
+
+            pipe.advance()?;
+
+            let scid = ConnectionId::from_ref(&fc_chan_id);
+            pipe.client.add_mc_cid(&scid)?;
+            pipe.advance()?;
+
+            let mc_announce = pipe.client.multicast.as_ref().unwrap().mc_announce_data[to].clone();
+            let server_addr = SocketAddr::new(IpAddr::V4(mc_announce.source_ip.into()), 4567);
+            let client_addr = SocketAddr::new(IpAddr::V4(mc_announce.group_ip.into()), mc_announce.udp_port);
+
+            // Path probe for the new channel.
+            pipe.client.create_mc_path(client_addr, server_addr, true)?;
+            let path_id = pipe
+                .client
+                .paths
+                .path_id_from_addrs(&(client_addr, server_addr))
+                .expect("no such path");
+            pipe.client.multicast.as_mut().unwrap().set_mc_space_id(path_id, crate::multicast::McPathType::Data);
+            println!("After I create the MC path. The path id={path_id}");
+
+            pipe.advance()?;
+
+            self.add_client((pipe, client_addr, server_addr), to)
+        }
     }
 
     /// Simple McAnnounceData for testing the flexicast extension only. It is
@@ -107,6 +182,8 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+    use std::time;
+
     use ring::rand::SystemRandom;
     use testing::MultiFcPipe;
 
@@ -145,8 +222,8 @@ mod tests {
             )
             .unwrap();
 
-            // The new client has the list of all channels, even though it joined only
-            // one.
+            // The new client has the list of all channels, even though it joined
+            // only one.
             let mc_announces = &new_client
                 .0
                 .client
@@ -183,5 +260,77 @@ mod tests {
             let mut buf = [0; 500];
             assert_eq!(client.stream_recv(3, &mut buf), Ok((300, true)));
         }
+    }
+
+    #[test]
+    /// Tests that a client can switch from a flexicast channel to another by
+    /// updating the flexicast space id.
+    fn test_change_fc_chan_space_id() {
+        let mut mfc_pipe =
+            MultiFcPipe::new_defaults("/tmp/test_fc_multiple_announces", 3)
+                .unwrap();
+        let random = SystemRandom::new();
+
+        // Add a new client that will listen to the second channel.
+        let fc_config = FcConfig {
+            mc_announce_data: mfc_pipe
+                .fc_configs
+                .iter()
+                .map(|f| f.mc_announce_data[0].clone())
+                .collect(),
+            probe_mc_path: true,
+            mc_announce_to_join: 1, // Joins the second channel.
+            ..FcConfig::default()
+        };
+        let new_client = MulticastPipe::setup_client(
+            &mut mfc_pipe.fc_pipes.get_mut(1).unwrap().mc_channel,
+            &fc_config,
+            &random,
+        )
+        .unwrap();
+        mfc_pipe.add_client(new_client, 1).unwrap();
+
+        // The multicast space id is 1 (i.e., this is the first path created)...
+        let (pipe, _, _) = &mut mfc_pipe.fc_pipes[1].unicast_pipes[0];
+        // ... for the client...
+        let mc_space_id = pipe.client.multicast.as_ref().unwrap().mc_space_id;
+        assert_eq!(mc_space_id, Some(1));
+
+        // ... and the server.
+        let mc_space_id = pipe.server.multicast.as_ref().unwrap().mc_space_id;
+        assert_eq!(mc_space_id, Some(1));
+
+        // The client receives data from the second channel.
+        let fc_pipe = &mut mfc_pipe.fc_pipes[1];
+        assert_eq!(fc_pipe.source_send_single_stream(true, None, 3), Ok(348));
+        let client = &mut fc_pipe.unicast_pipes[0].0.client;
+        let readables: Vec<_> = client.readable().collect();
+        assert_eq!(readables, vec![3]);
+        let mut buf = [0; 500];
+        assert_eq!(client.stream_recv(3, &mut buf), Ok((300, true)));
+
+        // The client leaves the second channel and joins the first one.
+        let now = time::Instant::now();
+        assert_eq!(mfc_pipe.move_client(0, 1, 0, now, &random), Ok(()));
+
+        // The multicast space id changed from 1 to 2 (because new path).
+        let (pipe, _, _) = &mut mfc_pipe.fc_pipes[0].unicast_pipes[0];
+        // ... for the client...
+        let mc_space_id = pipe.client.multicast.as_ref().unwrap().mc_space_id;
+        assert_eq!(mc_space_id, Some(2));
+
+        // ... and the server.
+        let mc_space_id = pipe.server.multicast.as_ref().unwrap().mc_space_id;
+        assert_eq!(mc_space_id, Some(2));
+
+        // The client can receive data from the first channel now.
+        println!("------- After client moved. The channel sends new data. It should work lol");
+        let fc_pipe = &mut mfc_pipe.fc_pipes[0];
+        assert_eq!(fc_pipe.source_send_single_stream(true, None, 7), Ok(348));
+        let client = &mut fc_pipe.unicast_pipes[0].0.client;
+        let readables: Vec<_> = client.readable().collect();
+        assert_eq!(readables, vec![7]);
+        let mut buf = [0; 500];
+        assert_eq!(client.stream_recv(7, &mut buf), Ok((300, true)));        
     }
 }

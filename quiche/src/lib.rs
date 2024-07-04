@@ -2869,9 +2869,15 @@ impl Connection {
             }
         }
 
+        let space_id_to_decrypt = if info.from_mc.is_some() {
+            1 // Always 1 for the flexicast source.
+        } else {
+            space_id as u32
+        };
+
         let mut payload = packet::decrypt_pkt(
             &mut b,
-            space_id as u32,
+            space_id_to_decrypt,
             pn,
             pn_len,
             payload_len,
@@ -9338,7 +9344,7 @@ impl Connection {
                         "Received an MC_STATE frame! channel ID: {:?}, action: {:?}, action_data: {} and current mc_role: {:?}",
                         channel_id, multicast::McClientAction::try_from(action)?, action_data, multicast.get_mc_role(),
                     );
-                    multicast.update_client_state(
+                    let _new_status = multicast.update_client_state(
                         action.try_into()?,
                         Some(action_data),
                     )?;

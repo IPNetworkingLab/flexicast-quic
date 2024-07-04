@@ -22,6 +22,7 @@ use crate::stream::McStream;
 use crate::CongestionControlAlgorithm;
 use crate::SendInfo;
 use networkcoding::source_symbol_metadata_from_u64;
+use networkcoding::vandermonde_lc::decoder::VLCDecoder;
 use ring::rand;
 use ring::rand::SecureRandom;
 use ring::signature;
@@ -508,7 +509,8 @@ impl MulticastAttributes {
     }
 
     #[inline]
-    /// Returns a reference to the MC_ANNOUNCE data of the flexicast channel that the client listens to.
+    /// Returns a reference to the MC_ANNOUNCE data of the flexicast channel
+    /// that the client listens to.
     pub fn get_mc_announce_data_active(&self) -> Option<&McAnnounceData> {
         self.mc_announce_data.get(fc_chan_idx!(self).ok()?)
     }
@@ -637,6 +639,13 @@ impl MulticastAttributes {
         // date.
         if action == McClientAction::Leave && is_server {
             self.mc_key_up_to_date = false;
+        }
+
+        // If the client left the group, it no longer has a space id.
+        if new_status == McClientStatus::AwareUnjoined &&
+            matches!(current_status, McClientStatus::Leaving(_))
+        {
+            self.mc_space_id = None;
         }
 
         self.mc_need_ack = true;
@@ -1104,13 +1113,14 @@ pub trait MulticastConnection {
     ///
     /// Also sets the multicast channel decryption key secret on the unicast
     /// server.
-    /// Sets the multicast receiver key for the specified MC_ANNOUNCE data, if any.
-    /// Otherwise, rely on the `fc_chan_id`.
+    /// Sets the multicast receiver key for the specified MC_ANNOUNCE data, if
+    /// any. Otherwise, rely on the `fc_chan_id`.
     /// Returns an McAnnounce error if no of the above conditions are met.
-    /// 
+    ///
     /// MC-TODO: change the name to be more explicit.
     fn mc_set_multicast_receiver(
-        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm, mc_announce_id: Option<usize>,
+        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm,
+        mc_announce_id: Option<usize>,
     ) -> Result<()>;
 
     /// Returns true if the multicast extension has control data to send.
@@ -1296,7 +1306,8 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_set_multicast_receiver(
-        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm, mc_announce_id: Option<usize>,
+        &mut self, secret: &[u8], mc_space_id: usize, algo: Algorithm,
+        mc_announce_id: Option<usize>,
     ) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             match multicast.mc_role {
@@ -1322,17 +1333,17 @@ impl MulticastConnection for Connection {
                 },
                 McRole::ServerUnicast(_) => {
                     println!("Before: {:?}", mc_announce_id);
-                    // let id = mc_announce_id.unwrap_or(fc_chan_idx!(multicast)?);
+                    // let id = mc_announce_id.unwrap_or(fc_chan_idx!(multicast)?
+                    // );
                     let id = if let Some(idx) = mc_announce_id {
                         idx
                     } else {
                         fc_chan_idx!(multicast)?
                     };
                     println!("After? {}", id);
-                    multicast.mc_announce_data[id]
-                        .fc_channel_secret = Some(secret.to_owned());
-                    multicast.mc_announce_data[id]
-                        .fc_channel_algo = Some(algo);
+                    multicast.mc_announce_data[id].fc_channel_secret =
+                        Some(secret.to_owned());
+                    multicast.mc_announce_data[id].fc_channel_algo = Some(algo);
                     multicast.mc_space_id = Some(mc_space_id);
 
                     Ok(())
@@ -1502,6 +1513,17 @@ impl MulticastConnection for Connection {
         } else {
             LEAVE_FROM_CLIENT
         };
+
+        // Remove all FEC state.
+        // FC-TODO: this should only be done once the client actually left the
+        // channel.
+        let fec_symbol_size = self.fec_decoder.symbol_size();
+        let fec_window_size = self.fec_window_size;
+        self.fec_decoder = networkcoding::Decoder::VLC(VLCDecoder::new(
+            fec_symbol_size,
+            fec_window_size,
+        ));
+
         multicast
             .update_client_state(McClientAction::Leave, Some(leaving_action_from))
     }
@@ -3271,10 +3293,12 @@ pub mod testing {
             pipe.advance().unwrap();
 
             // Client joins the multicast channel.
-            let chan_id = pipe.client.multicast.as_ref().unwrap().mc_announce_data[fc_config.mc_announce_to_join].channel_id.to_owned();
-            pipe.client
-                .mc_join_channel(true, Some(&chan_id))
-                .unwrap();
+            let chan_id =
+                pipe.client.multicast.as_ref().unwrap().mc_announce_data
+                    [fc_config.mc_announce_to_join]
+                    .channel_id
+                    .to_owned();
+            pipe.client.mc_join_channel(true, Some(&chan_id)).unwrap();
             pipe.advance().unwrap();
 
             // Server computes the client ID.
@@ -6461,69 +6485,71 @@ mod tests {
         );
     }
 
-    #[test]
-    /// Tests that the client can leave and join the multicast channel on the
-    /// fly.
-    fn test_mc_client_loop_join_leave() {
-        let mut fc_config = FcConfig {
-            authentication: McAuthType::None,
-            use_fec: true,
-            probe_mc_path: true,
-            ..Default::default()
-        };
-        let mut mc_pipe = MulticastPipe::new(
-            1,
-            "/tmp/test_mc_client_loop_join_leave.txt",
-            &mut fc_config,
-        )
-        .unwrap();
+    // The following test is no longer valid with multirate flexicast, as the client
+    // must perform a new path probing phase.
+    // #[test]
+    // /// Tests that the client can leave and join the multicast channel on the
+    // /// fly.
+    // fn test_mc_client_loop_join_leave() {
+    //     let mut fc_config = FcConfig {
+    //         authentication: McAuthType::None,
+    //         use_fec: true,
+    //         probe_mc_path: true,
+    //         ..Default::default()
+    //     };
+    //     let mut mc_pipe = MulticastPipe::new(
+    //         1,
+    //         "/tmp/test_mc_client_loop_join_leave.txt",
+    //         &mut fc_config,
+    //     )
+    //     .unwrap();
 
-        let mut client = &mut mc_pipe.unicast_pipes[0].0.client;
-        assert_eq!(
-            client.multicast.as_ref().unwrap().get_mc_role(),
-            McRole::Client(McClientStatus::ListenMcPath(true))
-        );
+    //     let mut client = &mut mc_pipe.unicast_pipes[0].0.client;
+    //     assert_eq!(
+    //         client.multicast.as_ref().unwrap().get_mc_role(),
+    //         McRole::Client(McClientStatus::ListenMcPath(true))
+    //     );
 
-        for _ in 0..100 {
-            client = &mut mc_pipe.unicast_pipes[0].0.client;
-            assert_eq!(
-                client.mc_leave_channel(),
-                Ok(McClientStatus::Leaving(false))
-            );
+    //     for _ in 0..100 {
+    //         client = &mut mc_pipe.unicast_pipes[0].0.client;
+    //         assert_eq!(
+    //             client.mc_leave_channel(),
+    //             Ok(McClientStatus::Leaving(false))
+    //         );
 
-            mc_pipe.unicast_pipes[0].0.advance().unwrap();
+    //         mc_pipe.unicast_pipes[0].0.advance().unwrap();
 
-            let server = &mut mc_pipe.unicast_pipes[0].0.server;
-            assert_eq!(
-                server.multicast.as_ref().unwrap().mc_role,
-                McRole::ServerUnicast(McClientStatus::AwareUnjoined)
-            );
+    //         let server = &mut mc_pipe.unicast_pipes[0].0.server;
+    //         assert_eq!(
+    //             server.multicast.as_ref().unwrap().mc_role,
+    //             McRole::ServerUnicast(McClientStatus::AwareUnjoined)
+    //         );
 
-            client = &mut mc_pipe.unicast_pipes[0].0.client;
-            assert_eq!(
-                client.multicast.as_ref().unwrap().mc_role,
-                McRole::Client(McClientStatus::AwareUnjoined)
-            );
+    //         client = &mut mc_pipe.unicast_pipes[0].0.client;
+    //         assert_eq!(
+    //             client.multicast.as_ref().unwrap().mc_role,
+    //             McRole::Client(McClientStatus::AwareUnjoined)
+    //         );
 
-            assert_eq!(
-                client.mc_join_channel(false, None),
-                Ok(McClientStatus::WaitingToJoin)
-            );
+    //         assert_eq!(
+    //             client.mc_join_channel(false, None),
+    //             Ok(McClientStatus::WaitingToJoin)
+    //         );
 
-            mc_pipe.unicast_pipes[0].0.advance().unwrap();
+    //         mc_pipe.unicast_pipes[0].0.advance().unwrap();
 
-            client = &mut mc_pipe.unicast_pipes[0].0.client;
-            assert_eq!(
-                client.multicast.as_ref().unwrap().mc_role,
-                McRole::Client(McClientStatus::ListenMcPath(true))
-            );
-            let server = &mut mc_pipe.unicast_pipes[0].0.server;
-            assert_eq!(
-                server.multicast.as_ref().unwrap().mc_role,
-                McRole::ServerUnicast(McClientStatus::ListenMcPath(true))
-            );
-        }
-    }
+    //         client = &mut mc_pipe.unicast_pipes[0].0.client;
+    //         assert_eq!(
+    //             client.multicast.as_ref().unwrap().mc_role,
+    //             McRole::Client(McClientStatus::ListenMcPath(true))
+    //         );
+    //         let server = &mut mc_pipe.unicast_pipes[0].0.server;
+    //         assert_eq!(
+    //             server.multicast.as_ref().unwrap().mc_role,
+    //             McRole::ServerUnicast(McClientStatus::ListenMcPath(true))
+    //         );
+    //     }
+    // }
 
     #[test]
     fn test_mc_unordered_streams() {
