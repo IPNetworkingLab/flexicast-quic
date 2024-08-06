@@ -6583,6 +6583,19 @@ impl Connection {
         stream.recv.has_fin()
     }
 
+    /// Returns whether the receiving side of the stream is finished and the stream can be read until its end sequentially now.
+    /// This means that all the data of the stream can be read until its end without any loss.
+    #[inline]
+    pub fn stream_fully_readable(&self, stream_id: u64) -> bool {
+        let stream = match self.streams.get(stream_id) {
+            Some(v) => v,
+
+            None => return true,
+        };
+
+        stream.recv.is_fully_readable()
+    }
+
     /// Returns the number of bidirectional streams that can be created
     /// before the peer's stream count limit is reached.
     ///
