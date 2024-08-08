@@ -89,12 +89,6 @@ struct Args {
     #[clap(long, value_parser, default_value = "600")]
     expiration_timer: u64,
 
-    /// File path to read and transmit through HTTP/3.
-    ///
-    /// FC-TODO: This should be updated if we want to deliver different files at
-    /// the same time.
-    file: Box<String>,
-
     /// Sent video frames results (timestamps sent on the wire).
     #[clap(
         short = 'r',
