@@ -1132,6 +1132,7 @@ fn get_multicast_channel(
         auth_type: args.authentication,
         is_ipv6: true,
         full_reliability: true,
+        reset_stream_on_join: false,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,
         udp_port: mc_port,

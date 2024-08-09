@@ -227,6 +227,7 @@ pub enum Frame {
         auth_type: u64,
         is_ipv6: u8,
         full_reliability: u8,
+        reset_stream_on_join: u8,
         source_ip: [u8; 4],
         group_ip: [u8; 4],
         udp_port: u16,
@@ -438,6 +439,7 @@ impl Frame {
                 let auth_type = b.get_varint()?;
                 let is_ipv6 = b.get_u8()?;
                 let full_reliability = b.get_u8()?;
+                let reset_stream_on_join = b.get_u8()?;
                 let source_ip = b
                     .get_bytes(4)?
                     .buf()
@@ -470,6 +472,7 @@ impl Frame {
                     auth_type,
                     is_ipv6,
                     full_reliability,
+                    reset_stream_on_join,
                     source_ip,
                     group_ip,
                     udp_port,
@@ -894,6 +897,7 @@ impl Frame {
                 auth_type,
                 is_ipv6,
                 full_reliability,
+                reset_stream_on_join,
                 source_ip,
                 group_ip,
                 udp_port,
@@ -913,6 +917,7 @@ impl Frame {
                 b.put_varint(*auth_type)?;
                 b.put_u8(*is_ipv6)?;
                 b.put_u8(*full_reliability)?;
+                b.put_u8(*reset_stream_on_join)?;
                 b.put_bytes(source_ip)?;
                 b.put_bytes(group_ip)?;
                 b.put_u16(*udp_port)?;
@@ -1307,6 +1312,7 @@ impl Frame {
                 auth_type,
                 is_ipv6: _,
                 full_reliability: _,
+                reset_stream_on_join: _,
                 source_ip: _,
                 group_ip: _,
                 udp_port: _,
@@ -1329,6 +1335,8 @@ impl Frame {
                 path_type_size +
                 auth_type_size +
                 1 + // is_ipv6
+                1 + // full_reliability
+                1 + // reset_stream_on_join
                 4 + // source_ip
                 4 + // group_ip
                 2 + // udp_port
@@ -2034,6 +2042,7 @@ impl std::fmt::Debug for Frame {
                 auth_type,
                 is_ipv6,
                 full_reliability,
+                reset_stream_on_join,
                 source_ip,
                 group_ip,
                 udp_port,
@@ -2041,7 +2050,7 @@ impl std::fmt::Debug for Frame {
                 public_key: _,
                 bitrate,
             } => {
-                write!(f, "MC_ANNOUNCE channel ID={:?}, path_type={} auth_type={} is_ipv6={}, full_reliability={} source_ip={:?}, group_ip={:?}, udp_port={}, expiration_timer={}, bitrate={:?}", channel_id, path_type, auth_type, is_ipv6, full_reliability, source_ip, group_ip, udp_port, expiration_timer, bitrate)?;
+                write!(f, "MC_ANNOUNCE channel ID={:?}, path_type={} auth_type={} is_ipv6={}, full_reliability={} reset_stream_on_join={} source_ip={:?}, group_ip={:?}, udp_port={}, expiration_timer={}, bitrate={:?}", channel_id, path_type, auth_type, is_ipv6, full_reliability, reset_stream_on_join, source_ip, group_ip, udp_port, expiration_timer, bitrate)?;
             },
 
             Frame::McState {
@@ -3717,6 +3726,7 @@ mod tests {
             auth_type: 3,
             is_ipv6: 0,
             full_reliability: 1,
+            reset_stream_on_join: 0,
             source_ip: [127, 0, 0, 1],
             group_ip: [239, 239, 239, 35],
             udp_port: 8889,
@@ -3730,7 +3740,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 46);
+        assert_eq!(wire_len, 47);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
@@ -3773,6 +3783,7 @@ mod tests {
             auth_type: 3,
             is_ipv6: 0,
             full_reliability: 1,
+            reset_stream_on_join: 1,
             source_ip: [127, 0, 0, 1],
             group_ip: [239, 239, 239, 35],
             udp_port: 8889,
@@ -3786,7 +3797,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 50);
+        assert_eq!(wire_len, 51);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

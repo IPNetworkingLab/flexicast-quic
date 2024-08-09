@@ -4873,6 +4873,7 @@ impl Connection {
                     } else {
                         0
                     },
+                    reset_stream_on_join: if mc_announce_data.reset_stream_on_join { 1 } else { 0 },
                     source_ip: mc_announce_data.source_ip,
                     group_ip: mc_announce_data.group_ip,
                     udp_port: mc_announce_data.udp_port,
@@ -4953,7 +4954,7 @@ impl Connection {
             if let Some(multicast) = self.multicast.as_mut() {
                 if multicast.should_send_mc_key() {
                     let mc_announce_data =
-                    multicast.get_mc_announce_data_active().ok_or(
+                        multicast.get_mc_announce_data_active().ok_or(
                             Error::Multicast(multicast::McError::McAnnounce),
                         )?;
                     let first_pn =
@@ -6583,8 +6584,9 @@ impl Connection {
         stream.recv.has_fin()
     }
 
-    /// Returns whether the receiving side of the stream is finished and the stream can be read until its end sequentially now.
-    /// This means that all the data of the stream can be read until its end without any loss.
+    /// Returns whether the receiving side of the stream is finished and the
+    /// stream can be read until its end sequentially now. This means that
+    /// all the data of the stream can be read until its end without any loss.
     #[inline]
     pub fn stream_fully_readable(&self, stream_id: u64) -> bool {
         let stream = match self.streams.get(stream_id) {
@@ -9308,6 +9310,7 @@ impl Connection {
                 auth_type,
                 is_ipv6,
                 full_reliability,
+                reset_stream_on_join,
                 source_ip,
                 group_ip,
                 udp_port,
@@ -9315,7 +9318,7 @@ impl Connection {
                 public_key,
                 bitrate,
             } => {
-                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, source_ip={:?}, group_ip={:?}, udp_port={}, bitrate={:?}", channel_id, path_type, auth_type, is_ipv6, source_ip, group_ip, udp_port, bitrate);
+                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, full_reliability={}, reset_stream_on_joih={}, source_ip={:?}, group_ip={:?}, udp_port={}, bitrate={:?}", channel_id, path_type, auth_type, is_ipv6, full_reliability, reset_stream_on_join, source_ip, group_ip, udp_port, bitrate);
                 if self.is_server {
                     error!("The server should not receive an MC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -9327,6 +9330,7 @@ impl Connection {
                     auth_type: auth_type.try_into()?,
                     is_ipv6: is_ipv6 == 1,
                     full_reliability: full_reliability == 1,
+                    reset_stream_on_join: reset_stream_on_join == 1,
                     source_ip,
                     group_ip,
                     udp_port,

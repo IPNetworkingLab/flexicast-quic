@@ -1077,6 +1077,10 @@ pub struct McAnnounceData {
     /// Distributed in the MC_KEY frame.
     /// mc_channel_algo: Algorithm::AES128_GCM,
     pub fc_channel_algo: Option<Algorithm>,
+
+    /// Whether the client should reset its stream states on joigning this channel.
+    /// This value is used for example if different flexicast channels expose different data, e.g., streams at different quality.
+    pub reset_stream_on_join: bool,
 }
 
 impl McAnnounceData {
@@ -3579,6 +3583,7 @@ pub mod testing {
             udp_port: 7676,
             public_key: None,
             expiration_timer: 1_000_000,
+            reset_stream_on_join: false,
             is_processed: false,
             auth_type: McAuthType::None,
             full_reliability: false,

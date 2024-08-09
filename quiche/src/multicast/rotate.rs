@@ -137,18 +137,34 @@ impl Connection {
                 McRole::Client(McClientStatus::ListenMcPath(true)),
             )));
         }
-        // The endpoint should not have any state for the streams in
-        // `stream_states`.
-        for stream_state in stream_states.iter() {
-            let stream = self.streams.get_or_create(
-                stream_state.stream_id(),
-                &self.local_transport_params,
-                &self.peer_transport_params,
-                false,
-                self.is_server,
-            )?;
+        // If the MC_ANNOUNCE data indicates that the client should reset its
+        // stream state when joining the channel, reset all. Otherwise,
+        // set the stream state according to the information given in the MC_KEY.
+        if self.multicast.as_ref().is_some_and(|mc| {
+            mc.fc_chan_id.as_ref().is_some_and(|(_, idx)| {
+                mc.mc_announce_data
+                    .get(*idx)
+                    .is_some_and(|mc_announce| mc_announce.reset_stream_on_join)
+            })
+        }) {
+            let max_streams_bidi = self.streams.max_streams_bidi();
+            let max_streams_uni = self.streams.max_streams_uni_next();
+            let max_stream_window = crate::stream::MAX_STREAM_WINDOW;
+            self.streams = crate::stream::StreamMap::new(max_streams_bidi, max_streams_uni, max_stream_window);
+        } else {
+            // The endpoint should not have any state for the streams in
+            // `stream_states`.
+            for stream_state in stream_states.iter() {
+                let stream = self.streams.get_or_create(
+                    stream_state.stream_id(),
+                    &self.local_transport_params,
+                    &self.peer_transport_params,
+                    false,
+                    self.is_server,
+                )?;
 
-            stream.recv.fc_set_offset_at(stream_state.offset() as u64)?;
+                stream.recv.fc_set_offset_at(stream_state.offset() as u64)?;
+            }
         }
 
         Ok(())
@@ -360,7 +376,9 @@ mod tests {
         assert_eq!(res, Ok((Some(3), None).into()));
 
         // The multicast source sends an MC_EXPIRE to the client.
-        mc_pipe.source_send_single_from_buf(None, &mut buf[..]).unwrap();
+        mc_pipe
+            .source_send_single_from_buf(None, &mut buf[..])
+            .unwrap();
 
         // Add a second client.
         let mc_client_tp = Some(McClientTp::default());
@@ -389,7 +407,8 @@ mod tests {
         mc_pipe.unicast_pipes.push(new_client);
 
         // Send the remaining of the stream to both clients.
-        // The second client loses the packet containing the last frame of the stream.
+        // The second client loses the packet containing the last frame of the
+        // stream.
         mc_pipe
             .source_send_single_from_buf(Some(&client_loss), &mut buf[..])
             .unwrap();
@@ -442,7 +461,8 @@ mod tests {
             .unwrap();
 
         // Send the content of the stream.
-        // The second client sees a packet loss that will be retransmitted through unicast.
+        // The second client sees a packet loss that will be retransmitted through
+        // unicast.
         mc_pipe
             .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
@@ -487,7 +507,7 @@ mod tests {
         assert!(!fin);
         assert_eq!(len_2, 11);
         assert_eq!(off, 22);
-        assert_eq!(&recv_buf[..11], &stream_data[len..len+11]);
+        assert_eq!(&recv_buf[..11], &stream_data[len..len + 11]);
 
         // ACK from clients.
         assert_eq!(mc_pipe.client_rmc_timeout(expired, &random), Ok(()));
@@ -514,7 +534,8 @@ mod tests {
 
         // The second client can now read everything.
         let client = &mut mc_pipe.unicast_pipes[1].0.client;
-        let (len_2, fin, off) = client.stream_recv_ooo(3, &mut recv_buf[..]).unwrap();
+        let (len_2, fin, off) =
+            client.stream_recv_ooo(3, &mut recv_buf[..]).unwrap();
         assert!(fin);
         assert_eq!(len_2, 11);
         assert_eq!(off, 22);
