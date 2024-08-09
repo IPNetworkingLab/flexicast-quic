@@ -30,7 +30,7 @@ use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
-const RTP_SOCKET_TOKEN: mio::Token = mio::Token(1);
+const RTP_SOCKET_TOKEN_START: usize = 1;
 
 struct Client {
     conn: quiche::Connection,
@@ -123,7 +123,7 @@ struct Args {
 
     /// Address of the RTP source.
     #[clap(long = "rtp-addr", value_parser)]
-    rtp_src_addr: SocketAddr,
+    rtp_src_addr: Vec<SocketAddr>,
 
     /// RTP message to indicate the end of the stream.
     #[clap(long = "rtp-stop", value_parser, default_value = "STOP RTP")]
@@ -163,6 +163,19 @@ fn main() {
     let mut next_client_id = 0;
     let local_addr = socket.local_addr().unwrap();
 
+    // Sanity check: there are the same number of flexicast instances as RTP
+    // sources, if flexicast is enabled.
+    if args.flexicast &&
+        (args
+            .bitrates
+            .as_ref()
+            .is_some_and(|b| b.len() != args.rtp_src_addr.len())) ||
+        args.bitrates.as_ref().is_none()
+    {
+        error!("If flexicast is enabled, the number of flexicast instances must be the same as the number of RTP sources!");
+        std::process::exit(1);
+    }
+
     // List of all flexicast channels with different bitrates.
     // If no bitrate is provided (i.e., the `bitrates` parameter is not used),
     // creates a single flexicast channel with the classical implemented
@@ -196,23 +209,38 @@ fn main() {
             .unwrap();
     }
 
-    // Register RTP source handler.
-    let mut rtp_server = RtpServer::new(
-        args.rtp_src_addr,
-        &args.result_wire_trace,
-        &args.result_wire_trace,
-        &args.rtp_stop,
-    )
-    .unwrap();
+    // Register RTP source handlers.
+    let mut rtp_servers = args
+        .rtp_src_addr
+        .iter()
+        .map(|rtp_addr| {
+            RtpServer::new(
+                *rtp_addr,
+                &args.result_wire_trace,
+                &args.result_wire_trace,
+                &args.rtp_stop,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
 
     // Register the RTP source socket.
-    if let Some(add_socket) = rtp_server.additional_udp_socket() {
-        poll.registry().register(add_socket, RTP_SOCKET_TOKEN, mio::Interest::READABLE).unwrap();
+    let mut rtp_tokens = HashMap::with_capacity(rtp_servers.len());
+    for (i, rtp_server) in rtp_servers.iter_mut().enumerate() {
+        if let Some(add_socket) = rtp_server.additional_udp_socket() {
+            let token = mio::Token(RTP_SOCKET_TOKEN_START + i);
+            poll.registry()
+                .register(add_socket, token, mio::Interest::READABLE)
+                .unwrap();
+            rtp_tokens.insert(token, i);
+        }
     }
 
     // Stop RTP timer.
-    // Once the RTP source sends a STOP RTP message, the source waits for 5 * flexicast timer before closing the connection.
-    let rtp_stop_timer = std::time::Duration::from_millis(args.expiration_timer) * 5;
+    // Once the RTP source sends a STOP RTP message, the source waits for 5 *
+    // flexicast timer before closing the connection.
+    let rtp_stop_timer =
+        std::time::Duration::from_millis(args.expiration_timer) * 5;
     let mut start_rtp_timer: Option<std::time::Instant> = None;
     let mut can_close_conn_after_rtp = false;
 
@@ -231,9 +259,17 @@ fn main() {
             .min();
 
         // Timeout after the RTP source finished.
-        let timeout_rtp = start_rtp_timer.map(|timer| rtp_stop_timer.saturating_sub(now.duration_since(timer)));
+        let timeout_rtp = start_rtp_timer.map(|timer| {
+            rtp_stop_timer.saturating_sub(now.duration_since(timer))
+        });
 
-        timeout = [timeout, timeout_fc, rtp_server.next_timeout(), timeout_rtp].iter().flatten().min().copied();
+        // The RTP application has no timeout because we get data as soon as it
+        // comes on the socket.
+        timeout = [timeout, timeout_fc, timeout_rtp]
+            .iter()
+            .flatten()
+            .min()
+            .copied();
 
         debug!("TIMEOUT: {:?}", timeout);
 
@@ -243,20 +279,28 @@ fn main() {
         // until there are no more packets to read.
         'uc_read: loop {
             // Received content on the RTP source socket.
+            let mut contains_quic_socket_event = false;
             for event in events.iter() {
-                if event.token() == RTP_SOCKET_TOKEN {
+                if let Some(i) = rtp_tokens.get(&event.token()) {
+                    let rtp_server = rtp_servers.get_mut(*i).unwrap();
                     rtp_server.on_additional_udp_socket_readable();
 
-                    if rtp_server.is_source_rtp_stopped() && start_rtp_timer.is_none() {
+                    if rtp_server.is_source_rtp_stopped() &&
+                        start_rtp_timer.is_none()
+                    {
                         debug!("Start RTP end timer");
                         start_rtp_timer = Some(std::time::Instant::now());
                     }
+                } else {
+                    contains_quic_socket_event = true;
                 }
             }
 
             // We can close the connection now.
             if let Some(timer) = start_rtp_timer {
-                if rtp_stop_timer.saturating_sub(now.duration_since(timer)) == std::time::Duration::ZERO {
+                if rtp_stop_timer.saturating_sub(now.duration_since(timer)) ==
+                    std::time::Duration::ZERO
+                {
                     // Yes, we can close now...
                     can_close_conn_after_rtp = true;
 
@@ -264,8 +308,6 @@ fn main() {
                     start_rtp_timer = None;
                 }
             }
-
-            let contains_quic_socket_event = events.iter().any(|e| e.token() != RTP_SOCKET_TOKEN);
 
             // If the event loop reported no events, it means that the timeout
             // has expired, so handle it without attempting to read packets. We
@@ -438,9 +480,7 @@ fn main() {
                 for (i, fc_chan) in fc_channels.iter().enumerate() {
                     client
                         .conn
-                        .mc_set_mc_announce_data(
-                            &fc_chan.mc_announce_data,
-                        )
+                        .mc_set_mc_announce_data(&fc_chan.mc_announce_data)
                         .unwrap();
                     // FC-TODO: not sure that this will work if it
                     // replaces the decryption key everytime we
@@ -559,25 +599,41 @@ fn main() {
         // Generate video content frames.
         // Repeat to ensure to dequeue all pending streams if needed.
         'app_data: loop {
-            if rtp_server.should_send_app_data() {
-                let (stream_id, app_data) = rtp_server.get_app_data();
-                if let Some(fc_chan) = fc_channels.get_mut(0) {
-                    match fc_chan.fc_chan.channel.stream_priority(stream_id, 0, false) {
-                        Ok(()) => (),
-                        Err(quiche::Error::StreamLimit) => (),
-                        Err(quiche::Error::Done) => (),
-                        Err(e) => panic!("Error while setting stream priority: {:?}", e),
+            let mut send_at_least_once = false;
+            for (i, rtp_server) in rtp_servers.iter_mut().enumerate() {
+                if rtp_server.should_send_app_data() {
+                    let (stream_id, app_data) = rtp_server.get_app_data();
+                    if let Some(fc_chan) = fc_channels.get_mut(i) {
+                        match fc_chan
+                            .fc_chan
+                            .channel
+                            .stream_priority(stream_id, 0, false)
+                        {
+                            Ok(()) => (),
+                            Err(quiche::Error::StreamLimit) => (),
+                            Err(quiche::Error::Done) => (),
+                            Err(e) => panic!(
+                                "Error while setting stream priority: {:?}",
+                                e
+                            ),
+                        }
+
+                        let written = match fc_chan
+                            .fc_chan
+                            .channel
+                            .stream_send(stream_id, &app_data, true)
+                        {
+                            Ok(v) => v,
+                            Err(quiche::Error::Done) => break 'app_data,
+                            Err(e) => panic!("Other error: {:?}", e),
+                        };
+
+                        rtp_server.stream_written(written);
                     }
-    
-                    let written = match fc_chan.fc_chan.channel.stream_send(stream_id, &app_data, true) {
-                        Ok(v) => v,
-                        Err(quiche::Error::Done) => break 'app_data,
-                        Err(e) => panic!("Other error: {:?}", e),
-                    };
-    
-                    rtp_server.stream_written(written);
+                    send_at_least_once = true;
                 }
-            } else {
+            }
+            if !send_at_least_once {
                 break 'app_data;
             }
         }
@@ -633,7 +689,8 @@ fn main() {
         // send them on the UDP socket, until quiche
         // reports that there are no more packets to be sent.
         for client in clients.values_mut() {
-            // Close the connections with the clients whether RTP is finished and we waited enough.
+            // Close the connections with the clients whether RTP is finished and
+            // we waited enough.
             if can_close_conn_after_rtp {
                 info!("Closing connection {:?}", client.conn.trace_id());
                 _ = client.conn.close(true, 1, &[1]);

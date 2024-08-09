@@ -92,12 +92,6 @@ impl RtpServer {
         })
     }
 
-    pub fn next_timeout(&self) -> Option<time::Duration> {
-        // the RTP stream has started and there are data to send, but waking up
-        // whould all be handled by pulling the additional_udp_socket
-        None
-    }
-
     #[inline]
     pub fn additional_udp_socket(&mut self) -> Option<&mut mio::net::UdpSocket> {
         Some(&mut self.socket)
