@@ -136,6 +136,9 @@ pub enum McError {
 
     /// Attempt to read a stream in-order while it uses stream rotation.
     FcStreamOutOfOrder,
+
+    /// Attempt to change channel ID in 1 RTT but path probing is used.
+    FcChangeChan,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -192,6 +195,9 @@ pub enum McClientStatus {
 
     /// This is used when the status is of no importance.
     Unspecified,
+
+    /// The client is changing the channel it listens to.
+    Changing,
 }
 
 /// Actions of multicast client in the finite state machine.
@@ -211,6 +217,11 @@ pub enum McClientAction {
 
     /// Multicast path created.
     McPath,
+
+    /// Change to another flexicast channel in 1 RTT.
+    /// Only if both channels do not use path probing and the client already
+    /// listens to a channel.
+    Change,
 }
 
 impl TryFrom<u64> for McClientAction {
@@ -223,6 +234,7 @@ impl TryFrom<u64> for McClientAction {
             2 => McClientAction::Leave,
             3 => McClientAction::DecryptionKey,
             4 => McClientAction::McPath,
+            5 => McClientAction::Change,
             _ => return Err(Error::Multicast(McError::McInvalidAction)),
         })
     }
@@ -238,6 +250,7 @@ impl TryInto<u64> for McClientAction {
             McClientAction::Leave => 2,
             McClientAction::DecryptionKey => 3,
             McClientAction::McPath => 4,
+            McClientAction::Change => 5,
         })
     }
 }
@@ -621,6 +634,15 @@ impl MulticastAttributes {
                 self.mc_space_id = Some(action_data.unwrap() as usize);
                 McClientStatus::ListenMcPath(true)
             },
+            (McClientStatus::ListenMcPath(true), McClientAction::Change)
+                if action_data.is_some() =>
+            {
+                self.mc_key_up_to_date = false;
+                self.mc_space_id = Some(action_data.unwrap() as usize);
+                McClientStatus::Changing
+            },
+            (McClientStatus::Changing, McClientAction::DecryptionKey) =>
+                McClientStatus::ListenMcPath(true),
             (McClientStatus::AwareUnjoined, McClientAction::Leave) =>
                 McClientStatus::AwareUnjoined,
             (McClientStatus::ListenMcPath(_), _) => current_status,
@@ -673,6 +695,7 @@ impl MulticastAttributes {
                 McClientStatus::JoinedAndKey if self.mc_space_id.is_some() =>
                     true,
                 McClientStatus::Leaving(false) => true,
+                McClientStatus::Changing => true,
                 _ => false,
             },
             McRole::ServerUnicast(McClientStatus::Leaving(false)) => true,
@@ -697,7 +720,8 @@ impl MulticastAttributes {
         if let McRole::ServerUnicast(status) = self.mc_role {
             match status {
                 McClientStatus::JoinedAndKey |
-                McClientStatus::ListenMcPath(_) => true,
+                McClientStatus::ListenMcPath(_) |
+                McClientStatus::Changing => true,
                 McClientStatus::JoinedNoKey if self.mc_client_id.is_some() =>
                     true,
                 _ => false,
@@ -720,7 +744,7 @@ impl MulticastAttributes {
     /// Get the channel decryption key secret.
     pub fn get_decryption_key_secret(&self) -> Result<&[u8]> {
         match self.mc_role {
-            McRole::ServerUnicast(McClientStatus::JoinedNoKey) => Ok(self
+            McRole::ServerUnicast(McClientStatus::JoinedNoKey) | McRole::ServerUnicast(McClientStatus::Changing) => Ok(self
                 .mc_announce_data[fc_chan_idx!(self)?]
             .fc_channel_secret
             .as_ref()
@@ -743,7 +767,8 @@ impl MulticastAttributes {
     ) -> Result<()> {
         match self.mc_role {
             McRole::Client(McClientStatus::JoinedNoKey) |
-            McRole::Client(McClientStatus::WaitingToJoin) => {
+            McRole::Client(McClientStatus::WaitingToJoin) |
+            McRole::Client(McClientStatus::Changing) => {
                 let aead_open = Open::from_secret(algo, &key)?;
                 self.mc_crypto_open = Some(aead_open);
                 let aead_seal = Seal::from_secret(algo, &key)?;
@@ -1078,8 +1103,9 @@ pub struct McAnnounceData {
     /// mc_channel_algo: Algorithm::AES128_GCM,
     pub fc_channel_algo: Option<Algorithm>,
 
-    /// Whether the client should reset its stream states on joigning this channel.
-    /// This value is used for example if different flexicast channels expose different data, e.g., streams at different quality.
+    /// Whether the client should reset its stream states on joigning this
+    /// channel. This value is used for example if different flexicast
+    /// channels expose different data, e.g., streams at different quality.
     pub reset_stream_on_join: bool,
 }
 
@@ -1475,6 +1501,7 @@ impl MulticastConnection for Connection {
             None => return Err(Error::Multicast(McError::McDisabled)),
             Some(multicast) => match multicast.mc_role {
                 McRole::Client(McClientStatus::AwareUnjoined) => multicast,
+                McRole::Client(McClientStatus::Leaving(_)) => multicast, /* Client attempting to change the channel. */
                 _ =>
                     return Err(Error::Multicast(McError::McInvalidRole(
                         multicast.mc_role,
@@ -6490,8 +6517,8 @@ mod tests {
         );
     }
 
-    // The following test is no longer valid with multirate flexicast, as the client
-    // must perform a new path probing phase.
+    // The following test is no longer valid with multirate flexicast, as the
+    // client must perform a new path probing phase.
     // #[test]
     // /// Tests that the client can leave and join the multicast channel on the
     // /// fly.

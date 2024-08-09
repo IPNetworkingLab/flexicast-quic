@@ -3305,6 +3305,7 @@ impl Connection {
                             debug!("Receive ack for McState: {:?}, {:?} and current role is {:?}", multicast::McClientAction::try_from(action), action_data, multicast.get_mc_role());
                             multicast.set_mc_state_in_flight(false);
                             match multicast.get_mc_role() {
+                                multicast::McRole::Client(multicast::McClientStatus::ListenMcPath(true)) if action == multicast::McClientAction::Change.try_into().unwrap() => multicast::McClientStatus::ListenMcPath(true),
                                 multicast::McRole::Client(
                                     multicast::McClientStatus::Leaving(true),
                                 ) |
@@ -4873,7 +4874,12 @@ impl Connection {
                     } else {
                         0
                     },
-                    reset_stream_on_join: if mc_announce_data.reset_stream_on_join { 1 } else { 0 },
+                    reset_stream_on_join: if mc_announce_data.reset_stream_on_join
+                    {
+                        1
+                    } else {
+                        0
+                    },
                     source_ip: mc_announce_data.source_ip,
                     group_ip: mc_announce_data.group_ip,
                     udp_port: mc_announce_data.udp_port,
@@ -4916,6 +4922,12 @@ impl Connection {
                         multicast::McRole::ServerUnicast(
                             multicast::McClientStatus::Leaving(false),
                         ) => (multicast::McClientAction::Leave, None),
+                        multicast::McRole::Client(
+                            multicast::McClientStatus::Changing,
+                        ) => (
+                            multicast::McClientAction::Change,
+                            multicast.get_mc_space_id(),
+                        ),
                         _ =>
                             return Err(Error::Multicast(
                                 multicast::McError::McInvalidRole(
