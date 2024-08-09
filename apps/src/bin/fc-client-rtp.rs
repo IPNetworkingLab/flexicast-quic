@@ -20,6 +20,7 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::time::SystemTime;
+use std::process::Command;
 
 use quiche_apps::mc_app::rtp::RtpClient;
 
@@ -62,6 +63,10 @@ struct Args {
     /// Address of the RTP sink.
     #[clap(short = 'r', long = "rtp-addr", value_parser)]
     rtp_sink_addr: SocketAddr,
+
+    /// Whether a system call is performed to kill the GStreamer sink when the connection is closed.
+    #[clap(long = "kill-gst")]
+    kill_gst_at_end: bool,
 }
 
 fn main() {
@@ -391,7 +396,7 @@ fn main() {
                                         .group_ip
                                         .to_owned(),
                                 ), // &args.local_ip
-                                &"11.1.5.1".parse().unwrap(),
+                                &"10.10.2.2".parse().unwrap(),
                             )
                             .unwrap();
                     }
@@ -493,6 +498,14 @@ fn main() {
                 }
             }
         }
+    }
+
+    // Kill the GStreamer sink.
+    if args.kill_gst_at_end {
+        Command::new("pkill")
+            .arg("gst-launch")
+            .output()
+            .expect("Failed to kill GStreamer sink.");
     }
 }
 

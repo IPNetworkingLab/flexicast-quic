@@ -9,7 +9,7 @@ use std::time::SystemTime;
 pub struct RtpClient {
     frame_recv: Vec<(u64, SystemTime, usize)>,
 
-    output_filename: String,
+    _output_filename: String,
 
     udp_sink: UdpSocket,
 }
@@ -23,7 +23,7 @@ impl RtpClient {
 
         Ok(Self {
             frame_recv: Vec::new(),
-            output_filename: output_filename.to_owned(),
+            _output_filename: output_filename.to_owned(),
             udp_sink,
         })
     }
@@ -61,14 +61,18 @@ pub struct RtpServer {
     last_provided_stream: u64,
     next_stream_id: u64,
     buf: [u8; 2000],
+
+    stop_msg: Vec<u8>,
+    is_stopped: bool,
 }
 
 impl RtpServer {
     pub fn new(
         bind_addr: std::net::SocketAddr, to_quic_filename: &str,
-        to_wire_filename: &str,
+        to_wire_filename: &str, stop_msg: &str,
     ) -> io::Result<Self> {
         info!("new RTP server listening for RTP in {}", bind_addr);
+        info!("Stop msg in bytes: {:?}", stop_msg.as_bytes());
         Ok(Self {
             socket: mio::net::UdpSocket::bind(bind_addr)?,
             queued_streams: VecDeque::new(),
@@ -82,6 +86,9 @@ impl RtpServer {
             to_quic_filename: to_quic_filename.to_string(),
             to_wire_filename: to_wire_filename.to_string(),
             buf: [0; 2000],
+            
+            stop_msg: stop_msg.as_bytes().to_vec(),
+            is_stopped: false,
         })
     }
 
@@ -155,6 +162,13 @@ impl RtpServer {
                         n,
                         self.next_stream_id
                     );
+                    if n - 1 == self.stop_msg.len() && &self.buf[..n - 1] == &self.stop_msg {
+                        // STOP RTP message.
+                        self.is_stopped = true;
+                        debug!("Received the end of the RTP stream");
+                        return;
+                    }
+                    
                     self.queued_streams.push_back(UDPPacketSendingBuf {
                         queued_packet: (
                             self.next_stream_id,
@@ -202,5 +216,10 @@ impl RtpServer {
     #[inline]
     pub fn has_sent_some_data(&self) -> bool {
         self.last_provided_stream > 0
+    }
+
+    #[inline]
+    pub fn is_source_rtp_stopped(&self) -> bool {
+        self.is_stopped
     }
 }
