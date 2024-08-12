@@ -67,6 +67,18 @@ struct Args {
     /// Whether a system call is performed to kill the GStreamer sink when the connection is closed.
     #[clap(long = "kill-gst")]
     kill_gst_at_end: bool,
+
+    /// Initial channel index to join.
+    /// FC-TODO: this should be done by using a real heuristic, not the index because we could not know per se which channel to join.
+    #[clap(short = 'i', long = "idx-chan", default_value = "0")]
+    idx_fc_chan: usize,
+
+    // /// Comma-separated pair of values.
+    // /// The first value indicates the time (in ms) after which the client changes the flexicast channel it listens to.
+    // /// The second value indicates the index of the channel to join.
+    // /// This assumes that the client can use 1-RTT changes.
+    // #[clap(long = "change", num_args = 2..3, separator = ",")] 
+    // change_fc_chan: Option<(u64, usize)>,
 }
 
 fn main() {
@@ -304,7 +316,7 @@ fn main() {
                 // Did not join the flexicast channel before.
                 let multicast = conn.get_multicast_attributes().unwrap();
                 let mc_announce_data =
-                    multicast.get_mc_announce_data_path().unwrap().to_owned();
+                    multicast.get_mc_announce_data(args.idx_fc_chan).unwrap().to_owned();
 
                 is_mc_reliable = mc_announce_data.full_reliability;
 
@@ -371,7 +383,7 @@ fn main() {
                             )
                             .unwrap();
                         probe_mc_path = true;
-                        conn.mc_join_channel(false, None).unwrap();
+                        conn.mc_join_channel(false, Some(&mc_announce_data.channel_id)).unwrap();
                         mc_socket_opt = Some(mc_socket);
                     }
                 }

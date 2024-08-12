@@ -698,10 +698,17 @@ fn main() {
 
             'uc_send: loop {
                 // Communication between the unicast and flexicast channels.
-                // FC-TODO: use here the index to determine on which flexicast
-                // instance is attached the client. Currently uses
-                // the index 0, if it exists.
-                if let Some(fc_chan) = fc_channels.get_mut(0) {
+                // FC-TODO: here we assume that the index of the MC_ANNOUNCE_DATA
+                // is the same as the index of the Flexicast
+                // channel the client listens to.
+                let fc_chan_idx = client
+                    .conn
+                    .get_multicast_attributes()
+                    .map(|mc| mc.get_fc_chan_id().map(|(_, idx)| *idx))
+                    .flatten();
+                if let Some(fc_chan) =
+                    fc_chan_idx.map(|idx| fc_channels.get_mut(idx)).flatten()
+                {
                     match client
                         .conn
                         .uc_to_mc_control(&mut fc_chan.fc_chan.channel, now)
@@ -740,10 +747,17 @@ fn main() {
             }
 
             // Communication between the unicast and flexicast channels.
-            // FC-TODO: use here the index to determine on which flexicast
-            // instance is attached the client. Currently uses the
-            // index 0, if it exists.
-            if let Some(fc_chan) = fc_channels.get_mut(0) {
+            // FC-TODO: here we assume that the index of the MC_ANNOUNCE_DATA is
+            // the same as the index of the Flexicast channel the client listens
+            // to.
+            let fc_chan_idx = client
+                .conn
+                .get_multicast_attributes()
+                .map(|mc| mc.get_fc_chan_id().map(|(_, idx)| *idx))
+                .flatten();
+            if let Some(fc_chan) =
+                fc_chan_idx.map(|idx| fc_channels.get_mut(idx)).flatten()
+            {
                 match client
                     .conn
                     .uc_to_mc_control(&mut fc_chan.fc_chan.channel, now)
