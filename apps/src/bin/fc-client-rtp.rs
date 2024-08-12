@@ -19,12 +19,35 @@ use std::net;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
-use std::time::SystemTime;
 use std::process::Command;
+use std::time;
+use std::time::SystemTime;
 
 use quiche_apps::mc_app::rtp::RtpClient;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
+
+#[derive(Clone, Debug)]
+struct ChangeFcChan {
+    /// Time between the start of reception and the change.
+    time: time::Duration,
+
+    /// Index of the new flexicast channel to join.
+    new_chan_idx: usize,
+}
+
+impl From<String> for ChangeFcChan {
+    fn from(value: String) -> Self {
+        // The two values must be comma-separated.
+        let mut tab = value.split(",");
+        ChangeFcChan {
+            time: time::Duration::from_millis(
+                tab.next().unwrap().parse().unwrap(),
+            ),
+            new_chan_idx: tab.next().unwrap().parse().unwrap(),
+        }
+    }
+}
 
 #[derive(Parser)]
 struct Args {
@@ -57,28 +80,36 @@ struct Args {
     /// source.
     proxy_uc: bool,
 
-    #[clap(short = 'o', long = "output", value_parser, default_value = "output.avi")]
+    #[clap(
+        short = 'o',
+        long = "output",
+        value_parser,
+        default_value = "output.avi"
+    )]
     output_file: String,
 
     /// Address of the RTP sink.
     #[clap(short = 'r', long = "rtp-addr", value_parser)]
     rtp_sink_addr: SocketAddr,
 
-    /// Whether a system call is performed to kill the GStreamer sink when the connection is closed.
+    /// Whether a system call is performed to kill the GStreamer sink when the
+    /// connection is closed.
     #[clap(long = "kill-gst")]
     kill_gst_at_end: bool,
 
     /// Initial channel index to join.
-    /// FC-TODO: this should be done by using a real heuristic, not the index because we could not know per se which channel to join.
+    /// FC-TODO: this should be done by using a real heuristic, not the index
+    /// because we could not know per se which channel to join.
     #[clap(short = 'i', long = "idx-chan", default_value = "0")]
     idx_fc_chan: usize,
 
-    // /// Comma-separated pair of values.
-    // /// The first value indicates the time (in ms) after which the client changes the flexicast channel it listens to.
-    // /// The second value indicates the index of the channel to join.
-    // /// This assumes that the client can use 1-RTT changes.
-    // #[clap(long = "change", num_args = 2..3, separator = ",")] 
-    // change_fc_chan: Option<(u64, usize)>,
+    /// Comma-separated pair of values.
+    /// The first value indicates the time (in ms) after which the client
+    /// changes the flexicast channel it listens to. The second value
+    /// indicates the index of the channel to join. This assumes that the
+    /// client can use 1-RTT changes.
+    #[clap(long = "change", value_parser = clap::value_parser!(ChangeFcChan))]
+    change_fc_chan: Option<ChangeFcChan>,
 }
 
 fn main() {
@@ -96,6 +127,11 @@ fn main() {
         ipv6_channels_allowed: true,
     };
     let mut is_mc_reliable = false;
+
+    // Whether the flexicast client leaves the channel and joins another after
+    // some time. Time of start of reception of data.
+    let mut start_recv: Option<time::Instant> = None;
+    let mut did_change = false;
 
     // Creation of the multicast path.
     let mut added_mc_cid = false;
@@ -162,7 +198,8 @@ fn main() {
     }
 
     // Create the RTP application handler at the client.
-    let mut rtp_client = RtpClient::new(&args.output_file, args.rtp_sink_addr).unwrap();
+    let mut rtp_client =
+        RtpClient::new(&args.output_file, args.rtp_sink_addr).unwrap();
 
     info!(
         "connecting to {:} from {:} with scid {}",
@@ -188,10 +225,19 @@ fn main() {
         if is_mc_reliable {
             conn.rmc_set_next_timeout(now, &random).unwrap();
         }
+
+        // Timer if the client changes its flexicast channel.
+        let timer_change = start_recv.zip(args.change_fc_chan.as_ref()).map(
+            |(start, change)| {
+                change.time.saturating_sub(now.duration_since(start))
+            },
+        );
+
         let timers = [
             conn.timeout(),        // QUIC timeout
             conn.mc_timeout(now),  // FC-QUIC timeout
             conn.rmc_timeout(now), // Reliable FC-QUIC timeout
+            timer_change,          // FC Channel change
         ];
         let timeout = timers.iter().flatten().min().copied();
 
@@ -306,6 +352,34 @@ fn main() {
 
         // Process Flexicast events.
         if conn.get_multicast_attributes().is_some() {
+            // Change the flexicast channel if the timer expired.
+            let timer_change = start_recv.zip(args.change_fc_chan.as_ref()).map(
+                |(start, change)| {
+                    change.time.saturating_sub(now.duration_since(start))
+                },
+            );
+            if !did_change &&
+                timer_change.is_some_and(|t| t == time::Duration::ZERO) &&
+                conn.get_multicast_attributes().unwrap().get_mc_role() ==
+                    McRole::Client(McClientStatus::ListenMcPath(true))
+            {
+                debug!("Client will change the flexicast channel.");
+
+                let fc_chan_id = conn
+                    .get_multicast_attributes()
+                    .unwrap()
+                    .get_mc_announce_data(
+                        args.change_fc_chan.as_ref().unwrap().new_chan_idx,
+                    )
+                    .unwrap()
+                    .channel_id
+                    .to_owned();
+                conn.fc_change_channel(false, &fc_chan_id).unwrap();
+
+                // Ensure that we don't change twice.
+                did_change = true;
+            }
+
             // Join the flexicast channel and creates the listening socket if not
             // already done.
             if conn.get_multicast_attributes().unwrap().get_mc_role() ==
@@ -315,8 +389,10 @@ fn main() {
 
                 // Did not join the flexicast channel before.
                 let multicast = conn.get_multicast_attributes().unwrap();
-                let mc_announce_data =
-                    multicast.get_mc_announce_data(args.idx_fc_chan).unwrap().to_owned();
+                let mc_announce_data = multicast
+                    .get_mc_announce_data(args.idx_fc_chan)
+                    .unwrap()
+                    .to_owned();
 
                 is_mc_reliable = mc_announce_data.full_reliability;
 
@@ -383,7 +459,11 @@ fn main() {
                             )
                             .unwrap();
                         probe_mc_path = true;
-                        conn.mc_join_channel(false, Some(&mc_announce_data.channel_id)).unwrap();
+                        conn.mc_join_channel(
+                            false,
+                            Some(&mc_announce_data.channel_id),
+                        )
+                        .unwrap();
                         mc_socket_opt = Some(mc_socket);
                     }
                 }
@@ -499,7 +579,13 @@ fn main() {
 
             // We should be able to read the stream until its end.
             let mut total = 0;
-            while let Ok((read, fin)) = conn.mc_stream_recv(stream_id, &mut buf[..]) {
+            while let Ok((read, fin)) =
+                conn.mc_stream_recv(stream_id, &mut buf[..])
+            {
+                if start_recv.is_none() {
+                    start_recv = Some(now);
+                }
+
                 total += read;
 
                 rtp_client.on_sequential_stream_recv(&buf[..read]);
