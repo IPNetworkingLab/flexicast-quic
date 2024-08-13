@@ -582,10 +582,10 @@ fn main() {
 
         // Handle time to live timeout of data of the multicast channel.
         let now = std::time::Instant::now();
-        for fc_chan in fc_channels.iter_mut() {
+        for (idx, fc_chan) in fc_channels.iter_mut().enumerate() {
             // Before expiring the data, deleguate to unicast connections if
             // reliable multicast is enabled.
-            let clients_conn = clients.iter_mut().map(|c| &mut c.1.conn);
+            let clients_conn = clients.iter_mut().filter(|client| client.1.conn.get_multicast_attributes().map(|mc| mc.get_fc_chan_id().map(|(_, id)| *id)).flatten().is_some_and(|i| i == idx)).map(|c| &mut c.1.conn);
             on_rmc_timeout_server!(
                 &mut fc_chan.fc_chan.channel,
                 clients_conn,
@@ -934,7 +934,7 @@ fn get_multicast_channel(
     let fc_config = FcConfig {
         authentication: args.authentication,
         use_fec: true,
-        probe_mc_path: true,
+        probe_mc_path: false,
         mc_cwnd: args.fc_cwnd,
         ..Default::default()
     };
@@ -954,7 +954,7 @@ fn get_multicast_channel(
         channel_id: channel_id_vec,
         path_type: multicast::McPathType::Data,
         auth_type: args.authentication,
-        is_ipv6: true,
+        is_ipv6: false,
         full_reliability: true,
         reset_stream_on_join: true,
         source_ip: [127, 0, 0, 1],

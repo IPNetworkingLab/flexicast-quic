@@ -132,6 +132,10 @@ fn main() {
     // some time. Time of start of reception of data.
     let mut start_recv: Option<time::Instant> = None;
     let mut did_change = false;
+    let mut current_fc_idx = args.idx_fc_chan;
+
+    // Whether the client must leave the multicast socket.
+    let mut must_leave_mc_sock = false;
 
     // Creation of the multicast path.
     let mut added_mc_cid = false;
@@ -254,8 +258,8 @@ fn main() {
             // will then proceed with the send loop.
             if events.is_empty() {
                 conn.on_timeout();
-                if conn.on_mc_timeout(now) ==
-                    Err(quiche::Error::Multicast(
+                if conn.on_mc_timeout(now)
+                    == Err(quiche::Error::Multicast(
                         multicast::McError::McInvalidRole(McRole::Client(
                             McClientStatus::Leaving(true),
                         )),
@@ -281,7 +285,7 @@ fn main() {
                     panic!("recv() failed: {:?}", e);
                 },
             };
-            info!("Recv from socket unicast");
+            debug!("Recv from socket unicast");
 
             let recv_info = quiche::RecvInfo {
                 to: socket.local_addr().unwrap(),
@@ -327,8 +331,8 @@ fn main() {
                 // Only feed the packet to quiche if the client listens to the
                 // multicast channel.
                 let err_opt =
-                    if conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                        McRole::Client(McClientStatus::ListenMcPath(true))
+                    if conn.get_multicast_attributes().unwrap().get_mc_role()
+                        == McRole::Client(McClientStatus::ListenMcPath(true))
                     {
                         conn.mc_recv(&mut buf[..len], recv_info)
                     } else {
@@ -358,10 +362,10 @@ fn main() {
                     change.time.saturating_sub(now.duration_since(start))
                 },
             );
-            if !did_change &&
-                timer_change.is_some_and(|t| t == time::Duration::ZERO) &&
-                conn.get_multicast_attributes().unwrap().get_mc_role() ==
-                    McRole::Client(McClientStatus::ListenMcPath(true))
+            if !did_change
+                && timer_change.is_some_and(|t| t == time::Duration::ZERO)
+                && conn.get_multicast_attributes().unwrap().get_mc_role()
+                    == McRole::Client(McClientStatus::ListenMcPath(true))
             {
                 debug!("Client will change the flexicast channel.");
 
@@ -375,22 +379,71 @@ fn main() {
                     .channel_id
                     .to_owned();
                 conn.fc_change_channel(false, &fc_chan_id).unwrap();
+                conn.abandon_path(
+                    mc_addr,
+                    peer_addr,
+                    0,
+                    b"change-channel".to_vec(),
+                )
+                .unwrap();
 
                 // Ensure that we don't change twice.
                 did_change = true;
+                must_leave_mc_sock = true;
+
+                // Change current flexicast channel index.
+                current_fc_idx = args.change_fc_chan.as_ref().unwrap().new_chan_idx;
+
+                // Reset some parameters because we change the flexicast channel.
+                added_mc_cid = false;
+                probe_mc_path = false;
+            }
+
+            // Stop the socket if the client left the group and it was
+            // acknowledged.
+            if let Some(multicast) = conn.get_multicast_attributes() {
+                if multicast.get_mc_role()
+                    == McRole::Client(McClientStatus::AwareUnjoined)
+                    && mc_socket_opt.is_some()
+                    || must_leave_mc_sock
+                {
+                    info!("Leave the multicast socket!");
+                    let mc_announce_data =
+                        multicast.get_mc_announce_data_path().unwrap().to_owned();
+                    if !args.proxy_uc {
+                        mc_socket_opt
+                            .as_mut()
+                            .unwrap()
+                            .leave_multicast_v4(
+                                &net::Ipv4Addr::from(
+                                    mc_announce_data.group_ip.to_owned(),
+                                ),
+                                &args.local_ip,
+                            )
+                            .unwrap();
+                    }
+                    if !must_leave_mc_sock {
+                        mc_socket_opt = None;
+                    } else {
+                        joined_mc_ip = false;
+                    }
+                    must_leave_mc_sock = false;
+                }
             }
 
             // Join the flexicast channel and creates the listening socket if not
             // already done.
-            if conn.get_multicast_attributes().unwrap().get_mc_role() ==
+            if matches!(
+                conn.get_multicast_attributes().unwrap().get_mc_role(),
                 McRole::Client(McClientStatus::AwareUnjoined)
-            {
+                    | McRole::Client(McClientStatus::Changing)
+            ) {
                 debug!("Client joins the flexicast channel.");
 
                 // Did not join the flexicast channel before.
                 let multicast = conn.get_multicast_attributes().unwrap();
                 let mc_announce_data = multicast
-                    .get_mc_announce_data(args.idx_fc_chan)
+                    .get_mc_announce_data(current_fc_idx)
                     .unwrap()
                     .to_owned();
 
@@ -444,6 +497,10 @@ fn main() {
                                 ))
                             };
 
+                        if let Some(sock) = mc_socket_opt.as_mut() {
+                            poll.registry().deregister(sock).unwrap();
+                        }
+
                         let mut mc_socket =
                             mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
                         debug!(
@@ -459,11 +516,13 @@ fn main() {
                             )
                             .unwrap();
                         probe_mc_path = true;
-                        conn.mc_join_channel(
-                            false,
-                            Some(&mc_announce_data.channel_id),
-                        )
-                        .unwrap();
+                        if !did_change {
+                            conn.mc_join_channel(
+                                false,
+                                Some(&mc_announce_data.channel_id),
+                            )
+                            .unwrap();
+                        }
                         mc_socket_opt = Some(mc_socket);
                     }
                 }
@@ -472,18 +531,19 @@ fn main() {
 
             // Join the multicast socket.
             if let Some(multicast) = conn.get_multicast_attributes() {
-                if multicast.get_mc_role() ==
-                    McRole::Client(McClientStatus::ListenMcPath(true)) &&
-                    !joined_mc_ip
+                if multicast.get_mc_role()
+                    == McRole::Client(McClientStatus::ListenMcPath(true))
+                    && !joined_mc_ip
                 {
                     if !args.proxy_uc {
+                        info!("Join MULTICAST");
                         mc_socket_opt
                             .as_mut()
                             .unwrap()
                             .join_multicast_v4(
                                 &net::Ipv4Addr::from(
                                     multicast
-                                        .get_mc_announce_data(0)
+                                        .get_mc_announce_data(current_fc_idx)
                                         .unwrap()
                                         .group_ip
                                         .to_owned(),
@@ -493,32 +553,6 @@ fn main() {
                             .unwrap();
                     }
                     joined_mc_ip = true;
-                }
-            }
-
-            // Stop the socket if the client left the group and it was
-            // acknowledged.
-            if let Some(multicast) = conn.get_multicast_attributes() {
-                if multicast.get_mc_role() ==
-                    McRole::Client(McClientStatus::AwareUnjoined) &&
-                    mc_socket_opt.is_some()
-                {
-                    info!("Leave the multicast socket!");
-                    let mc_announce_data =
-                        multicast.get_mc_announce_data_path().unwrap().to_owned();
-                    if !args.proxy_uc {
-                        mc_socket_opt
-                            .as_mut()
-                            .unwrap()
-                            .leave_multicast_v4(
-                                &net::Ipv4Addr::from(
-                                    mc_announce_data.group_ip.to_owned(),
-                                ),
-                                &args.local_ip,
-                            )
-                            .unwrap();
-                    }
-                    mc_socket_opt = None;
                 }
             }
         }

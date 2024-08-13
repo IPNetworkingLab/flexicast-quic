@@ -3305,7 +3305,7 @@ impl Connection {
                             debug!("Receive ack for McState: {:?}, {:?} and current role is {:?}", multicast::McClientAction::try_from(action), action_data, multicast.get_mc_role());
                             multicast.set_mc_state_in_flight(false);
                             match multicast.get_mc_role() {
-                                multicast::McRole::Client(multicast::McClientStatus::ListenMcPath(true)) if action == multicast::McClientAction::Change.try_into().unwrap() => multicast::McClientStatus::ListenMcPath(true),
+                                multicast::McRole::Client(multicast::McClientStatus::ListenMcPath(true)) if action == std::convert::TryInto::<u64>::try_into(multicast::McClientAction::Change).unwrap() => multicast::McClientStatus::ListenMcPath(true),
                                 multicast::McRole::Client(
                                     multicast::McClientStatus::Leaving(true),
                                 ) |

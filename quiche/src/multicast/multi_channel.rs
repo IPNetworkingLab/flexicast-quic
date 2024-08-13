@@ -75,6 +75,7 @@ impl Connection {
 
         // Update the Flexicast channel ID.
         multicast.fc_chan_id = Some((fc_chan_id.to_vec(), new_idx));
+        multicast.set_mc_space_id(new_fc_space_id, super::McPathType::Data);
 
         multicast.mc_leave_on_timeout = leave_on_timeout;
         multicast.update_client_state(super::McClientAction::Change, Some(new_fc_space_id as u64))
