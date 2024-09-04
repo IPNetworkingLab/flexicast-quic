@@ -336,9 +336,6 @@ pub struct MulticastAttributes {
     /// Space ID of the multicast data path.
     mc_space_id: Option<usize>,
 
-    /// Space ID of the multicast authentication path.
-    mc_auth_space_id: Option<usize>,
-
     /// Nack ranges received by the server from the client.
     /// Only present for the server unicast.
     /// For the client, it contains the last sent nack ranges.
@@ -942,7 +939,6 @@ impl Default for MulticastAttributes {
             mc_last_recv_time: None,
             mc_client_left_need_sync: false,
             mc_client_id: None,
-            mc_auth_space_id: None,
             mc_auth_type: McAuthType::None,
             mc_pn_need_sym_sign: None,
             mc_sym_signs: McSymSign::Client(HashMap::new()),
@@ -1776,19 +1772,6 @@ impl MulticastConnection for Connection {
                     // Reset the number of FEC repair packets in flight.
                     if let Some(fec_scheduler) = self.fec_scheduler.as_mut() {
                         fec_scheduler.reset_fec_state();
-                    }
-
-                    let mc_auth_space_id = multicast.mc_auth_space_id;
-
-                    // Expire packets from the authentication path.
-                    if let Some(auth_id) = mc_auth_space_id {
-                        // We expire packets but do not record them.
-                        self.mc_expire(
-                            Epoch::Application,
-                            auth_id as u64,
-                            ExpiredPkt::default(),
-                            now,
-                        )?;
                     }
 
                     let multicast = self.multicast.as_ref().unwrap();
@@ -5510,7 +5493,6 @@ mod tests {
         let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
         assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
         assert_eq!(multicast.mc_space_id, Some(1));
-        assert_eq!(multicast.mc_auth_space_id, None);
         assert!(multicast.mc_private_key.is_some());
         assert_eq!(
             multicast.get_mc_authentication_method(),
@@ -5521,7 +5503,6 @@ mod tests {
             let multicast = pipe.client.multicast.as_ref().unwrap();
             assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
             assert_eq!(multicast.mc_space_id, Some(1));
-            assert_eq!(multicast.mc_auth_space_id, None);
             assert!(multicast.mc_public_key.is_some());
             assert_eq!(
                 multicast.get_mc_authentication_method(),
@@ -5531,7 +5512,6 @@ mod tests {
             let multicast = pipe.client.multicast.as_ref().unwrap();
             assert_eq!(multicast.mc_auth_type, McAuthType::AsymSign);
             assert_eq!(multicast.mc_space_id, Some(1));
-            assert_eq!(multicast.mc_auth_space_id, None);
             assert!(multicast.mc_public_key.is_some());
         }
     }
