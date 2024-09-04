@@ -383,14 +383,12 @@ mod tests {
         // Add a second client.
         let mc_client_tp = Some(McClientTp::default());
         let random = SystemRandom::new();
-        let mc_data_auth = None;
 
         let mut client_loss = RangeSet::default();
         client_loss.insert(1..2);
 
         let fc_config = FcConfig {
             mc_announce_data: vec![mc_pipe.mc_announce_data.clone()],
-            mc_data_auth,
             probe_mc_path: true,
             authentication: McAuthType::None,
             mc_client_tp,

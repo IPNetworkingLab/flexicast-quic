@@ -151,8 +151,6 @@ pub const MC_STATE_CODE: u64 = 0xf4;
 pub const MC_KEY_CODE: u64 = 0xf5;
 /// MC_EXPIRE frame type.
 pub const MC_EXPIRE_CODE: u64 = 0xf6;
-/// MC_AUTH frame type.
-pub const MC_AUTH_CODE: u64 = 0xf7;
 /// MC_ASYM frame type.
 pub const MC_ASYM_CODE: u64 = 0xf8;
 /// MC_NACK frame type.
@@ -284,37 +282,6 @@ impl McConfig for crate::Config {
 
     fn set_enable_client_multicast(&mut self, v: Option<&McClientTp>) {
         self.local_transport_params.multicast_client_params = v.cloned();
-    }
-}
-
-#[derive(PartialEq, Eq, Clone, Debug, Copy)]
-/// Multicast path type.
-pub enum McPathType {
-    /// Multicast data exchanged on this channel.
-    Data,
-
-    /// Only used for symetric authentication.
-    Authentication,
-}
-
-impl TryFrom<u64> for McPathType {
-    type Error = crate::Error;
-
-    fn try_from(v: u64) -> Result<Self> {
-        match v {
-            0 => Ok(Self::Data),
-            1 => Ok(Self::Authentication),
-            _ => Err(Error::Multicast(McError::McPath)),
-        }
-    }
-}
-
-impl From<McPathType> for u64 {
-    fn from(v: McPathType) -> Self {
-        match v {
-            McPathType::Data => 0,
-            McPathType::Authentication => 1,
-        }
     }
 }
 
@@ -470,26 +437,6 @@ pub struct MulticastAttributes {
 
 impl MulticastAttributes {
     #[inline]
-    /// Returns a reference to the first MC_ANNOUNCE data for a
-    /// [`McPathType::Data`] path.
-    pub fn get_mc_announce_data_path(&self) -> Option<&McAnnounceData> {
-        self.mc_announce_data
-            .iter()
-            .find(|mc_data| mc_data.path_type == McPathType::Data)
-    }
-
-    #[inline]
-    /// Returns a mutable reference to the first MC_ANNOUNCE data for a
-    /// [`McPathType::Data`] path.
-    pub fn get_mut_mc_announce_data_path(
-        &mut self,
-    ) -> Option<&mut McAnnounceData> {
-        self.mc_announce_data
-            .iter_mut()
-            .find(|mc_data| mc_data.path_type == McPathType::Data)
-    }
-
-    #[inline]
     /// Returns the Flexicast channel ID that the client joins, and its index in
     /// the list of received McAnnounceData.
     pub fn get_fc_chan_id(&self) -> Option<&(Vec<u8>, usize)> {
@@ -581,7 +528,7 @@ impl MulticastAttributes {
                 McClientStatus::JoinedNoKey,
             (McClientStatus::Unaware, McClientAction::Join)
                 if is_server &&
-                    self.get_mc_announce_data_path().unwrap().is_processed =>
+                    self.get_mc_announce_data(0).unwrap().is_processed =>
                 McClientStatus::JoinedNoKey,
             (McClientStatus::WaitingToJoin, McClientAction::Join) =>
                 McClientStatus::JoinedNoKey,
@@ -744,7 +691,8 @@ impl MulticastAttributes {
     /// Get the channel decryption key secret.
     pub fn get_decryption_key_secret(&self) -> Result<&[u8]> {
         match self.mc_role {
-            McRole::ServerUnicast(McClientStatus::JoinedNoKey) | McRole::ServerUnicast(McClientStatus::Changing) => Ok(self
+            McRole::ServerUnicast(McClientStatus::JoinedNoKey) |
+            McRole::ServerUnicast(McClientStatus::Changing) => Ok(self
                 .mc_announce_data[fc_chan_idx!(self)?]
             .fc_channel_secret
             .as_ref()
@@ -825,16 +773,6 @@ impl MulticastAttributes {
                     McAuthType::None
                 }
             },
-            McAuthType::SymSign
-                if self
-                    .mc_announce_data
-                    .iter()
-                    .filter(|mc_data| {
-                        mc_data.path_type == McPathType::Authentication
-                    })
-                    .last()
-                    .is_some() =>
-                McAuthType::SymSign,
             _ => McAuthType::None,
         }
     }
@@ -842,21 +780,13 @@ impl MulticastAttributes {
     /// Sets the multicast path space identifier.
     /// This is used to alwasy refer to the correct multicast path
     /// when processing packets.
-    pub fn set_mc_space_id(&mut self, space_id: usize, path_type: McPathType) {
-        match path_type {
-            McPathType::Data => self.mc_space_id = Some(space_id),
-            McPathType::Authentication => self.mc_auth_space_id = Some(space_id),
-        }
+    pub fn set_mc_space_id(&mut self, space_id: usize) {
+        self.mc_space_id = Some(space_id)
     }
 
     /// Gets the multicast space ID.
     pub fn get_mc_space_id(&self) -> Option<usize> {
         self.mc_space_id
-    }
-
-    /// Gets the multicast authentication path space ID.
-    pub fn get_mc_auth_space_id(&self) -> Option<usize> {
-        self.mc_auth_space_id
     }
 
     /// Sets the multicast nack ranges received from the client.
@@ -899,19 +829,6 @@ impl MulticastAttributes {
         }
     }
 
-    /// Whether the multicast source must send authentication packets with
-    /// symetric signature.
-    pub fn should_send_mc_auth_packets(&self) -> bool {
-        if self.mc_role == McRole::ServerMulticast &&
-            self.mc_auth_type == McAuthType::SymSign
-        {
-            if let McSymSign::McSource(v) = &self.mc_sym_signs {
-                return !v.is_empty();
-            }
-        }
-        false
-    }
-
     /// Sets the [`MulticastAttributes::mc_space_id`] or
     /// [`MulticastAttributes::mc_space_id_auth`] depending on the given local
     /// address from the quiche library.
@@ -921,7 +838,7 @@ impl MulticastAttributes {
         for mc_data in self.mc_announce_data.iter() {
             let ip = std::net::Ipv4Addr::from(mc_data.group_ip.to_owned());
             if local_addr.ip() == ip && local_addr.port() == mc_data.udp_port {
-                self.set_mc_space_id(pid as usize, mc_data.path_type);
+                self.set_mc_space_id(pid as usize);
                 return Ok(());
             }
         }
@@ -1072,9 +989,6 @@ pub struct McAnnounceData {
     /// Time-to-live (ms) of multicast packets.
     /// After this time, the packets SHOULD NOT be retransmitted.
     pub expiration_timer: u64,
-
-    /// Path type.
-    pub path_type: McPathType,
 
     /// True if this multicast announce data is processed.
     /// For a server, it means that the data is sent to the client.
@@ -1261,7 +1175,7 @@ pub trait MulticastConnection {
     /// Sets the multicast path ID. Internally calls
     /// [`MulticastAttributes::set_mc_space_id`].
     fn set_mc_space_id(
-        &mut self, space_id: u64, path_type: McPathType,
+        &mut self, space_id: u64,
     ) -> Result<()>;
 
     /// Whether it is safe to close the multicast channel.
@@ -1317,14 +1231,8 @@ impl MulticastConnection for Connection {
                 .iter()
                 .position(|mc_data| !mc_data.is_processed);
             if idx.is_some() &&
-                (multicast.mc_role ==
-                    McRole::ServerUnicast(McClientStatus::Unaware) ||
-                    multicast
-                        .mc_announce_data
-                        .get(idx.unwrap())
-                        .unwrap()
-                        .path_type ==
-                        McPathType::Authentication)
+                multicast.mc_role ==
+                    McRole::ServerUnicast(McClientStatus::Unaware)
             {
                 idx
             } else {
@@ -1453,9 +1361,7 @@ impl MulticastConnection for Connection {
         }
 
         // Set the multicast path authentication method.
-        if let (Some(multicast), McPathType::Data) =
-            (self.multicast.as_mut(), mc_announce_data.path_type)
-        {
+        if let Some(multicast) = self.multicast.as_mut() {
             // Only allow for asymetric authentication if we have a key in the
             // MC_ANNOUNCE.
             if matches!(multicast.mc_role, McRole::Client(_)) &&
@@ -1473,14 +1379,8 @@ impl MulticastConnection for Connection {
         Ok(())
     }
 
-    fn mc_has_control_data(&self, send_pid: usize) -> bool {
+    fn mc_has_control_data(&self, _send_pid: usize) -> bool {
         if let Some(multicast) = self.multicast.as_ref() {
-            if let Some(mc_auth_space_id) = multicast.mc_auth_space_id {
-                // Do not send other information on the authentication path.
-                return mc_auth_space_id == send_pid &&
-                    multicast.should_send_mc_auth_packets();
-            }
-
             return self.mc_should_send_mc_announce().is_some() ||
                 multicast.should_send_mc_state() ||
                 multicast.should_send_mc_key() ||
@@ -1560,7 +1460,7 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_recv(&mut self, buf: &mut [u8], info: RecvInfo) -> Result<usize> {
-        let buf_len = if info.from_mc.is_some() {
+        let buf_len = if info.from_mc {
             if let Some(multicast) = self.multicast.as_mut() {
                 // Update the last time the client received a packet on the
                 // multicast channel.
@@ -1646,7 +1546,7 @@ impl MulticastConnection for Connection {
             let p = self.paths.get_mut(space_id as usize)?;
             p.recovery.mc_set_min_rtt(time::Duration::from_millis(
                 multicast
-                    .get_mc_announce_data_path()
+                    .get_mc_announce_data(0)
                     .unwrap()
                     .expiration_timer,
             ));
@@ -1660,7 +1560,7 @@ impl MulticastConnection for Connection {
                 space_id as u32,
                 now,
                 multicast
-                    .get_mc_announce_data_path()
+                    .get_mc_announce_data(0)
                     .ok_or(Error::Multicast(McError::McAnnounce))?
                     .expiration_timer,
                 hs_status,
@@ -1842,7 +1742,7 @@ impl MulticastConnection for Connection {
         let expiration_timer = self
             .multicast
             .as_ref()?
-            .get_mc_announce_data_path()?
+            .get_mc_announce_data(0)?
             .expiration_timer;
 
         // MC-TODO: should use mc_role instead of server.
@@ -2263,7 +2163,7 @@ impl MulticastConnection for Connection {
                     // mc_path.recovery.
                     // mc_set_loss_detection_timer(loss_detection_timer);
                     let expiration_timer = multicast
-                        .get_mc_announce_data_path()
+                        .get_mc_announce_data(0)
                         .unwrap()
                         .expiration_timer;
                     mc_path.recovery.mc_set_rtt(time::Duration::from_millis(
@@ -2293,10 +2193,10 @@ impl MulticastConnection for Connection {
     }
 
     fn set_mc_space_id(
-        &mut self, space_id: u64, path_type: McPathType,
+        &mut self, space_id: u64,
     ) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
-            multicast.set_mc_space_id(space_id as usize, path_type);
+            multicast.set_mc_space_id(space_id as usize);
             Ok(())
         } else {
             Err(Error::Multicast(McError::McDisabled))
@@ -2320,11 +2220,6 @@ impl MulticastConnection for Connection {
                 p.recovery.set_pacing_rate(rate, now);
             } else {
                 return Err(Error::Multicast(McError::McPath));
-            }
-
-            if let Some(space_id) = multicast.get_mc_auth_space_id() {
-                let p = self.paths.get_mut(space_id)?;
-                p.recovery.set_pacing_rate(rate, now);
             }
 
             Ok(())
@@ -2609,9 +2504,6 @@ pub struct MulticastChannelSource {
 
     /// Multicast send address.
     pub mc_send_addr: SocketAddr,
-
-    /// Authentication channel information.
-    pub mc_auth_info: Option<(ConnectionId<'static>, u128, SocketAddr)>,
 }
 
 impl MulticastChannelSource {
@@ -2620,7 +2512,7 @@ impl MulticastChannelSource {
     pub fn new_with_tls(
         mc_path_info: McPathInfo, config_server: &mut Config,
         config_client: &mut Config, peer: SocketAddr, keylog_filename: &str,
-        auth_path_info: Option<McPathInfo>, fc_config: &FcConfig,
+        fc_config: &FcConfig,
     ) -> Result<Self> {
         if fc_config.mc_cwnd.is_some() {
             config_client.cc_algorithm = CongestionControlAlgorithm::DISABLED;
@@ -2719,49 +2611,6 @@ impl MulticastChannelSource {
         conn_server.set_active(mc_path_info.peer, mc_path_info.local, true)?;
         Self::advance(&mut conn_server, &mut conn_client)?;
 
-        // Same with the authentication multicast path.
-        let mc_auth_info = if let Some(auth) = auth_path_info {
-            conn_server.new_source_cid(&auth.cid, reset_token, true)?;
-            conn_client.new_source_cid(&auth.cid, reset_token, true)?;
-            Self::advance(&mut conn_server, &mut conn_client)?;
-
-            conn_client.probe_path(auth.local, auth.peer)?;
-            let pid_c2s_1 = conn_client
-                .paths
-                .path_id_from_addrs(&(auth.local, auth.peer))
-                .expect("no such path");
-            let mc_path_client = conn_client.paths.get_mut(pid_c2s_1)?;
-            mc_path_client.recovery.reset();
-            Self::advance(&mut conn_server, &mut conn_client)?;
-            let pid_s2c_1 = conn_server
-                .paths
-                .path_id_from_addrs(&(auth.peer, auth.local))
-                .expect("no such path");
-            let mc_path_server = conn_server.paths.get_mut(pid_s2c_1)?;
-
-            // Set the congestion window of the multicast source for the auth
-            // path.
-            if let Some(cwnd) = fc_config.mc_cwnd {
-                mc_path_server.recovery.set_mc_max_cwnd(cwnd);
-            }
-            // } else {
-            //     mc_path_server.recovery.set_mc_max_cwnd(std::usize::MAX - 1);
-            // }
-            mc_path_server.recovery.reset();
-
-            conn_server.multicast.as_mut().unwrap().mc_auth_space_id =
-                Some(pid_s2c_1);
-
-            // Set the new path active.
-            conn_client.set_active(auth.local, auth.peer, true)?;
-            conn_server.set_active(auth.peer, auth.local, true)?;
-            Self::advance(&mut conn_server, &mut conn_client)?;
-
-            Some((auth.cid.clone().into_owned(), reset_token, auth.peer))
-        } else {
-            None
-        };
-
         conn_client.multicast = Some(MulticastAttributes {
             mc_role: McRole::Client(McClientStatus::Unspecified),
             fc_rotate: Some(FcRotate::Src(false)),
@@ -2778,7 +2627,6 @@ impl MulticastChannelSource {
             mc_path_conn_id: (cid, reset_token),
             mc_path_peer: mc_path_info.peer,
             mc_send_addr: peer,
-            mc_auth_info,
         })
     }
 
@@ -2895,22 +2743,6 @@ impl MulticastChannelSource {
             Some(self.mc_path_peer),
         )
     }
-
-    /// Equivalent of the [`MulticastChannelSource::mc_send`] method but for
-    /// authentication packetss. Send on the authentication multicast path if it
-    /// exists.
-    ///
-    /// Generates a [`McError::McInvalidAuth`] error if the
-    /// authentication method is not symetric signature.
-    pub fn mc_send_sym_auth(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if let Some(mc_auth) = self.mc_auth_info.as_ref() {
-            self.channel
-                .send_on_path(buf, Some(mc_auth.2), Some(mc_auth.2))
-                .map(|(written, _)| written)
-        } else {
-            Err(Error::Multicast(McError::McInvalidAuth))
-        }
-    }
 }
 
 #[derive(Default, Debug)]
@@ -3025,8 +2857,6 @@ pub struct FcConfig {
 
     pub mc_announce_to_join: usize,
 
-    pub mc_data_auth: Option<McAnnounceData>,
-
     pub authentication: McAuthType,
 
     pub probe_mc_path: bool,
@@ -3051,7 +2881,6 @@ impl Default for FcConfig {
             probe_mc_path: true,
             mc_client_tp: Some(McClientTp::default()),
             fc_server_tp: true,
-            mc_data_auth: None,
             use_fec: true,
             fec_window_size: 500_000,
             mc_cwnd: None,
@@ -3118,30 +2947,6 @@ pub mod testing {
             let mut client_config = get_test_mc_config(false, fc_config);
             let mut server_config = get_test_mc_config(true, fc_config);
 
-            // Change the config to set the maximum number of bytes that can be
-            // sent if the congestion window is fixed.
-            // if let Some(cwnd) = max_cwnd {
-            //     server_config.set_initial_max_data(cwnd as u64);
-            //     client_config.set_initial_max_data(cwnd as u64);
-            // }
-
-            // Create a new announce data if the channel uses symetric
-            // authentication.
-            let mc_data_auth = if fc_config.authentication == McAuthType::SymSign
-            {
-                let mut data = get_test_mc_announce_data();
-                data.udp_port += 10;
-                data.path_type = McPathType::Authentication;
-                data.channel_id =
-                    [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x44].to_vec();
-
-                Some(data)
-            } else {
-                None
-            };
-
-            fc_config.mc_data_auth = mc_data_auth;
-
             // Multicast path.
             let mut mc_channel = get_test_mc_channel_source(
                 &mut server_config,
@@ -3162,16 +2967,6 @@ pub mod testing {
             mc_announce_data.channel_id =
                 mc_channel.mc_path_conn_id.0.as_ref().to_vec();
 
-            if let Some(mc_data) = fc_config.mc_data_auth.as_mut() {
-                mc_data.channel_id = mc_channel
-                    .mc_auth_info
-                    .as_ref()
-                    .unwrap()
-                    .0
-                    .as_ref()
-                    .to_vec();
-            }
-
             mc_channel
                 .channel
                 .multicast
@@ -3179,17 +2974,6 @@ pub mod testing {
                 .unwrap()
                 .mc_announce_data
                 .push(mc_announce_data.clone());
-
-            // Push the authentication data if it exists.
-            if let Some(mc_data) = fc_config.mc_data_auth.as_ref() {
-                mc_channel
-                    .channel
-                    .multicast
-                    .as_mut()
-                    .unwrap()
-                    .mc_announce_data
-                    .push(mc_data.clone());
-            }
 
             // Copy the public key from the multicast channel.
             if let Some(public_key) = mc_channel
@@ -3255,7 +3039,7 @@ pub mod testing {
                 let recv_info = RecvInfo {
                     from: *server_addr,
                     to: *client_addr,
-                    from_mc: Some(McPathType::Data),
+                    from_mc: true,
                 };
 
                 let res =
@@ -3288,9 +3072,6 @@ pub mod testing {
                     .mc_set_mc_announce_data(mc_announce_data)
                     .unwrap();
             }
-            if let Some(mc_data) = &fc_config.mc_data_auth {
-                pipe.server.mc_set_mc_announce_data(mc_data).unwrap();
-            }
             let multicast = pipe.server.multicast.as_mut().unwrap();
             multicast.mc_announce_data[fc_config.mc_announce_to_join]
                 .fc_channel_secret = Some(mc_channel.master_secret.clone());
@@ -3307,19 +3088,6 @@ pub mod testing {
             pipe.server
                 .new_source_cid(&scid, reset_token, true)
                 .unwrap();
-
-            if fc_config.mc_data_auth.is_some() {
-                let mut scid = [0; 16];
-                random.fill(&mut scid[..]).unwrap();
-
-                let scid = ConnectionId::from_ref(&scid);
-                let mut reset_token = [0; 16];
-                random.fill(&mut reset_token).unwrap();
-                let reset_token = u128::from_be_bytes(reset_token);
-                pipe.server
-                    .new_source_cid(&scid, reset_token, true)
-                    .unwrap();
-            }
 
             pipe.advance().unwrap();
 
@@ -3368,51 +3136,7 @@ pub mod testing {
                 .multicast
                 .as_mut()
                 .unwrap()
-                .set_mc_space_id(pid_c2s_1, McPathType::Data);
-
-            assert_eq!(pipe.advance(), Ok(()));
-
-            if pipe
-                .client
-                .multicast
-                .as_ref()
-                .unwrap()
-                .get_mc_announce_data(1)
-                .is_some() &&
-                fc_config.mc_data_auth.is_some()
-            {
-                let scid = crate::ConnectionId::from_ref(
-                    &fc_config.mc_data_auth.as_ref().unwrap().channel_id,
-                );
-
-                pipe.client.add_mc_cid(&scid).unwrap();
-                assert_eq!(pipe.advance(), Ok(()));
-
-                let server_addr = testing::Pipe::server_addr();
-                let client_addr_2 = CLIENT_AUTH_ADDR.parse().unwrap();
-
-                pipe.client
-                    .create_mc_path(
-                        client_addr_2,
-                        server_addr,
-                        fc_config.probe_mc_path,
-                    )
-                    .unwrap();
-
-                let pid_c2s_1 = pipe
-                    .client
-                    .paths
-                    .path_id_from_addrs(&(client_addr_2, server_addr))
-                    .expect("no such path");
-
-                pipe.client
-                    .multicast
-                    .as_mut()
-                    .unwrap()
-                    .set_mc_space_id(pid_c2s_1, McPathType::Authentication);
-
-                assert_eq!(pipe.advance(), Ok(()));
-            }
+                .set_mc_space_id(pid_c2s_1);
 
             assert_eq!(pipe.advance(), Ok(()));
 
@@ -3474,7 +3198,7 @@ pub mod testing {
                     let recv_info = RecvInfo {
                         from: send_info.from,
                         to: send_info.to,
-                        from_mc: None,
+                        from_mc: false,
                     };
                     pipe.server.recv(&mut buf[..written], recv_info)?;
                 }
@@ -3507,43 +3231,6 @@ pub mod testing {
             let pipe = &mut self.unicast_pipes.get_mut(pipe_idx).unwrap().0;
             pipe.server.stream_send(stream_id, &buf, true)?;
             pipe.advance()
-        }
-
-        /// The multicast source sends as much authentication packets as needed.
-        pub fn mc_source_sends_auth_packets(
-            &mut self, client_loss: Option<&RangeSet>,
-        ) -> Result<usize> {
-            let mut mc_buf = [0u8; 1500];
-            let written = self.mc_channel.mc_send_sym_auth(&mut mc_buf[..])?;
-
-            // This is not optimal but it works...
-            let client_loss = if let Some(client_loss) = client_loss {
-                client_loss.flatten().collect()
-            } else {
-                HashSet::new()
-            };
-            let idx_client_receive = (0..self.unicast_pipes.len())
-                .filter(|&idx| !client_loss.contains(&(idx as u64)));
-
-            for client_idx in idx_client_receive {
-                let mut recv_buf = mc_buf;
-                let (pipe, _, server_addr) =
-                    self.unicast_pipes.get_mut(client_idx).unwrap();
-
-                let recv_info = RecvInfo {
-                    from: *server_addr,
-                    to: CLIENT_AUTH_ADDR.parse().unwrap(),
-                    from_mc: Some(McPathType::Authentication),
-                };
-
-                let res = pipe
-                    .client
-                    .mc_recv(&mut recv_buf[..written], recv_info)
-                    .unwrap();
-                assert_eq!(res, written);
-            }
-
-            Ok(written)
         }
     }
 
@@ -3604,7 +3291,6 @@ pub mod testing {
         McAnnounceData {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
             is_ipv6: false,
-            path_type: McPathType::Data,
             source_ip: std::net::Ipv4Addr::new(127, 0, 0, 1).octets(),
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
             udp_port: 7676,
@@ -3650,36 +3336,12 @@ pub mod testing {
             cid: channel_id,
         };
 
-        let mut channel_id_auth = [0; 16];
-        let auth_path_info = if fc_config.authentication == McAuthType::SymSign {
-            ring::rand::SystemRandom::new()
-                .fill(&mut channel_id_auth[..])
-                .unwrap();
-            let channel_id = ConnectionId::from_ref(&channel_id_auth);
-
-            let dummy_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
-            let dummy_port = 1239;
-            let to2 = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-                dummy_ip,
-                dummy_port + 1,
-            ));
-
-            Some(McPathInfo {
-                local: to2,
-                peer: to2,
-                cid: channel_id,
-            })
-        } else {
-            None
-        };
-
         MulticastChannelSource::new_with_tls(
             mc_path_info,
             config_server,
             config_client,
             to,
             keylog_filename,
-            auth_path_info,
             fc_config,
         )
     }
@@ -3765,7 +3427,6 @@ mod tests {
     use ring::rand::SecureRandom;
 
     use crate::multicast::authentication::McSymAuth;
-    use crate::multicast::testing::CLIENT_AUTH_ADDR;
     use crate::testing;
 
     use crate::multicast::testing::get_test_mc_channel_source;
@@ -4095,7 +3756,7 @@ mod tests {
         let recv_info = RecvInfo {
             from: to.from,
             to: to.to,
-            from_mc: None,
+            from_mc: false,
         };
         let res = mc_channel
             .client_backup
@@ -4117,7 +3778,7 @@ mod tests {
         let recv_info = RecvInfo {
             from: to.from,
             to: to.to,
-            from_mc: None,
+            from_mc: false,
         };
         let res = mc_channel
             .client_backup
@@ -4163,7 +3824,7 @@ mod tests {
         let recv_info = RecvInfo {
             from: server_addr,
             to: client_addr_2,
-            from_mc: Some(McPathType::Data),
+            from_mc: true,
         };
 
         // First a message with an invalid authentication signature.
@@ -4235,7 +3896,7 @@ mod tests {
         let recv_info = RecvInfo {
             from: server_addr,
             to: client_addr_2,
-            from_mc: Some(McPathType::Data),
+            from_mc: true,
         };
 
         let client_mc_space_id =
@@ -5873,217 +5534,6 @@ mod tests {
             assert_eq!(multicast.mc_auth_space_id, None);
             assert!(multicast.mc_public_key.is_some());
         }
-
-        let mut fc_config = FcConfig {
-            authentication: McAuthType::SymSign,
-            use_fec: true,
-            probe_mc_path: false,
-            ..Default::default()
-        };
-        let mc_pipe = MulticastPipe::new(
-            2,
-            "/tmp/test_authentication_methods.txt",
-            &mut fc_config,
-        )
-        .unwrap();
-
-        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
-        assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
-        assert_eq!(multicast.mc_space_id, Some(1));
-        assert_eq!(multicast.mc_auth_space_id, Some(2));
-        assert_eq!(
-            multicast.get_mc_authentication_method(),
-            McAuthType::SymSign
-        );
-
-        for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
-            let multicast = pipe.client.multicast.as_ref().unwrap();
-            assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
-            assert_eq!(multicast.mc_space_id, Some(1));
-            assert_eq!(multicast.mc_auth_space_id, Some(2));
-            assert_eq!(
-                multicast.get_mc_authentication_method(),
-                McAuthType::SymSign
-            );
-
-            let multicast = pipe.server.multicast.as_ref().unwrap();
-            assert_eq!(multicast.mc_auth_type, McAuthType::SymSign);
-            assert_eq!(multicast.mc_space_id, Some(1));
-            assert_eq!(multicast.mc_auth_space_id, None);
-        }
-    }
-
-    #[test]
-    /// Tests the symmetric signature process. In a nutshell, this test
-    /// evaluates that:
-    /// * The multicast channel creates a third path used for authentication
-    ///   only,
-    /// * The multicast channel sends MC_AUTH frames containing symetric
-    ///   signatures on this third path,
-    /// * The MC_AUTH frames contain a signature for each client, linked to
-    ///   their client ID,
-    /// * The signatures are correctly signed by the clients.
-    fn test_mc_auth_sym_process() {
-        let mut fc_config = FcConfig {
-            authentication: McAuthType::SymSign,
-            use_fec: false,
-            probe_mc_path: false,
-            ..Default::default()
-        };
-        let mut mc_pipe = MulticastPipe::new(
-            2,
-            "/tmp/test_mc_auth_sym_process.txt",
-            &mut fc_config,
-        )
-        .unwrap();
-
-        let auth_info = mc_pipe.mc_channel.mc_auth_info.as_ref();
-        assert!(auth_info.is_some());
-        let auth_info = auth_info.unwrap();
-
-        // The third path used for authentication-only exists.
-        assert_eq!(mc_pipe.mc_channel.channel.paths.len(), 3);
-        let auth_path_id = mc_pipe
-            .mc_channel
-            .channel
-            .paths
-            .path_id_from_addrs(&(auth_info.2, auth_info.2));
-        assert_eq!(auth_path_id, Some(2));
-        assert_eq!(
-            mc_pipe
-                .mc_channel
-                .channel
-                .multicast
-                .as_ref()
-                .unwrap()
-                .mc_auth_space_id,
-            Some(2)
-        );
-        assert_eq!(
-            mc_pipe
-                .mc_channel
-                .channel
-                .multicast
-                .as_ref()
-                .unwrap()
-                .mc_auth_type,
-            McAuthType::SymSign
-        );
-
-        // There is a third path for symetric authentication.
-        for (pipe, ..) in mc_pipe.unicast_pipes.iter() {
-            assert_eq!(pipe.client.paths.len(), 3);
-            let auth_path_id = pipe.client.paths.path_id_from_addrs(&(
-                CLIENT_AUTH_ADDR.parse().unwrap(),
-                testing::Pipe::server_addr(),
-            ));
-            assert_eq!(auth_path_id, Some(2));
-            assert_eq!(
-                pipe.client.multicast.as_ref().unwrap().mc_auth_space_id,
-                Some(2)
-            );
-            assert_eq!(
-                pipe.client.multicast.as_ref().unwrap().mc_auth_type,
-                McAuthType::SymSign
-            );
-            assert_eq!(
-                pipe.server.multicast.as_ref().unwrap().mc_auth_type,
-                McAuthType::SymSign
-            );
-        }
-
-        // Multicast source has no data to send on the authentication path.
-        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
-        let auth_pid = multicast.mc_auth_space_id.unwrap();
-        assert!(!mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
-
-        // Multicast source sends two data packets.
-        assert_eq!(mc_pipe.source_send_single_stream(true, None, 1), Ok(339));
-        assert_eq!(mc_pipe.source_send_single_stream(true, None, 5), Ok(339));
-
-        // Multicast source must send authentication packets.
-        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
-        let pn_need_sign = multicast.mc_pn_need_sym_sign.as_ref().unwrap();
-        let mut pn_need_sign_vec: Vec<_> =
-            pn_need_sign.iter().map(|(i, _)| *i).collect();
-        pn_need_sign_vec.sort();
-        assert_eq!(pn_need_sign_vec, vec![2, 3]);
-
-        // Multicast source generates the authentication tag.
-        let clients: Vec<_> = mc_pipe
-            .unicast_pipes
-            .iter_mut()
-            .map(|(conn, ..)| &mut conn.server)
-            .collect();
-        assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
-        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
-
-        // All packets that needed to be authenticated have been processed.
-        assert_eq!(multicast.mc_pn_need_sym_sign, Some(VecDeque::new()));
-
-        // Two packets have been signed, for pn=2 and pn=3.
-        if let McSymSign::McSource(signatures) = &multicast.mc_sym_signs {
-            assert_eq!(signatures.len(), 2);
-            for (i, (pn, sign, ..)) in signatures.iter().enumerate() {
-                assert_eq!(i as u64 + 2, *pn);
-                assert_eq!(sign.len(), 2);
-                let mut ids: Vec<_> =
-                    sign.iter().map(|mc_sym| mc_sym.mc_client_id).collect();
-                ids.sort();
-                assert_eq!(ids, vec![0, 1]);
-            }
-        } else {
-            assert!(false);
-        }
-
-        // Multicast source has packets to send on the authentication path.
-        assert!(mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
-
-        // Multicast source sends the authentication packets to the clients.
-        assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(130));
-
-        // Multicast source must not send any authentication packet because
-        // everything as been sent.
-        assert!(!mc_pipe.mc_channel.channel.mc_has_control_data(auth_pid));
-        let multicast = mc_pipe.mc_channel.channel.multicast.as_ref().unwrap();
-        assert_eq!(multicast.mc_pn_need_sym_sign, Some(VecDeque::new()));
-        let signatures = &multicast.mc_sym_signs;
-        if let McSymSign::McSource(signatures) = signatures {
-            assert_eq!(signatures.len(), 0);
-        } else {
-            assert!(false);
-        }
-    }
-
-    #[test]
-    fn my_test_mc() {
-        let mut fc_config = FcConfig {
-            authentication: McAuthType::SymSign,
-            use_fec: false,
-            probe_mc_path: false,
-            ..Default::default()
-        };
-        let mut pipe =
-            MulticastPipe::new(2, "/tmp/bench", &mut fc_config).unwrap();
-
-        let stream = vec![0u8; 1_000_000];
-        pipe.mc_channel
-            .channel
-            .stream_send(1, &stream, true)
-            .unwrap();
-        let mut buf = [0u8; 4000];
-
-        let clients: Vec<_> = pipe
-            .unicast_pipes
-            .iter_mut()
-            .map(|(conn, ..)| &mut conn.server)
-            .collect();
-
-        for _ in 0..100 {
-            pipe.mc_channel.mc_send(&mut buf).unwrap();
-            pipe.mc_channel.channel.mc_sym_sign(&clients).unwrap();
-            pipe.mc_channel.mc_send_sym_auth(&mut buf[..]).unwrap();
-        }
     }
 
     #[test]
@@ -6098,7 +5548,7 @@ mod tests {
     /// the (potentially two) added path(s).
     fn test_mc_create_mc_paths_probe() {
         let mut fc_config = FcConfig {
-            authentication: McAuthType::SymSign,
+            authentication: McAuthType::AsymSign,
             use_fec: true,
             probe_mc_path: true,
             ..Default::default()
@@ -6127,7 +5577,6 @@ mod tests {
         for _ in 0..100 {
             mc_pipe.mc_channel.mc_send(&mut buf).unwrap();
             mc_pipe.mc_channel.channel.mc_sym_sign(&clients).unwrap();
-            mc_pipe.mc_channel.mc_send_sym_auth(&mut buf[..]).unwrap();
         }
     }
 
@@ -6148,7 +5597,7 @@ mod tests {
     /// client.
     fn test_cid_and_path_explicit() {
         let mut fc_config = FcConfig {
-            authentication: McAuthType::SymSign,
+            authentication: McAuthType::AsymSign,
             use_fec: true,
             probe_mc_path: true,
             ..Default::default()
@@ -6165,17 +5614,15 @@ mod tests {
         // The server received the new connection ID from the client.
         assert_eq!(
             mc_pipe.unicast_pipes[0].0.client.ids.active_source_cids(),
-            3
+            2
         );
         assert!(mc_pipe.unicast_pipes[0].0.server.ids.get_dcid(0).is_ok());
         assert!(mc_pipe.unicast_pipes[0].0.server.ids.get_dcid(1).is_ok());
-        assert!(mc_pipe.unicast_pipes[0].0.server.ids.get_dcid(2).is_ok());
-        // MC-TODO: should ensure that this is equivalent to the client sCID.
 
-        assert_eq!(mc_pipe.unicast_pipes[0].0.server.paths.len(), 3);
+        assert_eq!(mc_pipe.unicast_pipes[0].0.server.paths.len(), 2);
 
         let mut fc_config = FcConfig {
-            authentication: McAuthType::SymSign,
+            authentication: McAuthType::AsymSign,
             use_fec: true,
             probe_mc_path: false,
             ..Default::default()
@@ -6192,49 +5639,12 @@ mod tests {
         // The server received the new connection ID from the client.
         assert_eq!(
             mc_pipe.unicast_pipes[0].0.client.ids.active_source_cids(),
-            3
+            2
         );
         assert!(mc_pipe.unicast_pipes[0].0.server.ids.get_dcid(0).is_ok());
         assert!(mc_pipe.unicast_pipes[0].0.server.ids.get_dcid(1).is_ok());
-        assert!(mc_pipe.unicast_pipes[0].0.server.ids.get_dcid(2).is_ok());
-        // MC-TODO: should ensure that this is equivalent to the client sCID.
 
         assert_eq!(mc_pipe.unicast_pipes[0].0.server.paths.len(), 1);
-    }
-
-    #[test]
-    /// Symmetric authentication adds a new multicast path.
-    fn test_mc_symmetric_auth_path() {
-        let mut fc_config = FcConfig {
-            authentication: McAuthType::SymSign,
-            use_fec: true,
-            probe_mc_path: false,
-            ..Default::default()
-        };
-        fc_config.mc_announce_data[fc_config.mc_announce_to_join].is_ipv6 = true;
-        let mut mc_pipe = MulticastPipe::new(
-            1,
-            "/tmp/test_mc_symmetric_auth_path.txt",
-            &mut fc_config,
-        )
-        .unwrap();
-
-        assert_eq!(mc_pipe.source_send_single_stream(true, None, 1), Ok(348));
-        assert_eq!(mc_pipe.source_send_single_stream(true, None, 5), Ok(348));
-        assert_eq!(mc_pipe.source_send_single_stream(true, None, 9), Ok(348));
-
-        // The client received all streams.
-        let uc_pipe = &mut mc_pipe.unicast_pipes.get_mut(0).unwrap().0;
-        let mut readables = uc_pipe.client.readable().collect::<Vec<_>>();
-        readables.sort();
-        assert_eq!(readables, vec![1, 5, 9]);
-
-        // The client received all streams. They must not send packets to the
-        // source.
-        let mut out = [0u8; 2048];
-        assert_eq!(uc_pipe.client.stream_send(2, &out[..100], true), Ok(100));
-        assert_eq!(uc_pipe.client.send(&mut out).map(|(w, _)| w), Ok(139));
-        // The client does not send ACK_MP frames for the authentication path.
     }
 
     #[test]

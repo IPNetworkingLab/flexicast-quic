@@ -35,11 +35,9 @@ use crate::Error;
 use crate::Result;
 
 use crate::crypto::Algorithm;
-use crate::multicast::authentication::McSymSignature;
 use crate::multicast::MC_ANNOUNCE_CODE;
 use crate::multicast::MC_ANNOUNCE_BW_CODE;
 use crate::multicast::MC_ASYM_CODE;
-use crate::multicast::MC_AUTH_CODE;
 use crate::multicast::MC_EXPIRE_CODE;
 use crate::multicast::MC_KEY_CODE;
 use crate::multicast::MC_NACK_CODE;
@@ -223,7 +221,6 @@ pub enum Frame {
 
     McAnnounce {
         channel_id: Vec<u8>,
-        path_type: u64,
         auth_type: u64,
         is_ipv6: u8,
         full_reliability: u8,
@@ -258,12 +255,6 @@ pub enum Frame {
         expiration_type: u8,
         pkt_num: Option<u64>,
         fec_metadata: Option<u64>,
-    },
-
-    McAuth {
-        channel_id: Vec<u8>,
-        pn: u64,
-        signatures: Vec<McSymSignature>,
     },
 
     McAsym {
@@ -435,7 +426,6 @@ impl Frame {
 
             MC_ANNOUNCE_CODE..=MC_ANNOUNCE_BW_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
-                let path_type = b.get_varint()?;
                 let auth_type = b.get_varint()?;
                 let is_ipv6 = b.get_u8()?;
                 let full_reliability = b.get_u8()?;
@@ -468,7 +458,6 @@ impl Frame {
 
                 Frame::McAnnounce {
                     channel_id,
-                    path_type,
                     auth_type,
                     is_ipv6,
                     full_reliability,
@@ -533,25 +522,6 @@ impl Frame {
                     expiration_type,
                     pkt_num,
                     fec_metadata,
-                }
-            },
-
-            MC_AUTH_CODE => {
-                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
-                let pn = b.get_varint()?;
-                let nb_signatures = b.get_u8()?;
-                let signatures: Vec<_> = (0..nb_signatures)
-                    .map(|_| {
-                        let mc_client_id = b.get_varint()?;
-                        let sign = b.get_bytes_with_u8_length()?.to_vec();
-                        Ok(McSymSignature { mc_client_id, sign })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-
-                Frame::McAuth {
-                    channel_id,
-                    pn,
-                    signatures,
                 }
             },
 
@@ -893,7 +863,6 @@ impl Frame {
 
             Frame::McAnnounce {
                 channel_id,
-                path_type,
                 auth_type,
                 is_ipv6,
                 full_reliability,
@@ -913,7 +882,6 @@ impl Frame {
                 b.put_varint(ty)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
-                b.put_varint(*path_type)?;
                 b.put_varint(*auth_type)?;
                 b.put_u8(*is_ipv6)?;
                 b.put_u8(*full_reliability)?;
@@ -981,27 +949,6 @@ impl Frame {
                 }
                 if let Some(fec_metadata) = fec_metadata {
                     b.put_varint(*fec_metadata)?;
-                }
-            },
-
-            Frame::McAuth {
-                channel_id,
-                pn,
-                signatures,
-            } => {
-                debug!(
-                    "Going to encode the MC_AUTH frame: {:?} {:?} {:?}",
-                    channel_id, pn, signatures
-                );
-                b.put_varint(MC_AUTH_CODE)?;
-                b.put_u8(channel_id.len() as u8)?;
-                b.put_bytes(channel_id.as_ref())?;
-                b.put_varint(*pn)?;
-                b.put_u8(signatures.len() as u8)?;
-                for signature in signatures.iter() {
-                    b.put_varint(signature.mc_client_id)?;
-                    b.put_u8(signature.sign.len() as u8)?;
-                    b.put_bytes(&signature.sign)?;
                 }
             },
 
@@ -1308,7 +1255,6 @@ impl Frame {
 
             Frame::McAnnounce {
                 channel_id,
-                path_type,
                 auth_type,
                 is_ipv6: _,
                 full_reliability: _,
@@ -1322,7 +1268,6 @@ impl Frame {
             } => {
                 let public_key_len_size =
                     octets::varint_len(public_key.len() as u64);
-                let path_type_size = octets::varint_len(*path_type);
                 let auth_type_size = octets::varint_len(*auth_type);
                 let frame_type_size = if bitrate.is_some() {
                     octets::varint_len(MC_ANNOUNCE_BW_CODE)
@@ -1332,7 +1277,6 @@ impl Frame {
                 frame_type_size + // frame type
                 1 + // channel_id len
                 channel_id.len() +
-                path_type_size +
                 auth_type_size +
                 1 + // is_ipv6
                 1 + // full_reliability
@@ -1400,29 +1344,6 @@ impl Frame {
                 channel_id.len() +
                 pkt_num_len +
                 fec_metadata_len
-            },
-
-            Frame::McAuth {
-                channel_id,
-                pn,
-                signatures,
-            } => {
-                let frame_type_size = octets::varint_len(MC_AUTH_CODE);
-                let pn_len = octets::varint_len(*pn);
-                let signatures_size: usize = signatures
-                    .iter()
-                    .map(|sign| {
-                        octets::varint_len(sign.mc_client_id) +
-                            1 +
-                            sign.sign.len()
-                    })
-                    .sum();
-                frame_type_size +
-                1 + // channel_id len
-                channel_id.len() +
-                pn_len +
-                1 + // signatures len
-                signatures_size
             },
 
             Frame::McAsym { signature } => {
@@ -2038,7 +1959,6 @@ impl std::fmt::Debug for Frame {
 
             Frame::McAnnounce {
                 channel_id,
-                path_type,
                 auth_type,
                 is_ipv6,
                 full_reliability,
@@ -2050,7 +1970,7 @@ impl std::fmt::Debug for Frame {
                 public_key: _,
                 bitrate,
             } => {
-                write!(f, "MC_ANNOUNCE channel ID={:?}, path_type={} auth_type={} is_ipv6={}, full_reliability={} reset_stream_on_join={} source_ip={:?}, group_ip={:?}, udp_port={}, expiration_timer={}, bitrate={:?}", channel_id, path_type, auth_type, is_ipv6, full_reliability, reset_stream_on_join, source_ip, group_ip, udp_port, expiration_timer, bitrate)?;
+                write!(f, "MC_ANNOUNCE channel ID={:?}, auth_type={}, is_ipv6={}, full_reliability={} reset_stream_on_join={} source_ip={:?}, group_ip={:?}, udp_port={}, expiration_timer={}, bitrate={:?}", channel_id, auth_type, is_ipv6, full_reliability, reset_stream_on_join, source_ip, group_ip, udp_port, expiration_timer, bitrate)?;
             },
 
             Frame::McState {
@@ -2087,18 +2007,6 @@ impl std::fmt::Debug for Frame {
                 fec_metadata,
             } => {
                 write!(f, "MC_EXPIRE channel ID={:?} expiration type: {:?} pkt_num: {:?} fec_metadata: {:?}", channel_id, expiration_type, pkt_num, fec_metadata)?;
-            },
-
-            Frame::McAuth {
-                channel_id,
-                pn,
-                signatures,
-            } => {
-                write!(
-                    f,
-                    "MC_AUTH channel ID={:?} pn={:?} signatures={:?}",
-                    channel_id, pn, signatures
-                )?;
             },
 
             Frame::McAsym { signature } => {
@@ -3722,7 +3630,6 @@ mod tests {
                 58, 220,
             ]
             .to_vec(),
-            path_type: 0,
             auth_type: 3,
             is_ipv6: 0,
             full_reliability: 1,
@@ -3740,7 +3647,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 47);
+        assert_eq!(wire_len, 46);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
@@ -3779,7 +3686,6 @@ mod tests {
                 58, 220,
             ]
             .to_vec(),
-            path_type: 0,
             auth_type: 3,
             is_ipv6: 0,
             full_reliability: 1,
@@ -3797,7 +3703,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 51);
+        assert_eq!(wire_len, 50);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
@@ -3941,59 +3847,6 @@ mod tests {
         };
 
         assert_eq!(wire_len, 17);
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert_eq!(
-            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
-            Ok(frame.clone())
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(
-            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
-                .is_err()
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(
-            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
-                .is_ok()
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(Frame::from_bytes(
-            &mut b,
-            packet::Type::Handshake,
-            &get_decoder()
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn mc_auth() {
-        let mut d = [41; 400];
-
-        let frame = Frame::McAuth {
-            channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
-            pn: 0xff383c,
-            signatures: vec![
-                McSymSignature {
-                    mc_client_id: 1,
-                    sign: vec![0xff, 0xdd, 0xee],
-                },
-                McSymSignature {
-                    mc_client_id: 3,
-                    sign: vec![0xaf, 0xdd, 0x32, 43],
-                },
-            ],
-        };
-
-        let wire_len = {
-            let mut b = octets::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b).unwrap()
-        };
-
-        assert_eq!(wire_len, 26);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

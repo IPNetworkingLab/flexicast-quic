@@ -21,11 +21,6 @@ pub enum McAuthType {
     /// Use asymmetric signature at the end of each Multicast QUIC packet.
     AsymSign,
 
-    /// Create a new Multicast QUIC packet on the authentication path containing
-    /// an MC_AUTH frame with the list of symetric signatures, using the keys of
-    /// the unicast connection for all clients of the multicast channel.
-    SymSign,
-
     /// Dynamically changes the signature process.
     /// Currently only supports symetric -> asymmetric.
     /// The inner value is the threshold number of receivers.
@@ -48,7 +43,6 @@ impl TryFrom<u64> for McAuthType {
     fn try_from(v: u64) -> Result<Self> {
         match v {
             0 => Ok(Self::AsymSign),
-            1 => Ok(Self::SymSign),
             2 => Ok(Self::Dynamic(20)),
             3 => Ok(Self::None),
             4 => Ok(Self::StreamAsym),
@@ -61,7 +55,6 @@ impl From<McAuthType> for u64 {
     fn from(v: McAuthType) -> Self {
         match v {
             McAuthType::AsymSign => 0,
-            McAuthType::SymSign => 1,
             McAuthType::Dynamic(_) => 2,
             McAuthType::None => 3,
             McAuthType::StreamAsym => 4,
@@ -79,7 +72,6 @@ impl FromStr for McAuthType {
     fn from_str(name: &str) -> Result<Self> {
         match name {
             "asymmetric" => Ok(McAuthType::AsymSign),
-            "symmetric" => Ok(McAuthType::SymSign),
             "none" => Ok(McAuthType::None),
             "stream" => Ok(McAuthType::StreamAsym),
             _ => Err(Error::Multicast(McError::McInvalidAuth)),
@@ -269,7 +261,7 @@ impl McAuthentication for Connection {
     fn mc_get_pn(&self, buf: &[u8]) -> Result<u64> {
         if let Some(multicast) = self.multicast.as_ref() {
             let cid_len = multicast
-                .get_mc_announce_data_path()
+                .get_mc_announce_data(0)
                 .ok_or(Error::Multicast(McError::McAnnounce))?
                 .channel_id
                 .len();
@@ -413,7 +405,6 @@ impl McSymAuth for Connection {
 mod tests {
     use crate::multicast::FcConfig;
     use crate::multicast::testing::MulticastPipe;
-    use crate::multicast::McPathType;
     use crate::multicast::MulticastConnection;
     use crate::RecvInfo;
 
@@ -422,7 +413,7 @@ mod tests {
     #[test]
     fn test_mc_get_pn() {
         let mut fc_config = FcConfig {
-            authentication: McAuthType::SymSign,
+            authentication: McAuthType::AsymSign,
             use_fec: false,
             probe_mc_path: false,
             ..Default::default()
@@ -433,7 +424,7 @@ mod tests {
 
         let mut buf = [0u8; 1500];
         let written = mc_pipe.mc_channel.mc_send(&mut buf).map(|(w, _)| w);
-        assert_eq!(written, Ok(339));
+        assert_eq!(written, Ok(403));
 
         // Get the packet number without impacting the original packet.
         let pn = mc_pipe.unicast_pipes[0]
@@ -446,7 +437,7 @@ mod tests {
         let recv_info = RecvInfo {
             from: mc_pipe.unicast_pipes[0].2,
             to: mc_pipe.unicast_pipes[0].1,
-            from_mc: Some(McPathType::Data),
+            from_mc: true,
         };
         assert_eq!(
             mc_pipe.unicast_pipes[0]
@@ -458,155 +449,4 @@ mod tests {
         // No harm. Nice.
         assert_eq!(mc_pipe.unicast_pipes[0].0.client.readable().next(), Some(1));
     }
-
-    // NO MORE SUPPORT FOR SYMMETRIC AUTHENTICATION.
-    // THE FOLLOWING TEST DOES NOT WORK.
-    // #[test]
-    // /// The multicast source sends multicast traffic with a symmetric
-    // /// authentication method. The clients verify the signatures to assert
-    // /// that the packets are correctly authenticated.
-    // fn test_mc_sym_auth_sign() {
-    //     for probe_mc_path in [true, false] {
-    //         let mut fc_config = FcConfig {
-    //             authentication: McAuthType::SymSign,
-    //             use_fec: false,
-    //             probe_mc_path,
-    //             ..Default::default()
-    //         };
-    //         let mut mc_pipe = MulticastPipe::new(
-    //             5,
-    //             "/tmp/test_mc_sym_auth_sign.txt",
-    //             &mut fc_config,
-    //         )
-    //         .unwrap();
-
-    //         let mut mc_buf = [0u8; 1500];
-
-    //         // Multicast source sends a multicast stream.
-    //         assert_eq!(mc_pipe.source_send_single_stream(false, None, 1), Ok(0));
-    //         let written = mc_pipe.source_send_single_from_buf(None, &mut mc_buf);
-    //         assert_eq!(written, Ok(339));
-
-    //         // Multicast source generates the AEAD tags for the clients.
-    //         let clients: Vec<_> = mc_pipe
-    //             .unicast_pipes
-    //             .iter_mut()
-    //             .map(|(conn, ..)| &mut conn.server)
-    //             .collect();
-    //         assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
-
-    //         // Multicast source sends the authentication packet.
-    //         assert_eq!(mc_pipe.mc_source_sends_auth_packets(None), Ok(136));
-
-    //         // The clients verify the authentication of the multicast data packets
-    //         // with the received tags.
-    //         for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
-    //             // Get the packet number of the received (and unauthenticated)
-    //             // packet.
-    //             let pn =
-    //                 pipe.client.mc_get_pn(&mc_buf[..written.unwrap()]).unwrap();
-
-    //             assert_eq!(
-    //                 pipe.client.mc_verify_sym(&mc_buf[..written.unwrap()], pn),
-    //                 Ok(())
-    //             );
-
-    //             // No more authentication packet for the client.
-    //             let sign = if let McSymSign::Client(c) =
-    //                 &pipe.client.multicast.as_ref().unwrap().mc_sym_signs
-    //             {
-    //                 c
-    //             } else {
-    //                 panic!()
-    //             };
-    //             assert!(sign.is_empty());
-    //         }
-
-    //         // Unicast connection stops the communication.
-    //         for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
-    //             assert_eq!(pipe.server.close(false, 0x1234, b"done"), Ok(()));
-    //             assert_eq!(
-    //                 pipe.server.close(false, 0x1234, b"done"),
-    //                 Err(Error::Done)
-    //             );
-
-    //             assert_eq!(pipe.advance(), Ok(()));
-    //             assert_eq!(pipe.advance(), Ok(()));
-
-    //             assert!(pipe.client.is_closed() || pipe.client.is_draining());
-    //             assert!(pipe.server.is_closed() || pipe.server.is_draining());
-    //         }
-    //     }
-    // }
-
-    // NO MORE SUPPORT FOR SYMMETRIC AUTHENTICATION.
-    // THE FOLLOWING TEST DOES NOT WORK.
-    // #[test]
-    // /// The multicast source sends a long stream consisting of several packets.
-    // /// The server generates MC_AUTH frames for all the STREAM frames.
-    // /// This tests is added to correct an existing bug where the source does not
-    // /// send all the MC_AUTH frames that they should.
-    // fn test_mc_sym_lot_of_data() {
-    //     let mut fc_config = FcConfig {
-    //         authentication: McAuthType::SymSign,
-    //         use_fec: true,
-    //         probe_mc_path: false,
-    //         ..Default::default()
-    //     };
-    //     let mut mc_pipe = MulticastPipe::new(
-    //         10,
-    //         "/tmp/test_mc_sym_lot_of_data.txt",
-    //         &mut fc_config,
-    //     )
-    //     .unwrap();
-
-    //     let mut buf = vec![0u8; 10_000];
-    //     assert_eq!(
-    //         mc_pipe.mc_channel.channel.stream_send(1, &buf, true),
-    //         Ok(buf.len())
-    //     );
-
-    //     let mut all_pns = Vec::with_capacity(1000);
-
-    //     loop {
-    //         if let Ok((w, _)) = mc_pipe.mc_channel.mc_send(&mut buf[..]) {
-    //             let pn = mc_pipe.unicast_pipes[0].0.client.mc_get_pn(&buf[..w]);
-    //             assert!(pn.is_ok());
-    //             all_pns.push(pn.unwrap());
-
-    //             for (pipe, client_addr, server_addr) in
-    //                 mc_pipe.unicast_pipes.iter_mut()
-    //             {
-    //                 let recv_info = RecvInfo {
-    //                     from: *server_addr,
-    //                     to: *client_addr,
-    //                     from_mc: Some(McPathType::Data),
-    //                 };
-    //                 pipe.client.mc_recv(&mut buf[..w], recv_info).unwrap();
-    //             }
-    //         } else {
-    //             break;
-    //         }
-    //     }
-
-    //     // Multicast source generates the AEAD tags for the clients.
-    //     let clients: Vec<_> = mc_pipe
-    //         .unicast_pipes
-    //         .iter_mut()
-    //         .map(|(conn, ..)| &mut conn.server)
-    //         .collect();
-    //     assert_eq!(mc_pipe.mc_channel.channel.mc_sym_sign(&clients), Ok(()));
-    //     while let Ok(_) = mc_pipe.mc_source_sends_auth_packets(None) {}
-
-    //     for (pipe, ..) in mc_pipe.unicast_pipes.iter_mut() {
-    //         let client = &mut pipe.client;
-
-    //         let tags = client.mc_get_client_auth_tags();
-    //         assert!(tags.is_ok());
-    //         let tags = tags.unwrap();
-    //         for pn in all_pns.iter() {
-    //             assert!(tags.contains(&pn));
-    //         }
-    //     }
-    // }
 }

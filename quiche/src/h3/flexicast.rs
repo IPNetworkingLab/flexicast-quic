@@ -1096,7 +1096,6 @@ mod tests {
         // The second client joins the flexicast channel.
         let fc_config = FcConfig {
             mc_announce_data: vec![fc_session.mc_announce_data.clone()],
-            mc_data_auth: None,
             authentication: McAuthType::AsymSign,
             probe_mc_path: true,
             fec_window_size: 5,

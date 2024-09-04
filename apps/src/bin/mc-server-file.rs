@@ -680,7 +680,7 @@ fn main() {
             let recv_info = quiche::RecvInfo {
                 to: socket.local_addr().unwrap(),
                 from,
-                from_mc: None,
+                from_mc: false,
             };
 
             log_uc_pkt_recv.push(pkt_buf.len());

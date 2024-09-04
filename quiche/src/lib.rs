@@ -122,7 +122,7 @@
 //! loop {
 //!     let (read, from) = socket.recv_from(&mut buf).unwrap();
 //!
-//!     let recv_info = quiche::RecvInfo { from, to, from_mc: None, };
+//!     let recv_info = quiche::RecvInfo { from, to, from_mc: false, };
 //!
 //!     let read = match conn.recv(&mut buf[..read], recv_info) {
 //!         Ok(v) => v,
@@ -688,7 +688,7 @@ pub struct RecvInfo {
 
     /// Whether this packet was received on a multicast channel.
     /// If some, gives the multicast path type.
-    pub from_mc: Option<McPathType>,
+    pub from_mc: bool,
 }
 
 /// Ancillary information about outgoing packets.
@@ -2258,7 +2258,7 @@ impl Connection {
     ///     let recv_info = quiche::RecvInfo {
     ///         from,
     ///         to: local,
-    ///         from_mc: None,
+    ///         from_mc: false,
     ///     };
     ///
     ///     let read = match conn.recv(&mut buf[..read], recv_info) {
@@ -2712,7 +2712,7 @@ impl Connection {
                 .get(epoch)
                 .crypto_0rtt_open
                 .as_ref()
-        } else if info.from_mc.is_some() {
+        } else if info.from_mc {
             // The multicast channel uses the shared key.
             // All multicast paths use the same shared key for encryption.
             if let Some(multicast) = self.multicast.as_ref() {
@@ -2869,7 +2869,7 @@ impl Connection {
             }
         }
 
-        let space_id_to_decrypt = if info.from_mc.is_some() {
+        let space_id_to_decrypt = if info.from_mc {
             1 // Always 1 for the flexicast source.
         } else {
             space_id as u32
@@ -3281,17 +3281,14 @@ impl Connection {
 
                     frame::Frame::McAnnounce { channel_id, .. } => {
                         if let Some(multicast) = self.multicast.as_mut() {
-                            if let Some(mc_announce_data) = multicast
+                            if multicast
                                 .get_mut_mc_announce_data_by_cid(&channel_id)
+                                .is_some()
                             {
-                                if mc_announce_data.path_type ==
-                                    multicast::McPathType::Data
-                                {
-                                    multicast.update_client_state(
-                                        multicast::McClientAction::Notify,
-                                        None,
-                                    )?;
-                                }
+                                multicast.update_client_state(
+                                    multicast::McClientAction::Notify,
+                                    None,
+                                )?;
                             }
                         }
                     },
@@ -3305,7 +3302,14 @@ impl Connection {
                             debug!("Receive ack for McState: {:?}, {:?} and current role is {:?}", multicast::McClientAction::try_from(action), action_data, multicast.get_mc_role());
                             multicast.set_mc_state_in_flight(false);
                             match multicast.get_mc_role() {
-                                multicast::McRole::Client(multicast::McClientStatus::ListenMcPath(true)) if action == std::convert::TryInto::<u64>::try_into(multicast::McClientAction::Change).unwrap() => multicast::McClientStatus::ListenMcPath(true),
+                                multicast::McRole::Client(
+                                    multicast::McClientStatus::ListenMcPath(true),
+                                ) if action ==
+                                    std::convert::TryInto::<u64>::try_into(
+                                        multicast::McClientAction::Change,
+                                    )
+                                    .unwrap() =>
+                                    multicast::McClientStatus::ListenMcPath(true),
                                 multicast::McRole::Client(
                                     multicast::McClientStatus::Leaving(true),
                                 ) |
@@ -3810,7 +3814,6 @@ impl Connection {
 
         // Multicast.
         let mut mc_used_auth_packet = McAuthType::None;
-        let mut mc_path_type = None;
         // Whether an MC_ASYM frame must be sent in this packet.
         if let Some(multicast) = self.multicast.as_mut() {
             if matches!(
@@ -3821,13 +3824,6 @@ impl Connection {
                     if space_id == send_pid {
                         mc_used_auth_packet =
                             multicast.get_mc_authentication_method();
-                        mc_path_type = Some(McPathType::Data);
-                    } else if let Some(auth_space_id) =
-                        multicast.get_mc_auth_space_id()
-                    {
-                        if auth_space_id == send_pid {
-                            mc_path_type = Some(McPathType::Authentication);
-                        }
                     }
                 }
             }
@@ -4195,50 +4191,6 @@ impl Connection {
 
         let left_before_packing_ack_frame = left;
 
-        // Create MC_AUTH frame.
-        //
-        // Only sent on a multicast authentication path
-        // ([`McPathType::Authentication`]). MC_AUTH frames are the first
-        // frames of the packet because the main priority of this path is to
-        // authenticate data form the multicast data path.
-        let mut sent_mc_auth = false;
-        if let Some(McPathType::Authentication) = mc_path_type {
-            if let Some(multicast) = self.multicast.as_mut() {
-                if let Some(mc_announce_data) =
-                    multicast.get_mc_announce_data_path()
-                {
-                    let channel_id = mc_announce_data.channel_id.clone();
-                    if let multicast::authentication::McSymSign::McSource(
-                        sym_signs,
-                    ) = &mut multicast.mc_sym_signs
-                    {
-                        while let Some((pn, next_sign)) = sym_signs.front() {
-                            let frame = frame::Frame::McAuth {
-                                channel_id: channel_id.clone(),
-                                pn: *pn,
-                                signatures: next_sign.to_vec(),
-                            };
-
-                            if push_frame_to_pkt!(b, frames, frame, left) {
-                                ack_eliciting = true;
-                                in_flight = true;
-                                sent_mc_auth = true;
-
-                                // Pop element.
-                                _ = sym_signs.pop_front();
-                            } else {
-                                break;
-                            }
-                        }
-                    } else {
-                        return Err(Error::Multicast(
-                            multicast::McError::McInvalidSign,
-                        ));
-                    }
-                }
-            }
-        }
-
         // Create ACK frame.
         //
         // When we need to explicitly elicit an ACK via PING later, go ahead and
@@ -4333,19 +4285,6 @@ impl Connection {
                         // Don't process twice the path's packet number space.
                         if space_id == active_scid_seq {
                             continue;
-                        }
-
-                        // Multicast: client does not send ACKMP frames for frames
-                        // received on the multicast path.
-                        // MC-TODO: need to test this condition.
-                        if let Some(multicast) = self.multicast.as_ref() {
-                            if let Some(mc_auth_space_id) =
-                                multicast.get_mc_auth_space_id()
-                            {
-                                if space_id == mc_auth_space_id as u64 {
-                                    continue;
-                                }
-                            }
                         }
 
                         // If the SCID is no more present, do not raise an error.
@@ -4866,7 +4805,6 @@ impl Connection {
                     .ok_or(Error::Multicast(multicast::McError::McDisabled))?;
                 let frame = frame::Frame::McAnnounce {
                     channel_id: mc_announce_data.channel_id.clone(),
-                    path_type: mc_announce_data.path_type.into(),
                     auth_type: mc_announce_data.auth_type.into(),
                     is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
                     full_reliability: if mc_announce_data.full_reliability {
@@ -5012,7 +4950,7 @@ impl Connection {
                         expiration_type += 4;
                     }
                     let mc_announce_data =
-                        multicast.get_mc_announce_data_path().ok_or(
+                        multicast.get_mc_announce_data(0).ok_or(
                             Error::Multicast(multicast::McError::McAnnounce),
                         )?;
 
@@ -5397,8 +5335,7 @@ impl Connection {
             path.active() &&
             !dgram_emitted &&
             (consider_standby_paths || !path.is_standby()) &&
-            !fec_only_path &&
-            !sent_mc_auth
+            !fec_only_path
         {
             while let Some(priority_key) = self.streams.peek_flushable() {
                 let stream_id = priority_key.id;
@@ -5882,21 +5819,6 @@ impl Connection {
 
         if ack_eliciting {
             self.ack_eliciting_sent = true;
-        }
-
-        // Multicast.
-        // If symetric authentication is used, record that this packet number must
-        // be authenticated.
-        if let Some(multicast) = self.multicast.as_mut() {
-            if mc_used_auth_packet == McAuthType::SymSign {
-                if let Some(vec_pn) = multicast.mc_pn_need_sym_sign.as_mut() {
-                    vec_pn.push_back((pn, out[..written].to_vec()));
-                } else {
-                    return Err(Error::Multicast(
-                        multicast::McError::McInvalidSign,
-                    ));
-                }
-            }
         }
 
         Ok((pkt_type, written))
@@ -8986,48 +8908,6 @@ impl Connection {
                 }
             },
 
-            frame::Frame::McAuth {
-                channel_id,
-                pn,
-                signatures,
-            } => {
-                debug!(
-                    "Must process McAuth frame: {:?} {:?} {:?}",
-                    channel_id, pn, signatures
-                );
-
-                // Store the signature of the client for later authentication.
-                // Generates an error if the client does not use symmetric
-                // authentication, or does not have a valid client ID.
-                if let Some(multicast) = self.multicast.as_mut() {
-                    if multicast.mc_auth_type != McAuthType::SymSign {
-                        return Err(Error::Multicast(
-                            multicast::McError::McInvalidAuth,
-                        ));
-                    }
-
-                    let client_id = multicast.get_self_client_id()?;
-                    let signature = signatures
-                        .iter()
-                        .find(|sign| sign.mc_client_id == client_id)
-                        .ok_or(Error::Multicast(
-                            multicast::McError::McInvalidClientId,
-                        ))?;
-                    if let multicast::authentication::McSymSign::Client(
-                        auth_tags,
-                    ) = &mut multicast.mc_sym_signs
-                    {
-                        auth_tags.insert(pn, signature.sign.to_owned());
-                    } else {
-                        return Err(Error::Multicast(
-                            multicast::McError::McInvalidSign,
-                        ));
-                    }
-                } else {
-                    return Err(Error::Multicast(multicast::McError::McDisabled));
-                }
-            },
-
             frame::Frame::McAsym { signature } => {
                 info!(
                     "Receive an MC_ASYM frame on space id {:?}: {:?}",
@@ -9318,7 +9198,6 @@ impl Connection {
 
             frame::Frame::McAnnounce {
                 channel_id,
-                path_type,
                 auth_type,
                 is_ipv6,
                 full_reliability,
@@ -9330,7 +9209,7 @@ impl Connection {
                 public_key,
                 bitrate,
             } => {
-                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?}, path_type={:?}, auth_type={:?}, is_ipv6={}, full_reliability={}, reset_stream_on_joih={}, source_ip={:?}, group_ip={:?}, udp_port={}, bitrate={:?}", channel_id, path_type, auth_type, is_ipv6, full_reliability, reset_stream_on_join, source_ip, group_ip, udp_port, bitrate);
+                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?} auth_type={:?}, is_ipv6={}, full_reliability={}, reset_stream_on_joih={}, source_ip={:?}, group_ip={:?}, udp_port={}, bitrate={:?}", channel_id, auth_type, is_ipv6, full_reliability, reset_stream_on_join, source_ip, group_ip, udp_port, bitrate);
                 if self.is_server {
                     error!("The server should not receive an MC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -9338,7 +9217,6 @@ impl Connection {
 
                 let mc_announce_data = multicast::McAnnounceData {
                     channel_id,
-                    path_type: path_type.try_into()?,
                     auth_type: auth_type.try_into()?,
                     is_ipv6: is_ipv6 == 1,
                     full_reliability: full_reliability == 1,
@@ -10973,7 +10851,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: server_path.peer_addr(),
                 from: server_path.local_addr(),
-                from_mc: None,
+                from_mc: false,
             };
 
             self.client.recv(buf, info)
@@ -10984,7 +10862,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: client_path.peer_addr(),
                 from: client_path.local_addr(),
-                from_mc: None,
+                from_mc: false,
             };
 
             self.server.recv(buf, info)
@@ -11046,7 +10924,7 @@ pub mod testing {
         let info = RecvInfo {
             to: active_path.local_addr(),
             from: active_path.peer_addr(),
-            from_mc: None,
+            from_mc: false,
         };
 
         conn.recv(&mut buf[..len], info)?;
@@ -11071,7 +10949,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: si.to,
                 from: si.from,
-                from_mc: None,
+                from_mc: false,
             };
 
             conn.recv(&mut pkt, info)?;
@@ -18040,7 +17918,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
-            from_mc: None,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -18094,7 +17972,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
-            from_mc: None,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -18109,7 +17987,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
-            from_mc: None,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -18125,7 +18003,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
-            from_mc: None,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -18140,7 +18018,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
-            from_mc: None,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -19049,7 +18927,7 @@ mod tests {
             .recv(&mut pkt_buf[..written], RecvInfo {
                 to: server_addr,
                 from: client_addr_2,
-                from_mc: None,
+                from_mc: false,
             })
             .expect("server receive path challenge");
 
@@ -19292,7 +19170,6 @@ use crate::multicast::authentication::McAuthentication;
 use crate::multicast::reliable::ReliableMc;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::multicast::McError;
-use crate::multicast::McPathType;
 use crate::multicast::MissingRangeSet;
 use crate::multicast::MulticastConnection;
 pub use crate::packet::ConnectionId;

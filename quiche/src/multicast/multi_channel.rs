@@ -75,7 +75,7 @@ impl Connection {
 
         // Update the Flexicast channel ID.
         multicast.fc_chan_id = Some((fc_chan_id.to_vec(), new_idx));
-        multicast.set_mc_space_id(new_fc_space_id, super::McPathType::Data);
+        multicast.set_mc_space_id(new_fc_space_id);
 
         multicast.mc_leave_on_timeout = leave_on_timeout;
         multicast.update_client_state(super::McClientAction::Change, Some(new_fc_space_id as u64))
@@ -279,8 +279,7 @@ pub mod testing {
                 .multicast
                 .as_mut()
                 .unwrap()
-                .set_mc_space_id(path_id, crate::multicast::McPathType::Data);
-            println!("After I create the MC path. The path id={path_id}");
+                .set_mc_space_id(path_id);
 
             pipe.advance()?;
 
@@ -675,7 +674,7 @@ mod tests {
             .multicast
             .as_mut()
             .unwrap()
-            .set_mc_space_id(path_id, crate::multicast::McPathType::Data);
+            .set_mc_space_id(path_id);
 
         // Add to the pipe.
         mfc_pipe

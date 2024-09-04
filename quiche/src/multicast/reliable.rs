@@ -283,7 +283,7 @@ impl ReliableMulticastConnection for Connection {
     ) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
             let expiration_timer = multicast
-                .get_mc_announce_data_path()
+                .get_mc_announce_data(0)
                 .unwrap()
                 .expiration_timer;
 
@@ -357,7 +357,7 @@ impl ReliableMulticastConnection for Connection {
 
             // Deleguate streams sent on the multicast path.
             let expiration_timer = mc_s
-                .get_mc_announce_data_path()
+                .get_mc_announce_data(0)
                 .ok_or(Error::Multicast(McError::McAnnounce))?
                 .expiration_timer;
             let space_id = mc_s
@@ -477,7 +477,7 @@ impl ReliableMulticastConnection for Connection {
 impl MulticastAttributes {
     /// Whether the multicast channel uses reliable multicast.
     pub fn mc_is_reliable(&self) -> bool {
-        self.get_mc_announce_data_path()
+        self.get_mc_announce_data(0)
             .map(|d| d.full_reliability)
             .unwrap_or(false)
     }
@@ -1585,12 +1585,10 @@ mod tests {
         let mc_client_tp = Some(McClientTp::default());
         let random = SystemRandom::new();
         let mc_announce_data = &mc_pipe.mc_announce_data;
-        let mc_data_auth = None;
 
         let mut fc_config = FcConfig {
             mc_client_tp,
             mc_announce_data: vec![mc_announce_data.clone()],
-            mc_data_auth,
             authentication: McAuthType::StreamAsym,
             probe_mc_path: true,
             ..FcConfig::default()

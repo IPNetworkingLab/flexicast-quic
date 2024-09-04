@@ -81,9 +81,5 @@ mio = { version = "0.8", features = ["net", "os-poll"] }
 url = "1"
 criterion = "0.4"
 
-[[bench]]
-name = "multicast-asym"
-harness = false
-
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
