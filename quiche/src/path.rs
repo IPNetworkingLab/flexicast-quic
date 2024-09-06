@@ -554,7 +554,6 @@ impl Path {
             now,
             trace_id,
         );
-        // println!("The recovery says lost packets={:?}", lost_packets);
 
         let mut lost_probe_time = None;
         self.in_flight_challenges.retain(|(_, _, sent_time)| {

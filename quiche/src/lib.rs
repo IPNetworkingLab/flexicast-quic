@@ -4023,13 +4023,6 @@ impl Connection {
                                 }
                             },
 
-                            frame::Frame::McNack { .. } => {
-                                // if let Some(multicast) =
-                                // self.multicast.as_mut() {
-                                //     // MC-TODO.
-                                // }
-                            },
-
                             _ => (),
                         }
                     },
@@ -4929,40 +4922,6 @@ impl Connection {
 
                     if push_frame_to_pkt!(b, frames, frame, left) {
                         multicast.set_mc_key_read(true);
-
-                        ack_eliciting = true;
-                        in_flight = true;
-                    }
-                }
-            }
-
-            // Create MC_EXPIRE frame.
-            if let Some(multicast) = self.multicast.as_mut() {
-                if let (true, Some(exp_pkt)) = (
-                    multicast.mc_last_expired_needs_notif,
-                    multicast.mc_last_expired,
-                ) {
-                    let mut expiration_type = 0;
-                    if exp_pkt.pn.is_some() {
-                        expiration_type += 1;
-                    }
-                    if exp_pkt.ssid.is_some() {
-                        expiration_type += 4;
-                    }
-                    let mc_announce_data =
-                        multicast.get_mc_announce_data(0).ok_or(
-                            Error::Multicast(multicast::McError::McAnnounce),
-                        )?;
-
-                    let frame = frame::Frame::McExpire {
-                        channel_id: mc_announce_data.channel_id.clone(),
-                        expiration_type,
-                        pkt_num: exp_pkt.pn,
-                        fec_metadata: exp_pkt.ssid,
-                    };
-
-                    if push_frame_to_pkt!(b, frames, frame, left) {
-                        multicast.mc_last_expired_needs_notif = false;
 
                         ack_eliciting = true;
                         in_flight = true;
@@ -7115,19 +7074,6 @@ impl Connection {
                 }
             }
 
-            // Disable loss detection timer for data sent on the multicast data
-            // path.
-            if let Some(multicast) = self.multicast.as_ref() {
-                if Some(path_id) == multicast.get_mc_space_id() &&
-                    matches!(
-                        multicast.get_mc_role(),
-                        multicast::McRole::ServerMulticast
-                    )
-                {
-                    continue;
-                }
-            }
-
             if let Some(timer) = p.recovery.loss_detection_timer() {
                 if timer <= now {
                     trace!(
@@ -9104,6 +9050,8 @@ impl Connection {
                     }
                 }
 
+                let nb_ack = self.newly_acked.len();
+
                 // If an endpoint receives an ACK_MP frame with a packet number
                 // space ID which is no more active (e.g., retired by a
                 // RETIRE_CONNECTION_ID frame or belonging to closed paths), it
@@ -9132,6 +9080,36 @@ impl Connection {
                             )?;
                         self.lost_count += lost_packets;
                         self.lost_bytes += lost_bytes as u64;
+                    }
+                }
+
+                // Record packets that have been acked just now.
+                if let Some(multicast) = self.multicast.as_mut() {
+                    if matches!(
+                        multicast.get_mc_role(),
+                        multicast::McRole::ServerUnicast(_)
+                    ) {
+                        if multicast.get_mc_space_id() ==
+                            Some(space_identifier as usize)
+                        {
+                            // Get the packet number of newly acked.
+                            let new_nb_ack = self.newly_acked.len();
+                            let pn_new_ack = self.newly_acked[nb_ack..new_nb_ack]
+                                .iter()
+                                .map(|pkt| pkt.pkt_num.pn());
+                            let mut new_ack_rs =
+                                crate::ranges::RangeSet::default();
+                            for pn in pn_new_ack {
+                                new_ack_rs.insert(pn..pn + 1);
+                            }
+
+                            multicast
+                                .rmc_get_mut()
+                                .unwrap()
+                                .server_mut()
+                                .unwrap()
+                                .new_ack_pn_fc = new_ack_rs;
+                        }
                     }
                 }
 
@@ -9331,83 +9309,6 @@ impl Connection {
                         multicast::McError::McInvalidSymKey,
                     ));
                 }
-            },
-
-            frame::Frame::McExpire {
-                channel_id,
-                expiration_type: _,
-                pkt_num,
-                fec_metadata,
-            } => {
-                debug!("Received an MC_EXPIRE frame! channel ID: {:?}, pkt num: {:?}, fec metadata: {:?}", channel_id, pkt_num, fec_metadata);
-                if self.is_server {
-                    return Err(Error::Multicast(
-                        multicast::McError::McInvalidRole(
-                            multicast::McRole::ServerUnicast(
-                                multicast::McClientStatus::Unspecified,
-                            ),
-                        ),
-                    ));
-                } else if let Some(multicast) = self.multicast.as_mut() {
-                    if let Some(space_id) = multicast.get_mc_space_id() {
-                        let now = time::Instant::now();
-                        self.mc_expire(
-                            epoch,
-                            space_id as u64,
-                            (pkt_num, fec_metadata).into(),
-                            now,
-                        )?;
-                    } else {
-                        return Err(Error::Multicast(multicast::McError::McPath));
-                    }
-                } else {
-                    return Err(Error::Multicast(
-                        multicast::McError::McInvalidSymKey,
-                    ));
-                }
-            },
-
-            frame::Frame::McNack {
-                channel_id: _,
-                last_pn,
-                nb_repair_needed,
-                ranges,
-            } => {
-                // If this is a multicast MC_NACK packet, the server may have no
-                // idea of the additional paths.
-                if let Some(multicast) = self.multicast.as_mut() {
-                    if matches!(
-                        multicast.get_mc_role(),
-                        multicast::McRole::ServerUnicast(_)
-                    ) {
-                        let nb_repair_opt = if nb_repair_needed == 0 {
-                            None
-                        } else {
-                            Some(nb_repair_needed)
-                        };
-                        if multicast.get_mc_space_id().is_some() {
-                            multicast.set_mc_nack_ranges(
-                                Some((&ranges, last_pn)),
-                                nb_repair_opt,
-                            )?;
-                            multicast.mc_need_ack = true;
-                        } else {
-                            return Err(Error::Multicast(
-                                multicast::McError::McPath,
-                            ));
-                        }
-                    } else {
-                        return Err(Error::Multicast(
-                            multicast::McError::McInvalidRole(
-                                multicast.get_mc_role(),
-                            ),
-                        ));
-                    }
-                } else {
-                    return Err(Error::Multicast(multicast::McError::McDisabled));
-                }
-
-                panic!("Should not receive an MC_NACK frame");
             },
         };
         Ok(())

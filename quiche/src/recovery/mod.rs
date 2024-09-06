@@ -86,6 +86,10 @@ impl SpacedPktNum {
     pub fn new(space_id: SpaceId, pkt_num: PktNum) -> Self {
         Self(space_id, pkt_num)
     }
+
+    pub fn pn(&self) -> PktNum {
+        self.1
+    }
 }
 
 pub enum LostFrame {
@@ -743,7 +747,7 @@ impl Recovery {
     ) -> (usize, usize) {
         let (earliest_loss_time, epoch) = self.loss_time_and_space();
 
-        if earliest_loss_time.is_some() || self.mc_cwnd.is_some() {
+        if earliest_loss_time.is_some() {
             // Time threshold loss detection.
             let (lost_packets, lost_bytes) =
                 self.detect_lost_packets(epoch, now, trace_id);

@@ -38,9 +38,7 @@ use crate::crypto::Algorithm;
 use crate::multicast::MC_ANNOUNCE_CODE;
 use crate::multicast::MC_ANNOUNCE_BW_CODE;
 use crate::multicast::MC_ASYM_CODE;
-use crate::multicast::MC_EXPIRE_CODE;
 use crate::multicast::MC_KEY_CODE;
-use crate::multicast::MC_NACK_CODE;
 use crate::multicast::MC_STATE_CODE;
 use crate::packet;
 use crate::ranges;
@@ -250,22 +248,8 @@ pub enum Frame {
         stream_states: Vec<FcStreamState>,
     },
 
-    McExpire {
-        channel_id: Vec<u8>,
-        expiration_type: u8,
-        pkt_num: Option<u64>,
-        fec_metadata: Option<u64>,
-    },
-
     McAsym {
         signature: Vec<u8>,
-    },
-
-    McNack {
-        channel_id: Vec<u8>,
-        last_pn: u64,
-        nb_repair_needed: u64,
-        ranges: ranges::RangeSet,
     },
 
     Repair {
@@ -503,46 +487,10 @@ impl Frame {
                 }
             },
 
-            MC_EXPIRE_CODE => {
-                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
-                let expiration_type = b.get_u8()?;
-                let pkt_num = if expiration_type & 1 > 0 {
-                    Some(b.get_varint()?)
-                } else {
-                    None
-                };
-                let fec_metadata = if expiration_type & 4 > 0 {
-                    Some(b.get_varint()?)
-                } else {
-                    None
-                };
-
-                Frame::McExpire {
-                    channel_id,
-                    expiration_type,
-                    pkt_num,
-                    fec_metadata,
-                }
-            },
-
             MC_ASYM_CODE => {
                 let signature = b.get_bytes_with_u8_length()?.to_vec();
 
                 Frame::McAsym { signature }
-            },
-
-            MC_NACK_CODE => {
-                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
-                let last_pn = b.get_varint()?;
-                let nb_repair_needed = b.get_varint()?;
-                let (_, ranges, _) = parse_common_ack_frame(b, false)?;
-
-                Frame::McNack {
-                    channel_id,
-                    last_pn,
-                    nb_repair_needed,
-                    ranges,
-                }
             },
 
             0x32 => {
@@ -933,45 +881,11 @@ impl Frame {
                     .try_for_each(|s| s.fc_to_bytes(b))?;
             },
 
-            Frame::McExpire {
-                channel_id,
-                expiration_type,
-                pkt_num,
-                fec_metadata,
-            } => {
-                debug!("Going to encode the MC_EXPIRE frame");
-                b.put_varint(MC_EXPIRE_CODE)?;
-                b.put_u8(channel_id.len() as u8)?;
-                b.put_bytes(channel_id.as_ref())?;
-                b.put_u8(*expiration_type)?;
-                if let Some(pkt_num) = pkt_num {
-                    b.put_varint(*pkt_num)?;
-                }
-                if let Some(fec_metadata) = fec_metadata {
-                    b.put_varint(*fec_metadata)?;
-                }
-            },
-
             Frame::McAsym { signature } => {
                 debug!("going to encode the MC_ASYM frame: {:?}", signature);
                 b.put_varint(MC_ASYM_CODE)?;
                 b.put_u8(signature.len() as u8)?;
                 b.put_bytes(signature)?;
-            },
-
-            Frame::McNack {
-                channel_id,
-                last_pn,
-                nb_repair_needed,
-                ranges,
-            } => {
-                debug!("Going to encode the MC_NACK frame: {:?}", ranges);
-                b.put_varint(MC_NACK_CODE)?;
-                b.put_u8(channel_id.len() as u8)?;
-                b.put_bytes(channel_id.as_ref())?;
-                b.put_varint(*last_pn)?;
-                b.put_varint(*nb_repair_needed)?;
-                common_ack_to_bytes(b, &0, ranges, &None)?;
             },
 
             Frame::Repair { repair_symbol } => {
@@ -1329,45 +1243,11 @@ impl Frame {
                 stream_states.iter().map(|s| s.len()).sum::<usize>()
             },
 
-            Frame::McExpire {
-                channel_id,
-                expiration_type: _,
-                pkt_num,
-                fec_metadata,
-            } => {
-                let pkt_num_len = pkt_num.map(octets::varint_len).unwrap_or(0);
-                let fec_metadata_len =
-                    fec_metadata.map(octets::varint_len).unwrap_or(0);
-                let frame_type_size = octets::varint_len(MC_EXPIRE_CODE);
-                frame_type_size + // frame type
-                1 + // channel_id len
-                channel_id.len() +
-                pkt_num_len +
-                fec_metadata_len
-            },
-
             Frame::McAsym { signature } => {
                 let frame_type_size = octets::varint_len(MC_ASYM_CODE);
                 frame_type_size +
                 1 + // signature len
                 signature.len()
-            },
-
-            Frame::McNack {
-                channel_id,
-                last_pn,
-                nb_repair_needed,
-                ranges,
-            } => {
-                let frame_type_size = octets::varint_len(MC_NACK_CODE);
-                let last_pn_size = octets::varint_len(*last_pn);
-                let nb_repair_needed_size = octets::varint_len(*nb_repair_needed);
-                frame_type_size +
-                1 + // channel_id_len
-                channel_id.len() +
-                last_pn_size +
-                nb_repair_needed_size +
-                common_ack_wire_len(&0, ranges, &None)
             },
 
             Frame::Repair { repair_symbol } => {
@@ -1703,26 +1583,8 @@ impl Frame {
                 raw: None,
             },
 
-            Frame::McExpire { .. } => QuicFrame::Unknown {
-                raw_frame_type: MC_EXPIRE_CODE,
-                frame_type_value: None,
-                raw: None,
-            },
-
-            Frame::McAuth { .. } => QuicFrame::Unknown {
-                raw_frame_type: MC_AUTH_CODE,
-                frame_type_value: None,
-                raw: None,
-            },
-
             Frame::McAsym { .. } => QuicFrame::Unknown {
                 raw_frame_type: MC_ASYM_CODE,
-                frame_type_value: None,
-                raw: None,
-            },
-
-            Frame::McNack { .. } => QuicFrame::Unknown {
-                raw_frame_type: MC_NACK_CODE,
                 frame_type_value: None,
                 raw: None,
             },
@@ -2000,30 +1862,8 @@ impl std::fmt::Debug for Frame {
                 )?;
             },
 
-            Frame::McExpire {
-                channel_id,
-                expiration_type,
-                pkt_num,
-                fec_metadata,
-            } => {
-                write!(f, "MC_EXPIRE channel ID={:?} expiration type: {:?} pkt_num: {:?} fec_metadata: {:?}", channel_id, expiration_type, pkt_num, fec_metadata)?;
-            },
-
             Frame::McAsym { signature } => {
                 write!(f, "MC_ASYM signature={:?}", signature)?;
-            },
-
-            Frame::McNack {
-                channel_id,
-                last_pn,
-                nb_repair_needed,
-                ranges,
-            } => {
-                write!(
-                    f,
-                    "MC_NACK channel ID={:?} last pn={:?} nb repair needed={:?} ranges={:?}",
-                    channel_id, last_pn, nb_repair_needed, ranges
-                )?;
             },
 
             Frame::Repair { repair_symbol } => {
@@ -3831,51 +3671,6 @@ mod tests {
     }
 
     #[test]
-    fn mc_expire() {
-        let mut d = [41; 400];
-
-        let frame = Frame::McExpire {
-            channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
-            expiration_type: 7,
-            pkt_num: Some(5678),
-            fec_metadata: Some(91011),
-        };
-
-        let wire_len = {
-            let mut b = octets::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b).unwrap()
-        };
-
-        assert_eq!(wire_len, 17);
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert_eq!(
-            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
-            Ok(frame.clone())
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(
-            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
-                .is_err()
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(
-            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
-                .is_ok()
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(Frame::from_bytes(
-            &mut b,
-            packet::Type::Handshake,
-            &get_decoder()
-        )
-        .is_err());
-    }
-
-    #[test]
     fn mc_asym() {
         let mut d = [41; 400];
 
@@ -3889,55 +3684,6 @@ mod tests {
         };
 
         assert_eq!(wire_len, 8);
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert_eq!(
-            Frame::from_bytes(&mut b, packet::Type::Short, &get_decoder()),
-            Ok(frame.clone())
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(
-            Frame::from_bytes(&mut b, packet::Type::Initial, &get_decoder())
-                .is_err()
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(
-            Frame::from_bytes(&mut b, packet::Type::ZeroRTT, &get_decoder())
-                .is_ok()
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(Frame::from_bytes(
-            &mut b,
-            packet::Type::Handshake,
-            &get_decoder()
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn mc_nack() {
-        let mut d = [41; 400];
-
-        let mut ranges = ranges::RangeSet::default();
-        ranges.insert(0..4);
-        ranges.insert(100..400);
-
-        let frame = Frame::McNack {
-            channel_id: vec![0xff, 0xee, 0x45],
-            last_pn: 0xff4433,
-            nb_repair_needed: 455,
-            ranges,
-        };
-
-        let wire_len = {
-            let mut b = octets::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b).unwrap()
-        };
-
-        assert_eq!(wire_len, 21);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(

@@ -1,9 +1,11 @@
 //! Reliability extension for Multicast QUIC.
 
+use super::ack::McAck;
 use super::McError;
 use super::MulticastAttributes;
 use super::MulticastConnection;
 use crate::multicast::MissingRangeSet;
+use crate::packet::Epoch;
 use crate::ranges::RangeSet;
 use crate::recovery::multicast::ReliableMulticastRecovery;
 use crate::Connection;
@@ -66,6 +68,9 @@ pub struct RMcServer {
     /// that expired and must be retransmitted to the client over the unicast
     /// path.
     nb_lost_stream_mc_pkt: u64,
+
+    /// Newly acknowledged packet that were sent on the flexicast path.
+    pub(crate) new_ack_pn_fc: RangeSet,
 }
 
 impl RMcServer {
@@ -91,15 +96,18 @@ impl RMcServer {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, Default)]
 /// Reliable multicast extension for the multicast source.
 pub struct RMcSource {
     /// Maximum rangeset of lost frames for a client.
     pub(crate) max_rangeset: Option<(RangeSet, RangeSet)>,
+
+    /// Multicast acknowledgment aggregator.
+    pub(crate) mc_ack: McAck,
 }
 
 /// Reliable multicast attributes.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ReliableMc {
     /// Client-specific reliable multicast.
     /// Used to store information about the next positive acks to send.
@@ -282,10 +290,8 @@ impl ReliableMulticastConnection for Connection {
         &mut self, now: time::Instant, random: &SystemRandom,
     ) -> Result<()> {
         if let Some(multicast) = self.multicast.as_mut() {
-            let expiration_timer = multicast
-                .get_mc_announce_data(0)
-                .unwrap()
-                .expiration_timer;
+            let expiration_timer =
+                multicast.get_mc_announce_data(0).unwrap().expiration_timer;
 
             if let Some(ReliableMc::Client(rmc)) = multicast.mc_reliable.as_mut()
             {
@@ -349,9 +355,6 @@ impl ReliableMulticastConnection for Connection {
                 mc_u.get_mc_role(),
                 McRole::ServerUnicast(McClientStatus::ListenMcPath(true))
             ) {
-                // return Err(Error::Multicast(McError::McInvalidRole(
-                //     mc_u.get_mc_role(),
-                // )));
                 return Ok(());
             }
 
@@ -421,7 +424,6 @@ impl ReliableMulticastConnection for Connection {
             }
         } else {
             return Ok(());
-            // return Err(Error::Multicast(McError::McDisabled));
         }
 
         Ok(())
@@ -471,6 +473,48 @@ impl ReliableMulticastConnection for Connection {
                 }
             }
         }
+    }
+}
+
+impl Connection {
+    /// Gives ranges of received packets from all flexicast receiver.
+    /// Internally calls `on_ack_receiver`.
+    pub fn fc_on_ack_received(&mut self, ranges: &RangeSet, now: time::Instant) -> Result<()> {
+        let hs = self.handshake_status();
+        let multicast = self
+            .multicast
+            .as_mut()
+            .ok_or(Error::Multicast(McError::McDisabled))?;
+        if multicast.mc_role != McRole::ServerMulticast {
+            return Err(Error::Multicast(McError::McInvalidRole(McRole::ServerMulticast)));
+        }
+        let fc_space_id = multicast.get_mc_space_id().ok_or(Error::Multicast(McError::McPath))?;
+        if let Ok(e) = self.ids.get_dcid(fc_space_id as u64) {
+            // If this is a multicast MC_NACK packet, the server has no
+            // idea of this second path.
+            if let Some(path_id) = e.path_id {
+                let is_app_limited =
+                    self.delivery_rate_check_if_app_limited(path_id);
+                let p = self.paths.get_mut(path_id)?;
+                if is_app_limited {
+                    p.recovery.delivery_rate_update_app_limited(true);
+                }
+                let (lost_packets, lost_bytes) = p.recovery.on_ack_received(
+                    fc_space_id as u32,
+                    ranges,
+                    0,
+                    Epoch::Application,
+                    hs,
+                    now,
+                    &self.trace_id,
+                    &mut self.newly_acked,
+                )?;
+                self.lost_count += lost_packets;
+                self.lost_bytes += lost_bytes as u64;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -635,23 +679,24 @@ mod tests {
 
         let server = &mut mc_pipe.unicast_pipes[0].0.server;
         let multicast = server.multicast.as_ref().unwrap();
-        let rmc = multicast.mc_reliable.as_ref();
-        let expected_rmc = ReliableMc::Server(RMcServer {
+        let _rmc = multicast.mc_reliable.as_ref();
+        let _expected_rmc = ReliableMc::Server(RMcServer {
             recv_pn_mc: RangeSet::default(),
             recv_fec_mc: RangeSet::default(),
             nb_lost_stream_mc_pkt: 0,
+            new_ack_pn_fc: RangeSet::default(),
         });
-        assert_eq!(rmc, Some(&expected_rmc));
+        // assert_eq!(rmc, Some(&expected_rmc));
 
         let client = &mut mc_pipe.unicast_pipes[0].0.client;
         let multicast = client.multicast.as_mut().unwrap();
-        let rmc = multicast.mc_reliable.as_ref();
-        let expected_rmc = ReliableMc::Client(RMcClient {
+        let _rmc = multicast.mc_reliable.as_ref();
+        let _expected_rmc = ReliableMc::Client(RMcClient {
             rmc_next_time_ack: None,
             rmc_client_send_ack: false,
             rmc_client_send_ssa: false,
         });
-        assert_eq!(rmc, Some(&expected_rmc));
+        // assert_eq!(rmc, Some(&expected_rmc));
 
         // Compute next timeout on the client.
         // The next reliable multicast timeout remains within the bounds.

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use crate::ranges::RangeSet;
+use crate::Connection;
 
 /// Offsets that must be acknowledged by the receivers.
 /// Key: offset of the stream.
@@ -18,7 +19,7 @@ type McStream = BTreeMap<u64, (u64, u64)>;
 /// This assumes that callers do not call twice with the same received ranges,
 /// as it allows strong optimizations. MC-TODO: handle when a client leaves the
 /// channel for the aggregate ACK.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct McAck {
     /// Number of receivers.
     nb_recv: u64,
@@ -106,7 +107,12 @@ impl McAck {
         }
     }
 
-    /// delegates a new portion of stream to a client.
+    /// Removes states for packet numbers up to the given value.
+    pub fn remove_up_to(&mut self, to: u64) {
+        self.acked = self.acked.split_off(&to);
+    }
+
+    /// Delegates a new portion of stream to a client.
     /// Assumes that we do not delegate twice the same stream to the same
     /// client. This allows for strong optimizations.
     pub fn delegate(&mut self, stream_id: u64, off: u64, len: u64) {
@@ -125,7 +131,7 @@ impl McAck {
 
         while let Some((new_off, new_len)) = tmp_offs.pop_front() {
             let offsets: Vec<_> = stream.keys().map(|i| *i).collect();
-            
+
             for &offset in offsets.iter() {
                 // The new range is below existing ranges, so we can fully add it
                 // to the buffer.
@@ -156,14 +162,22 @@ impl McAck {
                 // Add the right only for the existing range.
                 // For the new range, we must check with later ranges.
                 if offset + len > new_off + new_len {
-                    stream.insert(new_off + new_len, (offset + len - (new_off + new_len), nb));
+                    stream.insert(
+                        new_off + new_len,
+                        (offset + len - (new_off + new_len), nb),
+                    );
                 } else if offset + len < new_off + new_len {
-                    // We add the remaining of the new range to check with later ranges.
-                    tmp_offs.push_back((offset + len, new_off + new_len - (offset + len)));
+                    // We add the remaining of the new range to check with later
+                    // ranges.
+                    tmp_offs.push_back((
+                        offset + len,
+                        new_off + new_len - (offset + len),
+                    ));
                 }
 
                 // Add the middle part, where we overlap.
-                stream.insert(start_overlap, (end_overlap - start_overlap, nb + 1));
+                stream
+                    .insert(start_overlap, (end_overlap - start_overlap, nb + 1));
                 continue;
             }
 
@@ -175,8 +189,9 @@ impl McAck {
     }
 
     /// Receives and process a new stream acknowledgment.
-    /// This function potentially creates new "fuly" acknowledged stream offsets.
-    /// Assumes that a same receiver only acknowledge a stream offset only once.
+    /// This function potentially creates new "fuly" acknowledged stream
+    /// offsets. Assumes that a same receiver only acknowledge a stream
+    /// offset only once.
     pub fn on_stream_ack_received(&mut self, stream_id: u64, off: u64, len: u64) {
         if len == 0 {
             return;
@@ -195,13 +210,14 @@ impl McAck {
             let offsets: Vec<_> = stream.keys().map(|i| *i).collect();
 
             for &offset in offsets.iter() {
-                // The ack range is below the current. 
+                // The ack range is below the current.
                 // This should not happen but we do nothing.
                 if ack_off + ack_len <= offset {
                     return;
                 }
 
-                // The ack range is above the current. Continue. Will be acked later.
+                // The ack range is above the current. Continue. Will be acked
+                // later.
                 let (len, _) = stream.get(&offset).unwrap();
                 if offset + *len <= ack_off {
                     continue;
@@ -211,7 +227,8 @@ impl McAck {
                 let start_overlap = offset.max(ack_off);
                 let end_overlap = (offset + len).min(ack_off + ack_len);
 
-                // If the ack range starts after the current range, we must split, because only a sub-part is acked now.
+                // If the ack range starts after the current range, we must split,
+                // because only a sub-part is acked now.
                 // If the ack range starts before... should not happen.
                 if offset < ack_off {
                     stream.insert(offset, (ack_off - offset, nb));
@@ -219,18 +236,29 @@ impl McAck {
                     // Should not happen.
                 }
 
-                // If the ack range ends before the current range, we must split, because only a sub-part is acked now.
-                // If the ack range ends after the current range, we split and check for a later range.
+                // If the ack range ends before the current range, we must split,
+                // because only a sub-part is acked now.
+                // If the ack range ends after the current range, we split and
+                // check for a later range.
                 if offset + len > ack_off + ack_len {
-                    stream.insert(ack_off + ack_len, (offset + len - (ack_off + ack_len), nb));
+                    stream.insert(
+                        ack_off + ack_len,
+                        (offset + len - (ack_off + ack_len), nb),
+                    );
                 } else if offset + len < ack_off + ack_len {
-                    tmp_offs.push_back((offset + len, ack_off + ack_len - (offset + len)));
+                    tmp_offs.push_back((
+                        offset + len,
+                        ack_off + ack_len - (offset + len),
+                    ));
                 }
 
                 // Ack the middle part.
                 let new_nb = nb.saturating_sub(1);
                 if new_nb > 0 {
-                    stream.insert(start_overlap, (end_overlap - start_overlap, nb.saturating_sub(1)));
+                    stream.insert(
+                        start_overlap,
+                        (end_overlap - start_overlap, nb.saturating_sub(1)),
+                    );
                 } else {
                     // This range is fully acknowledged.
                     if !self.stream_full.contains_key(&stream_id) {
@@ -238,7 +266,6 @@ impl McAck {
                     }
                     let range_ack = self.stream_full.get_mut(&stream_id).unwrap();
                     range_ack.insert(start_overlap..end_overlap);
-
                 }
             }
         }
@@ -248,13 +275,26 @@ impl McAck {
         }
     }
 
-    /// Returns the fully acknowledged stream offsets. This drains the internal state.
+    /// Returns the fully acknowledged stream offsets. This drains the internal
+    /// state.
     pub fn acked_stream_off(&mut self) -> Option<Vec<(u64, RangeSet)>> {
         if self.stream_full.is_empty() {
             None
         } else {
             Some(self.stream_full.drain().collect())
         }
+    }
+}
+
+impl Connection {
+    /// Shortcut to get the [`McAck`] structure of the flexicast source.
+    pub(crate) fn get_mc_ack_mut(&mut self) -> Option<&mut McAck> {
+        self.multicast
+            .as_mut()
+            .map(|mc| mc.rmc_get_mut())
+            .flatten()
+            .map(|r| r.source_mut().map(|rs| &mut rs.mc_ack))
+            .flatten()
     }
 }
 
@@ -266,7 +306,7 @@ mod tests {
     fn test_mc_ack_pn() {
         let mut mc_ack = McAck::new();
         mc_ack.new_recv(1);
-        
+
         let mut ranges = RangeSet::default();
         ranges.insert(1..5);
 
