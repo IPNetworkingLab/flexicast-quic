@@ -1204,7 +1204,6 @@ impl MulticastConnection for Connection {
                     Ok(())
                 },
                 McRole::ServerUnicast(_) => {
-                    println!("Before: {:?}", mc_announce_id);
                     // let id = mc_announce_id.unwrap_or(fc_chan_idx!(multicast)?
                     // );
                     let id = if let Some(idx) = mc_announce_id {
@@ -1212,7 +1211,6 @@ impl MulticastConnection for Connection {
                     } else {
                         fc_chan_idx!(multicast)?
                     };
-                    println!("After? {}", id);
                     multicast.mc_announce_data[id].fc_channel_secret =
                         Some(secret.to_owned());
                     multicast.mc_announce_data[id].fc_channel_algo = Some(algo);
@@ -1841,6 +1839,7 @@ impl MulticastConnection for Connection {
 
             // The unicast server instances notify the source through the McAck of
             // new packets that have been acked.
+            // Also notify for streams that have been deleguated and that 
             let multicast = self.multicast.as_mut().unwrap();
             let rmc_server =
                 multicast.rmc_get_mut().unwrap().server_mut().unwrap();
@@ -1855,6 +1854,28 @@ impl MulticastConnection for Connection {
                 // Maybe now we can send new ACKs to the source.
                 if let Some(fully_acked) = mc_ack.full_ack() {
                     mc_channel.fc_on_ack_received(&fully_acked, now)?;
+                }
+            }
+
+            // Notify for stream pieces that have been correctly received.
+            if let Some(mut ack_stream_pieces) = rmc_server.mc_ack.acked_stream_off() {
+                let mc_ack = &mut mc_channel
+                .get_mc_ack_mut().unwrap();
+                for (stream_id, ranges) in ack_stream_pieces.drain(..) {
+                    for range in ranges.iter() {
+                        mc_ack.on_stream_ack_received(stream_id, range.start, range.end - range.start);
+                    }
+                }
+
+                // Maybe now we can also fully acknowledge some streams on the flexicast server.
+                let mc_ack = &mut mc_channel
+                .get_mc_ack_mut().unwrap();
+                if let Some(mut fully_acked_stream_pieces) = mc_ack.acked_stream_off() {
+                    for (stream_id, ranges) in fully_acked_stream_pieces.drain(..) {
+                        for range in ranges.iter() {
+                            mc_channel.fc_on_stream_ack_received(stream_id, range.start, range.end - range.start)?;
+                        }
+                    }
                 }
             }
         } else {

@@ -3213,6 +3213,27 @@ impl Connection {
 
                             self.streams.collect(stream_id, local);
                         }
+
+                        // Flexicast extension.
+                        // If the stream was sent through unicast retransmission
+                        // because the flexicast source deleguated it, we must
+                        // acknowledge the multicast ack aggregator that we
+                        // correctly transmitted it to the client.
+                        if let Some(rmc_server) = self
+                            .multicast
+                            .as_mut()
+                            .map(|mc| {
+                                mc.rmc_get_mut().map(|rmc| rmc.server_mut())
+                            })
+                            .flatten()
+                            .flatten()
+                        {
+                            rmc_server.mc_ack.on_stream_ack_received(
+                                stream_id,
+                                offset,
+                                length as u64,
+                            );
+                        }
                     },
 
                     frame::Frame::HandshakeDone => {
@@ -9014,7 +9035,6 @@ impl Connection {
                         if let Some(ReliableMc::Server(s)) =
                             multicast.rmc_get_mut()
                         {
-                            debug!("Recv ranges from the client: {:?}", ranges);
                             s.set_rmc_received_pn(ranges.clone());
                         }
                     }
@@ -9049,8 +9069,6 @@ impl Connection {
                         }
                     }
                 }
-
-                let nb_ack = self.newly_acked.len();
 
                 // If an endpoint receives an ACK_MP frame with a packet number
                 // space ID which is no more active (e.g., retired by a
@@ -9093,10 +9111,9 @@ impl Connection {
                             Some(space_identifier as usize)
                         {
                             // Get the packet number of newly acked.
-                            let new_nb_ack = self.newly_acked.len();
-                            let pn_new_ack = self.newly_acked[nb_ack..new_nb_ack]
-                                .iter()
-                                .map(|pkt| pkt.pkt_num.pn());
+                            let p = self.paths.get_mut(space_identifier as usize)?;
+                            
+                            let pn_new_ack = p.recovery.fc_new_ack_pn.drain(..);
                             let mut new_ack_rs =
                                 crate::ranges::RangeSet::default();
                             for pn in pn_new_ack {

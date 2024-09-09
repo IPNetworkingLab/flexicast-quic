@@ -14,6 +14,7 @@ use networkcoding::source_symbol_metadata_to_u64;
 
 use crate::frame;
 use crate::frame::Frame;
+use crate::multicast::ack::McAck;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::multicast::ExpiredPkt;
 use crate::packet::Epoch;
@@ -160,7 +161,7 @@ pub trait ReliableMulticastRecovery {
     /// the client on the unicast path.
     fn deleguate_stream(
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
-        space_id: u32, local_streams: &mut StreamMap,
+        space_id: u32, local_streams: &mut StreamMap, mc_ack: &mut McAck,
     ) -> Result<(u64, (RangeSet, RangeSet))>;
 
     #[allow(unused)]
@@ -182,7 +183,7 @@ pub trait ReliableMulticastRecovery {
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
     fn deleguate_stream(
         &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
-        space_id: u32, local_streams: &mut StreamMap,
+        space_id: u32, local_streams: &mut StreamMap, mc_ack: &mut McAck,
     ) -> Result<(u64, (RangeSet, RangeSet))> {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let mut lost_pn = RangeSet::default();
@@ -301,6 +302,10 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                             continue;
                         }
 
+                        // Notify the multicast acknowledgment aggregator that we
+                        // deleguate a piece of stream.
+                        mc_ack.delegate(*stream_id, *offset, *length as u64);
+
                         // First mark the stream as rotable for unicast
                         // retransmission if it is the case for the flexicast
                         // source.
@@ -352,6 +357,22 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                                 )
                                 .ok();
                             });
+                        }
+
+                        // Notify the unicast instance that this piece of stream
+                        // has been deleguated by the flexicast source.
+                        if let Some(mc_ack) = uc
+                            .multicast
+                            .as_mut()
+                            .map(|mc| {
+                                mc.rmc_get_mut().map(|rmc| {
+                                    rmc.server_mut().map(|s| &mut s.mc_ack)
+                                })
+                            })
+                            .flatten()
+                            .flatten()
+                        {
+                            mc_ack.delegate(*stream_id, *offset, *length as u64);
                         }
                     },
                     frame::Frame::McAsym { signature } => {
@@ -414,8 +435,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                             // Maybe the stream is now complete.
                             if uc_stream.is_complete() && !uc_stream.is_readable()
                             {
-                                // println!("Unicast stream {} is collected after
-                                // deleguate_stream", stream_id);
                                 let local = uc_stream.local;
                                 uc.streams.collect(*stream_id, local);
                             }

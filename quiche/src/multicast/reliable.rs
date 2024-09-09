@@ -55,7 +55,7 @@ impl RMcClient {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, Default)]
 /// Reliable multicast attributes for the server.
 pub struct RMcServer {
     /// Packet numbers received by the client.
@@ -71,6 +71,12 @@ pub struct RMcServer {
 
     /// Newly acknowledged packet that were sent on the flexicast path.
     pub(crate) new_ack_pn_fc: RangeSet,
+
+    /// Multicast Ack aggregator.
+    /// The role of this structure here is different than for the flexicast
+    /// source. Here, the structure helps the unicast server to know which
+    /// stream offsets have been deleguated for unicast retransmission.
+    pub(crate) mc_ack: McAck,
 }
 
 impl RMcServer {
@@ -368,6 +374,12 @@ impl ReliableMulticastConnection for Connection {
                 .ok_or(Error::Multicast(McError::McPath))?;
             let path = self.paths.get_mut(space_id)?;
             let stream_map = &mut self.streams;
+            let mc_ack = mc_s
+                .mc_reliable
+                .as_mut()
+                .map(|r| r.source_mut().map(|s| &mut s.mc_ack))
+                .flatten()
+                .ok_or(Error::Multicast(McError::McReliableDisabled))?;
             let (nb_lost_stream_frames, (mut lost_pn, mut recv_pn)) =
                 path.recovery.deleguate_stream(
                     uc,
@@ -375,6 +387,7 @@ impl ReliableMulticastConnection for Connection {
                     expiration_timer,
                     space_id as u32,
                     stream_map,
+                    mc_ack,
                 )?;
             if let Some(rmc) = uc.multicast.as_mut().unwrap().mc_reliable.as_mut()
             {
@@ -479,16 +492,22 @@ impl ReliableMulticastConnection for Connection {
 impl Connection {
     /// Gives ranges of received packets from all flexicast receiver.
     /// Internally calls `on_ack_receiver`.
-    pub fn fc_on_ack_received(&mut self, ranges: &RangeSet, now: time::Instant) -> Result<()> {
+    pub fn fc_on_ack_received(
+        &mut self, ranges: &RangeSet, now: time::Instant,
+    ) -> Result<()> {
         let hs = self.handshake_status();
         let multicast = self
             .multicast
             .as_mut()
             .ok_or(Error::Multicast(McError::McDisabled))?;
         if multicast.mc_role != McRole::ServerMulticast {
-            return Err(Error::Multicast(McError::McInvalidRole(McRole::ServerMulticast)));
+            return Err(Error::Multicast(McError::McInvalidRole(
+                McRole::ServerMulticast,
+            )));
         }
-        let fc_space_id = multicast.get_mc_space_id().ok_or(Error::Multicast(McError::McPath))?;
+        let fc_space_id = multicast
+            .get_mc_space_id()
+            .ok_or(Error::Multicast(McError::McPath))?;
         if let Ok(e) = self.ids.get_dcid(fc_space_id as u64) {
             // If this is a multicast MC_NACK packet, the server has no
             // idea of this second path.
@@ -512,6 +531,51 @@ impl Connection {
                 self.lost_count += lost_packets;
                 self.lost_bytes += lost_bytes as u64;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Gives ranges of received stream pieces that have been deleguated for
+    /// unicast retransmission. These pieces of streams have been received
+    /// by all receivers and can release memory from the flexicast source.
+    /// This basically copies the portion of code that is processed when a
+    /// unicast server receives an ACK frame acknowledging a STREAM frame.
+    pub fn fc_on_stream_ack_received(
+        &mut self, stream_id: u64, off: u64, len: u64,
+    ) -> Result<()> {
+        let stream = self.streams.get_mut(stream_id);
+        if let Some(stream) = stream {
+            stream.send.ack_and_drop(off, len as usize);
+            self.tx_buffered = self.tx_buffered.saturating_sub(len as usize);
+
+            qlog_with_type!(QLOG_DATA_MV, self.qlog, q, {
+                let ev_data =
+                    EventData::DataMoved(qlog::events::quic::DataMoved {
+                        stream_id: Some(stream_id),
+                        offset: Some(off),
+                        length: Some(len as u64),
+                        from: Some(DataRecipient::Transport),
+                        to: Some(DataRecipient::Dropped),
+                        raw: None,
+                    });
+
+                q.add_event_data_with_instant(ev_data, now).ok();
+            });
+
+            // Only collect the stream if it is complete and not
+            // readable. If it is readable, it will get collected when
+            // stream_recv() is used.
+            if stream.is_complete() && !stream.is_readable() {
+                let local = stream.local;
+
+                self.streams.collect(stream_id, local);
+            }
+        } else {
+            error!(
+                "fc_on_stream_ack_received stream does not exist: {:?}",
+                stream_id
+            );
         }
 
         Ok(())
@@ -685,6 +749,7 @@ mod tests {
             recv_fec_mc: RangeSet::default(),
             nb_lost_stream_mc_pkt: 0,
             new_ack_pn_fc: RangeSet::default(),
+            mc_ack: McAck::new(),
         });
         // assert_eq!(rmc, Some(&expected_rmc));
 
@@ -1894,88 +1959,121 @@ mod tests {
         assert!(streams.is_empty());
     }
 
-    // #[test]
-    // Evaluate the flow control mechanism. The source sends some stream
-    // content with a flow control limitation. This test is not directly
-    // related to full reliable Flexicast QUIC, but we use the reliable pipe.
-    // fn test_fc_flow_control() {
-    // let mut fc_config = FcConfig {
-    // authentication: McAuthType::StreamAsym,
-    // use_fec: true,
-    // probe_mc_path: true,
-    // fec_window_size: 5,
-    // max_data: 55,
-    // max_stream_data: 50,
-    // ..FcConfig::default()
-    // };
-    //
-    // let mut fc_pipe = MulticastPipe::new_reliable(
-    // 1,
-    // "/tmp/test_fc_flow_control",
-    // &mut fc_config,
-    // )
-    // .unwrap();
-    //
-    // All stream data that cannot be send in a single expiration period.
-    // let stream_data: Vec<_> = (0..100).collect();
-    // assert_eq!(
-    // fc_pipe
-    // .mc_channel
-    // .channel
-    // .stream_send(3, &stream_data[..], true),
-    // Ok(50)
-    // );
-    //
-    // Send all the content.
-    // while let Ok(_) = fc_pipe.source_send_single(None) {}
-    //
-    // We have to wait to be able to send more data.
-    // assert_eq!(
-    // fc_pipe
-    // .mc_channel
-    // .channel
-    // .stream_send(3, &stream_data[50..], true),
-    // Err(Error::Done)
-    // );
-    //
-    // Read the first received part to release memory from QUIC for the flow
-    // control.
-    // let mut out = [0u8; 101];
-    // let err = fc_pipe.unicast_pipes[0]
-    // .0
-    // .client
-    // .stream_recv(3, &mut out[..]);
-    // assert_eq!(err, Ok((50, false)));
-    //
-    // Timer expiration.
-    // let now = time::Instant::now();
-    // let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
-    // let expired = now
-    // .checked_add(time::Duration::from_millis(expiration_timer + 100))
-    // .unwrap();
-    //
-    // let res = fc_pipe.mc_channel.channel.on_mc_timeout(expired);
-    // assert_eq!(res, Ok((Some(2), Some(0)).into()));
-    //
-    // The multicast source sends an MC_EXPIRE to the client.
-    // fc_pipe.source_send_single(None).unwrap();
-    //
-    // Can send the remaining of the stream.
-    // assert_eq!(
-    // fc_pipe
-    // .mc_channel
-    // .channel
-    // .stream_send(3, &stream_data[50..], true),
-    // Ok(50)
-    // );
-    // while let Ok(_) = fc_pipe.source_send_single(None) {}
-    //
-    // The client received all content.
-    // let err = fc_pipe.unicast_pipes[0]
-    // .0
-    // .client
-    // .stream_recv(3, &mut out[50..]);
-    // assert_eq!(err, Ok((50, true)));
-    // assert_eq!(&out[..100], &stream_data[..]);
-    // }
+    #[test]
+    /// Tests the full reliability mechanism of flexicast using the McAck
+    /// structure.
+    fn test_fc_reliability_with_mc_ack() {
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::None,
+            use_fec: false,
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_pipe = MulticastPipe::new_reliable(
+            2,
+            "/tmp/test_fc_reliability_with_mc_ack",
+            &mut fc_config,
+        )
+        .unwrap();
+
+        let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
+        let expiration_timer = time::Duration::from_millis(expiration_timer + 100);
+        let now = time::Instant::now();
+
+        // First stream is received by both receivers.
+        let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
+        let (_, _, nb) = mc_ack.get_state();
+        assert_eq!(nb, 2);
+        fc_pipe.source_send_single_stream(true, None, 1).unwrap();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+
+        // Flexicast source has a packet in waiting for ack.
+        let fc_path = fc_pipe.mc_channel.channel.paths.get(1).unwrap();
+        let nb_ack = fc_path.recovery.acked[Epoch::Application].len();
+
+        // The flexicast source acknowledged the packet because both receivers said it was ok.
+        let mut expired = now
+            .checked_add(expiration_timer)
+            .unwrap();
+        let random = SystemRandom::new();
+        assert_eq!(fc_pipe.client_rmc_timeout(expired, &random), Ok(()));
+        fc_pipe.clients_send().unwrap();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+        let fc_path = fc_pipe.mc_channel.channel.paths.get(1).unwrap();
+        assert_eq!(fc_path.recovery.acked[Epoch::Application].len(), nb_ack + 2);
+
+        // McAck state is empty.
+        let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
+        let (pns, _, _) = mc_ack.get_state();
+        assert_eq!(pns.len(), 0);
+
+        // Second stream is lost for the first client.
+        let mut client_losses = RangeSet::default();
+        client_losses.insert(0..1);
+        fc_pipe.source_send_single_stream(true, Some(&client_losses), 7).unwrap();
+        fc_pipe.server_control_to_mc_source(expired).unwrap();
+        expired = expired.checked_add(expiration_timer).unwrap();
+        assert_eq!(fc_pipe.client_rmc_timeout(expired, &random), Ok(()));
+        fc_pipe.clients_send().unwrap();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+
+        // No new complete acked packet.
+        let fc_path = fc_pipe.mc_channel.channel.paths.get(1).unwrap();
+        assert_eq!(fc_path.recovery.acked[Epoch::Application].len(), nb_ack + 2);
+
+        // McAck contains state for this packet because it is not fully acked.
+        let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
+        let (pns, streams, _) = mc_ack.get_state();
+        assert_eq!(pns.len(), 1);
+        assert_eq!(*pns.values().next().unwrap(), 1); // Only one client need to ack the packet.
+        assert_eq!(streams.len(), 0);
+
+        // The source deleguates the stream to the first client.
+        fc_pipe.source_deleguates_streams(expired).unwrap();
+
+        // TODO: check values after timeout!
+        // fc_pipe.mc_channel.channel.on_mc_timeout(expired).unwrap();
+
+        // The unicast server now has state for the expired streams.
+        let open_stream_ids = fc_pipe.unicast_pipes[0]
+        .0
+        .server
+        .streams
+        .writable()
+        .collect::<Vec<_>>();
+        assert_eq!(open_stream_ids, vec![7]);
+
+        assert!(!fc_pipe.mc_channel.channel.streams.is_collected(7));
+
+        // And the McAck of both the flexicast source and the unicast server have state.
+        let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
+        let (_, streams, _) = mc_ack.get_state();
+        assert_eq!(streams.len(), 1);
+        let value = streams.get(&7).unwrap();
+        assert_eq!(value.len(), 1);
+        assert_eq!(value.iter().next().unwrap(), (&0, &(300, 1)));
+
+        let mc_ack = &fc_pipe.unicast_pipes[0].0.server.multicast.as_ref().unwrap().rmc_get().unwrap().server().unwrap().mc_ack;
+        let (_, streams, _) = mc_ack.get_state();
+        assert_eq!(streams.len(), 1);
+        let value = streams.get(&7).unwrap();
+        assert_eq!(value.len(), 1);
+        assert_eq!(value.iter().next().unwrap(), (&0, &(300, 1)));
+        
+        fc_pipe.unicast_pipes[0].0.advance().unwrap();
+
+        // Client received the stream. State updated on the McAck of the server.
+        let mc_ack = &fc_pipe.unicast_pipes[0].0.server.multicast.as_ref().unwrap().rmc_get().unwrap().server().unwrap().mc_ack;
+        let (_, streams, _) = mc_ack.get_state();
+        assert!(streams.is_empty());
+        
+        fc_pipe.server_control_to_mc_source(expired).unwrap();
+
+        // Now the flexicast source does not have any state for the open stream.
+        let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
+        let (_, streams, _) = mc_ack.get_state();
+        assert!(streams.is_empty());
+        assert!(fc_pipe.mc_channel.channel.streams.is_collected(7));
+
+    }
 }

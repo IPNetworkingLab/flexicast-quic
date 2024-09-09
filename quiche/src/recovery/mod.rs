@@ -200,6 +200,10 @@ pub struct Recovery {
     /// Maximum congestion window size for the multicast channel.
     mc_cwnd: Option<usize>,
 
+    /// Flexicast.
+    /// Packet numbers that have been newly acked.
+    pub(crate) fc_new_ack_pn: Vec<u64>,
+
     /// Initial congestion window size in terms of packet count.
     initial_congestion_window_packets: usize,
 }
@@ -337,6 +341,9 @@ impl Recovery {
             outstanding_non_ack_eliciting: 0,
 
             mc_cwnd: None,
+
+            fc_new_ack_pn: Vec::new(),
+            
             initial_congestion_window_packets: recovery_config
                 .initial_congestion_window_packets,
         }
@@ -645,6 +652,10 @@ impl Recovery {
 
                     lost: unacked.lost,
                 });
+
+                // Flexicast.
+                // Push newly acked.
+                self.fc_new_ack_pn.push(unacked.pkt_num.1);
 
                 trace!("{} packet newly acked {:?}", trace_id, unacked.pkt_num);
             }

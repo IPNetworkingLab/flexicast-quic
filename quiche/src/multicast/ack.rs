@@ -98,6 +98,8 @@ impl McAck {
                 if new_nb == self.nb_recv {
                     // Not opti at all.
                     fully_range.insert(recv_pn..recv_pn + 1);
+
+                    self.acked.remove(&recv_pn);
                 }
             }
         }
@@ -197,11 +199,14 @@ impl McAck {
             return;
         }
 
+        println!("Enter here....");
+
         // No data for the stream. Should not happen!
         if !self.stream_map.contains_key(&stream_id) {
             return;
         }
         let stream = self.stream_map.get_mut(&stream_id).unwrap();
+        println!("Get stream....");
 
         let mut tmp_offs = VecDeque::with_capacity(2);
         tmp_offs.push_back((off, len));
@@ -266,6 +271,8 @@ impl McAck {
                     }
                     let range_ack = self.stream_full.get_mut(&stream_id).unwrap();
                     range_ack.insert(start_overlap..end_overlap);
+                    stream.remove(&start_overlap);
+                    println!("Insert here full ack range: {:?}", (start_overlap..end_overlap));
                 }
             }
         }
@@ -278,11 +285,18 @@ impl McAck {
     /// Returns the fully acknowledged stream offsets. This drains the internal
     /// state.
     pub fn acked_stream_off(&mut self) -> Option<Vec<(u64, RangeSet)>> {
+        println!("I am calling: {:?}", self.stream_full);
         if self.stream_full.is_empty() {
             None
         } else {
             Some(self.stream_full.drain().collect())
         }
+    }
+
+    #[cfg(test)]
+    /// Returns the internal state of the structure.
+    pub fn get_state(&self) -> (&BTreeMap<u64, u64>, &HashMap<u64, McStream>, u64) {
+        (&self.acked, &self.stream_map, self.nb_recv)
     }
 }
 
@@ -315,6 +329,7 @@ mod tests {
         let mut ranges = RangeSet::default();
         ranges.insert(1..5);
         assert_eq!(mc_ack.full_ack(), Some(ranges));
+        assert!(mc_ack.acked.is_empty());
 
         mc_ack.new_recv(5);
 
