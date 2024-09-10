@@ -1987,6 +1987,15 @@ mod tests {
         fc_pipe.source_send_single_stream(true, None, 1).unwrap();
         fc_pipe.server_control_to_mc_source(now).unwrap();
 
+        // Clients read the stream.
+        let mut buf = [0u8; 500];
+        let client_0 = &mut fc_pipe.unicast_pipes[0].0.client;
+        assert!(client_0.stream_readable(1));
+        assert_eq!(client_0.stream_recv(1, &mut buf), Ok((300, true)));
+        let client_1 = &mut fc_pipe.unicast_pipes[1].0.client;
+        assert!(client_1.stream_readable(1));
+        assert_eq!(client_1.stream_recv(1, &mut buf), Ok((300, true)));
+
         // Flexicast source has a packet in waiting for ack.
         let fc_path = fc_pipe.mc_channel.channel.paths.get(1).unwrap();
         let nb_ack = fc_path.recovery.acked[Epoch::Application].len();
@@ -2012,6 +2021,14 @@ mod tests {
         client_losses.insert(0..1);
         fc_pipe.source_send_single_stream(true, Some(&client_losses), 7).unwrap();
         fc_pipe.server_control_to_mc_source(expired).unwrap();
+
+        // Only second client receives data.
+        let client_0 = &mut fc_pipe.unicast_pipes[0].0.client;
+        assert!(!client_0.stream_readable(7));
+        let client_1 = &mut fc_pipe.unicast_pipes[1].0.client;
+        assert!(client_1.stream_readable(7));
+        assert_eq!(client_1.stream_recv(7, &mut buf), Ok((300, true)));
+
         expired = expired.checked_add(expiration_timer).unwrap();
         assert_eq!(fc_pipe.client_rmc_timeout(expired, &random), Ok(()));
         fc_pipe.clients_send().unwrap();
@@ -2032,7 +2049,7 @@ mod tests {
         fc_pipe.source_deleguates_streams(expired).unwrap();
 
         // TODO: check values after timeout!
-        // fc_pipe.mc_channel.channel.on_mc_timeout(expired).unwrap();
+        fc_pipe.mc_channel.channel.on_mc_timeout(expired).unwrap();
 
         // The unicast server now has state for the expired streams.
         let open_stream_ids = fc_pipe.unicast_pipes[0]
@@ -2074,6 +2091,11 @@ mod tests {
         let (_, streams, _) = mc_ack.get_state();
         assert!(streams.is_empty());
         assert!(fc_pipe.mc_channel.channel.streams.is_collected(7));
+
+        // First client now has the second stream.
+        let client_0 = &mut fc_pipe.unicast_pipes[0].0.client;
+        assert!(client_0.stream_readable(7));
+        assert_eq!(client_0.stream_recv(7, &mut buf), Ok((300, true)));
 
     }
 }
