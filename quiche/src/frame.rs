@@ -220,8 +220,8 @@ pub enum Frame {
     McAnnounce {
         channel_id: Vec<u8>,
         auth_type: u64,
-        is_ipv6: u8,
-        full_reliability: u8,
+        is_ipv6_addr: u8,
+        probe_path: u8,
         reset_stream_on_join: u8,
         source_ip: [u8; 4],
         group_ip: [u8; 4],
@@ -411,8 +411,8 @@ impl Frame {
             MC_ANNOUNCE_CODE..=MC_ANNOUNCE_BW_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
                 let auth_type = b.get_varint()?;
-                let is_ipv6 = b.get_u8()?;
-                let full_reliability = b.get_u8()?;
+                let probe_path = b.get_u8()?;
+                let is_ipv6_addr = b.get_u8()?;
                 let reset_stream_on_join = b.get_u8()?;
                 let source_ip = b
                     .get_bytes(4)?
@@ -443,8 +443,8 @@ impl Frame {
                 Frame::McAnnounce {
                     channel_id,
                     auth_type,
-                    is_ipv6,
-                    full_reliability,
+                    probe_path,
+                    is_ipv6_addr,
                     reset_stream_on_join,
                     source_ip,
                     group_ip,
@@ -812,8 +812,8 @@ impl Frame {
             Frame::McAnnounce {
                 channel_id,
                 auth_type,
-                is_ipv6,
-                full_reliability,
+                probe_path,
+                is_ipv6_addr,
                 reset_stream_on_join,
                 source_ip,
                 group_ip,
@@ -831,8 +831,8 @@ impl Frame {
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
                 b.put_varint(*auth_type)?;
-                b.put_u8(*is_ipv6)?;
-                b.put_u8(*full_reliability)?;
+                b.put_u8(*probe_path)?;
+                b.put_u8(*is_ipv6_addr)?;
                 b.put_u8(*reset_stream_on_join)?;
                 b.put_bytes(source_ip)?;
                 b.put_bytes(group_ip)?;
@@ -1170,8 +1170,8 @@ impl Frame {
             Frame::McAnnounce {
                 channel_id,
                 auth_type,
-                is_ipv6: _,
-                full_reliability: _,
+                probe_path: _,
+                is_ipv6_addr: _,
                 reset_stream_on_join: _,
                 source_ip: _,
                 group_ip: _,
@@ -1822,8 +1822,8 @@ impl std::fmt::Debug for Frame {
             Frame::McAnnounce {
                 channel_id,
                 auth_type,
-                is_ipv6,
-                full_reliability,
+                probe_path,
+                is_ipv6_addr,
                 reset_stream_on_join,
                 source_ip,
                 group_ip,
@@ -1832,7 +1832,7 @@ impl std::fmt::Debug for Frame {
                 public_key: _,
                 bitrate,
             } => {
-                write!(f, "MC_ANNOUNCE channel ID={:?}, auth_type={}, is_ipv6={}, full_reliability={} reset_stream_on_join={} source_ip={:?}, group_ip={:?}, udp_port={}, expiration_timer={}, bitrate={:?}", channel_id, auth_type, is_ipv6, full_reliability, reset_stream_on_join, source_ip, group_ip, udp_port, expiration_timer, bitrate)?;
+                write!(f, "MC_ANNOUNCE channel ID={:?}, auth_type={}, probe_path={}, is_ipv6_addr={} reset_stream_on_join={} source_ip={:?}, group_ip={:?}, udp_port={}, expiration_timer={}, bitrate={:?}", channel_id, auth_type, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, expiration_timer, bitrate)?;
             },
 
             Frame::McState {
@@ -3471,8 +3471,8 @@ mod tests {
             ]
             .to_vec(),
             auth_type: 3,
-            is_ipv6: 0,
-            full_reliability: 1,
+            probe_path: 1,
+            is_ipv6_addr: 0,
             reset_stream_on_join: 0,
             source_ip: [127, 0, 0, 1],
             group_ip: [239, 239, 239, 35],
@@ -3527,8 +3527,8 @@ mod tests {
             ]
             .to_vec(),
             auth_type: 3,
-            is_ipv6: 0,
-            full_reliability: 1,
+            probe_path: 1,
+            is_ipv6_addr: 0,
             reset_stream_on_join: 1,
             source_ip: [127, 0, 0, 1],
             group_ip: [239, 239, 239, 35],

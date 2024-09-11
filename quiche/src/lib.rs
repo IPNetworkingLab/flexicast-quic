@@ -3223,9 +3223,8 @@ impl Connection {
                             .multicast
                             .as_mut()
                             .map(|mc| {
-                                mc.rmc_get_mut().map(|rmc| rmc.server_mut())
+                                mc.rmc_get_mut().server_mut()
                             })
-                            .flatten()
                             .flatten()
                         {
                             rmc_server.mc_ack.on_stream_ack_received(
@@ -4820,12 +4819,8 @@ impl Connection {
                 let frame = frame::Frame::McAnnounce {
                     channel_id: mc_announce_data.channel_id.clone(),
                     auth_type: mc_announce_data.auth_type.into(),
-                    is_ipv6: if mc_announce_data.is_ipv6 { 1 } else { 0 },
-                    full_reliability: if mc_announce_data.full_reliability {
-                        1
-                    } else {
-                        0
-                    },
+                    is_ipv6_addr: if mc_announce_data.is_ipv6_addr { 1 } else { 0 },
+                    probe_path: if mc_announce_data.probe_path { 1 } else { 0 },
                     reset_stream_on_join: if mc_announce_data.reset_stream_on_join
                     {
                         1
@@ -5657,9 +5652,9 @@ impl Connection {
                     Some(source_symbol_metadata);
             }
         }
-        trace!("{} tx on space_id={}", self.trace_id, space_id);
+        println!("{} tx on space_id={} pn={}", self.trace_id, space_id, pn);
         for frame in &mut frames {
-            trace!("{} tx frm {:?}", self.trace_id, frame);
+            println!("{} tx frm {:?}", self.trace_id, frame);
 
             qlog_with_type!(QLOG_PACKET_TX, self.qlog, _q, {
                 qlog_frames.push(frame.to_qlog());
@@ -8734,7 +8729,7 @@ impl Connection {
                         .unwrap()
                         .get_mc_announce_data_active()
                         .unwrap()
-                        .is_ipv6
+                        .probe_path
                 {
                     let challenge_pending = self
                         .paths
@@ -8969,7 +8964,7 @@ impl Connection {
                         // unicat path, and only on the multicast path. As a
                         // result, we do not need to keep track of the path on
                         // which the source symbol is sent.
-                        if let Some(ReliableMc::Server(s)) =
+                        if let ReliableMc::Server(s) =
                             multicast.rmc_get_mut()
                         {
                             s.set_rmc_received_fec_metadata(ranges);
@@ -9032,7 +9027,7 @@ impl Connection {
                     if multicast.get_mc_space_id() ==
                         Some(space_identifier as usize)
                     {
-                        if let Some(ReliableMc::Server(s)) =
+                        if let ReliableMc::Server(s) =
                             multicast.rmc_get_mut()
                         {
                             s.set_rmc_received_pn(ranges.clone());
@@ -9111,8 +9106,9 @@ impl Connection {
                             Some(space_identifier as usize)
                         {
                             // Get the packet number of newly acked.
-                            let p = self.paths.get_mut(space_identifier as usize)?;
-                            
+                            let p =
+                                self.paths.get_mut(space_identifier as usize)?;
+
                             let pn_new_ack = p.recovery.fc_new_ack_pn.drain(..);
                             let mut new_ack_rs =
                                 crate::ranges::RangeSet::default();
@@ -9120,12 +9116,12 @@ impl Connection {
                                 new_ack_rs.insert(pn..pn + 1);
                             }
 
-                            multicast
+                            if let Some(rmc_server) = multicast
                                 .rmc_get_mut()
-                                .unwrap()
                                 .server_mut()
-                                .unwrap()
-                                .new_ack_pn_fc = new_ack_rs;
+                            {
+                                rmc_server.new_ack_pn_fc = new_ack_rs;
+                            }
                         }
                     }
                 }
@@ -9194,8 +9190,8 @@ impl Connection {
             frame::Frame::McAnnounce {
                 channel_id,
                 auth_type,
-                is_ipv6,
-                full_reliability,
+                probe_path,
+                is_ipv6_addr,
                 reset_stream_on_join,
                 source_ip,
                 group_ip,
@@ -9204,7 +9200,7 @@ impl Connection {
                 public_key,
                 bitrate,
             } => {
-                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?} auth_type={:?}, is_ipv6={}, full_reliability={}, reset_stream_on_joih={}, source_ip={:?}, group_ip={:?}, udp_port={}, bitrate={:?}", channel_id, auth_type, is_ipv6, full_reliability, reset_stream_on_join, source_ip, group_ip, udp_port, bitrate);
+                debug!("Received an MC_ANNOUNCE frame! MC_ANNOUNCE channel ID={:?} auth_type={:?}, probe_path={}, is_ipv6_addr={}, reset_stream_on_joih={}, source_ip={:?}, group_ip={:?}, udp_port={}, bitrate={:?}", channel_id, auth_type, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, bitrate);
                 if self.is_server {
                     error!("The server should not receive an MC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -9213,8 +9209,8 @@ impl Connection {
                 let mc_announce_data = multicast::McAnnounceData {
                     channel_id,
                     auth_type: auth_type.try_into()?,
-                    is_ipv6: is_ipv6 == 1,
-                    full_reliability: full_reliability == 1,
+                    probe_path: probe_path == 1,
+                    is_ipv6_addr: is_ipv6_addr == 1,
                     reset_stream_on_join: reset_stream_on_join == 1,
                     source_ip,
                     group_ip,

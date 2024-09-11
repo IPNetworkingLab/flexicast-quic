@@ -402,7 +402,7 @@ pub struct MulticastAttributes {
     pub(crate) mc_ss_pn: RangeSet,
 
     /// Reliable multicast attributes.
-    mc_reliable: Option<ReliableMc>,
+    mc_reliable: ReliableMc,
 
     /// Packet numbers received on the multicast channel containing STREAM
     /// frames. This structure is used to correctly remove expired streams
@@ -890,7 +890,7 @@ impl Default for MulticastAttributes {
             mc_leave_on_timeout: true,
             mc_prioritize_fec: false,
             mc_ss_pn: RangeSet::default(),
-            mc_reliable: None,
+            mc_reliable: ReliableMc::Undefined,
             mc_pn_stream_id: BTreeMap::default(),
             mc_last_recv_pn: 0,
             cur_max_pn: 0,
@@ -907,7 +907,10 @@ pub struct McAnnounceData {
     pub channel_id: Vec<u8>,
 
     /// Set to `true` if it is an IPv6 multicast group, `false` for IPv4.
-    pub is_ipv6: bool,
+    pub is_ipv6_addr: bool,
+
+    /// Whether path probing is required to create the flexicast path.
+    pub probe_path: bool,
 
     /// IP address of the multicast source (IPv4 only WIP).
     pub source_ip: [u8; 4],
@@ -933,9 +936,6 @@ pub struct McAnnounceData {
 
     /// Authentication used for this path.
     pub auth_type: McAuthType,
-
-    /// Whether this multicast channel uses full reliability.
-    pub full_reliability: bool,
 
     /// Bitrate of this channel in bits per second.
     /// If `None`, it means that the channel uses a classical congestion
@@ -1250,10 +1250,10 @@ impl MulticastConnection for Connection {
                             ));
                     }
                 },
-                McRole::ServerMulticast if mc_announce_data.full_reliability =>
-                    if multicast.mc_reliable.is_none() {
+                McRole::ServerMulticast =>
+                    if !multicast.rmc_is_set() {
                         multicast.mc_reliable =
-                            Some(ReliableMc::McSource(RMcSource::default()));
+                            ReliableMc::McSource(RMcSource::default());
                     },
                 _ => (),
             }
@@ -1279,14 +1279,10 @@ impl MulticastConnection for Connection {
                         )
                     },
                 ),
-                mc_reliable: if mc_announce_data.full_reliability {
-                    Some(if self.is_server {
-                        ReliableMc::Server(RMcServer::default())
-                    } else {
-                        ReliableMc::Client(RMcClient::default())
-                    })
+                mc_reliable: if self.is_server {
+                    ReliableMc::Server(RMcServer::default())
                 } else {
-                    None
+                    ReliableMc::Client(RMcClient::default())
                 },
                 ..Default::default()
             });
@@ -1475,8 +1471,8 @@ impl MulticastConnection for Connection {
                     .ok_or(Error::Multicast(McError::McAnnounce))?
                     .expiration_timer,
                 hs_status,
-                &mut self.newly_acked,
             )?;
+            println!("Expired pkt={:?}", expired_pkt);
             self.blocked_limit = None;
         }
 
@@ -1803,15 +1799,8 @@ impl MulticastConnection for Connection {
                     .and_then(|exp| exp.pn)
                     .unwrap_or(0);
                 mc_channel
-                    .multicast
-                    .as_mut()
-                    .unwrap()
-                    .rmc_get_mut()
-                    .unwrap()
-                    .source_mut()
-                    .unwrap()
-                    .mc_ack
-                    .new_recv(max_pn);
+                    .get_mc_ack_mut()
+                    .map(|mc_ack| mc_ack.new_recv(max_pn));
             }
 
             // Unicast connection asks the multicast channel to remove its client
@@ -1839,41 +1828,56 @@ impl MulticastConnection for Connection {
 
             // The unicast server instances notify the source through the McAck of
             // new packets that have been acked.
-            // Also notify for streams that have been deleguated and that 
+            // Also notify for streams that have been deleguated and that
             let multicast = self.multicast.as_mut().unwrap();
-            let rmc_server =
-                multicast.rmc_get_mut().unwrap().server_mut().unwrap();
-            let new_ack_pn = &rmc_server.new_ack_pn_fc;
-            if new_ack_pn.len() > 0 {
-                let mc_ack = &mut mc_channel
-                .get_mc_ack_mut().unwrap();
-                
-                mc_ack.on_ack_received(new_ack_pn);
-                rmc_server.new_ack_pn_fc = RangeSet::default(); // MUST reset it.
+            if let (Some(rmc_server), Some(mc_ack)) = (
+                multicast
+                    .rmc_get_mut()
+                    .server_mut(),
+                mc_channel.get_mc_ack_mut(),
+            ) {
+                let new_ack_pn = &rmc_server.new_ack_pn_fc;
+                if new_ack_pn.len() > 0 {
+                    mc_ack.on_ack_received(new_ack_pn);
+                    rmc_server.new_ack_pn_fc = RangeSet::default(); // MUST reset it.
 
-                // Maybe now we can send new ACKs to the source.
-                if let Some(fully_acked) = mc_ack.full_ack() {
-                    mc_channel.fc_on_ack_received(&fully_acked, now)?;
-                }
-            }
-
-            // Notify for stream pieces that have been correctly received.
-            if let Some(mut ack_stream_pieces) = rmc_server.mc_ack.acked_stream_off() {
-                let mc_ack = &mut mc_channel
-                .get_mc_ack_mut().unwrap();
-                for (stream_id, ranges) in ack_stream_pieces.drain(..) {
-                    for range in ranges.iter() {
-                        mc_ack.on_stream_ack_received(stream_id, range.start, range.end - range.start);
+                    // Maybe now we can send new ACKs to the source.
+                    if let Some(fully_acked) = mc_ack.full_ack() {
+                        mc_channel.fc_on_ack_received(&fully_acked, now)?;
                     }
                 }
 
-                // Maybe now we can also fully acknowledge some streams on the flexicast server.
-                let mc_ack = &mut mc_channel
-                .get_mc_ack_mut().unwrap();
-                if let Some(mut fully_acked_stream_pieces) = mc_ack.acked_stream_off() {
-                    for (stream_id, ranges) in fully_acked_stream_pieces.drain(..) {
+                // Notify for stream pieces that have been correctly received.
+                if let Some(mut ack_stream_pieces) =
+                    rmc_server.mc_ack.acked_stream_off()
+                {
+                    let mc_ack = &mut mc_channel.get_mc_ack_mut().unwrap();
+                    for (stream_id, ranges) in ack_stream_pieces.drain(..) {
                         for range in ranges.iter() {
-                            mc_channel.fc_on_stream_ack_received(stream_id, range.start, range.end - range.start)?;
+                            mc_ack.on_stream_ack_received(
+                                stream_id,
+                                range.start,
+                                range.end - range.start,
+                            );
+                        }
+                    }
+
+                    // Maybe now we can also fully acknowledge some streams on the
+                    // flexicast server.
+                    let mc_ack = &mut mc_channel.get_mc_ack_mut().unwrap();
+                    if let Some(mut fully_acked_stream_pieces) =
+                        mc_ack.acked_stream_off()
+                    {
+                        for (stream_id, ranges) in
+                            fully_acked_stream_pieces.drain(..)
+                        {
+                            for range in ranges.iter() {
+                                mc_channel.fc_on_stream_ack_received(
+                                    stream_id,
+                                    range.start,
+                                    range.end - range.start,
+                                )?;
+                            }
                         }
                     }
                 }
@@ -2348,6 +2352,21 @@ impl MulticastChannelSource {
             ..MulticastAttributes::default()
         });
         conn_client.multicast.as_mut().unwrap().mc_space_id = Some(pid_c2s_1);
+
+        // Remove packets that need acknowledgment from the flexicast source.
+        conn_server
+            .pkt_num_spaces
+            .spaces
+            .get_mut(Epoch::Application, 1)
+            .unwrap()
+            .recv_pkt_need_ack = RangeSet::default();
+
+        conn_client
+            .pkt_num_spaces
+            .spaces
+            .get_mut(Epoch::Application, 1)
+            .unwrap()
+            .recv_pkt_need_ack = RangeSet::default();
 
         let cid = channel_id.clone().into_owned();
         Ok(Self {
@@ -2909,10 +2928,11 @@ pub mod testing {
         pub fn clients_send(&mut self) -> Result<()> {
             let mut buf = [0u8; 1500];
             for (pipe, ..) in self.unicast_pipes.iter_mut() {
+                println!("---- New pipe send");
                 loop {
                     let (written, send_info) = match pipe.client.send(&mut buf) {
                         Ok(v) => v,
-                        Err(Error::Done) => break,
+                        Err(Error::Done) => {println!("Client does not send anything"); break},
                         Err(e) => return Err(e),
                     };
 
@@ -3011,16 +3031,16 @@ pub mod testing {
     pub fn get_test_mc_announce_data() -> McAnnounceData {
         McAnnounceData {
             channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
-            is_ipv6: false,
+            probe_path: false,
+            is_ipv6_addr: false,
             source_ip: std::net::Ipv4Addr::new(127, 0, 0, 1).octets(),
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
             udp_port: 7676,
             public_key: None,
-            expiration_timer: 1_000_000,
+            expiration_timer: 500,
             reset_stream_on_join: false,
             is_processed: false,
             auth_type: McAuthType::None,
-            full_reliability: false,
             bitrate: None,
             fc_channel_algo: None,
             fc_channel_secret: None,
@@ -3657,12 +3677,9 @@ mod tests {
     }
 
     #[test]
-    /// Tests the process of MC_EXPIRE from the server to the client.
-    /// The server sends an MC_EXPIRE when the data expires with the
-    /// `expiration_timer` value of the multicast attributes. Also tests
-    /// that the multicast source regularly sends MC_EXPIRE containing empty
-    /// data if no new data is sent to the client, to ensure that the
-    /// multicast channel does not timeout.
+    /// Tests the process of expiration from the server.
+    /// The server can send PING if no new data is sent to the client, to ensure
+    /// that the multicast channel does not timeout.
     fn test_on_mc_timeout() {
         let mut fc_config = FcConfig {
             authentication: McAuthType::None,
@@ -5320,7 +5337,8 @@ mod tests {
             probe_mc_path: true,
             ..Default::default()
         };
-        fc_config.mc_announce_data[fc_config.mc_announce_to_join].is_ipv6 = true;
+        fc_config.mc_announce_data[fc_config.mc_announce_to_join].probe_path =
+            true;
 
         let mc_pipe = MulticastPipe::new(
             1,
@@ -5345,7 +5363,8 @@ mod tests {
             probe_mc_path: false,
             ..Default::default()
         };
-        fc_config.mc_announce_data[fc_config.mc_announce_to_join].is_ipv6 = false;
+        fc_config.mc_announce_data[fc_config.mc_announce_to_join].probe_path =
+            false;
 
         let mc_pipe = MulticastPipe::new(
             1,
@@ -5366,12 +5385,6 @@ mod tests {
     }
 
     #[test]
-    /// Tests the multicast handshake in case of packet losses.
-    fn test_mc_handshake_with_losses() {
-        // MC-TODO!
-    }
-
-    #[test]
     /// Tests the [`authentication::McAuthType::StreamAsym`] authentication
     /// method.
     fn test_mc_stream_asym() {
@@ -5381,7 +5394,8 @@ mod tests {
             probe_mc_path: true,
             ..Default::default()
         };
-        fc_config.mc_announce_data[fc_config.mc_announce_to_join].is_ipv6 = true;
+        fc_config.mc_announce_data[fc_config.mc_announce_to_join].probe_path =
+            true;
         let mut mc_pipe =
             MulticastPipe::new(1, "/tmp/test_mc_stream_asym.txt", &mut fc_config)
                 .unwrap();
@@ -5771,33 +5785,6 @@ mod tests {
             ); // Margin
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(7), Some(5)).into()));
-    }
-
-    #[test]
-    fn test_mc_no_retransmit_timer() {
-        let mut fc_config = FcConfig {
-            authentication: McAuthType::StreamAsym,
-            use_fec: true,
-            probe_mc_path: true,
-            ..Default::default()
-        };
-        let mut mc_pipe = MulticastPipe::new(
-            1,
-            "/tmp/test_mc_no_retransmit_timer.txt",
-            &mut fc_config,
-        )
-        .unwrap();
-
-        mc_pipe.source_send_single_stream(true, None, 1).unwrap();
-
-        // The stream is sent to the clients.
-        assert_eq!(mc_pipe.source_send_single(None), Err(Error::Done));
-        std::thread::sleep(time::Duration::from_millis(100));
-        let conn = &mut mc_pipe.mc_channel.channel;
-        conn.on_timeout();
-
-        // The server must not retransmit STREAM data on the multicast channel.
-        assert_eq!(mc_pipe.source_send_single(None), Err(Error::Done));
     }
 }
 

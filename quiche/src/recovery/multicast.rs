@@ -18,7 +18,6 @@ use crate::multicast::ack::McAck;
 use crate::multicast::reliable::ReliableMulticastConnection;
 use crate::multicast::ExpiredPkt;
 use crate::packet::Epoch;
-use crate::ranges;
 use crate::ranges::RangeSet;
 use crate::stream::StreamMap;
 use crate::Connection;
@@ -28,11 +27,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::Acked;
 use super::HandshakeStatus;
 use super::LostFrame;
 use super::Recovery;
-use super::Sent;
 use super::SpaceId;
 
 /// Multicast extension of the recovery mechanism of QUIC.
@@ -45,7 +42,7 @@ pub trait MulticastRecovery {
     #[allow(clippy::too_many_arguments)]
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, ttl: u64,
-        handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
+        handshake_status: HandshakeStatus,
     ) -> Result<ExpiredPkt>;
 
     #[allow(unused)]
@@ -56,9 +53,6 @@ pub trait MulticastRecovery {
 
     /// Sets the multicast maximum congestion window size.
     fn set_mc_max_cwnd(&mut self, cwnd: usize);
-
-    /// Returns the sent packet for the given packet number.
-    fn mc_get_sent_pkt(&self, pn: u64) -> Option<Sent>;
 }
 
 impl crate::recovery::Recovery {
@@ -77,7 +71,7 @@ impl crate::recovery::Recovery {
 impl MulticastRecovery for crate::recovery::Recovery {
     fn mc_data_timeout(
         &mut self, space_id: SpaceId, now: Instant, timer: u64,
-        handshake_status: HandshakeStatus, newly_acked: &mut Vec<Acked>,
+        handshake_status: HandshakeStatus,
     ) -> Result<ExpiredPkt> {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
@@ -142,13 +136,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
         self.mc_cwnd = Some(cwnd);
         self.reset();
     }
-
-    fn mc_get_sent_pkt(&self, pn: u64) -> Option<Sent> {
-        self.sent[Epoch::Application]
-            .iter()
-            .find(|pkt| pkt.pkt_num.1 == pn)
-            .cloned()
-    }
 }
 
 /// Reliable extensions of the recovery mechanism of Multicast QUIC.
@@ -188,7 +175,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let mut lost_pn = RangeSet::default();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
-        debug!(
+        println!(
             "Start deleguate stream for client {:?}. recv_pn={:?}",
             uc.multicast.as_ref().map(|m| m.get_self_client_id()),
             recv_pn
@@ -207,7 +194,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let mut max_exp_ss: Option<u64> = None;
 
         'per_packet: for packet in expired_sent {
-            debug!(
+            println!(
                 "This is a packet that is expired now: {:?} with frames: {:?}",
                 packet.pkt_num, packet.frames
             );
@@ -269,7 +256,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
                         // This STREAM frame was lost. Retransmit in a (new)
                         // stream on unicast path.
-                        debug!("Lost STREAM frame. ID={:?}, offset={:?}, length={:?}, fin={:?}", stream_id, offset, length, fin);
+                        println!("Lost STREAM frame. ID={:?}, offset={:?}, length={:?}, fin={:?}", stream_id, offset, length, fin);
                         let is_stream_collected =
                             uc.streams.is_collected(*stream_id);
                         let stream: &mut crate::stream::Stream = match uc
@@ -365,11 +352,10 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                             .multicast
                             .as_mut()
                             .map(|mc| {
-                                mc.rmc_get_mut().map(|rmc| {
-                                    rmc.server_mut().map(|s| &mut s.mc_ack)
-                                })
+                                mc.rmc_get_mut()
+                                    .server_mut()
+                                    .map(|s| &mut s.mc_ack)
                             })
-                            .flatten()
                             .flatten()
                         {
                             mc_ack.delegate(*stream_id, *offset, *length as u64);
@@ -759,7 +745,6 @@ mod tests {
             now,
             data_expiration_val,
             HandshakeStatus::default(),
-            &mut Vec::new(),
         );
         assert_eq!(res, Ok((Some(2), Some(2)).into()));
 
@@ -1282,7 +1267,6 @@ mod tests {
             now,
             data_expiration_val,
             HandshakeStatus::default(),
-            &mut Vec::new(),
         );
         assert_eq!(res, Ok((Some(2), Some(2)).into()));
 

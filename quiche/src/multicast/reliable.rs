@@ -126,6 +126,9 @@ pub enum ReliableMc {
 
     /// Multicast source specific reliable multicast.
     McSource(RMcSource),
+
+    /// Undefined role. Used to initialise the structure at first.
+    Undefined,
 }
 
 impl ReliableMc {
@@ -266,7 +269,7 @@ impl ReliableMulticastConnection for Connection {
             return None;
         }
 
-        let mc_reliable = multicast.mc_reliable.as_ref()?;
+        let mc_reliable = &multicast.mc_reliable;
 
         if let ReliableMc::Client(rmc) = mc_reliable {
             Some(rmc.rmc_next_time_ack?.duration_since(now))
@@ -276,13 +279,14 @@ impl ReliableMulticastConnection for Connection {
     }
 
     fn on_rmc_timeout(&mut self, now: time::Instant) -> Result<()> {
+        println!("on_rmc_timeout");
         if let Some(time::Duration::ZERO) = self.rmc_timeout(now) {
+            println!("on_rmc_timeout in");
             // Should be the client.
             assert!(!self.is_server);
             if let Some(multicast) = self.multicast.as_mut() {
-                if let Some(ReliableMc::Client(rmc)) =
-                    multicast.mc_reliable.as_mut()
-                {
+                if let ReliableMc::Client(rmc) = &mut multicast.mc_reliable {
+                    println!("Inside");
                     rmc.set_rmc_client_send_ack(true);
                     rmc.set_rmc_client_send_ssa(true);
                     rmc.rmc_next_time_ack = None; // Reset the next time ack.
@@ -299,10 +303,10 @@ impl ReliableMulticastConnection for Connection {
             let expiration_timer =
                 multicast.get_mc_announce_data(0).unwrap().expiration_timer;
 
-            if let Some(ReliableMc::Client(rmc)) = multicast.mc_reliable.as_mut()
-            {
+            if let ReliableMc::Client(ref mut rmc) = multicast.mc_reliable {
                 // Next time ack already set.
                 if rmc.rmc_next_time_ack.is_some() {
+                    println!("Set next timeout already set");
                     return Ok(());
                 }
                 let mut random_v = [0u8; 4];
@@ -327,8 +331,6 @@ impl ReliableMulticastConnection for Connection {
             .as_ref()
             .ok_or(Error::Multicast(McError::McDisabled))?
             .mc_reliable
-            .as_ref()
-            .ok_or(Error::Multicast(McError::McReliableDisabled))?
             .client()
             .ok_or(Error::Multicast(McError::McInvalidRole(McRole::Undefined)))
             .map(|c| c.rmc_client_send_ack)
@@ -339,8 +341,6 @@ impl ReliableMulticastConnection for Connection {
             .as_ref()
             .ok_or(Error::Multicast(McError::McDisabled))?
             .mc_reliable
-            .as_ref()
-            .ok_or(Error::Multicast(McError::McReliableDisabled))?
             .client()
             .ok_or(Error::Multicast(McError::McInvalidRole(McRole::Undefined)))
             .map(|c| c.rmc_client_send_ssa)
@@ -376,9 +376,8 @@ impl ReliableMulticastConnection for Connection {
             let stream_map = &mut self.streams;
             let mc_ack = mc_s
                 .mc_reliable
-                .as_mut()
-                .map(|r| r.source_mut().map(|s| &mut s.mc_ack))
-                .flatten()
+                .source_mut()
+                .map(|s| &mut s.mc_ack)
                 .ok_or(Error::Multicast(McError::McReliableDisabled))?;
             let (nb_lost_stream_frames, (mut lost_pn, mut recv_pn)) =
                 path.recovery.deleguate_stream(
@@ -389,10 +388,10 @@ impl ReliableMulticastConnection for Connection {
                     stream_map,
                     mc_ack,
                 )?;
-            if let Some(rmc) = uc.multicast.as_mut().unwrap().mc_reliable.as_mut()
+            if let ReliableMc::Server(ref mut rmc_server) =
+                uc.multicast.as_mut().unwrap().mc_reliable
             {
-                rmc.server_mut().unwrap().nb_lost_stream_mc_pkt +=
-                    nb_lost_stream_frames;
+                rmc_server.nb_lost_stream_mc_pkt += nb_lost_stream_frames;
             }
 
             if let Some(exp) = mc_s.mc_last_expired {
@@ -416,8 +415,7 @@ impl ReliableMulticastConnection for Connection {
             let max_pn =
                 lost_pn.last().unwrap_or(0).max(recv_pn.last().unwrap_or(0));
 
-            if let Some(rmc) = mc_s.rmc_get_mut().and_then(|rmc| rmc.source_mut())
-            {
+            if let Some(rmc) = mc_s.rmc_get_mut().source_mut() {
                 if let Some((_, recv)) = &rmc.max_rangeset {
                     if recv.nb_elements() > recv_pn.nb_elements() {
                         rmc.max_rangeset = Some((lost_pn, recv_pn));
@@ -444,7 +442,7 @@ impl ReliableMulticastConnection for Connection {
 
     fn rmc_get_recv_pn(&self) -> Result<&RangeSet> {
         if let Some(multicast) = self.multicast.as_ref() {
-            if let Some(ReliableMc::Server(s)) = multicast.mc_reliable.as_ref() {
+            if let ReliableMc::Server(ref s) = multicast.mc_reliable {
                 Ok(&s.recv_pn_mc)
             } else {
                 Err(Error::Multicast(McError::McReliableDisabled))
@@ -456,7 +454,7 @@ impl ReliableMulticastConnection for Connection {
 
     fn rmc_get_rec_ss(&self) -> Result<&RangeSet> {
         if let Some(multicast) = self.multicast.as_ref() {
-            if let Some(ReliableMc::Server(s)) = multicast.mc_reliable.as_ref() {
+            if let ReliableMc::Server(ref s) = multicast.mc_reliable {
                 Ok(&s.recv_fec_mc)
             } else {
                 Err(Error::Multicast(McError::McReliableDisabled))
@@ -468,10 +466,7 @@ impl ReliableMulticastConnection for Connection {
 
     fn rmc_reset_recv_pn_ss(&mut self, exp_pn: Option<u64>, exp_ss: Option<u64>) {
         if let Some(multicast) = self.multicast.as_mut() {
-            if let Some(ReliableMc::Server(s)) = multicast.mc_reliable.as_mut() {
-                // s.recv_pn_mc = RangeSet::default();
-                // s.recv_fec_mc = RangeSet::default();
-
+            if let ReliableMc::Server(ref mut s) = multicast.mc_reliable {
                 // Instead of resetting the ranges, we remove the expired values.
                 if let Some(exp) = exp_pn {
                     s.recv_pn_mc.remove_until(exp);
@@ -583,28 +578,26 @@ impl Connection {
 }
 
 impl MulticastAttributes {
-    /// Whether the multicast channel uses reliable multicast.
-    pub fn mc_is_reliable(&self) -> bool {
-        self.get_mc_announce_data(0)
-            .map(|d| d.full_reliability)
-            .unwrap_or(false)
+    /// Whether the full reliability structure is already set.
+    pub fn rmc_is_set(&self) -> bool {
+        !matches!(self.mc_reliable, ReliableMc::Undefined)
     }
 
     /// Sets the reliable client needing to send positive ack frames.
     pub fn rmc_set_send_ack(&mut self, v: bool) {
-        if let Some(ReliableMc::Client(c)) = self.mc_reliable.as_mut() {
+        if let ReliableMc::Client(ref mut c) = self.mc_reliable {
             c.set_rmc_client_send_ack(v);
         }
     }
 
     /// Gets the reliable multicast attributes as a mutable reference.
-    pub fn rmc_get_mut(&mut self) -> Option<&mut ReliableMc> {
-        self.mc_reliable.as_mut()
+    pub fn rmc_get_mut(&mut self) -> &mut ReliableMc {
+        &mut self.mc_reliable
     }
 
     /// Gets the reliable multicast attributes as a reference.
-    pub fn rmc_get(&self) -> Option<&ReliableMc> {
-        self.mc_reliable.as_ref()
+    pub fn rmc_get(&self) -> &ReliableMc {
+        &self.mc_reliable
     }
 
     /// Gets the number of STREAM frames that this server-side unicast
@@ -613,14 +606,13 @@ impl MulticastAttributes {
     /// Always `None` for the multicast source and the client.
     /// `None` if reliable multicast is disabled.
     pub fn rmc_get_server_nb_lost_stream(&self) -> Option<u64> {
-        if !matches!(self.mc_role, McRole::ServerUnicast(_)) ||
-            !self.mc_is_reliable()
-        {
+        if !matches!(self.mc_role, McRole::ServerUnicast(_)) {
             return None;
         }
 
         self.rmc_get()
-            .map(|rmc| rmc.server().map(|s| s.get_nb_lost_stream_mc_pkt()))?
+            .server()
+            .map(|s| s.get_nb_lost_stream_mc_pkt())
     }
 }
 
@@ -631,24 +623,12 @@ pub mod testing {
     use crate::multicast::testing::*;
     use crate::multicast::*;
 
-    impl FcConfig {
-        /// Simple McAnnounceData for testing the reliable multicast extension
-        /// only.
-        pub fn enable_reliable(&mut self) {
-            self.mc_announce_data.iter_mut().for_each(|announce| {
-                announce.full_reliability = true;
-                announce.expiration_timer = 500;
-            });
-        }
-    }
-
     impl MulticastPipe {
         /// Generates a new reliable multicast pipe with already defined
         /// configuration.
         pub fn new_reliable(
             nb_clients: usize, keylog_filename: &str, fc_config: &mut FcConfig,
         ) -> Result<MulticastPipe> {
-            fc_config.enable_reliable();
             Self::new(nb_clients, keylog_filename, fc_config)
         }
 
@@ -671,6 +651,7 @@ pub mod testing {
             &mut self, now: time::Instant, random: &SystemRandom,
         ) -> Result<()> {
             self.unicast_pipes.iter_mut().try_for_each(|(pipe, ..)| {
+                println!("--- New pipe client rmc timeout");
                 let client = &mut pipe.client;
                 client.rmc_set_next_timeout(now, random)?;
 
@@ -691,8 +672,6 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::multicast::reliable::RMcClient;
-    use crate::multicast::reliable::RMcServer;
     use crate::multicast::reliable::ReliableMc;
     use crate::multicast::testing::MulticastPipe;
     use crate::multicast::FcConfig;
@@ -719,49 +698,15 @@ mod tests {
         .unwrap();
         let expiration_timer = mc_pipe.mc_announce_data.expiration_timer;
 
-        assert!(mc_pipe
-            .mc_channel
-            .channel
-            .multicast
-            .as_ref()
-            .unwrap()
-            .mc_is_reliable());
-        assert!(mc_pipe.unicast_pipes[0]
-            .0
-            .server
-            .multicast
-            .as_ref()
-            .unwrap()
-            .mc_is_reliable());
-        assert!(mc_pipe.unicast_pipes[0]
-            .0
-            .client
-            .multicast
-            .as_ref()
-            .unwrap()
-            .mc_is_reliable());
-
         let server = &mut mc_pipe.unicast_pipes[0].0.server;
         let multicast = server.multicast.as_ref().unwrap();
-        let _rmc = multicast.mc_reliable.as_ref();
-        let _expected_rmc = ReliableMc::Server(RMcServer {
-            recv_pn_mc: RangeSet::default(),
-            recv_fec_mc: RangeSet::default(),
-            nb_lost_stream_mc_pkt: 0,
-            new_ack_pn_fc: RangeSet::default(),
-            mc_ack: McAck::new(),
-        });
-        // assert_eq!(rmc, Some(&expected_rmc));
+        let rmc = &multicast.mc_reliable;
+        assert!(matches!(rmc, ReliableMc::Server(_)));
 
         let client = &mut mc_pipe.unicast_pipes[0].0.client;
         let multicast = client.multicast.as_mut().unwrap();
-        let _rmc = multicast.mc_reliable.as_ref();
-        let _expected_rmc = ReliableMc::Client(RMcClient {
-            rmc_next_time_ack: None,
-            rmc_client_send_ack: false,
-            rmc_client_send_ssa: false,
-        });
-        // assert_eq!(rmc, Some(&expected_rmc));
+        let rmc = &multicast.mc_reliable;
+        assert!(matches!(rmc, ReliableMc::Client(_)));
 
         // Compute next timeout on the client.
         // The next reliable multicast timeout remains within the bounds.
@@ -774,8 +719,6 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .mc_reliable
-                .as_ref()
-                .unwrap()
                 .client()
                 .unwrap();
             let next_timeout = rmc_client.rmc_next_time_ack.unwrap();
@@ -853,8 +796,6 @@ mod tests {
             .as_ref()
             .unwrap()
             .mc_reliable
-            .as_ref()
-            .unwrap()
             .server()
             .unwrap();
         let mut expected_ranges = RangeSet::default();
@@ -1977,7 +1918,8 @@ mod tests {
         .unwrap();
 
         let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
-        let expiration_timer = time::Duration::from_millis(expiration_timer + 100);
+        let expiration_timer =
+            time::Duration::from_millis(expiration_timer + 100);
         let now = time::Instant::now();
 
         // First stream is received by both receivers.
@@ -2000,10 +1942,9 @@ mod tests {
         let fc_path = fc_pipe.mc_channel.channel.paths.get(1).unwrap();
         let nb_ack = fc_path.recovery.acked[Epoch::Application].len();
 
-        // The flexicast source acknowledged the packet because both receivers said it was ok.
-        let mut expired = now
-            .checked_add(expiration_timer)
-            .unwrap();
+        // The flexicast source acknowledged the packet because both receivers
+        // said it was ok.
+        let mut expired = now.checked_add(expiration_timer).unwrap();
         let random = SystemRandom::new();
         assert_eq!(fc_pipe.client_rmc_timeout(expired, &random), Ok(()));
         fc_pipe.clients_send().unwrap();
@@ -2013,13 +1954,15 @@ mod tests {
 
         // McAck state is empty.
         let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
-        let (pns, _, _) = mc_ack.get_state();
+        let (pns, ..) = mc_ack.get_state();
         assert_eq!(pns.len(), 0);
 
         // Second stream is lost for the first client.
         let mut client_losses = RangeSet::default();
         client_losses.insert(0..1);
-        fc_pipe.source_send_single_stream(true, Some(&client_losses), 7).unwrap();
+        fc_pipe
+            .source_send_single_stream(true, Some(&client_losses), 7)
+            .unwrap();
         fc_pipe.server_control_to_mc_source(expired).unwrap();
 
         // Only second client receives data.
@@ -2047,22 +1990,21 @@ mod tests {
 
         // The source deleguates the stream to the first client.
         fc_pipe.source_deleguates_streams(expired).unwrap();
-
-        // TODO: check values after timeout!
         fc_pipe.mc_channel.channel.on_mc_timeout(expired).unwrap();
 
         // The unicast server now has state for the expired streams.
         let open_stream_ids = fc_pipe.unicast_pipes[0]
-        .0
-        .server
-        .streams
-        .writable()
-        .collect::<Vec<_>>();
+            .0
+            .server
+            .streams
+            .writable()
+            .collect::<Vec<_>>();
         assert_eq!(open_stream_ids, vec![7]);
 
         assert!(!fc_pipe.mc_channel.channel.streams.is_collected(7));
 
-        // And the McAck of both the flexicast source and the unicast server have state.
+        // And the McAck of both the flexicast source and the unicast server have
+        // state.
         let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
         let (_, streams, _) = mc_ack.get_state();
         assert_eq!(streams.len(), 1);
@@ -2070,20 +2012,38 @@ mod tests {
         assert_eq!(value.len(), 1);
         assert_eq!(value.iter().next().unwrap(), (&0, &(300, 1)));
 
-        let mc_ack = &fc_pipe.unicast_pipes[0].0.server.multicast.as_ref().unwrap().rmc_get().unwrap().server().unwrap().mc_ack;
+        let mc_ack = &fc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .multicast
+            .as_ref()
+            .unwrap()
+            .rmc_get()
+            .server()
+            .unwrap()
+            .mc_ack;
         let (_, streams, _) = mc_ack.get_state();
         assert_eq!(streams.len(), 1);
         let value = streams.get(&7).unwrap();
         assert_eq!(value.len(), 1);
         assert_eq!(value.iter().next().unwrap(), (&0, &(300, 1)));
-        
+
         fc_pipe.unicast_pipes[0].0.advance().unwrap();
 
         // Client received the stream. State updated on the McAck of the server.
-        let mc_ack = &fc_pipe.unicast_pipes[0].0.server.multicast.as_ref().unwrap().rmc_get().unwrap().server().unwrap().mc_ack;
+        let mc_ack = &fc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .multicast
+            .as_ref()
+            .unwrap()
+            .rmc_get()
+            .server()
+            .unwrap()
+            .mc_ack;
         let (_, streams, _) = mc_ack.get_state();
         assert!(streams.is_empty());
-        
+
         fc_pipe.server_control_to_mc_source(expired).unwrap();
 
         // Now the flexicast source does not have any state for the open stream.
@@ -2096,6 +2056,5 @@ mod tests {
         let client_0 = &mut fc_pipe.unicast_pipes[0].0.client;
         assert!(client_0.stream_readable(7));
         assert_eq!(client_0.stream_recv(7, &mut buf), Ok((300, true)));
-
     }
 }

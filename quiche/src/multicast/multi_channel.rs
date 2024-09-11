@@ -54,15 +54,17 @@ impl Connection {
             .ok_or(Error::Multicast(McError::McAnnounce))?;
 
         // Only bother if both channels do not use path probing to use single RTT.
-        if multicast.mc_announce_data[old_idx].is_ipv6 ||
-            multicast.mc_announce_data[new_idx].is_ipv6
+        if multicast.mc_announce_data[old_idx].probe_path ||
+            multicast.mc_announce_data[new_idx].probe_path
         {
             return Err(Error::Multicast(McError::FcChangeChan));
         }
 
         // Get the old and new space ID.
         // FC-TODO: not sure this will work because we infer the new space id.
-        let old_fc_space_id = multicast.get_mc_space_id().ok_or(Error::Multicast(McError::McPath))?;
+        let old_fc_space_id = multicast
+            .get_mc_space_id()
+            .ok_or(Error::Multicast(McError::McPath))?;
         let new_fc_space_id = old_fc_space_id + 1;
 
         // Remove all FEC state.
@@ -78,7 +80,10 @@ impl Connection {
         multicast.set_mc_space_id(new_fc_space_id);
 
         multicast.mc_leave_on_timeout = leave_on_timeout;
-        multicast.update_client_state(super::McClientAction::Change, Some(new_fc_space_id as u64))
+        multicast.update_client_state(
+            super::McClientAction::Change,
+            Some(new_fc_space_id as u64),
+        )
     }
 }
 
@@ -608,9 +613,7 @@ mod tests {
             [to]
             .channel_id
             .to_owned();
-        pipe.client
-            .fc_change_channel(false, &fc_chan_id)
-            .unwrap();
+        pipe.client.fc_change_channel(false, &fc_chan_id).unwrap();
         pipe.client
             .abandon_path(sock_from, sock_to, 0, b"change-channel".to_vec())
             .unwrap();

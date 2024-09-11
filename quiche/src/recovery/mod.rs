@@ -808,6 +808,7 @@ impl Recovery {
         // HANDSHAKE_DONE and MAX_DATA / MAX_STREAM_DATA as well, in addition
         // to CRYPTO and STREAM, if the original packet carried them.
         for unacked in unacked_iter {
+            println!("** Unacked packet iter: {:?}", unacked.pkt_num);
             let mut contains_recovered_source_symbol = false;
             for frame in &unacked.frames {
                 if let frame::Frame::SourceSymbolHeader { recovered, .. } = frame

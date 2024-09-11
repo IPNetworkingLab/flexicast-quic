@@ -199,14 +199,11 @@ impl McAck {
             return;
         }
 
-        println!("Enter here....");
-
         // No data for the stream. Should not happen!
         if !self.stream_map.contains_key(&stream_id) {
             return;
         }
         let stream = self.stream_map.get_mut(&stream_id).unwrap();
-        println!("Get stream....");
 
         let mut tmp_offs = VecDeque::with_capacity(2);
         tmp_offs.push_back((off, len));
@@ -272,7 +269,6 @@ impl McAck {
                     let range_ack = self.stream_full.get_mut(&stream_id).unwrap();
                     range_ack.insert(start_overlap..end_overlap);
                     stream.remove(&start_overlap);
-                    println!("Insert here full ack range: {:?}", (start_overlap..end_overlap));
                 }
             }
         }
@@ -285,7 +281,6 @@ impl McAck {
     /// Returns the fully acknowledged stream offsets. This drains the internal
     /// state.
     pub fn acked_stream_off(&mut self) -> Option<Vec<(u64, RangeSet)>> {
-        println!("I am calling: {:?}", self.stream_full);
         if self.stream_full.is_empty() {
             None
         } else {
@@ -295,7 +290,9 @@ impl McAck {
 
     #[cfg(test)]
     /// Returns the internal state of the structure.
-    pub fn get_state(&self) -> (&BTreeMap<u64, u64>, &HashMap<u64, McStream>, u64) {
+    pub fn get_state(
+        &self,
+    ) -> (&BTreeMap<u64, u64>, &HashMap<u64, McStream>, u64) {
         (&self.acked, &self.stream_map, self.nb_recv)
     }
 }
@@ -305,9 +302,7 @@ impl Connection {
     pub(crate) fn get_mc_ack_mut(&mut self) -> Option<&mut McAck> {
         self.multicast
             .as_mut()
-            .map(|mc| mc.rmc_get_mut())
-            .flatten()
-            .map(|r| r.source_mut().map(|rs| &mut rs.mc_ack))
+            .map(|mc| mc.rmc_get_mut().source_mut().map(|rs| &mut rs.mc_ack))
             .flatten()
     }
 }
