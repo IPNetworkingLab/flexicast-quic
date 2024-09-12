@@ -342,7 +342,8 @@ pub struct MulticastAttributes {
     pub(crate) mc_last_expired: Option<ExpiredPkt>,
 
     /// Time at which the client received the last packet.
-    mc_last_recv_time: Option<time::Instant>,
+    /// For the source, the last time a timeout occured.
+    mc_last_time: Option<time::Instant>,
 
     /// Set to true if the client just left the multicast channel and the
     /// synchronisation step is not performed yet.
@@ -356,23 +357,6 @@ pub struct MulticastAttributes {
     /// verifications, as we overwrite this value for each McPathType::Data
     /// MC_ANNOUNCE data received.
     pub(crate) mc_auth_type: McAuthType,
-
-    /// Packet number and packet content sent on the multicast data channel that
-    /// must be authenticated with a symetric MC_AUTH frame on the
-    /// authentication channel.
-    pub(crate) mc_pn_need_sym_sign: Option<VecDeque<(u64, Vec<u8>)>>,
-
-    /// All symetric signatures that must be sent inside MC_AUTH frames on a
-    /// multicast authentication path.
-    /// For a client, it contains the set of received signatures concerning this
-    /// client.
-    ///
-    /// It is up to the application to fill this vector with signatures to send
-    /// to the clients. This design choice ensures that the [`send`] methods
-    /// from the library must not take a reference to all the clients of the
-    /// channel. Instead, this library provides a function MC-TODO to fill this
-    /// vector by the application before calling the send functions.
-    pub(crate) mc_sym_signs: McSymSign,
 
     /// MC_STATE frame in flight.
     mc_state_in_flight: bool,
@@ -876,12 +860,10 @@ impl Default for MulticastAttributes {
             mc_space_id: None,
             mc_nack_ranges: (None, None),
             mc_last_expired: None,
-            mc_last_recv_time: None,
+            mc_last_time: None,
             mc_client_left_need_sync: false,
             mc_client_id: None,
             mc_auth_type: McAuthType::None,
-            mc_pn_need_sym_sign: None,
-            mc_sym_signs: McSymSign::Client(HashMap::new()),
             mc_state_in_flight: false,
             mc_recv_stream: VecDeque::new(),
             mc_need_ack: false,
@@ -1392,7 +1374,7 @@ impl MulticastConnection for Connection {
                 // Update the last time the client received a packet on the
                 // multicast channel.
                 let now = time::Instant::now();
-                multicast.mc_last_recv_time = Some(now);
+                multicast.mc_last_time = Some(now);
 
                 let len = buf.len();
                 let auth_method = multicast.get_mc_authentication_method();
@@ -1472,7 +1454,6 @@ impl MulticastConnection for Connection {
                     .expiration_timer,
                 hs_status,
             )?;
-            println!("Expired pkt={:?}", expired_pkt);
             self.blocked_limit = None;
         }
 
@@ -1512,10 +1493,10 @@ impl MulticastConnection for Connection {
             return None;
         }
         let timeout = if self.is_server {
-            multicast.mc_last_recv_time? +
+            multicast.mc_last_time? +
                 time::Duration::from_millis(expiration_timer)
         } else {
-            multicast.mc_last_recv_time? +
+            multicast.mc_last_time? +
                 time::Duration::from_millis(expiration_timer * 3)
         };
         if timeout <= now {
@@ -1543,7 +1524,7 @@ impl MulticastConnection for Connection {
                                 Some(exp_pkt);
 
                             // Update last time a timeout event occured.
-                            self.multicast.as_mut().unwrap().mc_last_recv_time =
+                            self.multicast.as_mut().unwrap().mc_last_time =
                                 Some(now);
 
                             if let Some(e) = exp_pkt.pn {
@@ -2303,8 +2284,7 @@ impl MulticastChannelSource {
                 McClientIdSource::default(),
             )),
             mc_auth_type: fc_config.authentication,
-            mc_pn_need_sym_sign: Some(VecDeque::new()),
-            mc_last_recv_time: Some(time::Instant::now()),
+            mc_last_time: Some(time::Instant::now()),
             mc_sent_repairs: Some(ranges::RangeSet::default()),
             ..Default::default()
         });
@@ -2928,11 +2908,10 @@ pub mod testing {
         pub fn clients_send(&mut self) -> Result<()> {
             let mut buf = [0u8; 1500];
             for (pipe, ..) in self.unicast_pipes.iter_mut() {
-                println!("---- New pipe send");
                 loop {
                     let (written, send_info) = match pipe.client.send(&mut buf) {
                         Ok(v) => v,
-                        Err(Error::Done) => {println!("Client does not send anything"); break},
+                        Err(Error::Done) => break,
                         Err(e) => return Err(e),
                     };
 
@@ -3037,7 +3016,7 @@ pub mod testing {
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
             udp_port: 7676,
             public_key: None,
-            expiration_timer: 500,
+            expiration_timer: 50,
             reset_stream_on_join: false,
             is_processed: false,
             auth_type: McAuthType::None,
@@ -3167,7 +3146,6 @@ pub mod testing {
 mod tests {
     use ring::rand::SecureRandom;
 
-    use crate::multicast::authentication::McSymAuth;
     use crate::testing;
 
     use crate::multicast::testing::get_test_mc_channel_source;
@@ -3825,7 +3803,7 @@ mod tests {
             .multicast
             .as_ref()
             .unwrap()
-            .mc_last_recv_time;
+            .mc_last_time;
         expired_timer += time::Duration::from_millis(
             mc_pipe.mc_announce_data.expiration_timer + 100,
         );
@@ -3848,7 +3826,7 @@ mod tests {
             .multicast
             .as_ref()
             .unwrap()
-            .mc_last_recv_time;
+            .mc_last_time;
         assert!(client_last_received.is_some());
         assert!(client_last_received_now.is_some());
         assert!(
@@ -3865,7 +3843,7 @@ mod tests {
             .multicast
             .as_ref()
             .unwrap()
-            .mc_last_recv_time;
+            .mc_last_time;
         expired_timer += time::Duration::from_millis(
             mc_pipe.mc_announce_data.expiration_timer + 100,
         );
@@ -3888,7 +3866,7 @@ mod tests {
             .multicast
             .as_ref()
             .unwrap()
-            .mc_last_recv_time;
+            .mc_last_time;
         assert!(client_last_received.is_some());
         assert!(client_last_received_now.is_some());
         assert!(
@@ -5311,7 +5289,6 @@ mod tests {
 
         for _ in 0..100 {
             mc_pipe.mc_channel.mc_send(&mut buf).unwrap();
-            mc_pipe.mc_channel.channel.mc_sym_sign(&clients).unwrap();
         }
     }
 

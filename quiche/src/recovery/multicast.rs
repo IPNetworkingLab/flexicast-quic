@@ -105,7 +105,6 @@ impl MulticastRecovery for crate::recovery::Recovery {
                     None => first,
                 };
                 let expired_pn = Some(last.pkt_num.1);
-
                 let (_lost_packets, _lost_bytes) =
                     self.on_loss_detection_timeout(handshake_status, now, "");
 
@@ -147,8 +146,8 @@ pub trait ReliableMulticastRecovery {
     /// Returns the number of STREAM frames lost that will be retransmitted to
     /// the client on the unicast path.
     fn deleguate_stream(
-        &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
-        space_id: u32, local_streams: &mut StreamMap, mc_ack: &mut McAck,
+        &mut self, uc: &mut Connection, space_id: u32,
+        local_streams: &mut StreamMap, mc_ack: &mut McAck,
     ) -> Result<(u64, (RangeSet, RangeSet))>;
 
     #[allow(unused)]
@@ -169,33 +168,33 @@ pub trait ReliableMulticastRecovery {
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
     fn deleguate_stream(
-        &mut self, uc: &mut Connection, now: Instant, expiration_timer: u64,
-        space_id: u32, local_streams: &mut StreamMap, mc_ack: &mut McAck,
+        &mut self, uc: &mut Connection, space_id: u32,
+        local_streams: &mut StreamMap, mc_ack: &mut McAck,
     ) -> Result<(u64, (RangeSet, RangeSet))> {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let mut lost_pn = RangeSet::default();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
-        println!(
+        debug!(
             "Start deleguate stream for client {:?}. recv_pn={:?}",
             uc.multicast.as_ref().map(|m| m.get_self_client_id()),
             recv_pn
         );
 
         let mut nb_lost_mc_stream_frames = 0;
-        let expired_sent = self.sent[Epoch::Application]
+        let lost_iter = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
-                now.saturating_duration_since(p.time_sent) >=
-                    Duration::from_millis(expiration_timer)
+                (p.time_lost.is_some() || p.time_acked.is_some()) &&
+                    p.pkt_num.0 == space_id
             })
-            .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
+            .filter(|p| p.time_lost.is_some() && p.pkt_num.0 == space_id);
 
         let mut max_exp_pn: Option<u64> = None;
         let mut max_exp_ss: Option<u64> = None;
 
-        'per_packet: for packet in expired_sent {
-            println!(
-                "This is a packet that is expired now: {:?} with frames: {:?}",
+        'per_packet: for packet in lost_iter {
+            debug!(
+                "This is a packet that is lost: {:?} with frames: {:?}",
                 packet.pkt_num, packet.frames
             );
             max_exp_pn = if let Some(c) = max_exp_pn {
@@ -256,7 +255,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
                         // This STREAM frame was lost. Retransmit in a (new)
                         // stream on unicast path.
-                        println!("Lost STREAM frame. ID={:?}, offset={:?}, length={:?}, fin={:?}", stream_id, offset, length, fin);
+                        debug!("Lost STREAM frame. ID={:?}, offset={:?}, length={:?}, fin={:?}", stream_id, offset, length, fin);
                         let is_stream_collected =
                             uc.streams.is_collected(*stream_id);
                         let stream: &mut crate::stream::Stream = match uc
@@ -390,10 +389,10 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
-                now.saturating_duration_since(p.time_sent) >=
-                    Duration::from_millis(expiration_timer)
+                (p.time_lost.is_some() || p.time_acked.is_some()) &&
+                    p.pkt_num.0 == space_id
             })
-            .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
+            .filter(|p| p.time_lost.is_some() && p.pkt_num.0 == space_id);
 
         for pkt in expired_sent {
             for frame in pkt.frames.iter() {

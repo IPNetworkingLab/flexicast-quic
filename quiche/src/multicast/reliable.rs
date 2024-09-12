@@ -279,14 +279,11 @@ impl ReliableMulticastConnection for Connection {
     }
 
     fn on_rmc_timeout(&mut self, now: time::Instant) -> Result<()> {
-        println!("on_rmc_timeout");
         if let Some(time::Duration::ZERO) = self.rmc_timeout(now) {
-            println!("on_rmc_timeout in");
             // Should be the client.
             assert!(!self.is_server);
             if let Some(multicast) = self.multicast.as_mut() {
                 if let ReliableMc::Client(rmc) = &mut multicast.mc_reliable {
-                    println!("Inside");
                     rmc.set_rmc_client_send_ack(true);
                     rmc.set_rmc_client_send_ssa(true);
                     rmc.rmc_next_time_ack = None; // Reset the next time ack.
@@ -306,7 +303,6 @@ impl ReliableMulticastConnection for Connection {
             if let ReliableMc::Client(ref mut rmc) = multicast.mc_reliable {
                 // Next time ack already set.
                 if rmc.rmc_next_time_ack.is_some() {
-                    println!("Set next timeout already set");
                     return Ok(());
                 }
                 let mut random_v = [0u8; 4];
@@ -365,10 +361,6 @@ impl ReliableMulticastConnection for Connection {
             }
 
             // Deleguate streams sent on the multicast path.
-            let expiration_timer = mc_s
-                .get_mc_announce_data(0)
-                .ok_or(Error::Multicast(McError::McAnnounce))?
-                .expiration_timer;
             let space_id = mc_s
                 .get_mc_space_id()
                 .ok_or(Error::Multicast(McError::McPath))?;
@@ -382,8 +374,6 @@ impl ReliableMulticastConnection for Connection {
             let (nb_lost_stream_frames, (mut lost_pn, mut recv_pn)) =
                 path.recovery.deleguate_stream(
                     uc,
-                    now,
-                    expiration_timer,
                     space_id as u32,
                     stream_map,
                     mc_ack,
@@ -644,6 +634,17 @@ pub mod testing {
             on_rmc_timeout_server!(mc, ucs, expired)
         }
 
+        /// Same as `source_deleguates_streams` but does not check for mc_timeout.
+        pub fn source_deleguates_streams_direct(
+            &mut self, expired: time::Instant,
+        ) -> Result<()> {
+            let ucs = self.unicast_pipes.iter_mut().take_while(|_| true);
+            let mc = &mut self.mc_channel.channel;
+            let ucs = ucs.map(|c| &mut c.0.server);
+
+            ucs.map(|uc| mc.rmc_deleguate_streams(uc, expired)).collect()
+        }
+
         /// Sets the RMC next timeout on the client and directly expires it by
         /// calling `on_rmc_timeout` to trigger positive acks to the source.
         /// Does not make the pipes advance.
@@ -651,7 +652,6 @@ pub mod testing {
             &mut self, now: time::Instant, random: &SystemRandom,
         ) -> Result<()> {
             self.unicast_pipes.iter_mut().try_for_each(|(pipe, ..)| {
-                println!("--- New pipe client rmc timeout");
                 let client = &mut pipe.client;
                 client.rmc_set_next_timeout(now, random)?;
 
@@ -1944,9 +1944,10 @@ mod tests {
 
         // The flexicast source acknowledged the packet because both receivers
         // said it was ok.
-        let mut expired = now.checked_add(expiration_timer).unwrap();
+        std::thread::sleep(expiration_timer);
+        let now = time::Instant::now();
         let random = SystemRandom::new();
-        assert_eq!(fc_pipe.client_rmc_timeout(expired, &random), Ok(()));
+        assert_eq!(fc_pipe.client_rmc_timeout(now, &random), Ok(()));
         fc_pipe.clients_send().unwrap();
         fc_pipe.server_control_to_mc_source(now).unwrap();
         let fc_path = fc_pipe.mc_channel.channel.paths.get(1).unwrap();
@@ -1963,7 +1964,7 @@ mod tests {
         fc_pipe
             .source_send_single_stream(true, Some(&client_losses), 7)
             .unwrap();
-        fc_pipe.server_control_to_mc_source(expired).unwrap();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
 
         // Only second client receives data.
         let client_0 = &mut fc_pipe.unicast_pipes[0].0.client;
@@ -1972,8 +1973,9 @@ mod tests {
         assert!(client_1.stream_readable(7));
         assert_eq!(client_1.stream_recv(7, &mut buf), Ok((300, true)));
 
-        expired = expired.checked_add(expiration_timer).unwrap();
-        assert_eq!(fc_pipe.client_rmc_timeout(expired, &random), Ok(()));
+        std::thread::sleep(expiration_timer);
+        let now = time::Instant::now();
+        assert_eq!(fc_pipe.client_rmc_timeout(now, &random), Ok(()));
         fc_pipe.clients_send().unwrap();
         fc_pipe.server_control_to_mc_source(now).unwrap();
 
@@ -1988,9 +1990,17 @@ mod tests {
         assert_eq!(*pns.values().next().unwrap(), 1); // Only one client need to ack the packet.
         assert_eq!(streams.len(), 0);
 
-        // The source deleguates the stream to the first client.
-        fc_pipe.source_deleguates_streams(expired).unwrap();
-        fc_pipe.mc_channel.channel.on_mc_timeout(expired).unwrap();
+        // The arrival of a new stream will trigger a loss for Stream 7.
+        let now = time::Instant::now();
+        fc_pipe.source_send_single_stream(true, None, 11).unwrap();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+        std::thread::sleep(expiration_timer);
+        let now = time::Instant::now();
+        assert_eq!(fc_pipe.client_rmc_timeout(now, &random), Ok(()));
+        fc_pipe.clients_send().unwrap();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+        // TODO: check McAck here.
+        fc_pipe.source_deleguates_streams_direct(now).unwrap();
 
         // The unicast server now has state for the expired streams.
         let open_stream_ids = fc_pipe.unicast_pipes[0]
@@ -2044,7 +2054,7 @@ mod tests {
         let (_, streams, _) = mc_ack.get_state();
         assert!(streams.is_empty());
 
-        fc_pipe.server_control_to_mc_source(expired).unwrap();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
 
         // Now the flexicast source does not have any state for the open stream.
         let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
