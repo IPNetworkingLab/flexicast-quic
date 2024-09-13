@@ -42,6 +42,9 @@ pub struct McAck {
 
     /// Fully acknowledged stream offsets.
     stream_full: HashMap<u64, RangeSet>,
+
+    /// Lowest packet number potentially in the acked ranges.
+    largest_pn: Option<u64>,
 }
 
 impl McAck {
@@ -53,12 +56,25 @@ impl McAck {
             acked_full: None,
             stream_map: HashMap::new(),
             stream_full: HashMap::new(),
+            largest_pn: None,
         }
     }
 
     /// Returns the fully acknowledged packets. This drains the internal state.
     pub fn full_ack(&mut self) -> Option<RangeSet> {
         self.acked_full.take()
+    }
+
+    /// Sets the largest packet number in the structure.
+    /// This drains entries that are below this value.
+    pub fn drain_packets(&mut self, largest_pn: u64) {
+        self.acked = self.acked.split_off(&largest_pn);
+        self.largest_pn = Some(largest_pn);
+    }
+
+    /// Get largest packet number that is still in the queue.
+    pub fn get_largest_pn(&self) -> Option<u64> {
+        self.largest_pn
     }
 
     /// Adds a new receiver to the structure.
@@ -110,9 +126,9 @@ impl McAck {
     }
 
     /// Removes states for packet numbers up to the given value.
-    pub fn remove_up_to(&mut self, to: u64) {
-        self.acked = self.acked.split_off(&to);
-    }
+    // pub fn remove_up_to(&mut self, to: u64) {
+    //     self.acked = self.acked.split_off(&to);
+    // }
 
     /// Delegates a new portion of stream to a client.
     /// Assumes that we do not delegate twice the same stream to the same

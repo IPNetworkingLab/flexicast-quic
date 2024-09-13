@@ -429,7 +429,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             }
         }
 
-        uc.rmc_reset_recv_pn_ss(max_exp_pn, max_exp_ss);
+        uc.rmc_reset_recv_pn_ss(mc_ack.get_largest_pn(), max_exp_ss);
+
         Ok((nb_lost_mc_stream_frames, (lost_pn, recv_pn)))
     }
 
@@ -532,6 +533,18 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         }
 
         new_max_pn + 1
+    }
+}
+
+impl Recovery {
+    /// Returns the lowest packet number still in the sending queue of the
+    /// Application Epoch on the provided space ID.
+    pub fn get_lowest_pn_app_epoch(&self, space_id: u32) -> Option<u64> {
+        self.sent[Epoch::Application]
+            .iter()
+            .filter(|pkt| pkt.pkt_num.0 == space_id)
+            .map(|pkt| pkt.pkt_num.1)
+            .min()
     }
 }
 

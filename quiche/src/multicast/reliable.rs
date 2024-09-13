@@ -371,13 +371,9 @@ impl ReliableMulticastConnection for Connection {
                 .source_mut()
                 .map(|s| &mut s.mc_ack)
                 .ok_or(Error::Multicast(McError::McReliableDisabled))?;
-            let (nb_lost_stream_frames, (mut lost_pn, mut recv_pn)) =
-                path.recovery.deleguate_stream(
-                    uc,
-                    space_id as u32,
-                    stream_map,
-                    mc_ack,
-                )?;
+            let (nb_lost_stream_frames, (mut lost_pn, mut recv_pn)) = path
+                .recovery
+                .deleguate_stream(uc, space_id as u32, stream_map, mc_ack)?;
             if let ReliableMc::Server(ref mut rmc_server) =
                 uc.multicast.as_mut().unwrap().mc_reliable
             {
@@ -515,6 +511,15 @@ impl Connection {
                 )?;
                 self.lost_count += lost_packets;
                 self.lost_bytes += lost_bytes as u64;
+
+                // Drain packets from the McAck structure.
+                let largest_pn =
+                    p.recovery.get_lowest_pn_app_epoch(fc_space_id as u32);
+                if let Some(mc_ack) = self.get_mc_ack_mut() {
+                    if let Some(pn) = largest_pn {
+                        mc_ack.drain_packets(pn - 1);
+                    }
+                }
             }
         }
 
@@ -634,7 +639,8 @@ pub mod testing {
             on_rmc_timeout_server!(mc, ucs, expired)
         }
 
-        /// Same as `source_deleguates_streams` but does not check for mc_timeout.
+        /// Same as `source_deleguates_streams` but does not check for
+        /// mc_timeout.
         pub fn source_deleguates_streams_direct(
             &mut self, expired: time::Instant,
         ) -> Result<()> {
@@ -642,7 +648,8 @@ pub mod testing {
             let mc = &mut self.mc_channel.channel;
             let ucs = ucs.map(|c| &mut c.0.server);
 
-            ucs.map(|uc| mc.rmc_deleguate_streams(uc, expired)).collect()
+            ucs.map(|uc| mc.rmc_deleguate_streams(uc, expired))
+                .collect()
         }
 
         /// Sets the RMC next timeout on the client and directly expires it by
@@ -677,6 +684,7 @@ mod tests {
     use crate::multicast::FcConfig;
     use crate::multicast::McAuthType;
     use crate::multicast::McClientTp;
+    use crate::rand::rand_u8;
     use crate::ranges::RangeSet;
     use ring::rand::SystemRandom;
     use std::time;
@@ -2066,5 +2074,247 @@ mod tests {
         let client_0 = &mut fc_pipe.unicast_pipes[0].0.client;
         assert!(client_0.stream_readable(7));
         assert_eq!(client_0.stream_recv(7, &mut buf), Ok((300, true)));
+    }
+
+    #[test]
+    /// Tests the reliability mechanism of Flexicast QUIC with random packet
+    /// losses.
+    fn test_fc_quic_reliability_short_streams() {
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::None,
+            use_fec: false,
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_pipe = MulticastPipe::new_reliable(
+            3,
+            "/tmp/test_fc_quic_reliability_short_streams",
+            &mut fc_config,
+        )
+        .unwrap();
+
+        let random = SystemRandom::new();
+        let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
+        let expiration_timer = Duration::from_millis(expiration_timer);
+
+        // Send multiple short streams that can lie in a single packet.
+        let nb_streams = 1000;
+        for i in 0..nb_streams {
+            // Generate random losses.
+            let mask = rand_u8();
+
+            // Do not generate losses for the last 2 streams to ensure that we see
+            // gaps.
+            let client_loss = if mask & 0b1 > 0 && i < nb_streams - 2 {
+                let mut losses = RangeSet::default();
+                for j in 1..4 {
+                    if mask & 1 << j > 0 {
+                        losses.insert(j - 1..j);
+                    }
+                }
+                Some(losses)
+            } else {
+                None
+            };
+
+            // The source sends the stream.
+            let now = time::Instant::now();
+            fc_pipe
+                .source_send_single_stream(true, client_loss.as_ref(), 3 + i * 4)
+                .unwrap();
+
+            // The source notifies the unicast instances of the sent packet.
+            fc_pipe.server_control_to_mc_source(now).unwrap();
+
+            // Clients set timeout information.
+            fc_pipe.client_rmc_timeout(now, &random).unwrap();
+
+            // Wait a bit...
+            std::thread::sleep(expiration_timer);
+            let now = time::Instant::now();
+
+            // Clients send their feedback to the source.
+            fc_pipe.clients_send().unwrap();
+            fc_pipe.server_control_to_mc_source(now).unwrap();
+
+            // Stream deleguation.
+            fc_pipe.source_deleguates_streams_direct(now).unwrap();
+
+            // Potentially unicast retransmissions.
+            fc_pipe
+                .unicast_pipes
+                .iter_mut()
+                .for_each(|(pipe, ..)| pipe.advance().unwrap());
+        }
+
+        // Ensure that each client received all the streams.
+        for (pipe, ..) in fc_pipe.unicast_pipes.iter_mut() {
+            let client = &mut pipe.client;
+            for i in 0..nb_streams {
+                assert!(client.stream_readable(3 + i * 4));
+            }
+        }
+    }
+
+    #[test]
+    /// Tests the reliability mechanism with a single sent stream and relying on
+    /// the timeout of the server.
+    fn test_fc_quic_reliability_timeout() {
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::None,
+            use_fec: false,
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_pipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_fc_quic_reliability_timeout",
+            &mut fc_config,
+        )
+        .unwrap();
+
+        let random = SystemRandom::new();
+        let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
+        let expiration_timer = Duration::from_millis(expiration_timer);
+
+        let mut client_loss = RangeSet::default();
+        client_loss.insert(0..1);
+
+        fc_pipe
+            .source_send_single_stream(true, Some(&client_loss), 3)
+            .unwrap();
+
+        // Looping until we receive the packet. Set a "timeout" to ensure that we
+        // don't loop for ever.
+        for _ in 0..5 {
+            // Timeout of the flexicast source.
+            let now = time::Instant::now();
+            let _ = fc_pipe.mc_channel.channel.on_mc_timeout(now);
+
+            // Allow the flexicast source to send more packets, e.g., ping frames.
+            let _ = fc_pipe.source_send_single(None);
+
+            // The source notifies the unicast instances of the sent packet.
+            fc_pipe.server_control_to_mc_source(now).unwrap();
+
+            // Clients set timeout information.
+            fc_pipe.client_rmc_timeout(now, &random).unwrap();
+
+            // Wait a bit...
+            std::thread::sleep(expiration_timer);
+            let now = time::Instant::now();
+
+            // Clients send their feedback to the source.
+            fc_pipe.clients_send().unwrap();
+            fc_pipe.server_control_to_mc_source(now).unwrap();
+
+            // Stream deleguation.
+            fc_pipe.source_deleguates_streams_direct(now).unwrap();
+
+            // Potentially unicast retransmissions.
+            fc_pipe
+                .unicast_pipes
+                .iter_mut()
+                .for_each(|(pipe, ..)| pipe.advance().unwrap());
+
+            // Test if the stream is readable.
+            let client = &fc_pipe.unicast_pipes[0].0.client;
+            if client.stream_readable(3) {
+                return; // Ok.
+            }
+        }
+
+        let client = &fc_pipe.unicast_pipes[0].0.client;
+        assert!(client.stream_readable(3));
+    }
+
+    #[test]
+    /// Tests the reliability of Flexicast QUIC with two long streams and random losses.
+    fn test_fc_quic_reliability_long_streams() {
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::None,
+            use_fec: false,
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_pipe = MulticastPipe::new_reliable(
+            3,
+            "/tmp/test_fc_quic_reliability_long_streams",
+            &mut fc_config,
+        )
+        .unwrap();
+
+        let random = SystemRandom::new();
+        let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
+        let expiration_timer = Duration::from_millis(expiration_timer);
+
+        // Two streams.
+        let mut buf = vec![0u8; 40_000];
+        random.fill(&mut buf[..]).unwrap();
+        fc_pipe.mc_channel.channel.stream_send(3, &buf[..30_000], true).unwrap();
+        fc_pipe.mc_channel.channel.stream_send(7, &buf[30_000..], true).unwrap();
+
+        let nb_turns_allowed = 100;
+        
+        for _ in 0..nb_turns_allowed {
+            // Generate random losses.
+            let mask = rand_u8();
+
+            // Do not generate losses for the last 2 streams to ensure that we see
+            // gaps.
+            let client_loss = if mask & 0b1 > 0 {
+                let mut losses = RangeSet::default();
+                for j in 1..4 {
+                    if mask & 1 << j > 0 {
+                        losses.insert(j - 1..j);
+                    }
+                }
+                Some(losses)
+            } else {
+                None
+            };
+
+            // The source sends the stream or other content.
+            let now = time::Instant::now();
+            let _ = fc_pipe
+                .source_send_single(client_loss.as_ref());
+
+            // The source notifies the unicast instances of the sent packet.
+            fc_pipe.server_control_to_mc_source(now).unwrap();
+
+            // Clients set timeout information.
+            fc_pipe.mc_channel.channel.on_mc_timeout(now).unwrap();
+            fc_pipe.client_rmc_timeout(now, &random).unwrap();
+
+            // Wait a bit...
+            std::thread::sleep(expiration_timer);
+            let now = time::Instant::now();
+
+            // Clients send their feedback to the source.
+            fc_pipe.clients_send().unwrap();
+            fc_pipe.server_control_to_mc_source(now).unwrap();
+
+            // Stream deleguation.
+            fc_pipe.source_deleguates_streams_direct(now).unwrap();
+
+            // Potentially unicast retransmissions.
+            fc_pipe
+                .unicast_pipes
+                .iter_mut()
+                .for_each(|(pipe, ..)| pipe.advance().unwrap());
+        }
+
+        // Ensure that each client received all the streams.
+        let mut out = vec![0u8; 30_001];
+        for (pipe, ..) in fc_pipe.unicast_pipes.iter_mut() {
+            let client = &mut pipe.client;
+            assert!(client.stream_readable(3));
+            assert_eq!(client.stream_recv(3, &mut out[..]), Ok((30_000, true)));
+            assert_eq!(&out[..30_000], &buf[..30_000]);
+
+            assert!(client.stream_readable(7));
+            assert_eq!(client.stream_recv(7, &mut out[..]), Ok((10_000, true)));
+            assert_eq!(&out[..10_000], &buf[30_000..]);
+        }
     }
 }

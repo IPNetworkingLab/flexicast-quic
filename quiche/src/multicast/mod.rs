@@ -1544,9 +1544,9 @@ impl MulticastConnection for Connection {
                                 }
 
                                 // Remove expired state from the ack aggregator.
-                                if let Some(mc_ack) = self.get_mc_ack_mut() {
-                                    mc_ack.remove_up_to(e);
-                                }
+                                // if let Some(mc_ack) = self.get_mc_ack_mut() {
+                                //     mc_ack.remove_up_to(e);
+                                // }
                             }
 
                             Ok(exp_pkt)
@@ -3016,7 +3016,7 @@ pub mod testing {
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
             udp_port: 7676,
             public_key: None,
-            expiration_timer: 50,
+            expiration_timer: 10,
             reset_stream_on_join: false,
             is_processed: false,
             auth_type: McAuthType::None,
@@ -5281,12 +5281,6 @@ mod tests {
             .unwrap();
         let mut buf = [0u8; 4000];
 
-        let clients: Vec<_> = mc_pipe
-            .unicast_pipes
-            .iter_mut()
-            .map(|(conn, ..)| &mut conn.server)
-            .collect();
-
         for _ in 0..100 {
             mc_pipe.mc_channel.mc_send(&mut buf).unwrap();
         }
@@ -5773,7 +5767,6 @@ pub mod reliable;
 pub mod rotate;
 
 use self::authentication::McAuthentication;
-use self::authentication::McSymSign;
 use self::reliable::RMcClient;
 use self::reliable::RMcServer;
 use self::reliable::ReliableMc;
