@@ -1549,6 +1549,8 @@ impl MulticastConnection for Connection {
                                 // }
                             }
 
+                            self.send_ack_eliciting_on_path_with_id(space_id)?;
+
                             Ok(exp_pkt)
                         } else {
                             Ok(ExpiredPkt::default())
@@ -1812,9 +1814,7 @@ impl MulticastConnection for Connection {
             // Also notify for streams that have been deleguated and that
             let multicast = self.multicast.as_mut().unwrap();
             if let (Some(rmc_server), Some(mc_ack)) = (
-                multicast
-                    .rmc_get_mut()
-                    .server_mut(),
+                multicast.rmc_get_mut().server_mut(),
                 mc_channel.get_mc_ack_mut(),
             ) {
                 let new_ack_pn = &rmc_server.new_ack_pn_fc;
@@ -2347,6 +2347,9 @@ impl MulticastChannelSource {
             .get_mut(Epoch::Application, 1)
             .unwrap()
             .recv_pkt_need_ack = RangeSet::default();
+
+        // Set state of the recovery receiver.
+        conn_server.fc_set_recovery_state()?;
 
         let cid = channel_id.clone().into_owned();
         Ok(Self {

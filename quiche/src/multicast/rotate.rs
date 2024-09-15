@@ -374,8 +374,6 @@ mod tests {
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert_eq!(res, Ok((Some(3), None).into()));
 
-        println!("---- After second timeout..........");
-
         // Add a second client.
         let mc_client_tp = Some(McClientTp::default());
         let random = SystemRandom::new();
@@ -400,8 +398,6 @@ mod tests {
         .unwrap();
         mc_pipe.unicast_pipes.push(new_client);
 
-        println!("------ Push new client");
-
         // Send the remaining of the stream to both clients.
         // The second client loses the packet containing the last frame of the
         // stream.
@@ -413,8 +409,6 @@ mod tests {
             mc_pipe.source_send_single_from_buf(None, &mut buf[..]),
             Err(Error::Done)
         );
-
-        println!("------ After sending from buf the last packet?");
 
         // Timeout of the first part of the data.
         let expired = expired
@@ -429,7 +423,6 @@ mod tests {
         assert_eq!(mc_pipe.source_deleguates_streams(expired), Ok(()));
 
         // The unicast server sends the retransmissions.
-        println!("------ Before unicast server sends the retransmission");
         assert_eq!(
             mc_pipe
                 .unicast_pipes
@@ -439,7 +432,6 @@ mod tests {
             Ok(())
         );
 
-        println!("------ After unicast server sends the retransmission");
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired);
         assert_eq!(res, Ok((Some(4), None).into()));
 
@@ -460,15 +452,12 @@ mod tests {
         // Send the content of the stream.
         // The second client sees a packet loss that will be retransmitted through
         // unicast.
-        println!("------ Server sends buf 1");
         mc_pipe
             .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();
-        println!("------ Server sends buf 2 with losses");
         mc_pipe
             .source_send_single_from_buf(Some(&client_loss), &mut buf[..])
             .unwrap();
-        println!("------ Server sends buf 3");
         mc_pipe
             .source_send_single_from_buf(None, &mut buf[..])
             .unwrap();

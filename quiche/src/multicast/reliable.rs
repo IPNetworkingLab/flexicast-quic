@@ -570,6 +570,25 @@ impl Connection {
 
         Ok(())
     }
+
+    /// Sets the recovery mode of the flexicast source.
+    pub fn fc_set_recovery_state(&mut self) -> Result<()> {
+        if let Some(multicast) = self.multicast.as_ref() {
+            if multicast.mc_role != McRole::ServerMulticast {
+                return Err(Error::Multicast(McError::McInvalidRole(
+                    McRole::ServerMulticast,
+                )));
+            }
+
+            if let Some(space_id) = multicast.get_mc_space_id() {
+                let p = self.paths.get_mut(space_id)?;
+                p.recovery.is_fc_source = true;
+                return Ok(());
+            }
+            return Err(Error::Multicast(McError::McPath));
+        }
+        return Err(Error::Multicast(McError::McDisabled));
+    }
 }
 
 impl MulticastAttributes {
@@ -2229,7 +2248,8 @@ mod tests {
     }
 
     #[test]
-    /// Tests the reliability of Flexicast QUIC with two long streams and random losses.
+    /// Tests the reliability of Flexicast QUIC with two long streams and random
+    /// losses.
     fn test_fc_quic_reliability_long_streams() {
         let mut fc_config = FcConfig {
             authentication: McAuthType::None,
@@ -2251,11 +2271,19 @@ mod tests {
         // Two streams.
         let mut buf = vec![0u8; 40_000];
         random.fill(&mut buf[..]).unwrap();
-        fc_pipe.mc_channel.channel.stream_send(3, &buf[..30_000], true).unwrap();
-        fc_pipe.mc_channel.channel.stream_send(7, &buf[30_000..], true).unwrap();
+        fc_pipe
+            .mc_channel
+            .channel
+            .stream_send(3, &buf[..30_000], true)
+            .unwrap();
+        fc_pipe
+            .mc_channel
+            .channel
+            .stream_send(7, &buf[30_000..], true)
+            .unwrap();
 
         let nb_turns_allowed = 100;
-        
+
         for _ in 0..nb_turns_allowed {
             // Generate random losses.
             let mask = rand_u8();
@@ -2276,8 +2304,7 @@ mod tests {
 
             // The source sends the stream or other content.
             let now = time::Instant::now();
-            let _ = fc_pipe
-                .source_send_single(client_loss.as_ref());
+            let _ = fc_pipe.source_send_single(client_loss.as_ref());
 
             // The source notifies the unicast instances of the sent packet.
             fc_pipe.server_control_to_mc_source(now).unwrap();
@@ -2316,5 +2343,79 @@ mod tests {
             assert_eq!(client.stream_recv(7, &mut out[..]), Ok((10_000, true)));
             assert_eq!(&out[..10_000], &buf[30_000..]);
         }
+    }
+
+    #[test]
+    /// Tests the reliability mechanism of Flexicast QUIC with multiple timeout.
+    /// The source must not drain lost packets that have not been retransmitted
+    /// to the unicast path.
+    fn test_fc_quic_reliability_no_drain() {
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::None,
+            use_fec: false,
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_pipe = MulticastPipe::new_reliable(
+            1,
+            "/tmp/test_fc_quic_reliability_no_drain",
+            &mut fc_config,
+        )
+        .unwrap();
+
+        let random = SystemRandom::new();
+        let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
+        let expiration_timer = Duration::from_millis(expiration_timer);
+
+        let mut client_loss = RangeSet::default();
+        client_loss.insert(0..1);
+
+        fc_pipe
+            .source_send_single_stream(true, Some(&client_loss), 3)
+            .unwrap();
+
+        let now = time::Instant::now();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+        fc_pipe.client_rmc_timeout(now, &random).unwrap();
+
+        // Timeout of the flexicast source.
+        std::thread::sleep(expiration_timer * 2);
+        let now = time::Instant::now();
+        let _ = fc_pipe.mc_channel.channel.on_mc_timeout(now);
+
+        // Allow the flexicast source to send more packets, e.g., ping frames.
+        let _ = fc_pipe.source_send_single(None);
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+        fc_pipe.clients_send().unwrap();
+        fc_pipe.client_rmc_timeout(now, &random).unwrap();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+
+        // Wait a bit...
+        std::thread::sleep(expiration_timer * 2);
+        let now = time::Instant::now();
+
+        // Allow the flexicast source to send more packets, e.g., ping frames.
+        let _ = fc_pipe.mc_channel.channel.on_mc_timeout(now);
+        let _ = fc_pipe.source_send_single(None);
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+        fc_pipe.clients_send().unwrap();
+        fc_pipe.client_rmc_timeout(now, &random).unwrap();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+
+        std::thread::sleep(expiration_timer * 2);
+        let now = time::Instant::now();
+
+        // Stream deleguation.
+        fc_pipe.source_deleguates_streams_direct(now).unwrap();
+
+        // Potentially unicast retransmissions.
+        fc_pipe
+            .unicast_pipes
+            .iter_mut()
+            .for_each(|(pipe, ..)| pipe.advance().unwrap());
+
+        // Test if the stream is readable.
+        let client = &fc_pipe.unicast_pipes[0].0.client;
+        assert!(client.stream_readable(3));
     }
 }

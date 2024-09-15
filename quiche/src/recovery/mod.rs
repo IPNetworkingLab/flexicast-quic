@@ -200,6 +200,9 @@ pub struct Recovery {
     /// Maximum congestion window size for the multicast channel.
     mc_cwnd: Option<usize>,
 
+    /// Whether this is the recovery of the Flexicast QUIC source.
+    pub(crate) is_fc_source: bool,
+
     /// Flexicast.
     /// Packet numbers that have been newly acked.
     pub(crate) fc_new_ack_pn: Vec<u64>,
@@ -343,7 +346,9 @@ impl Recovery {
             mc_cwnd: None,
 
             fc_new_ack_pn: Vec::new(),
-            
+
+            is_fc_source: false,
+
             initial_congestion_window_packets: recovery_config
                 .initial_congestion_window_packets,
         }
@@ -1038,8 +1043,6 @@ impl Recovery {
                 pto_timeout = new_time;
                 pto_space = e;
             }
-
-            // println!("MC_DEBUG: pto={:?}, max_delay={:?}, time_of_last_sent_ack_eliciting_pkt={:?}", self.pto(), self.max_ack_delay, self.time_of_last_sent_ack_eliciting_pkt[e]);
         }
 
         (pto_timeout, pto_space)
@@ -1248,6 +1251,14 @@ impl Recovery {
                     lowest_non_expired_pkt_index = i;
                     break;
                 }
+
+                // Flexicast extension.
+                // If this is the flexicast source, and the packet is not
+                // delegated yet, we cannot drain it.
+                if self.is_fc_source && !pkt.is_fc_delegated {
+                    lowest_non_expired_pkt_index = i;
+                    break;
+                }
             }
 
             if pkt.time_acked.is_none() && pkt.time_lost.is_none() {
@@ -1374,9 +1385,9 @@ pub enum CongestionControlAlgorithm {
     /// CUBIC congestion control algorithm (default). `cubic` in a string form.
     CUBIC    = 1,
     /// BBR congestion control algorithm. `bbr` in a string form.
-    BBR   = 2,
+    BBR      = 2,
     /// BBRv2 congestion control algorithm. `bbr2` in a string form.
-    BBR2  = 3,
+    BBR2     = 3,
     /// DISABLED congestion control. `disabled` in a string form.
     DISABLED = 4,
 }
@@ -1527,6 +1538,10 @@ pub struct Sent {
     pub has_data: bool,
 
     pub retransmitted_for_probing: bool,
+
+    /// Flexicast extension.
+    /// Potentially whether the packet was delegated through unicast.
+    pub is_fc_delegated: bool,
 }
 
 impl std::fmt::Debug for Sent {
@@ -1775,6 +1790,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1804,6 +1820,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1833,6 +1850,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1862,6 +1880,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1925,6 +1944,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1954,6 +1974,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2030,6 +2051,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2059,6 +2081,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2088,6 +2111,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2117,6 +2141,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2204,6 +2229,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2233,6 +2259,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2262,6 +2289,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2291,6 +2319,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2392,6 +2421,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2454,6 +2484,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2488,6 +2519,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2519,6 +2551,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2570,8 +2603,8 @@ mod cubic;
 mod delivery_rate;
 mod disabled_cc;
 mod hystart;
-pub mod multicast;
 mod mc_cubic;
+pub mod multicast;
 mod pacer;
 mod prr;
 mod reno;

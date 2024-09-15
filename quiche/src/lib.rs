@@ -5652,9 +5652,9 @@ impl Connection {
                     Some(source_symbol_metadata);
             }
         }
-        println!("{} tx on space_id={} pn={}", self.trace_id, space_id, pn);
+        trace!("{} tx on space_id={} pn={}", self.trace_id, space_id, pn);
         for frame in &mut frames {
-            println!("{} tx frm {:?}", self.trace_id, frame);
+            trace!("{} tx frm {:?}", self.trace_id, frame);
 
             qlog_with_type!(QLOG_PACKET_TX, self.qlog, _q, {
                 qlog_frames.push(frame.to_qlog());
@@ -5730,6 +5730,7 @@ impl Connection {
             lost: 0,
             has_data,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         if in_flight && is_app_limited {
@@ -6676,6 +6677,16 @@ impl Connection {
             .paths
             .path_id_from_addrs(&(local, peer))
             .ok_or(Error::InvalidState)?;
+        self.paths.get_mut(path_id)?.needs_ack_eliciting = true;
+        Ok(())
+    }
+
+    pub fn send_ack_eliciting_on_path_with_id(
+        &mut self, path_id: usize,
+    ) -> Result<()> {
+        if self.is_closed() || self.is_draining() {
+            return Ok(());
+        }
         self.paths.get_mut(path_id)?.needs_ack_eliciting = true;
         Ok(())
     }

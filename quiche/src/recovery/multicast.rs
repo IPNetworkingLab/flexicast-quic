@@ -182,7 +182,7 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
         let mut nb_lost_mc_stream_frames = 0;
         let lost_iter = self.sent[Epoch::Application]
-            .iter()
+            .iter_mut()
             .take_while(|p| {
                 (p.time_lost.is_some() || p.time_acked.is_some()) &&
                     p.pkt_num.0 == space_id
@@ -197,6 +197,10 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                 "This is a packet that is lost: {:?} with frames: {:?}",
                 packet.pkt_num, packet.frames
             );
+
+            // Indicate that this packet was delegated through unicast.
+            packet.is_fc_delegated = true;
+
             max_exp_pn = if let Some(c) = max_exp_pn {
                 Some(c.max(packet.pkt_num.1))
             } else {
@@ -615,6 +619,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -647,6 +652,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -679,6 +685,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -713,6 +720,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -794,6 +802,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -870,6 +879,7 @@ mod tests {
                 tx_in_flight: 0,
                 lost: 0,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -926,6 +936,7 @@ mod tests {
                 tx_in_flight: 0,
                 lost: 0,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -982,6 +993,7 @@ mod tests {
                 tx_in_flight: 0,
                 lost: 0,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -1068,6 +1080,7 @@ mod tests {
                 tx_in_flight: 0,
                 lost: 0,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -1154,6 +1167,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1191,6 +1205,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1223,6 +1238,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1257,6 +1273,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(

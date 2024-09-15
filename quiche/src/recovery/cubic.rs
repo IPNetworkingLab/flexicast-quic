@@ -495,6 +495,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited
@@ -548,6 +549,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited
@@ -628,6 +630,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.congestion_event(
@@ -673,6 +676,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         // Trigger congestion event to update ssthresh
@@ -750,6 +754,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.congestion_event(
@@ -816,6 +821,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         // 1st round.
@@ -976,6 +982,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         // 1st round.
@@ -1134,6 +1141,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.congestion_event(
@@ -1196,6 +1204,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         let prev_cwnd = r.cwnd();
@@ -1272,6 +1281,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.congestion_event(
@@ -1339,6 +1349,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.congestion_event(

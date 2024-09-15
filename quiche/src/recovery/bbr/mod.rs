@@ -439,6 +439,7 @@ mod tests {
                 lost: 0,
                 has_data: false,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -511,6 +512,7 @@ mod tests {
                 lost: 0,
                 has_data: false,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -582,6 +584,7 @@ mod tests {
                 lost: 0,
                 has_data: false,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -635,6 +638,7 @@ mod tests {
                 lost: 0,
                 has_data: false,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -709,6 +713,7 @@ mod tests {
                 lost: 0,
                 has_data: false,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -782,6 +787,7 @@ mod tests {
                 lost: 0,
                 has_data: false,
                 retransmitted_for_probing: false,
+                is_fc_delegated: false,
             };
 
             r.on_packet_sent(
@@ -838,6 +844,7 @@ mod tests {
             lost: 0,
             has_data: false,
             retransmitted_for_probing: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
