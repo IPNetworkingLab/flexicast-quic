@@ -1121,17 +1121,15 @@ fn get_multicast_channel(
         &mut client_config,
         mc_addr,
         args.fc_keylog_file.as_ref().to_str().unwrap(),
-        None,
         &fc_config,
     )
     .unwrap();
 
     let mc_announce_data = McAnnounceData {
         channel_id: channel_id_vec,
-        path_type: multicast::McPathType::Data,
         auth_type: args.authentication,
-        is_ipv6: true,
-        full_reliability: true,
+        probe_path: true,
+        is_ipv6_addr: false,
         reset_stream_on_join: false,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,

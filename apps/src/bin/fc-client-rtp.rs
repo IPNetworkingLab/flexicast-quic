@@ -7,7 +7,6 @@ use quiche::multicast;
 use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::McClientStatus;
 use quiche::multicast::McConfig;
-use quiche::multicast::McPathType;
 use quiche::multicast::McRole;
 use quiche::multicast::MulticastConnection;
 use quiche::ConnectionId;
@@ -126,7 +125,6 @@ fn main() {
         ipv4_channels_allowed: true,
         ipv6_channels_allowed: true,
     };
-    let mut is_mc_reliable = false;
 
     // Whether the flexicast client leaves the channel and joins another after
     // some time. Time of start of reception of data.
@@ -226,9 +224,7 @@ fn main() {
     'main_loop: loop {
         // Compute (FC-)QUIC timeout.
         let now = std::time::Instant::now();
-        if is_mc_reliable {
-            conn.rmc_set_next_timeout(now, &random).unwrap();
-        }
+        conn.rmc_set_next_timeout(now, &random).unwrap();
 
         // Timer if the client changes its flexicast channel.
         let timer_change = start_recv.zip(args.change_fc_chan.as_ref()).map(
@@ -325,7 +321,7 @@ fn main() {
                 let recv_info = quiche::RecvInfo {
                     to: mc_addr,
                     from: peer_addr,
-                    from_mc: Some(McPathType::Data),
+                    from_mc: true,
                 };
 
                 // Only feed the packet to quiche if the client listens to the
@@ -409,7 +405,7 @@ fn main() {
                 {
                     info!("Leave the multicast socket!");
                     let mc_announce_data =
-                        multicast.get_mc_announce_data_path().unwrap().to_owned();
+                        multicast.get_mc_announce_data_active().unwrap().to_owned();
                     if !args.proxy_uc {
                         mc_socket_opt
                             .as_mut()
@@ -447,8 +443,6 @@ fn main() {
                     .unwrap()
                     .to_owned();
 
-                is_mc_reliable = mc_announce_data.full_reliability;
-
                 // Add the new connection ID for the announce data.
                 if !added_mc_cid {
                     debug!("Add a new connection ID");
@@ -463,10 +457,10 @@ fn main() {
                     let mc_space_id = conn.create_mc_path(
                         mc_addr,
                         peer_addr,
-                        mc_announce_data.is_ipv6,
+                        mc_announce_data.probe_path,
                     );
                     if let Ok(mc_space_id) = mc_space_id {
-                        conn.set_mc_space_id(mc_space_id, McPathType::Data)
+                        conn.set_mc_space_id(mc_space_id)
                             .unwrap();
 
                         // If soft-multicast is used by the source, the client
@@ -477,7 +471,7 @@ fn main() {
                         // with the multicast destination
                         // port.
                         let mc_group_sockaddr: net::SocketAddr =
-                            if mc_announce_data.is_ipv6 {
+                            if mc_announce_data.probe_path {
                                 let ip = socket.local_addr().unwrap().ip();
                                 net::SocketAddr::new(
                                     ip,
