@@ -5768,6 +5768,7 @@ pub mod ack;
 pub mod multi_channel;
 pub mod reliable;
 pub mod rotate;
+pub mod control;
 
 use self::authentication::McAuthentication;
 use self::reliable::RMcClient;

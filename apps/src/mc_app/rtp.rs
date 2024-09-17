@@ -6,6 +6,27 @@ use std::net::SocketAddr;
 use std::time;
 use std::time::SystemTime;
 
+pub enum SockType {
+    Mio(mio::net::UdpSocket),
+    Tokio(tokio::net::UdpSocket),
+}
+
+impl SockType {
+    fn mio_mut(&mut self) -> Option<&mut mio::net::UdpSocket> {
+        match self {
+            Self::Mio(ref mut s) => Some(s),
+            _ => None
+        }
+    }
+
+    fn tokio(&self) -> Option<&tokio::net::UdpSocket> {
+        match self {
+            Self::Tokio(ref s) => Some(s),
+            _ => None
+        }
+    }
+}
+
 pub struct RtpClient {
     frame_recv: Vec<(u64, SystemTime, usize)>,
 
@@ -48,7 +69,7 @@ struct UDPPacketSendingBuf {
 }
 
 pub struct RtpServer {
-    socket: mio::net::UdpSocket,
+    socket: SockType,
     queued_streams: VecDeque<UDPPacketSendingBuf>,
     time_sent_to_quic: Vec<(u64, time::Instant)>,
     time_sent_to_wire: Vec<(u64, time::Instant)>,
@@ -74,7 +95,32 @@ impl RtpServer {
         info!("new RTP server listening for RTP in {}", bind_addr);
         info!("Stop msg in bytes: {:?}", stop_msg.as_bytes());
         Ok(Self {
-            socket: mio::net::UdpSocket::bind(bind_addr)?,
+            socket: SockType::Mio(mio::net::UdpSocket::bind(bind_addr)?),
+            queued_streams: VecDeque::new(),
+            time_sent_to_quic: Vec::new(),
+            time_sent_to_wire: Vec::new(),
+            start_rtp: Some(time::Instant::now()),
+
+            last_provided_stream: 0,
+            next_stream_id: 3,
+
+            to_quic_filename: to_quic_filename.to_string(),
+            to_wire_filename: to_wire_filename.to_string(),
+            buf: [0; 2000],
+            
+            stop_msg: stop_msg.as_bytes().to_vec(),
+            is_stopped: false,
+        })
+    }
+
+    pub async fn new_with_tokio(
+        bind_addr: std::net::SocketAddr, to_quic_filename: &str,
+        to_wire_filename: &str, stop_msg: &str,
+    ) -> io::Result<Self> {
+        info!("new RTP server listening for RTP in {}", bind_addr);
+        info!("Stop msg in bytes: {:?}", stop_msg.as_bytes());
+        Ok(Self {
+            socket: SockType::Tokio(tokio::net::UdpSocket::bind(bind_addr).await?),
             queued_streams: VecDeque::new(),
             time_sent_to_quic: Vec::new(),
             time_sent_to_wire: Vec::new(),
@@ -94,7 +140,12 @@ impl RtpServer {
 
     #[inline]
     pub fn additional_udp_socket(&mut self) -> Option<&mut mio::net::UdpSocket> {
-        Some(&mut self.socket)
+        self.socket.mio_mut()
+    }
+
+    #[inline]
+    pub fn additional_udp_socket_tokio(&self) -> Option<&tokio::net::UdpSocket> {
+        self.socket.tokio()
     }
 
     pub fn get_app_data(&mut self) -> (u64, Vec<u8>) {
@@ -149,7 +200,11 @@ impl RtpServer {
     #[inline]
     pub fn on_additional_udp_socket_readable(&mut self) {
         loop {
-            match self.socket.recv_from(&mut self.buf[..]) {
+            let res = match &self.socket {
+                SockType::Mio(s) => s.recv_from(&mut self.buf[..]),
+                SockType::Tokio(s) => s.try_recv_from(&mut self.buf[..]),
+            };
+            match res {
                 Ok((n, _)) => {
                     trace!(
                         "read {} bytes from RTP socket, enqueue in stream {}",
