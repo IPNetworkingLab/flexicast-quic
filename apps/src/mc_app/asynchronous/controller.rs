@@ -7,6 +7,7 @@ use super::Result;
 use quiche::multicast::ack::McAck;
 use quiche::multicast::ack::McStreamOff;
 use quiche::multicast::ack::OpenRangeSet;
+use quiche::multicast::control::OpenSent;
 use quiche::multicast::ExpiredPkt;
 use quiche::multicast::McAnnounceData;
 use tokio;
@@ -44,6 +45,9 @@ pub enum MsgFcCtl {
     /// It also acknowledges stream pieces that have been delegated through the
     /// unicast path.
     AckData((u64, u64, Option<OpenRangeSet>, Option<McStreamOff>)),
+
+    /// The flexicast source forwards to the controller the packet it just sent on the flexicast flow.
+    Sent((u64, Vec<OpenSent>)),
 }
 
 /// Messages sent to the receiver.
@@ -56,6 +60,9 @@ pub enum MsgRecv {
     /// The first value is the index of the flexicast flow.
     /// The second value is the expired packet.
     NewExpiredPkt((u64, ExpiredPkt)),
+
+    /// Packets sent on the flexicast flow that will be part of the state.
+    Sent((u64, Vec<OpenSent>)),
 }
 
 /// Messages sent to the flexicast source.
@@ -177,6 +184,11 @@ impl FcController {
                 debug!("Client {client_id} acknowledges for flexicast flow {fc_id}: pn={ack_pn:?} and streams={ack_stream_pieces:?}");
                 self.handle_ack_pn_stream_pieces(fc_id, ack_pn, ack_stream_pieces).await?;
             },
+
+            MsgFcCtl::Sent((fc_id, sent)) => {
+                debug!("Flexicast source {fc_id} sent {:?}", sent.len());
+                self.handle_sent_pkt(fc_id, sent).await?;
+            }
         }
 
         Ok(())
@@ -234,6 +246,16 @@ impl FcController {
         if let Some(fully_acked_stream_pieces) = mc_ack.acked_stream_off() {
             let msg = MsgFcSource::AckStreamPieces(fully_acked_stream_pieces);
             self.tx_fc_sources[fc_id as usize].send(msg).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Forwards to the unicast instances the packets sent on the flexicast flow by the source.
+    async fn handle_sent_pkt(&self, fc_id: u64, sent: Vec<OpenSent>) -> Result<()> {
+        for &client_id in self.active_clients[fc_id as usize].iter() {
+            let msg = MsgRecv::Sent((fc_id, sent.clone()));
+            self.tx_clients[client_id as usize].send(msg).await?;
         }
 
         Ok(())

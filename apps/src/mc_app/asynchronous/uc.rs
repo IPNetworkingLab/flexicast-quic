@@ -193,6 +193,10 @@ impl Client {
             MsgRecv::NewExpiredPkt((_id, exp_pkt)) => {
                 self.conn.fc_set_last_expired(Some(exp_pkt));
             },
+
+            MsgRecv::Sent((fc_id, sent)) => {
+                self.conn.fc_on_new_pkt_sent(fc_id, sent)?;
+            },
         }
 
         Ok(())

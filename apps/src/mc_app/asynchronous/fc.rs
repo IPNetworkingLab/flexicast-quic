@@ -191,6 +191,9 @@ impl FcChannelAsync {
 
                 debug!("Flexicast written {:?} bytes", written);
             }
+
+            // Notify the controller of the sent packets.
+            self.sent_pkt_to_controller().await?;
         }
 
         Ok(())
@@ -217,6 +220,15 @@ impl FcChannelAsync {
             },
         }
 
+        Ok(())
+    }
+
+    async fn sent_pkt_to_controller(&mut self) -> Result<()> {
+        let sent = self.fc_chan.channel.fc_get_sent_pkt()?;
+
+        let msg = MsgFcCtl::Sent((self.id, sent));
+        self.sync_tx.send(msg).await?;
+        
         Ok(())
     }
 }

@@ -550,6 +550,26 @@ impl Recovery {
             .map(|pkt| pkt.pkt_num.1)
             .min()
     }
+
+    /// Returns a copy of the packets sent.
+    /// Only returns once each packet, and assumes that the caller already
+    /// processed previously sent ones. Also returns the new paximum packet
+    /// number.
+    pub fn fc_get_sent_pkt(
+        &self, space_id: u32, epoch: Epoch, max_pn: u64,
+    ) -> (u64, Vec<super::Sent>) {
+        let new_max_pn = self.sent[Epoch::Application]
+            .back()
+            .map(|s| s.pkt_num.1)
+            .unwrap_or(0);
+
+        let sent = self.sent[epoch]
+            .iter()
+            .filter(|s| s.pkt_num.0 == space_id && s.pkt_num.1 >= max_pn)
+            .map(|s| s.to_owned())
+            .collect();
+        (new_max_pn, sent)
+    }
 }
 
 #[cfg(test)]
