@@ -15,11 +15,17 @@ use crate::Connection;
 /// Value: (length of the stream, remaining number of clients that must ACK).
 type McStream = BTreeMap<u64, (u64, u64)>;
 
+/// Stream ID and offsets of streams.
+pub type McStreamOff = Vec<(u64, RangeSet)>;
+
+/// Public representation of rangesets.
+pub type OpenRangeSet = RangeSet;
+
 /// Multicast acknowledgment aggregation structure.
 /// This assumes that callers do not call twice with the same received ranges,
 /// as it allows strong optimizations. MC-TODO: handle when a client leaves the
 /// channel for the aggregate ACK.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct McAck {
     /// Number of receivers.
     nb_recv: u64,
@@ -296,7 +302,7 @@ impl McAck {
 
     /// Returns the fully acknowledged stream offsets. This drains the internal
     /// state.
-    pub fn acked_stream_off(&mut self) -> Option<Vec<(u64, RangeSet)>> {
+    pub fn acked_stream_off(&mut self) -> Option<McStreamOff> {
         if self.stream_full.is_empty() {
             None
         } else {

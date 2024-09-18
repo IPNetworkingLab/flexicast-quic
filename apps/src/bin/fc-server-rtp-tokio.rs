@@ -1,17 +1,16 @@
 #[macro_use]
 extern crate log;
 
-use std::cmp;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::io;
 use std::net;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::path::Path;
-use std::time;
 use std::u64;
 
-use quiche_apps::mc_app::control::FcController;
+use quiche_apps::mc_app::asynchronous::fc::FcChannelInfo;
 use socket2;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -19,28 +18,24 @@ use tokio::sync::mpsc;
 use clap::Parser;
 use quiche::multicast;
 use quiche::multicast::authentication::McAuthType;
-use quiche::multicast::reliable::ReliableMulticastConnection;
 use quiche::multicast::FcConfig;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::McClientTp;
 use quiche::multicast::McConfig;
-use quiche::multicast::McRole;
 use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastConnection;
-use quiche::on_rmc_timeout_server;
-use quiche::ucs_to_mc_cwnd;
+
 #[cfg(feature = "qlog")]
 use quiche_apps::common::make_qlog_writer;
 use quiche_apps::common::ClientIdMap;
-use quiche_apps::mc_app::control;
 use quiche_apps::mc_app::rtp::RtpServer;
+use quiche_apps::mc_app::asynchronous;
+use quiche_apps::mc_app::asynchronous::fc::FcChannelAsync;
 
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
-
-type ClientMap = HashMap<u64, Client>;
 
 #[derive(Parser)]
 struct Args {
@@ -217,17 +212,32 @@ async fn main() {
     // the sender.
     let (tx_fc_ctl, rx_fc_ctl) = mpsc::channel(20);
 
-    // Register the McAnnounceData to forward them to the clients.
+    // Get the McAnnounceData to forward them to the clients.
     let mc_announce_data: Vec<_> = fc_channels
         .iter()
         .map(|fc| fc.mc_announce_data.clone())
         .collect();
+
+    // Also get the decryption keys and algos, indexed in the same order as the McAnnounceData.
+    let mc_master_secret: Vec<Vec<u8>> = fc_channels
+        .iter()
+        .map(|fc| fc.fc_chan.master_secret.clone())
+        .collect();
+    let mc_key_algo: Vec<u8> = fc_channels
+        .iter()
+        .map(|fc| fc.fc_chan.algo.try_into().unwrap())
+        .collect();
+
+    // Create the communication channels towards the flexicast sources.
+    let mut tx_fc_source = Vec::with_capacity(fc_channels.len());
 
     // Spawn tokio tasks for the flexicast channel(s).
     let mut id_fc_chan = 0;
     for (fc_chan_info, rtp_server) in
         fc_channels.drain(..).zip(rtp_servers.drain(..))
     {
+        let (tx, rx) = mpsc::channel(20);
+
         let mut fc_struct = FcChannelAsync {
             fc_chan: fc_chan_info.fc_chan,
             mc_announce_data: fc_chan_info.mc_announce_data,
@@ -236,7 +246,10 @@ async fn main() {
             rtp_stop_timer,
             sync_tx: tx_fc_ctl.clone(),
             id: id_fc_chan,
+            rx_ctl: rx,
         };
+
+        tx_fc_source.push(tx);
 
         tokio::spawn(async move {
             fc_struct.run().await.unwrap();
@@ -247,7 +260,7 @@ async fn main() {
 
     // Create the controller structure that will manage the communication between
     // the flexicast source and the unicast server instances.
-    let mut controller = FcController::new(rx_fc_ctl, mc_announce_data.clone());
+    let mut controller = asynchronous::controller::FcController::new(rx_fc_ctl, mc_announce_data.clone(), tx_fc_source);
     tokio::spawn(async move {
         controller.run().await.unwrap();
     });
@@ -393,14 +406,17 @@ async fn main() {
             let (tx, rx) = mpsc::channel(10);
             clients_tx.push(tx.clone());
 
-            let client = Client {
+            let client = quiche_apps::mc_app::asynchronous::uc::Client {
                 conn,
                 client_id,
                 listen_fc_channel: false,
                 udp_socket,
                 rng: rng.clone(),
                 mc_announce_data: mc_announce_data.clone(),
+                mc_master_secret: mc_master_secret.clone(),
+                mc_key_algo: mc_key_algo.iter().map(|key| *key).collect::<Vec<_>>(),
                 rx_ctl: rx,
+                tx_tcl: tx_fc_ctl.clone(),
             };
 
             // Notify the controller with a new client.
@@ -716,265 +732,6 @@ fn validate_token<'a>(
     Some(quiche::ConnectionId::from_ref(&token[addr.len()..]))
 }
 
-struct Client {
-    conn: quiche::Connection,
-    client_id: u64,
-    listen_fc_channel: bool,
-    udp_socket: UdpSocket,
-    rng: SystemRandom,
-    rx_ctl: mpsc::Receiver<control::MsgRecv>,
-    mc_announce_data: Vec<McAnnounceData>,
-}
-
-impl Client {
-    async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Before entering the loop, set the McAnnounceData to the client.
-        for (i, mc_announce_data) in self.mc_announce_data.iter().enumerate() {
-            self
-                .conn
-                .mc_set_mc_announce_data(mc_announce_data)
-                .unwrap();
-            // FC-TODO: not sure that this will work if it
-            // replaces the decryption key everytime we
-            // add a new one :/. We should see this in the
-            // tests but it actually works... lol.
-            self
-                .conn
-                .mc_set_multicast_receiver(
-                    &fc_chan.fc_chan.master_secret,
-                    fc_chan
-                        .fc_chan
-                        .channel
-                        .get_multicast_attributes()
-                        .unwrap()
-                        .get_mc_space_id()
-                        .unwrap(),
-                    fc_chan
-                        .fc_chan
-                        .channel
-                        .get_multicast_attributes()
-                        .unwrap()
-                        .get_decryption_key_algo(),
-                    Some(i),
-                )
-                .unwrap();
-        }
-
-        let mut buf = [0u8; 1500];
-        loop {
-            let timeout = self
-                .conn
-                .timeout()
-                .unwrap_or(time::Duration::from_secs(10));
-
-            tokio::select! {
-                // Timeout sleep.
-                _ = tokio::time::sleep(timeout) => self.conn.on_timeout(),
-
-                // Data on the udp socket.
-                _ = self.udp_socket.readable() => (),
-
-                // Data on the control channel.
-                Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
-            }
-
-            // Read incoming UDP packets from the socket and feed them to quiche,
-            // until there are no more packets to read.
-            'read: loop {
-                let len = match self.udp_socket.try_recv(&mut buf[..]) {
-                    Ok(v) => v,
-
-                    Err(e) => {
-                        // There are no more UDP packets to read, so exit the read
-                        // loop.
-                        if e.kind() == io::ErrorKind::WouldBlock {
-                            break 'read;
-                        }
-
-                        panic!("recv() failed: {:?}", e);
-                    },
-                };
-
-                let pkt_buf = &mut buf[..len];
-
-                let recv_info = quiche::RecvInfo {
-                    to: self.udp_socket.local_addr()?,
-                    from: self.udp_socket.peer_addr()?,
-                    from_mc: false,
-                };
-
-                // Process potentially coalesced packets.
-                let _read = match self.conn.recv(pkt_buf, recv_info) {
-                    Ok(v) => v,
-
-                    Err(e) => {
-                        error!("{} recv failed: {:?}", self.conn.trace_id(), e);
-                        continue 'read;
-                    },
-                };
-
-                // Provides as many CIDs as possible.
-                self.handle_path_events();
-
-                while self.conn.source_cids_left() > 0 {
-                    let (scid, reset_token) = {
-                        let mut scid = [0; 16];
-                        self.rng.fill(&mut scid).unwrap();
-                        let scid = scid.to_vec().into();
-                        let mut reset_token = [0; 16];
-                        self.rng.fill(&mut reset_token).unwrap();
-                        let reset_token = u128::from_be_bytes(reset_token);
-                        (scid, reset_token)
-                    };
-                    if self
-                        .conn
-                        .new_source_cid(&scid, reset_token, false)
-                        .is_err()
-                    {
-                        break;
-                    }
-                    info!("add a new source cid: {:?}", scid.as_ref());
-                    // TODO!!!
-                    // clients_ids.insert(scid, client.client_id);
-                }
-            }
-
-            // Generate outgoing QUIC packets for all active connections and send
-            // them on the UDP socket, until quiche reports that there are no more
-            // packets to be sent.
-            'send: loop {
-                let (write, _send_info) = match self.conn.send(&mut buf[..]) {
-                    Ok(v) => v,
-
-                    Err(quiche::Error::Done) => break 'send,
-
-                    Err(e) => {
-                        error!("{} send failed: {:?}", self.conn.trace_id(), e);
-
-                        self.conn.close(false, 0x1, b"fail").ok();
-                        break 'send;
-                    },
-                };
-
-                // Here we do wait to send the packets.
-                if let Err(e) = self.udp_socket.send(&buf[..write]).await {
-                    if e.kind() == io::ErrorKind::WouldBlock {
-                        debug!("send() would block, should not happen");
-                        break 'send;
-                    }
-
-                    panic!("send() failed: {:?}", e);
-                }
-            }
-
-            // Exit the stap if the connection is closed.
-            if self.conn.is_closed() {
-                info!(
-                    "{} connection collected {:?}",
-                    self.conn.trace_id(),
-                    self.conn.stats(),
-                );
-                break;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_ctl_msg(&mut self, msg: control::MsgRecv) -> control::Result<()> {
-        Ok(())
-    }
-
-    fn handle_path_events(&mut self) {
-        while let Some(qe) = self.conn.path_event_next() {
-            match qe {
-                quiche::PathEvent::New(local_addr, peer_addr) => {
-                    info!(
-                        "{} Seen new path ({}, {})",
-                        self.conn.trace_id(),
-                        local_addr,
-                        peer_addr
-                    );
-
-                    // Directly probe the new path.
-                    self.conn
-                        .probe_path(local_addr, peer_addr)
-                        .map_err(|e| error!("cannot probe: {}", e))
-                        .ok();
-                },
-
-                quiche::PathEvent::Validated(local_addr, peer_addr) => {
-                    info!(
-                        "{} Path ({}, {}) is now validated",
-                        self.conn.trace_id(),
-                        local_addr,
-                        peer_addr
-                    );
-                    if self.conn.is_multipath_enabled() {
-                        self.conn
-                            .set_active(local_addr, peer_addr, true)
-                            .map_err(|e| error!("cannot set path active: {}", e))
-                            .ok();
-                    }
-                },
-
-                quiche::PathEvent::FailedValidation(local_addr, peer_addr) => {
-                    info!(
-                        "{} Path ({}, {}) failed validation",
-                        self.conn.trace_id(),
-                        local_addr,
-                        peer_addr
-                    );
-                },
-
-                quiche::PathEvent::Closed(local_addr, peer_addr, err, reason) => {
-                    info!(
-                        "{} Path ({}, {}) is now closed and unusable; err = {} reason = {:?}",
-                        self.conn.trace_id(),
-                        local_addr,
-                        peer_addr,
-                        err,
-                        reason,
-                    );
-                },
-
-                quiche::PathEvent::ReusedSourceConnectionId(
-                    cid_seq,
-                    old,
-                    new,
-                ) => {
-                    info!(
-                        "{} Peer reused cid seq {} (initially {:?}) on {:?}",
-                        self.conn.trace_id(),
-                        cid_seq,
-                        old,
-                        new
-                    );
-                },
-
-                quiche::PathEvent::PeerMigrated(local_addr, peer_addr) => {
-                    info!(
-                        "{} Connection migrated to ({}, {})",
-                        self.conn.trace_id(),
-                        local_addr,
-                        peer_addr
-                    );
-                },
-
-                quiche::PathEvent::PeerPathStatus(addr, path_status) => {
-                    info!("Peer asks status {:?} for {:?}", path_status, addr,);
-                    self.conn
-                        .set_path_status(addr.0, addr.1, path_status, false)
-                        .map_err(|e| {
-                            error!("cannot follow status request: {}", e)
-                        })
-                        .ok();
-                },
-            }
-        }
-    }
-}
-
 fn new_udp_socket_reuseport(bind_addr: SocketAddr) -> io::Result<UdpSocket> {
     // Use socket2 sockets to set reuse port.
     let socket =
@@ -985,170 +742,4 @@ fn new_udp_socket_reuseport(bind_addr: SocketAddr) -> io::Result<UdpSocket> {
     // Convert to tokio socket.
     let socket = UdpSocket::from_std(socket.into())?;
     Ok(socket)
-}
-
-struct FcChannelInfo {
-    socket: UdpSocket,
-    fc_chan: MulticastChannelSource,
-    mc_announce_data: McAnnounceData,
-}
-
-struct FcChannelAsync {
-    socket: UdpSocket,
-    fc_chan: MulticastChannelSource,
-    mc_announce_data: McAnnounceData,
-
-    rtp_server: RtpServer,
-
-    /// Stop RTP timer.
-    /// Once the RTP source sends a STOP RTP message, the source waits for 5 *
-    /// flexicast timer before closing the connection.
-    rtp_stop_timer: time::Duration,
-
-    /// Communication between entities, using tokio mpsc.
-    sync_tx: mpsc::Sender<control::MsgFcCtl>,
-
-    /// ID of the flexicast channel.
-    id: u64,
-}
-
-impl FcChannelAsync {
-    async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut buf = [0u8; 1500];
-
-        // Timer to stop the RTP transmission.
-        let mut rtp_stopped = None;
-        let mut can_close_conn_after_rtp = false;
-
-        loop {
-            let now = time::Instant::now();
-            let timeout = self
-                .fc_chan
-                .channel
-                .mc_timeout(now)
-                .unwrap_or(time::Duration::from_secs(u64::MAX - 1));
-
-            let sock_rtp = self
-                .rtp_server
-                .additional_udp_socket_tokio()
-                .ok_or(String::from("Using invalid socket for RTP"))?;
-            if let Err(_) =
-                tokio::time::timeout(timeout, sock_rtp.readable()).await
-            {
-                debug!("Flexicast source timeout");
-                // TODO: on_rmc_timeout_server!
-
-                let now = time::Instant::now();
-                self.fc_chan.channel.on_mc_timeout(now)?;
-            }
-
-            // Generate video content frames.
-            // First read the socket.
-            self.rtp_server.on_additional_udp_socket_readable();
-            if self.rtp_server.is_source_rtp_stopped() && rtp_stopped.is_none() {
-                rtp_stopped = Some(time::Instant::now());
-                debug!("Start RTP end timer");
-            }
-
-            // Maybe we can close the connection.
-            if let Some(timer) = rtp_stopped {
-                if self
-                    .rtp_stop_timer
-                    .saturating_sub(now.duration_since(timer)) ==
-                    time::Duration::ZERO
-                {
-                    // Yes, we can close now.
-                    can_close_conn_after_rtp = true;
-
-                    // Empty the timer to avoid goind over and over here.
-                    rtp_stopped = None;
-                }
-            }
-
-            // If we can close the connection, send a message to the control and
-            // exit.
-            if can_close_conn_after_rtp {
-                self.sync_tx
-                    .send(control::MsgFcCtl::CloseRtp(self.id))
-                    .await?;
-
-                break;
-            }
-
-            // Loop to ensure to dequeue all pending data.
-            'rtp: loop {
-                if self.rtp_server.should_send_app_data() {
-                    let (stream_id, app_data) = self.rtp_server.get_app_data();
-                    match self
-                        .fc_chan
-                        .channel
-                        .stream_priority(stream_id, 0, false)
-                    {
-                        Ok(()) => (),
-                        Err(quiche::Error::StreamLimit) => (),
-                        Err(quiche::Error::Done) => (),
-                        Err(e) =>
-                            panic!("Error while setting stream priority: {:?}", e),
-                    }
-
-                    let written = match self
-                        .fc_chan
-                        .channel
-                        .stream_send(stream_id, &app_data, true)
-                    {
-                        Ok(v) => v,
-                        Err(quiche::Error::Done) => break 'rtp,
-                        Err(e) => panic!("Other error: {:?}", e),
-                    };
-
-                    self.rtp_server.stream_written(written);
-                } else {
-                    break;
-                }
-            }
-
-            // Generate outgoing QUIC packets to send on the Flexicast path.
-            'fc: loop {
-                // Ask quiche to generate the packets.
-                let (write, _send_info) = match self.fc_chan.mc_send(&mut buf[..])
-                {
-                    Ok(v) => v,
-
-                    Err(quiche::Error::Done) => break,
-
-                    Err(e) => {
-                        error!("Flexicast send() failed: {:?}", e);
-                        break 'fc;
-                    },
-                };
-
-                // Send the packets on the wire.
-                let mut off = 0;
-                let mut left = write;
-                let mut written = 0;
-
-                while left > 0 {
-                    let pkt_len = cmp::min(left, MAX_DATAGRAM_SIZE);
-
-                    match self.socket.send(&buf[off..off + pkt_len]).await {
-                        Ok(v) => written += v,
-                        Err(e) => {
-                            if e.kind() == io::ErrorKind::WouldBlock {
-                                debug!("Flexicast send() would block");
-                                break 'fc;
-                            }
-
-                            panic!("Flexicast send() failed: {:?}", e);
-                        },
-                    }
-                    off += pkt_len;
-                    left -= pkt_len;
-                }
-
-                debug!("Flexicast written {:?} bytes", written);
-            }
-        }
-
-        Ok(())
-    }
 }
