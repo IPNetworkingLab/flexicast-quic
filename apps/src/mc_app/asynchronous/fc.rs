@@ -68,7 +68,6 @@ impl FcChannelAsync {
                 // Timeout sleep.
                 _ = tokio::time::sleep(timeout) => {
                     debug!("Flexicast source timeout");
-                    // TODO: on_rmc_timeout_server!
 
                     let now = time::Instant::now();
                     let exp_pkt = self.fc_chan.channel.on_mc_timeout(now)?;
@@ -76,6 +75,12 @@ impl FcChannelAsync {
                     // On timeout, inform the controller of the last expired packet.
                     let new_exp_pkt_msg = MsgFcCtl::NewExpiredPkt((self.id, exp_pkt));
                     self.sync_tx.send(new_exp_pkt_msg).await?;
+
+                    // On timeout, also delegate lost STREAM frames to the controller,
+                    // that will dispatch them to all unicast paths for retransmission.
+                    let delegated_streams = self.conn.fc_get_delegated_stream()?;
+                    // let del_streams_msg = Msg
+
                 },
 
                 // Generate video content frames.
@@ -228,7 +233,7 @@ impl FcChannelAsync {
 
         let msg = MsgFcCtl::Sent((self.id, sent));
         self.sync_tx.send(msg).await?;
-        
+
         Ok(())
     }
 }

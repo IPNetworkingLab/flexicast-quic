@@ -26,6 +26,7 @@ use crate::Result;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use crate::multicast::ack::FcDelegatedStream;
 
 use super::HandshakeStatus;
 use super::LostFrame;
@@ -569,6 +570,78 @@ impl Recovery {
             .map(|s| s.to_owned())
             .collect();
         (new_max_pn, sent)
+    }
+
+    /// Returns the set of STREAM frames that must be delegated to the receivers
+    /// for unicast retransmission. This function does not take into account
+    /// per-receiver reception of a STREAM frame, it will aggregate everything
+    /// and forward all frames to the controller that will take the time to
+    /// adjust to all clients.
+    ///
+    /// FC-TODO: this function does not take into account MC_ASYM frames for per-stream authentication!
+    /// This will break per-stream authentication if the frame needs to be retransmitted.
+    /// 
+    /// FC-TODO: also breaks FEC.
+    pub fn fc_get_delegated_stream(
+        &mut self, space_id: u32, streams: &mut StreamMap,
+    ) -> Result<FcDelegatedStream> {
+        let mut delegated_pieces = Vec::new();
+
+        let lost_iter = self.sent[Epoch::Application]
+            .iter_mut()
+            .take_while(|p| {
+                p.pkt_num.0 == space_id &&
+                    (p.time_lost.is_some() || p.time_acked.is_some())
+            })
+            .filter(|p| p.time_lost.is_some());
+
+        for packet in lost_iter {
+            debug!(
+                "Lost packet: {:?} with frames: {:?}",
+                packet.pkt_num, packet.frames
+            );
+
+            // Indicate that this packet was delegated through unicast
+            // retransmission.
+            packet.is_fc_delegated = true;
+
+            for frame in &packet.frames {
+                match frame {
+                    frame::Frame::StreamHeader { stream_id, offset, length, fin } => {
+                        debug!("Lost STREAM frame. ID={stream_id:?}, offset={offset:?}, length={length:?}, fin={fin:?}");
+                        let stream = streams.get_mut(*stream_id).ok_or(Error::InvalidStreamState(*stream_id))?;
+
+                        // We "ack" the recovery mechanism by asking to retransmit
+                        // the specified data... Since we
+                        // call "send" on the data that is
+                        // retransmitted, we assume that the call
+                        // to "retransmit" wil be cancelled out.
+                        stream.send.retransmit(*offset, *length);
+
+                        // ...and we get the data. This is not optimized (2
+                        // copies) but requires the fewest
+                        // changes.
+                        let mut buf = vec![0u8; *length];
+                        if let Err(Error::FinalSize) =
+                            stream.send.emit(&mut buf)
+                        {
+                            continue;
+                        }
+
+                        // FC-TODO: QLOG?
+
+                        delegated_pieces.push((
+                            *stream_id,
+                            *offset,
+                            buf,
+                        ));
+                    },
+                    _ => (),
+                }
+            }
+        }
+
+        Ok(delegated_pieces)
     }
 }
 

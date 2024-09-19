@@ -15,6 +15,13 @@ use crate::Connection;
 /// Value: (length of the stream, remaining number of clients that must ACK).
 type McStream = BTreeMap<u64, (u64, u64)>;
 
+/// Shorthand for pieces of streams that are delegated.
+/// First value: stream ID.
+/// Second value: offset.
+/// Third value: Payload.
+/// The length is induced using the payload.
+pub type FcDelegatedStream = Vec<(u64, u64, Vec<u8>)>;
+
 /// Stream ID and offsets of streams.
 pub type McStreamOff = Vec<(u64, RangeSet)>;
 

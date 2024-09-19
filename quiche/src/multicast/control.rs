@@ -11,6 +11,7 @@ use super::McRole;
 use crate::multicast::ack::McStreamOff;
 use crate::packet::Epoch;
 use crate::ranges::RangeSet;
+use crate::recovery::multicast::FcDelegatedStream;
 use crate::recovery::Sent;
 use crate::Connection;
 use crate::Error;
@@ -143,5 +144,41 @@ impl Connection {
         }
 
         Ok(())
+    }
+
+    /// Returns the set of STREAM frames that must be delegated to the receivers
+    /// for unicast retransmission. This function does not take into account
+    /// per-receiver reception of a STREAM frame, it will aggregate everything
+    /// and forward all frames to the controller that will take the time to
+    /// adjust to all clients.
+    ///
+    /// Returns an error if this is not the flexicast source.
+    ///
+    /// FC-TODO: this function does not take into account MC_ASYM frames for
+    /// per-stream authentication! This will break per-stream authentication
+    /// if the frame needs to be retransmitted.
+    ///
+    /// FC-TODO: also breaks FEC.
+    pub fn fc_get_delegated_stream(&mut self) -> Result<FcDelegatedStream> {
+        if self.multicast.is_none() {
+            return Err(Error::Multicast(McError::McDisabled));
+        }
+
+        let multicast = self.multicast.as_ref().unwrap();
+        if multicast.get_mc_role() != McRole::ServerMulticast {
+            return Err(Error::Multicast(McError::McInvalidRole(
+                McRole::ServerMulticast,
+            )));
+        }
+
+        let space_id = multicast
+            .get_mc_space_id()
+            .ok_or(Error::Multicast(McError::McPath))?;
+        let fc_path = self.paths.get_mut(space_id)?;
+
+        let streams = &mut self.streams;
+        fc_path
+            .recovery
+            .fc_get_delegated_stream(space_id as u32, streams)
     }
 }

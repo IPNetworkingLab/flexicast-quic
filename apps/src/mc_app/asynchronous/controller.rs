@@ -48,6 +48,11 @@ pub enum MsgFcCtl {
 
     /// The flexicast source forwards to the controller the packet it just sent on the flexicast flow.
     Sent((u64, Vec<OpenSent>)),
+
+    /// The flexicast source forwards to the controller the delegated streams.
+    /// These are the STREAM frames that have been lost, considering all receivers (using their ACK).
+    /// The controller will handle the dispatch of the unicast retransmission to simplify the work of the flexicast source.
+    DelegateStreams(FcDelegatedStream)
 }
 
 /// Messages sent to the receiver.
