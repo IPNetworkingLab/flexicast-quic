@@ -197,6 +197,10 @@ impl Client {
             MsgRecv::Sent((fc_id, sent)) => {
                 self.conn.fc_on_new_pkt_sent(fc_id, sent)?;
             },
+
+            MsgRecv::DelegateStreams((fc_id, delegated_streams)) => {
+                self.conn.fc_delegated_streams(fc_id, delegated_streams)?;
+            },
         }
 
         Ok(())

@@ -15,12 +15,28 @@ use crate::Connection;
 /// Value: (length of the stream, remaining number of clients that must ACK).
 type McStream = BTreeMap<u64, (u64, u64)>;
 
+#[derive(Clone)]
 /// Shorthand for pieces of streams that are delegated.
 /// First value: stream ID.
 /// Second value: offset.
 /// Third value: Payload.
 /// The length is induced using the payload.
-pub type FcDelegatedStream = Vec<(u64, u64, Vec<u8>)>;
+pub struct FcDelegatedStream {
+    /// Stream ID.
+    pub stream_id: u64,
+
+    /// Offset of the stream.
+    pub offset: u64,
+
+    /// Payload of the stream.
+    pub payload: Vec<u8>,
+
+    /// Packet number where this STREAM frame was sent on the flexicast flow.
+    pub pn: u64,
+
+    /// Whether this is the last frame of the stream.
+    pub fin: bool,
+}
 
 /// Stream ID and offsets of streams.
 pub type McStreamOff = Vec<(u64, RangeSet)>;

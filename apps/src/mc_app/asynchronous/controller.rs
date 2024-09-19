@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use super::Result;
+use quiche::multicast::ack::FcDelegatedStream;
 use quiche::multicast::ack::McAck;
 use quiche::multicast::ack::McStreamOff;
 use quiche::multicast::ack::OpenRangeSet;
@@ -46,13 +47,16 @@ pub enum MsgFcCtl {
     /// unicast path.
     AckData((u64, u64, Option<OpenRangeSet>, Option<McStreamOff>)),
 
-    /// The flexicast source forwards to the controller the packet it just sent on the flexicast flow.
+    /// The flexicast source forwards to the controller the packet it just sent
+    /// on the flexicast flow.
     Sent((u64, Vec<OpenSent>)),
 
     /// The flexicast source forwards to the controller the delegated streams.
-    /// These are the STREAM frames that have been lost, considering all receivers (using their ACK).
-    /// The controller will handle the dispatch of the unicast retransmission to simplify the work of the flexicast source.
-    DelegateStreams(FcDelegatedStream)
+    /// These are the STREAM frames that have been lost, considering all
+    /// receivers (using their ACK). The controller will handle the dispatch
+    /// of the unicast retransmission to simplify the work of the flexicast
+    /// source.
+    DelegateStreams((u64, Vec<FcDelegatedStream>)),
 }
 
 /// Messages sent to the receiver.
@@ -68,6 +72,9 @@ pub enum MsgRecv {
 
     /// Packets sent on the flexicast flow that will be part of the state.
     Sent((u64, Vec<OpenSent>)),
+
+    /// Identical semantic as [`MsgFcCtl::DelegateStreams`].
+    DelegateStreams((u64, Vec<FcDelegatedStream>)),
 }
 
 /// Messages sent to the flexicast source.
@@ -109,6 +116,15 @@ pub struct FcController {
 
     /// Communication channels with towards flexicast sources.
     tx_fc_sources: Vec<mpsc::Sender<MsgFcSource>>,
+
+    /// Keeps state of the received packet numbers for each client.
+    /// This state is used to delegated STREAM frames that were lost on the
+    /// flexicast flow and need unicast retransmission to the receivers.
+    /// It is regularly populated with the acknowledgements from the receivers
+    /// through the [`MsgFcCtl::AckData`] message, and erased when the
+    /// controller delegates STREAM frames to the receiver. Indexed through
+    /// the receiver ID.
+    recv_ack: Vec<OpenRangeSet>,
 }
 
 impl FcController {
@@ -125,6 +141,7 @@ impl FcController {
             active_clients: vec![HashSet::new(); mc_announce_data.len()],
             mc_acks: vec![McAck::new(); mc_announce_data.len()],
             last_expired_pn: vec![None; mc_announce_data.len()],
+            recv_ack: vec![OpenRangeSet::default(); mc_announce_data.len()],
             _mc_announce_data: mc_announce_data,
             tx_fc_sources,
         }
@@ -185,15 +202,27 @@ impl FcController {
                 }
             },
 
-            MsgFcCtl::AckData((client_id, fc_id, ack_pn, ack_stream_pieces)) => {
-                debug!("Client {client_id} acknowledges for flexicast flow {fc_id}: pn={ack_pn:?} and streams={ack_stream_pieces:?}");
-                self.handle_ack_pn_stream_pieces(fc_id, ack_pn, ack_stream_pieces).await?;
+            MsgFcCtl::AckData((recv_id, fc_id, ack_pn, ack_stream_pieces)) => {
+                debug!("Client {recv_id} acknowledges for flexicast flow {fc_id}: pn={ack_pn:?} and streams={ack_stream_pieces:?}");
+                self.handle_ack_pn_stream_pieces(
+                    recv_id,
+                    fc_id,
+                    ack_pn,
+                    ack_stream_pieces,
+                )
+                .await?;
             },
 
             MsgFcCtl::Sent((fc_id, sent)) => {
                 debug!("Flexicast source {fc_id} sent {:?}", sent.len());
                 self.handle_sent_pkt(fc_id, sent).await?;
-            }
+            },
+
+            MsgFcCtl::DelegateStreams((fc_id, delegated_streams)) => {
+                debug!("Flexicast source delegated streams");
+                self.handle_delegated_streams(fc_id, delegated_streams)
+                    .await?;
+            },
         }
 
         Ok(())
@@ -218,7 +247,7 @@ impl FcController {
     /// Sends to the flexicast source the acknowledged packets and stream
     /// pieces.
     async fn handle_ack_pn_stream_pieces(
-        &mut self, fc_id: u64, ack_pn: Option<OpenRangeSet>,
+        &mut self, recv_id: u64, fc_id: u64, ack_pn: Option<OpenRangeSet>,
         ack_stream_pieces: Option<McStreamOff>,
     ) -> Result<()> {
         let mc_ack = &mut self.mc_acks[fc_id as usize];
@@ -226,6 +255,11 @@ impl FcController {
         // Packet numbers acknowledgment.
         if let Some(rs) = ack_pn {
             mc_ack.on_ack_received(&rs);
+
+            // Store per-receiver acknowledgments.
+            for range in rs.iter() {
+                self.recv_ack[recv_id as usize].insert(range);
+            }
         }
 
         // Stream pieces.
@@ -256,11 +290,50 @@ impl FcController {
         Ok(())
     }
 
-    /// Forwards to the unicast instances the packets sent on the flexicast flow by the source.
-    async fn handle_sent_pkt(&self, fc_id: u64, sent: Vec<OpenSent>) -> Result<()> {
+    /// Forwards to the unicast instances the packets sent on the flexicast flow
+    /// by the source.
+    async fn handle_sent_pkt(
+        &self, fc_id: u64, sent: Vec<OpenSent>,
+    ) -> Result<()> {
         for &client_id in self.active_clients[fc_id as usize].iter() {
             let msg = MsgRecv::Sent((fc_id, sent.clone()));
             self.tx_clients[client_id as usize].send(msg).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Dispatchs delegated streams to receivers.
+    async fn handle_delegated_streams(
+        &mut self, fc_id: u64, delegated_streams: Vec<FcDelegatedStream>,
+    ) -> Result<()> {
+        // Iterate over all clients listening to this flexicast source to delegate
+        // the appropriate STREAM frame retransmissions.
+        for &client_id in self.active_clients[fc_id as usize].iter() {
+            let client_ack: HashSet<u64> =
+                self.recv_ack[client_id as usize].flatten().collect();
+            let tx_client = &self.tx_clients[client_id as usize];
+
+            // Delegate the STREAM frames for unicast retransmission.
+            // FC-TODO: maybe not optimal, create a new message for every streams?
+            let mut del_streams_to_client = Vec::new();
+            for delegated_piece in delegated_streams.iter() {
+                if !client_ack.contains(&delegated_piece.pn) {
+                    // Lost packet on this client.
+                    del_streams_to_client.push(delegated_piece.to_owned());
+                }
+            }
+
+            // Send the delegated pieces to the client.
+            let msg = MsgRecv::DelegateStreams((fc_id, del_streams_to_client));
+            tx_client.send(msg).await?;
+
+            // Release memory based on the highest packet number.
+            // Fc-TODO: not sure this will work because the last expired may be
+            // another than the largest lost.
+            if let Some(max_pn) = self.last_expired_pn[fc_id as usize] {
+                self.recv_ack[client_id as usize].remove_until(max_pn);
+            }
         }
 
         Ok(())

@@ -3,15 +3,16 @@
 //! intends to provide "multi-thread" friendly functions to exchange such
 //! information.
 
+use std::sync::Arc;
 use std::time;
 
 use super::ExpiredPkt;
 use super::McError;
 use super::McRole;
+use crate::multicast::ack::FcDelegatedStream;
 use crate::multicast::ack::McStreamOff;
 use crate::packet::Epoch;
 use crate::ranges::RangeSet;
-use crate::recovery::multicast::FcDelegatedStream;
 use crate::recovery::Sent;
 use crate::Connection;
 use crate::Error;
@@ -159,7 +160,7 @@ impl Connection {
     /// if the frame needs to be retransmitted.
     ///
     /// FC-TODO: also breaks FEC.
-    pub fn fc_get_delegated_stream(&mut self) -> Result<FcDelegatedStream> {
+    pub fn fc_get_delegated_stream(&mut self) -> Result<Vec<FcDelegatedStream>> {
         if self.multicast.is_none() {
             return Err(Error::Multicast(McError::McDisabled));
         }
@@ -180,5 +181,76 @@ impl Connection {
         fc_path
             .recovery
             .fc_get_delegated_stream(space_id as u32, streams)
+    }
+
+    /// Inserts in the unicast path delegated streams from the flexicast source.
+    /// This creates states for streams that were previously sent on the
+    /// flexicast flow and need unicast retransmission.
+    ///
+    /// Returns an error if this is not a unicast source instance.
+    /// Does nothing if this is the wrong flexicast source ID, since we may be
+    /// in a transient state because the receiver changed its flexicast flow.
+    pub fn fc_delegated_streams(
+        &mut self, fc_id: u64, mut delegated_streams: Vec<FcDelegatedStream>,
+    ) -> Result<()> {
+        let multicast = self
+            .multicast
+            .as_ref()
+            .ok_or(Error::Multicast(McError::McDisabled))?;
+
+        if !matches!(multicast.get_mc_role(), McRole::ServerUnicast(_)) {
+            return Err(Error::Multicast(McError::McInvalidRole(
+                multicast.get_mc_role(),
+            )));
+        }
+
+        // Maybe a transient state.
+        if multicast
+            .fc_chan_id
+            .as_ref()
+            .map(|(_, id)| *id as u64 != fc_id)
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+
+        for del_stream in delegated_streams.drain(..) {
+            let is_stream_collected =
+                self.streams.is_collected(del_stream.stream_id);
+            // FC-TODO: Woops, won't work if not local stream!
+            let stream =
+                match self.get_or_create_stream(del_stream.stream_id, true) {
+                    Ok(v) => v,
+                    Err(Error::Done) if is_stream_collected => continue,
+                    Err(e) => return Err(e),
+                };
+
+            let was_flushable = stream.is_flushable();
+
+            debug!(
+                "Client unicast retransmits stream piece because lost packet={}",
+                del_stream.pn
+            );
+
+            // FC-TODO: stream rotation?
+
+            let _written = match stream.send.write_at_offset(
+                &del_stream.payload,
+                del_stream.offset,
+                del_stream.fin,
+            ) {
+                Ok(v) => v,
+                Err(Error::FinalSize) => continue,
+                Err(e) => return Err(e),
+            };
+
+            // Mark the stream as flushable.
+            let priority_key = Arc::clone(&stream.priority_key);
+            if !was_flushable {
+                self.streams.insert_flushable(&priority_key);
+            }
+        }
+
+        Ok(())
     }
 }
