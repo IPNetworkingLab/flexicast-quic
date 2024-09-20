@@ -252,11 +252,13 @@ async fn main() {
         tx_fc_source.push(tx);
 
         tokio::spawn(async move {
-            fc_struct.run().await.unwrap();
+            // fc_struct.run().await.unwrap();
         });
 
         id_fc_chan += 1;
     }
+
+    println!("ICI 11111");
 
     // Create the controller structure that will manage the communication between
     // the flexicast source and the unicast server instances.
@@ -270,6 +272,7 @@ async fn main() {
 
     // Listens to incoming connections from new clients.
     loop {
+        println!("INSIDE WAITING RECV FROM: {:?}", socket.local_addr());
         let (len, from) = match socket.recv_from(&mut buf).await {
             Ok(v) => v,
 
@@ -283,6 +286,8 @@ async fn main() {
                 panic!("recv() failed: {:?}", e);
             },
         };
+
+        println!("Receive a packet from the global socket!");
 
         let pkt_buf = &mut buf[..len];
 
@@ -454,6 +459,8 @@ async fn main() {
             from,
             from_mc: false,
         };
+
+        println!("From general send to QUIC: {:?} and local_addr sent to quiche={:?}", recv_info, local_addr);
 
         // First recv is handled by the main thread. Subsequent recv are handled
         // by the tokio task.

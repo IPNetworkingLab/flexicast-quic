@@ -295,10 +295,14 @@ impl FcController {
     async fn handle_sent_pkt(
         &self, fc_id: u64, sent: Vec<OpenSent>,
     ) -> Result<()> {
+        println!("Inside handle sent pkt");
         for &client_id in self.active_clients[fc_id as usize].iter() {
             let msg = MsgRecv::Sent((fc_id, sent.clone()));
+            println!("Will send a packet to client {}", client_id);
             self.tx_clients[client_id as usize].send(msg).await?;
         }
+
+        println!("Outside of handle_sent_pkt");
 
         Ok(())
     }

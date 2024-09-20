@@ -93,9 +93,6 @@ impl FcChannelAsync {
                     }
                 },
 
-                // Data on the UDP socket. Do not read it, as we will do it below.
-                _ = self.socket.readable() => (),
-
                 // Data on the control channel.
                 Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
             }
@@ -160,7 +157,7 @@ impl FcChannelAsync {
             // Generate outgoing QUIC packets to send on the Flexicast path.
             'fc: loop {
                 // Ask quiche to generate the packets.
-                let (write, _send_info) = match self.fc_chan.mc_send(&mut buf[..])
+                let (write, send_info) = match self.fc_chan.mc_send(&mut buf[..])
                 {
                     Ok(v) => v,
 
@@ -180,7 +177,11 @@ impl FcChannelAsync {
                 while left > 0 {
                     let pkt_len = cmp::min(left, super::MAX_DATAGRAM_SIZE);
 
-                    match self.socket.send(&buf[off..off + pkt_len]).await {
+                    match self
+                        .socket
+                        .send_to(&buf[off..off + pkt_len], &send_info.to)
+                        .await
+                    {
                         Ok(v) => written += v,
                         Err(e) => {
                             if e.kind() == io::ErrorKind::WouldBlock {
@@ -230,7 +231,11 @@ impl FcChannelAsync {
     }
 
     async fn sent_pkt_to_controller(&mut self) -> Result<()> {
-        let sent = self.fc_chan.channel.fc_get_sent_pkt()?;
+        let sent = match self.fc_chan.channel.fc_get_sent_pkt() {
+            Ok(v) => v,
+            Err(quiche::Error::Done) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
 
         let msg = MsgFcCtl::Sent((self.id, sent));
         self.sync_tx.send(msg).await?;

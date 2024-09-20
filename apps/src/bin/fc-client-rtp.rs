@@ -224,7 +224,9 @@ fn main() {
     'main_loop: loop {
         // Compute (FC-)QUIC timeout.
         let now = std::time::Instant::now();
-        conn.rmc_set_next_timeout(now, &random).unwrap();
+        if conn.get_multicast_attributes().is_some() {
+            conn.rmc_set_next_timeout(now, &random).unwrap();
+        }
 
         // Timer if the client changes its flexicast channel.
         let timer_change = start_recv.zip(args.change_fc_chan.as_ref()).map(
@@ -542,7 +544,7 @@ fn main() {
                                         .group_ip
                                         .to_owned(),
                                 ), // &args.local_ip
-                                &"10.10.2.2".parse().unwrap(),
+                                &"11.1.6.2".parse().unwrap(),
                             )
                             .unwrap();
                     }

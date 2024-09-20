@@ -2713,6 +2713,7 @@ impl Connection {
                 .crypto_0rtt_open
                 .as_ref()
         } else if info.from_mc {
+            println!("HELLO FROM MC");
             // The multicast channel uses the shared key.
             // All multicast paths use the same shared key for encryption.
             if let Some(multicast) = self.multicast.as_ref() {
@@ -2769,6 +2770,8 @@ impl Connection {
                 );
 
                 debug!("Here because no crypto context");
+
+                println!("Err donne: {:?}", e);
 
                 return Err(e);
             },

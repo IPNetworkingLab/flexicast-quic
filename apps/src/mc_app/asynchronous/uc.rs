@@ -45,47 +45,62 @@ impl Client {
                 .unwrap();
         }
 
+        // The first read was already performed. Directly go to the write.
+        let mut first_read = true;
+
         let mut buf = [0u8; 1500];
         loop {
             let timeout =
                 self.conn.timeout().unwrap_or(time::Duration::from_secs(10));
 
-            tokio::select! {
-                // Timeout sleep.
-                _ = tokio::time::sleep(timeout) => self.conn.on_timeout(),
-
-                // Data on the udp socket.
-                _ = self.udp_socket.readable() => (),
-
-                // Data on the control channel.
-                Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
+            if !first_read {
+                tokio::select! {
+                    // Timeout sleep.
+                    _ = tokio::time::sleep(timeout) => self.conn.on_timeout(),
+    
+                    // Data on the udp socket.
+                    _ = self.udp_socket.readable() => (),
+    
+                    // Data on the control channel.
+                    Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
+                }
             }
+
+            first_read = false;
 
             // Read incoming UDP packets from the socket and feed them to quiche,
             // until there are no more packets to read.
+            let mut a = true;
             'read: loop {
-                let len = match self.udp_socket.try_recv(&mut buf[..]) {
-                    Ok(v) => v,
-
-                    Err(e) => {
-                        // There are no more UDP packets to read, so exit the read
-                        // loop.
-                        if e.kind() == io::ErrorKind::WouldBlock {
-                            break 'read;
-                        }
-
-                        panic!("recv() failed: {:?}", e);
+                debug!("Will try recv from the socket");
+                let timeout_read = time::Duration::from_millis(2);
+                if !a {
+                    break 'read;
+                }
+                let res = tokio::time::timeout(timeout_read, self.udp_socket.recv(&mut buf[..])).await;
+                let len = match res {
+                    Ok(Ok(v)) => {
+                        debug!("PUTAIN DE MERDE");
+                        v
+                    },
+                    Ok(e) => panic!("Error while reading socket: {:?}", e),
+                    Err(_) => {
+                        println!("TIMEOUT?????");
+                        break 'read;
                     },
                 };
-
+                debug!("Recv a packet from single socket");
+                a = false;
+                
                 let pkt_buf = &mut buf[..len];
-
+                
                 let recv_info = quiche::RecvInfo {
                     to: self.udp_socket.local_addr()?,
                     from: self.udp_socket.peer_addr()?,
                     from_mc: false,
                 };
-
+                debug!("Receive a packet from the client socket! recv_info={:?}", recv_info);
+                
                 // Process potentially coalesced packets.
                 let _read = match self.conn.recv(pkt_buf, recv_info) {
                     Ok(v) => v,
@@ -114,13 +129,18 @@ impl Client {
                         .new_source_cid(&scid, reset_token, false)
                         .is_err()
                     {
+                        println!("Error while sending new source CID");
                         break;
                     }
                     info!("add a new source cid: {:?}", scid.as_ref());
                     // TODO!!!
                     // clients_ids.insert(scid, client.client_id);
                 }
+
+                debug!("MAIS JE PASSE ICI???");
             }
+
+            debug!("Out of READ loop");
 
             // Informs the controller whether the client listens to a flexicast
             // flow.
@@ -145,7 +165,10 @@ impl Client {
                 let (write, _send_info) = match self.conn.send(&mut buf[..]) {
                     Ok(v) => v,
 
-                    Err(quiche::Error::Done) => break 'send,
+                    Err(quiche::Error::Done) => {
+                        println!("QUICHE says DONE here");
+                        break 'send;
+                    },
 
                     Err(e) => {
                         error!("{} send failed: {:?}", self.conn.trace_id(), e);
@@ -164,6 +187,8 @@ impl Client {
 
                     panic!("send() failed: {:?}", e);
                 }
+
+                println!("SEND A PACKET TO UNICAST");
             }
 
             // Exit the stap if the connection is closed.

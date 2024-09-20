@@ -94,7 +94,10 @@ impl Connection {
                 Epoch::Application,
                 max_pn,
             );
-            multicast.cur_max_pn = new_max_pn;
+            multicast.cur_max_pn = new_max_pn + 1;
+            if sent.is_empty() {
+                return Err(Error::Done);
+            }
             Ok(sent)
         } else {
             Err(Error::Multicast(McError::McPath))
