@@ -2,7 +2,9 @@
 
 use super::controller;
 use super::controller::MsgFcCtl;
+use super::controller::MsgMain;
 use super::controller::MsgRecv;
+use super::new_udp_socket_reuseport;
 use super::Result;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::MulticastConnection;
@@ -10,6 +12,7 @@ use tokio::net::UdpSocket;
 
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
+use core::slice::SlicePattern;
 use std::convert::TryInto;
 use std::io;
 use std::time;
@@ -27,6 +30,11 @@ pub struct Client {
     pub mc_announce_data: Vec<McAnnounceData>,
     pub mc_master_secret: Vec<Vec<u8>>,
     pub mc_key_algo: Vec<u8>,
+
+    pub buffer: Vec<u8>,
+    pub tx_main: mpsc::Sender<MsgMain>,
+
+    pub mp_socket: Option<UdpSocket>,
 }
 
 impl Client {
@@ -57,90 +65,19 @@ impl Client {
                 tokio::select! {
                     // Timeout sleep.
                     _ = tokio::time::sleep(timeout) => self.conn.on_timeout(),
-    
-                    // Data on the udp socket.
-                    _ = self.udp_socket.readable() => (),
-    
+
+                    // Read incoming UDP packets from the socket and feed them to quiche,
+                    // until there are no more packets to read.
+                    _ = self.udp_socket.readable() => self.recv(false).await?,
+
+                    _ = self.mp_socket.map(|s| s.readable()) => self.recv(true).await?,
+
                     // Data on the control channel.
                     Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
                 }
             }
 
             first_read = false;
-
-            // Read incoming UDP packets from the socket and feed them to quiche,
-            // until there are no more packets to read.
-            let mut a = true;
-            'read: loop {
-                debug!("Will try recv from the socket");
-                let timeout_read = time::Duration::from_millis(2);
-                if !a {
-                    break 'read;
-                }
-                let res = tokio::time::timeout(timeout_read, self.udp_socket.recv(&mut buf[..])).await;
-                let len = match res {
-                    Ok(Ok(v)) => {
-                        debug!("PUTAIN DE MERDE");
-                        v
-                    },
-                    Ok(e) => panic!("Error while reading socket: {:?}", e),
-                    Err(_) => {
-                        println!("TIMEOUT?????");
-                        break 'read;
-                    },
-                };
-                debug!("Recv a packet from single socket");
-                a = false;
-                
-                let pkt_buf = &mut buf[..len];
-                
-                let recv_info = quiche::RecvInfo {
-                    to: self.udp_socket.local_addr()?,
-                    from: self.udp_socket.peer_addr()?,
-                    from_mc: false,
-                };
-                debug!("Receive a packet from the client socket! recv_info={:?}", recv_info);
-                
-                // Process potentially coalesced packets.
-                let _read = match self.conn.recv(pkt_buf, recv_info) {
-                    Ok(v) => v,
-
-                    Err(e) => {
-                        error!("{} recv failed: {:?}", self.conn.trace_id(), e);
-                        continue 'read;
-                    },
-                };
-
-                // Provides as many CIDs as possible.
-                self.handle_path_events();
-
-                while self.conn.source_cids_left() > 0 {
-                    let (scid, reset_token) = {
-                        let mut scid = [0; 16];
-                        self.rng.fill(&mut scid).unwrap();
-                        let scid = scid.to_vec().into();
-                        let mut reset_token = [0; 16];
-                        self.rng.fill(&mut reset_token).unwrap();
-                        let reset_token = u128::from_be_bytes(reset_token);
-                        (scid, reset_token)
-                    };
-                    if self
-                        .conn
-                        .new_source_cid(&scid, reset_token, false)
-                        .is_err()
-                    {
-                        println!("Error while sending new source CID");
-                        break;
-                    }
-                    info!("add a new source cid: {:?}", scid.as_ref());
-                    // TODO!!!
-                    // clients_ids.insert(scid, client.client_id);
-                }
-
-                debug!("MAIS JE PASSE ICI???");
-            }
-
-            debug!("Out of READ loop");
 
             // Informs the controller whether the client listens to a flexicast
             // flow.
@@ -226,6 +163,10 @@ impl Client {
             MsgRecv::DelegateStreams((fc_id, delegated_streams)) => {
                 self.conn.fc_delegated_streams(fc_id, delegated_streams)?;
             },
+
+            MsgRecv::NewAddr((pkt_to_read, new_addr)) => {
+                self.handle_new_addr(pkt_to_read, new_addr)?;
+            },
         }
 
         Ok(())
@@ -261,6 +202,96 @@ impl Client {
         }
 
         Ok(())
+    }
+
+    async fn recv(&mut self, is_mp_sock: bool) -> Result<()> {
+        let socket = if is_mp_sock {
+            &self.udp_socket
+        } else {
+            self.mp_socket.as_ref().ok_or("None MP socket".to_string())?
+        };
+
+        let len = match socket.try_recv(&mut self.buffer[..]) {
+            Ok(v) => v,
+
+            Err(e) => {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    debug!("Client recv would block");
+                    return Ok(());
+                }
+
+                return Err(format!("Error while try_recv: {e:?}"));
+            },
+        };
+
+        let pkt_buf = &mut buf[..len];
+
+        let recv_info = quiche::RecvInfo {
+            to: socket.local_addr()?,
+            from: socket.peer_addr()?,
+            from_mc: false,
+        };
+        debug!(
+            "Receive a packet from the client socket! recv_info={:?}",
+            recv_info
+        );
+
+        // Process potentially coalesced packets.
+        let _read = match self.conn.recv(pkt_buf, recv_info) {
+            Ok(v) => v,
+
+            Err(e) => {
+                error!("{} recv failed: {:?}", self.conn.trace_id(), e);
+                return Err(e);
+            },
+        };
+
+        // Provides as many CIDs as possible.
+        self.handle_path_events();
+
+        while self.conn.source_cids_left() > 0 {
+            let (scid, reset_token) = {
+                let mut scid = [0; 16];
+                self.rng.fill(&mut scid).unwrap();
+                let scid = scid.to_vec().into();
+                let mut reset_token = [0; 16];
+                self.rng.fill(&mut reset_token).unwrap();
+                let reset_token = u128::from_be_bytes(reset_token);
+                (scid, reset_token)
+            };
+            if self.conn.new_source_cid(&scid, reset_token, false).is_err() {
+                println!("Error while sending new source CID");
+                break;
+            }
+            info!("add a new source cid: {:?}", scid.as_ref());
+            
+            // Notifies the main thread that this connection has a new source CID.
+            self.notify_new_cid(scid.as_slice()).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn notify_new_cid(&self, cid: &[u8]) -> Result<()> {
+        let msg = MsgMain::NewCID((self.client_id, cid.to_vec()));
+        self.tx_main.send(msg).await
+    }
+
+    async fn handle_new_addr(&mut self, mut pkt_to_read: Vec<u8>, new_addr: SocketAddr) -> Result<()> {
+        // Create the new socket.
+        let new_socket = new_udp_socket_reuseport(self.udp_socket.local_addr())?;
+        new_socket.connect(new_addr).await?;
+
+        self.mp_socket = Some(new_socket);
+
+        // And read the data to quiche.
+        let recv_info = quiche::RecvInfo {
+            to: self.udp_socket.local_addr()?,
+            from: new_addr,
+            from_mc: false,
+        };
+
+        self.conn.recv(&mut pkt_to_read[..], recv_info)
     }
 
     fn handle_path_events(&mut self) {

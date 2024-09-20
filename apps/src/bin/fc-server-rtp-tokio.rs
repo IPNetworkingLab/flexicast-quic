@@ -10,8 +10,8 @@ use std::net::SocketAddrV4;
 use std::path::Path;
 use std::u64;
 
+use quiche_apps::mc_app::asynchronous::controller::MsgRecv;
 use quiche_apps::mc_app::asynchronous::fc::FcChannelInfo;
-use socket2;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -184,6 +184,9 @@ async fn main() {
         Vec::new() // Empty.
     };
 
+    // Channel to communicate with the main thread (this one). Used to notify of new Connection IDs mapped to specific clients.
+    let (tx_main, rx_main) = mpsc::channel(20);
+
     // Compute the mapping between Flexicast channel ID and index.
     let _fcid_to_idx: HashMap<Vec<u8>, usize> = fc_channels
         .iter()
@@ -272,6 +275,13 @@ async fn main() {
 
     // Listens to incoming connections from new clients.
     loop {
+        tokio::select! {
+            // Receive new packet from unconnected address.
+            _ = socket.readable() => (),
+
+            // Receive a message for control.
+            Some(msg) = rx_main.recv() => handle_msg(&mut clients_ids).await.unwrap(),
+        }
         println!("INSIDE WAITING RECV FROM: {:?}", socket.local_addr());
         let (len, from) = match socket.recv_from(&mut buf).await {
             Ok(v) => v,
@@ -422,6 +432,9 @@ async fn main() {
                 mc_key_algo: mc_key_algo.iter().map(|key| *key).collect::<Vec<_>>(),
                 rx_ctl: rx,
                 tx_tcl: tx_fc_ctl.clone(),
+                buffer: vec![0u8; 1500],
+                tx_main: tx_main.clone(),
+                mp_socket: None,
             };
 
             // Notify the controller with a new client.
@@ -451,7 +464,12 @@ async fn main() {
 
             client
         } else {
-            panic!("This socket should not receive a packet for an existing client because its corresponding socket should be connected");
+            // This is an existing receiver that sends a QUIC packet from a new address.
+            // We notify the receiver that it must handle this packet and all new packets from this address.
+            let client_id = clients_ids.get(&hdr.dcid).unwrap();
+            let msg = MsgRecv::NewAddr((pkt_buf.to_vec(), from));
+            clients_tx[*client_id as usize].send(msg).await.unwrap();
+            
         };
 
         let recv_info = quiche::RecvInfo {
@@ -737,16 +755,4 @@ fn validate_token<'a>(
     }
 
     Some(quiche::ConnectionId::from_ref(&token[addr.len()..]))
-}
-
-fn new_udp_socket_reuseport(bind_addr: SocketAddr) -> io::Result<UdpSocket> {
-    // Use socket2 sockets to set reuse port.
-    let socket =
-        socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)?;
-    socket.set_reuse_port(true)?;
-    socket.bind(&bind_addr.into())?;
-
-    // Convert to tokio socket.
-    let socket = UdpSocket::from_std(socket.into())?;
-    Ok(socket)
 }

@@ -2,6 +2,9 @@
 //! tokio.
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
+
+use crate::common::ClientIdMap;
 
 use super::Result;
 use quiche::multicast::ack::FcDelegatedStream;
@@ -75,6 +78,10 @@ pub enum MsgRecv {
 
     /// Identical semantic as [`MsgFcCtl::DelegateStreams`].
     DelegateStreams((u64, Vec<FcDelegatedStream>)),
+
+    /// The receiver used a new address with an existing CID.
+    /// The unicast instance is responsible to create a socket to handle new packets.
+    NewAddr((Vec<u8>, SocketAddr)),
 }
 
 /// Messages sent to the flexicast source.
@@ -86,6 +93,12 @@ pub enum MsgFcSource {
     /// Stream pieces that were delegated and now received by all clients that
     /// should receive it.
     AckStreamPieces(McStreamOff),
+}
+
+/// Messages sent to the main thread.
+pub enum MsgMain {
+    /// A receiver notifies that a new connection ID is mapped to its connection.
+    NewCID((u64, Vec<u8>)),
 }
 
 /// Controller structure using tokio to handle messages between the flexicast
@@ -341,5 +354,14 @@ impl FcController {
         }
 
         Ok(())
+    }
+}
+
+fn handle_msg(msg: MsgMain, clients_ids: &mut ClientIdMap) {
+    match msg {
+        MsgMain::NewCID((client_id, cid)) => {
+            debug!("Receiver {client_id} adds a new CID!");
+            clients_ids.insert(cid.into(), client_id);
+        }
     }
 }
