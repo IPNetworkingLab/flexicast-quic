@@ -357,7 +357,7 @@ impl FcController {
     }
 }
 
-fn handle_msg(msg: MsgMain, clients_ids: &mut ClientIdMap) {
+pub fn handle_msg(msg: MsgMain, clients_ids: &mut ClientIdMap) {
     match msg {
         MsgMain::NewCID((client_id, cid)) => {
             debug!("Receiver {client_id} adds a new CID!");

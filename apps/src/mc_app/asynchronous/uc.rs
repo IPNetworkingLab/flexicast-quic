@@ -12,9 +12,9 @@ use tokio::net::UdpSocket;
 
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
-use core::slice::SlicePattern;
 use std::convert::TryInto;
 use std::io;
+use std::net::SocketAddr;
 use std::time;
 use tokio::sync::mpsc;
 
@@ -70,10 +70,12 @@ impl Client {
                     // until there are no more packets to read.
                     _ = self.udp_socket.readable() => self.recv(false).await?,
 
-                    _ = self.mp_socket.map(|s| s.readable()) => self.recv(true).await?,
-
                     // Data on the control channel.
                     Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
+
+                    // Read incomming UDP packets from the second socket and feed
+                    // them to quiche, until there are no more packets to read.
+                    _ = Self::on_mp_socket_readable(self.mp_socket.as_ref()) => self.recv(true).await?,
                 }
             }
 
@@ -165,7 +167,7 @@ impl Client {
             },
 
             MsgRecv::NewAddr((pkt_to_read, new_addr)) => {
-                self.handle_new_addr(pkt_to_read, new_addr)?;
+                self.handle_new_addr(pkt_to_read, new_addr).await?;
             },
         }
 
@@ -208,7 +210,9 @@ impl Client {
         let socket = if is_mp_sock {
             &self.udp_socket
         } else {
-            self.mp_socket.as_ref().ok_or("None MP socket".to_string())?
+            self.mp_socket
+                .as_ref()
+                .ok_or("None MP socket".to_string())?
         };
 
         let len = match socket.try_recv(&mut self.buffer[..]) {
@@ -220,11 +224,11 @@ impl Client {
                     return Ok(());
                 }
 
-                return Err(format!("Error while try_recv: {e:?}"));
+                return Err(format!("Error while try_recv: {e:?}").into());
             },
         };
 
-        let pkt_buf = &mut buf[..len];
+        let pkt_buf = &mut self.buffer[..len];
 
         let recv_info = quiche::RecvInfo {
             to: socket.local_addr()?,
@@ -242,7 +246,7 @@ impl Client {
 
             Err(e) => {
                 error!("{} recv failed: {:?}", self.conn.trace_id(), e);
-                return Err(e);
+                return Err(e.into());
             },
         };
 
@@ -264,9 +268,9 @@ impl Client {
                 break;
             }
             info!("add a new source cid: {:?}", scid.as_ref());
-            
+
             // Notifies the main thread that this connection has a new source CID.
-            self.notify_new_cid(scid.as_slice()).await?;
+            self.notify_new_cid(scid.as_ref()).await?;
         }
 
         Ok(())
@@ -274,12 +278,15 @@ impl Client {
 
     async fn notify_new_cid(&self, cid: &[u8]) -> Result<()> {
         let msg = MsgMain::NewCID((self.client_id, cid.to_vec()));
-        self.tx_main.send(msg).await
+        self.tx_main.send(msg).await?;
+        Ok(())
     }
 
-    async fn handle_new_addr(&mut self, mut pkt_to_read: Vec<u8>, new_addr: SocketAddr) -> Result<()> {
+    async fn handle_new_addr(
+        &mut self, mut pkt_to_read: Vec<u8>, new_addr: SocketAddr,
+    ) -> Result<()> {
         // Create the new socket.
-        let new_socket = new_udp_socket_reuseport(self.udp_socket.local_addr())?;
+        let new_socket = new_udp_socket_reuseport(self.udp_socket.local_addr()?)?;
         new_socket.connect(new_addr).await?;
 
         self.mp_socket = Some(new_socket);
@@ -291,7 +298,8 @@ impl Client {
             from_mc: false,
         };
 
-        self.conn.recv(&mut pkt_to_read[..], recv_info)
+        self.conn.recv(&mut pkt_to_read[..], recv_info)?;
+        Ok(())
     }
 
     fn handle_path_events(&mut self) {
@@ -380,6 +388,15 @@ impl Client {
                         .ok();
                 },
             }
+        }
+    }
+
+    async fn on_mp_socket_readable(socket: Option<&UdpSocket>) -> Option<()> {
+        if let Some(s) = socket {
+            s.readable().await.ok()?;
+            Some(())
+        } else {
+            None
         }
     }
 }
