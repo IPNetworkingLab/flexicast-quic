@@ -4,7 +4,6 @@ use super::controller;
 use super::controller::MsgFcCtl;
 use super::controller::MsgMain;
 use super::controller::MsgRecv;
-use super::new_udp_socket_reuseport;
 use super::Result;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::MulticastConnection;
@@ -13,8 +12,6 @@ use tokio::net::UdpSocket;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 use std::convert::TryInto;
-use std::io;
-use std::net::SocketAddr;
 use std::time;
 use tokio::sync::mpsc;
 
@@ -22,7 +19,6 @@ pub struct Client {
     pub conn: quiche::Connection,
     pub client_id: u64,
     pub listen_fc_channel: bool,
-    pub udp_socket: UdpSocket,
     pub rng: SystemRandom,
     pub rx_ctl: mpsc::Receiver<controller::MsgRecv>,
     pub tx_tcl: mpsc::Sender<controller::MsgFcCtl>,
@@ -31,10 +27,7 @@ pub struct Client {
     pub mc_master_secret: Vec<Vec<u8>>,
     pub mc_key_algo: Vec<u8>,
 
-    pub buffer: Vec<u8>,
     pub tx_main: mpsc::Sender<MsgMain>,
-
-    pub mp_socket: Option<UdpSocket>,
 }
 
 impl Client {
@@ -66,16 +59,8 @@ impl Client {
                     // Timeout sleep.
                     _ = tokio::time::sleep(timeout) => self.conn.on_timeout(),
 
-                    // Read incoming UDP packets from the socket and feed them to quiche,
-                    // until there are no more packets to read.
-                    _ = self.udp_socket.readable() => self.recv(false).await?,
-
                     // Data on the control channel.
                     Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
-
-                    // Read incomming UDP packets from the second socket and feed
-                    // them to quiche, until there are no more packets to read.
-                    _ = Self::on_mp_socket_readable(self.mp_socket.as_ref()) => self.recv(true).await?,
                 }
             }
 
@@ -101,11 +86,11 @@ impl Client {
             // them on the UDP socket, until quiche reports that there are no more
             // packets to be sent.
             'send: loop {
-                let (write, _send_info) = match self.conn.send(&mut buf[..]) {
+                let (write, send_info) = match self.conn.send(&mut buf[..]) {
                     Ok(v) => v,
 
                     Err(quiche::Error::Done) => {
-                        println!("QUICHE says DONE here");
+                        trace!("QUICHE says DONE here");
                         break 'send;
                     },
 
@@ -117,17 +102,10 @@ impl Client {
                     },
                 };
 
-                // Here we do wait to send the packets.
-                if let Err(e) = self.udp_socket.send(&buf[..write]).await {
-                    if e.kind() == io::ErrorKind::WouldBlock {
-                        debug!("send() would block, should not happen");
-                        break 'send;
-                    }
-
-                    panic!("send() failed: {:?}", e);
-                }
-
-                println!("SEND A PACKET TO UNICAST");
+                // Send the packet to the main thread to send it on the wire.
+                let msg = MsgMain::SendPkt((buf[..write].to_vec(), send_info));
+                debug!("Send packet to main thread with send_info={:?}", send_info);
+                self.tx_main.send(msg).await?;
             }
 
             // Exit the stap if the connection is closed.
@@ -166,8 +144,8 @@ impl Client {
                 self.conn.fc_delegated_streams(fc_id, delegated_streams)?;
             },
 
-            MsgRecv::NewAddr((pkt_to_read, new_addr)) => {
-                self.handle_new_addr(pkt_to_read, new_addr).await?;
+            MsgRecv::NewPkt((pkt_to_read, new_addr)) => {
+                self.handle_new_pkt(pkt_to_read, new_addr).await?;
             },
         }
 
@@ -206,35 +184,7 @@ impl Client {
         Ok(())
     }
 
-    async fn recv(&mut self, is_mp_sock: bool) -> Result<()> {
-        let socket = if is_mp_sock {
-            &self.udp_socket
-        } else {
-            self.mp_socket
-                .as_ref()
-                .ok_or("None MP socket".to_string())?
-        };
-
-        let len = match socket.try_recv(&mut self.buffer[..]) {
-            Ok(v) => v,
-
-            Err(e) => {
-                if e.kind() == io::ErrorKind::WouldBlock {
-                    debug!("Client recv would block");
-                    return Ok(());
-                }
-
-                return Err(format!("Error while try_recv: {e:?}").into());
-            },
-        };
-
-        let pkt_buf = &mut self.buffer[..len];
-
-        let recv_info = quiche::RecvInfo {
-            to: socket.local_addr()?,
-            from: socket.peer_addr()?,
-            from_mc: false,
-        };
+    async fn recv(&mut self, pkt_buf: &mut [u8], recv_info: quiche::RecvInfo) -> Result<()> {
         debug!(
             "Receive a packet from the client socket! recv_info={:?}",
             recv_info
@@ -264,7 +214,7 @@ impl Client {
                 (scid, reset_token)
             };
             if self.conn.new_source_cid(&scid, reset_token, false).is_err() {
-                println!("Error while sending new source CID");
+                error!("Error while sending new source CID");
                 break;
             }
             info!("add a new source cid: {:?}", scid.as_ref());
@@ -279,26 +229,14 @@ impl Client {
     async fn notify_new_cid(&self, cid: &[u8]) -> Result<()> {
         let msg = MsgMain::NewCID((self.client_id, cid.to_vec()));
         self.tx_main.send(msg).await?;
+        debug!("Client sends a new CID message to the main thread");
         Ok(())
     }
 
-    async fn handle_new_addr(
-        &mut self, mut pkt_to_read: Vec<u8>, new_addr: SocketAddr,
+    async fn handle_new_pkt(
+        &mut self, mut pkt_to_read: Vec<u8>, recv_info: quiche::RecvInfo,
     ) -> Result<()> {
-        // Create the new socket.
-        let new_socket = new_udp_socket_reuseport(self.udp_socket.local_addr()?)?;
-        new_socket.connect(new_addr).await?;
-
-        self.mp_socket = Some(new_socket);
-
-        // And read the data to quiche.
-        let recv_info = quiche::RecvInfo {
-            to: self.udp_socket.local_addr()?,
-            from: new_addr,
-            from_mc: false,
-        };
-
-        self.conn.recv(&mut pkt_to_read[..], recv_info)?;
+        self.recv(&mut pkt_to_read, recv_info).await?;
         Ok(())
     }
 
@@ -391,12 +329,11 @@ impl Client {
         }
     }
 
-    async fn on_mp_socket_readable(socket: Option<&UdpSocket>) -> Option<()> {
-        if let Some(s) = socket {
-            s.readable().await.ok()?;
-            Some(())
-        } else {
-            None
-        }
-    }
+    // async fn on_mp_socket_readable(socket: Option<&UdpSocket>) -> Option<()> {
+    //     if let Some(s) = socket {
+    //         s.readable().await.ok()
+    //     } else {
+    //         None
+    //     }
+    // }
 }

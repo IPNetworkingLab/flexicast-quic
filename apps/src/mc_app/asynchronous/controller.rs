@@ -2,7 +2,6 @@
 //! tokio.
 
 use std::collections::HashSet;
-use std::net::SocketAddr;
 
 use crate::common::ClientIdMap;
 
@@ -14,7 +13,10 @@ use quiche::multicast::ack::OpenRangeSet;
 use quiche::multicast::control::OpenSent;
 use quiche::multicast::ExpiredPkt;
 use quiche::multicast::McAnnounceData;
+use quiche::RecvInfo;
+use quiche::SendInfo;
 use tokio;
+use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
 /// Messages sent to the controller.
@@ -79,9 +81,8 @@ pub enum MsgRecv {
     /// Identical semantic as [`MsgFcCtl::DelegateStreams`].
     DelegateStreams((u64, Vec<FcDelegatedStream>)),
 
-    /// The receiver used a new address with an existing CID.
-    /// The unicast instance is responsible to create a socket to handle new packets.
-    NewAddr((Vec<u8>, SocketAddr)),
+    /// New packet from this receiver for the unicast instance to handle.
+    NewPkt((Vec<u8>, RecvInfo)),
 }
 
 /// Messages sent to the flexicast source.
@@ -99,6 +100,9 @@ pub enum MsgFcSource {
 pub enum MsgMain {
     /// A receiver notifies that a new connection ID is mapped to its connection.
     NewCID((u64, Vec<u8>)),
+
+    /// A receiver notifies that a new packet must be sent on the wire.
+    SendPkt((Vec<u8>, SendInfo)),
 }
 
 /// Controller structure using tokio to handle messages between the flexicast
@@ -308,14 +312,10 @@ impl FcController {
     async fn handle_sent_pkt(
         &self, fc_id: u64, sent: Vec<OpenSent>,
     ) -> Result<()> {
-        println!("Inside handle sent pkt");
         for &client_id in self.active_clients[fc_id as usize].iter() {
             let msg = MsgRecv::Sent((fc_id, sent.clone()));
-            println!("Will send a packet to client {}", client_id);
             self.tx_clients[client_id as usize].send(msg).await?;
         }
-
-        println!("Outside of handle_sent_pkt");
 
         Ok(())
     }
@@ -357,11 +357,18 @@ impl FcController {
     }
 }
 
-pub fn handle_msg(msg: MsgMain, clients_ids: &mut ClientIdMap) {
+pub async fn handle_msg(msg: MsgMain, clients_ids: &mut ClientIdMap, socket: &UdpSocket) -> Result<()> {
     match msg {
         MsgMain::NewCID((client_id, cid)) => {
             debug!("Receiver {client_id} adds a new CID!");
             clients_ids.insert(cid.into(), client_id);
+        },
+
+        MsgMain::SendPkt((pkt_buf, send_info)) => {
+            debug!("Will send the packet to the wire with send_info={:?}", send_info);
+            socket.send_to(&pkt_buf, send_info.to).await?;
         }
     }
+
+    Ok(())
 }

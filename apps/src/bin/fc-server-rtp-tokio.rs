@@ -12,7 +12,6 @@ use std::u64;
 use quiche_apps::mc_app::asynchronous::controller::handle_msg;
 use quiche_apps::mc_app::asynchronous::controller::MsgRecv;
 use quiche_apps::mc_app::asynchronous::fc::FcChannelInfo;
-use quiche_apps::mc_app::asynchronous::new_udp_socket_reuseport;
 use tokio::sync::mpsc;
 
 use clap::Parser;
@@ -127,7 +126,7 @@ struct Args {
     rtp_stop: String,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
     env_logger::builder()
         .default_format_timestamp_nanos(true)
@@ -138,7 +137,7 @@ async fn main() {
     let args = Args::parse();
 
     // Create the general UDP socket that will listen to new incoming connections.
-    let socket = new_udp_socket_reuseport(args.src_addr).unwrap();
+    let socket = tokio::net::UdpSocket::bind(args.src_addr).await.unwrap();
 
     // Create the configuration for the QUIC connections.
     let mut config = get_config(&args);
@@ -255,13 +254,11 @@ async fn main() {
         tx_fc_source.push(tx);
 
         tokio::spawn(async move {
-            // fc_struct.run().await.unwrap();
+            fc_struct.run().await.unwrap();
         });
 
         id_fc_chan += 1;
     }
-
-    println!("ICI 11111");
 
     // Create the controller structure that will manage the communication between
     // the flexicast source and the unicast server instances.
@@ -280,10 +277,9 @@ async fn main() {
             _ = socket.readable() => (),
 
             // Receive a message for control.
-            Some(msg) = rx_main.recv() => handle_msg(msg, &mut clients_ids),
+            Some(msg) = rx_main.recv() => handle_msg(msg, &mut clients_ids, &socket).await.unwrap(),
         }
-        println!("INSIDE WAITING RECV FROM: {:?}", socket.local_addr());
-        let (len, from) = match socket.recv_from(&mut buf).await {
+        let (len, from) = match socket.try_recv_from(&mut buf) {
             Ok(v) => v,
 
             Err(e) => {
@@ -297,7 +293,7 @@ async fn main() {
             },
         };
 
-        println!("Receive a packet from the global socket!");
+        debug!("Receive a packet from the global socket!");
 
         let pkt_buf = &mut buf[..len];
 
@@ -414,9 +410,6 @@ async fn main() {
 
             let client_id = next_client_id;
 
-            let udp_socket = new_udp_socket_reuseport(args.src_addr).unwrap();
-            udp_socket.connect(from).await.unwrap();
-
             // Create a new channel to communicate with the client.
             let (tx, rx) = mpsc::channel(10);
             clients_tx.push(tx.clone());
@@ -425,16 +418,13 @@ async fn main() {
                 conn,
                 client_id,
                 listen_fc_channel: false,
-                udp_socket,
                 rng: rng.clone(),
                 mc_announce_data: mc_announce_data.clone(),
                 mc_master_secret: mc_master_secret.clone(),
                 mc_key_algo: mc_key_algo.iter().map(|key| *key).collect::<Vec<_>>(),
                 rx_ctl: rx,
                 tx_tcl: tx_fc_ctl.clone(),
-                buffer: vec![0u8; 1500],
                 tx_main: tx_main.clone(),
-                mp_socket: None,
             };
 
             // Notify the controller with a new client.
@@ -467,7 +457,13 @@ async fn main() {
             // This is an existing receiver that sends a QUIC packet from a new address.
             // We notify the receiver that it must handle this packet and all new packets from this address.
             let client_id = clients_ids.get(&hdr.dcid).unwrap();
-            let msg = MsgRecv::NewAddr((pkt_buf.to_vec(), from));
+            let recv_info = quiche::RecvInfo {
+                from,
+                to: socket.local_addr().unwrap(),
+                from_mc: false,
+            };
+            let msg = MsgRecv::NewPkt((pkt_buf.to_vec(), recv_info));
+            debug!("Send message to {:?} because recv_info={:?}", client_id, recv_info);
             clients_tx[*client_id as usize].send(msg).await.unwrap();
             continue;
         };
@@ -477,8 +473,6 @@ async fn main() {
             from,
             from_mc: false,
         };
-
-        println!("From general send to QUIC: {:?} and local_addr sent to quiche={:?}", recv_info, local_addr);
 
         // First recv is handled by the main thread. Subsequent recv are handled
         // by the tokio task.
