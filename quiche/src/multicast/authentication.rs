@@ -6,8 +6,6 @@ use crate::Connection;
 use crate::Error;
 use crate::Result;
 
-use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::str::FromStr;
 
@@ -73,19 +71,6 @@ impl FromStr for McAuthType {
             _ => Err(Error::Multicast(McError::McInvalidAuth)),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Structure containing symetric signatures for each of the multicast clients
-/// for a given packet number.
-pub struct McSymSignature {
-    /// Client ID given by the multicast source to the client.
-    /// The client uses this value instead of the Connection ID because it is
-    /// encoded in less bytes.
-    pub mc_client_id: u64,
-
-    /// AEAD tag using information from the unicast session.
-    pub sign: Vec<u8>,
 }
 
 /// Multicast authentication.
@@ -190,19 +175,6 @@ impl McAuthentication for Connection {
             Err(Error::Multicast(McError::McDisabled))
         }
     }
-}
-
-#[derive(Debug)]
-/// Multicast symmetric signatures.
-/// For the multicast source, it is a Vec of signatures for each packet and each
-/// client. For the clients, it is a Vec of signatures for each packet only.
-pub enum McSymSign {
-    /// The client must only remember which packet number corresponds to a given
-    /// tag.
-    Client(HashMap<u64, Vec<u8>>),
-
-    /// The multicast source must remember the tag for each of its clients.
-    McSource(VecDeque<(u64, Vec<McSymSignature>)>),
 }
 
 #[cfg(test)]

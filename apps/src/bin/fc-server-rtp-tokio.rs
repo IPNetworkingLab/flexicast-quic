@@ -10,6 +10,7 @@ use std::path::Path;
 use std::u64;
 
 use quiche_apps::mc_app::asynchronous::controller::handle_msg;
+use quiche_apps::mc_app::asynchronous::controller::MsgFcCtl;
 use quiche_apps::mc_app::asynchronous::controller::MsgRecv;
 use quiche_apps::mc_app::asynchronous::fc::FcChannelInfo;
 use tokio::sync::mpsc;
@@ -428,6 +429,8 @@ async fn main() {
             };
 
             // Notify the controller with a new client.
+            let msg = MsgFcCtl::NewClient((next_client_id, tx.clone()));
+            tx_fc_ctl.send(msg).await.unwrap();
 
             next_client_id += 1;
             clients_ids.insert(scid.clone(), client_id);

@@ -58,7 +58,7 @@ pub trait MulticastRecovery {
 
 impl crate::recovery::Recovery {
     pub fn dump_sent(&self, s: &str) {
-        debug!(
+        trace!(
             "{}: {:?}",
             s,
             self.sent[Epoch::Application]
@@ -175,11 +175,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let mut lost_pn = RangeSet::default();
         let reco_ss = uc.rmc_get_rec_ss()?.to_owned();
-        debug!(
-            "Start deleguate stream for client {:?}. recv_pn={:?}",
-            uc.multicast.as_ref().map(|m| m.get_self_client_id()),
-            recv_pn
-        );
 
         let mut nb_lost_mc_stream_frames = 0;
         let lost_iter = self.sent[Epoch::Application]
@@ -326,29 +321,29 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         }
 
                         protected_stream_id = Some(*stream_id);
-                        if let Some(_client_id) = uc
-                            .multicast
-                            .as_ref()
-                            .and_then(|m| m.get_self_client_id().ok())
-                        {
-                            qlog_with_type!(QLOG_DATA_MV, uc.qlog, q, {
-                                let ev_data_client = EventData::McRetransmit(
-                                    qlog::events::quic::McRetransmit {
-                                        stream_id: *stream_id,
-                                        offset: *offset,
-                                        len: *length,
-                                        fin: *fin,
-                                        client_id: _client_id,
-                                    },
-                                );
+                        // if let Some(_client_id) = uc
+                        //     .multicast
+                        //     .as_ref()
+                        //     .and_then(|m| m.get_self_client_id().ok())
+                        // {
+                        //     qlog_with_type!(QLOG_DATA_MV, uc.qlog, q, {
+                        //         let ev_data_client = EventData::McRetransmit(
+                        //             qlog::events::quic::McRetransmit {
+                        //                 stream_id: *stream_id,
+                        //                 offset: *offset,
+                        //                 len: *length,
+                        //                 fin: *fin,
+                        //                 client_id: _client_id,
+                        //             },
+                        //         );
 
-                                q.add_event_data_with_instant(
-                                    ev_data_client,
-                                    now,
-                                )
-                                .ok();
-                            });
-                        }
+                        //         q.add_event_data_with_instant(
+                        //             ev_data_client,
+                        //             now,
+                        //         )
+                        //         .ok();
+                        //     });
+                        // }
 
                         // Notify the unicast instance that this piece of stream
                         // has been deleguated by the flexicast source.

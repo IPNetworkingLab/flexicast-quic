@@ -8,6 +8,7 @@ use quiche::multicast::MulticastChannelSource;
 use quiche::multicast::MulticastConnection;
 use tokio::net::UdpSocket;
 
+use crate::mc_app::asynchronous::controller::optional_timeout;
 use crate::mc_app::asynchronous::controller::MsgFcCtl;
 use crate::mc_app::rtp::RtpServer;
 use std::cmp;
@@ -56,8 +57,7 @@ impl FcChannelAsync {
             let timeout = self
                 .fc_chan
                 .channel
-                .mc_timeout(now)
-                .unwrap_or(time::Duration::from_secs(10));
+                .mc_timeout(now);
 
             let sock_rtp = self
                 .rtp_server
@@ -66,7 +66,7 @@ impl FcChannelAsync {
 
             tokio::select! {
                 // Timeout sleep.
-                _ = tokio::time::sleep(timeout) => {
+                Some(_) = optional_timeout(timeout) => {
                     debug!("Flexicast source timeout");
 
                     let now = time::Instant::now();
@@ -179,7 +179,7 @@ impl FcChannelAsync {
 
                     match self
                         .socket
-                        .send_to(&buf[off..off + pkt_len], &send_info.to)
+                        .send_to(&buf[off..off + pkt_len], self.fc_chan.mc_send_addr)
                         .await
                     {
                         Ok(v) => written += v,
@@ -196,7 +196,7 @@ impl FcChannelAsync {
                     left -= pkt_len;
                 }
 
-                debug!("Flexicast written {:?} bytes", written);
+                debug!("Flexicast written {:?} bytes to {:?}", written, send_info);
             }
 
             // Notify the controller of the sent packets.

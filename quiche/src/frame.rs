@@ -244,7 +244,6 @@ pub enum Frame {
         key: Vec<u8>,
         algo: Algorithm,
         first_pn: u64,
-        client_id: u64,
         stream_states: Vec<FcStreamState>,
     },
 
@@ -472,7 +471,6 @@ impl Frame {
                 let algo =
                     b.get_u8()?.try_into().map_err(|_| Error::CryptoFail)?;
                 let first_pn = b.get_varint()?;
-                let client_id = b.get_varint()?;
                 let nb_stream_states = b.get_varint()?;
                 let stream_states = (0..nb_stream_states)
                     .map(|_| FcStreamState::from_bytes(b))
@@ -482,7 +480,6 @@ impl Frame {
                     key,
                     algo,
                     first_pn,
-                    client_id,
                     stream_states,
                 }
             },
@@ -863,7 +860,6 @@ impl Frame {
                 key,
                 algo,
                 first_pn,
-                client_id,
                 stream_states,
             } => {
                 debug!("Going to encode the MC_KEY frame");
@@ -874,7 +870,6 @@ impl Frame {
                 b.put_bytes(key)?;
                 b.put_u8(algo.to_owned().try_into().unwrap())?;
                 b.put_varint(*first_pn)?;
-                b.put_varint(*client_id)?;
                 b.put_varint(stream_states.len() as u64)?;
                 stream_states
                     .iter()
@@ -1223,12 +1218,10 @@ impl Frame {
                 key,
                 algo: _,
                 first_pn,
-                client_id,
                 stream_states,
             } => {
                 let key_len_size = octets::varint_len(key.len() as u64);
                 let first_pn_size = octets::varint_len(*first_pn);
-                let client_id_size = octets::varint_len(*client_id);
                 let frame_type_size = octets::varint_len(MC_KEY_CODE);
                 let nb_stream_state_size = octets::varint_len(stream_states.len() as u64);
                 frame_type_size + // frame type
@@ -1238,7 +1231,6 @@ impl Frame {
                 key.len() +
                 1 + // algo len
                 first_pn_size +
-                client_id_size + 
                 nb_stream_state_size +
                 stream_states.iter().map(|s| s.len()).sum::<usize>()
             },
@@ -1852,13 +1844,12 @@ impl std::fmt::Debug for Frame {
                 key,
                 algo,
                 first_pn,
-                client_id,
                 stream_states,
             } => {
                 write!(
                     f,
-                    "MC_KEY channel ID={:?} key={:?} algo={:?} first pn={:?} client id={:?} stream_states={:?}",
-                    channel_id, key, algo, first_pn, client_id, stream_states,
+                    "MC_KEY channel ID={:?} key={:?} algo={:?} first pn={:?} stream_states={:?}",
+                    channel_id, key, algo, first_pn, stream_states,
                 )?;
             },
 
@@ -3632,7 +3623,6 @@ mod tests {
             key: vec![1; 32],
             algo: Algorithm::AES128_GCM,
             first_pn: 0xffffff,
-            client_id: 0xabcd,
             stream_states,
         };
 

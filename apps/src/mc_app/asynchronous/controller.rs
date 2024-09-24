@@ -188,6 +188,7 @@ impl FcController {
 
             MsgFcCtl::NewClient((_id, tx)) => {
                 // Push new client.
+                debug!("New receiver connected to the source");
                 self.nb_clients =
                     Some(self.nb_clients.unwrap_or(0).saturating_add(1));
                 self.tx_clients.push(tx);
@@ -372,3 +373,13 @@ pub async fn handle_msg(msg: MsgMain, clients_ids: &mut ClientIdMap, socket: &Ud
 
     Ok(())
 }
+
+pub async fn optional_timeout(timeout: Option<std::time::Duration>) -> Option<()> {
+        match timeout {
+            Some(t) => {
+                tokio::time::sleep(t).await;
+                Some(())
+            },
+            None => None,
+        }
+    }

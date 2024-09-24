@@ -2713,7 +2713,6 @@ impl Connection {
                 .crypto_0rtt_open
                 .as_ref()
         } else if info.from_mc {
-            println!("HELLO FROM MC");
             // The multicast channel uses the shared key.
             // All multicast paths use the same shared key for encryption.
             if let Some(multicast) = self.multicast.as_ref() {
@@ -4931,7 +4930,6 @@ impl Connection {
                         key: multicast.get_decryption_key_secret()?.to_vec(),
                         algo: multicast.get_decryption_key_algo(),
                         first_pn,
-                        client_id: multicast.get_self_client_id()?,
                         stream_states: if multicast.fc_use_stream_rotation() {
                             multicast.fc_drain_svr_stream_states()?
                         } else {
@@ -5655,9 +5653,9 @@ impl Connection {
                     Some(source_symbol_metadata);
             }
         }
-        trace!("{} tx on space_id={} pn={}", self.trace_id, space_id, pn);
+        println!("{} tx on space_id={} pn={}", self.trace_id, space_id, pn);
         for frame in &mut frames {
-            trace!("{} tx frm {:?}", self.trace_id, frame);
+            println!("{} tx frm {:?}", self.trace_id, frame);
 
             qlog_with_type!(QLOG_PACKET_TX, self.qlog, _q, {
                 qlog_frames.push(frame.to_qlog());
@@ -6684,6 +6682,13 @@ impl Connection {
         Ok(())
     }
 
+    /// Schedule an ack-eliciting packet on the specified path with ID.
+    ///
+    /// See [`send_ack_eliciting()`] for more detail. [`InvalidState`] is
+    /// returned if there is no record of the path.
+    ///
+    /// [`send_ack_eliciting()`]: struct.Connection.html#method.send_ack_eliciting
+    /// [`InvalidState`]: enum.Error.html#variant.InvalidState
     pub fn send_ack_eliciting_on_path_with_id(
         &mut self, path_id: usize,
     ) -> Result<()> {
@@ -9278,7 +9283,6 @@ impl Connection {
                 key,
                 algo,
                 first_pn,
-                client_id,
                 stream_states,
             } => {
                 if self.is_server {
@@ -9291,7 +9295,6 @@ impl Connection {
                     ));
                 } else if let Some(multicast) = self.multicast.as_mut() {
                     multicast.set_decryption_key_secret(key, algo)?;
-                    multicast.set_client_id(client_id)?;
 
                     multicast.update_client_state(
                         multicast::McClientAction::DecryptionKey,

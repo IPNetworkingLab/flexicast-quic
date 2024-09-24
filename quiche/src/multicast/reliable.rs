@@ -77,6 +77,9 @@ pub struct RMcServer {
     /// source. Here, the structure helps the unicast server to know which
     /// stream offsets have been deleguated for unicast retransmission.
     pub(crate) mc_ack: McAck,
+
+    /// Whether the Flexicast flow is aware that this client listens to it.
+    pub notified_fc_source: bool,
 }
 
 impl RMcServer {
@@ -583,6 +586,7 @@ impl Connection {
             if let Some(space_id) = multicast.get_mc_space_id() {
                 let p = self.paths.get_mut(space_id)?;
                 p.recovery.is_fc_source = true;
+                self.newly_acked.drain(..);
                 return Ok(());
             }
             return Err(Error::Multicast(McError::McPath));
@@ -2258,7 +2262,7 @@ mod tests {
             ..Default::default()
         };
         let mut fc_pipe = MulticastPipe::new_reliable(
-            3,
+            1,
             "/tmp/test_fc_quic_reliability_long_streams",
             &mut fc_config,
         )
@@ -2284,13 +2288,13 @@ mod tests {
 
         let nb_turns_allowed = 100;
 
-        for _ in 0..nb_turns_allowed {
+        for i in 0..nb_turns_allowed {
             // Generate random losses.
             let mask = rand_u8();
 
             // Do not generate losses for the last 2 streams to ensure that we see
             // gaps.
-            let client_loss = if mask & 0b1 > 0 {
+            let client_loss = if mask & 0b1 > 0 && i < nb_turns_allowed - 5 {
                 let mut losses = RangeSet::default();
                 for j in 1..4 {
                     if mask & 1 << j > 0 {

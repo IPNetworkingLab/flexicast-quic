@@ -349,9 +349,6 @@ pub struct MulticastAttributes {
     /// synchronisation step is not performed yet.
     mc_client_left_need_sync: bool,
 
-    /// Multicast clients Ids.
-    mc_client_id: Option<McClientId>,
-
     /// Multicast authentication type.
     /// Currently this disables the possibility to have a chain of
     /// verifications, as we overwrite this value for each McPathType::Data
@@ -642,8 +639,7 @@ impl MulticastAttributes {
                 McClientStatus::JoinedAndKey |
                 McClientStatus::ListenMcPath(_) |
                 McClientStatus::Changing => true,
-                McClientStatus::JoinedNoKey if self.mc_client_id.is_some() =>
-                    true,
+                McClientStatus::JoinedNoKey => true,
                 _ => false,
             }
         } else {
@@ -781,27 +777,6 @@ impl MulticastAttributes {
         Ok(())
     }
 
-    /// Sets the client ID for the client and the unicast server (i.e., the id
-    /// of their client).
-    pub fn set_client_id(&mut self, client_id: u64) -> Result<()> {
-        if !matches!(self.mc_role, McRole::Client(_) | McRole::ServerUnicast(_)) {
-            return Err(Error::Multicast(McError::McInvalidRole(self.mc_role)));
-        }
-        self.mc_client_id = Some(McClientId::Client(client_id));
-
-        Ok(())
-    }
-
-    /// Gets the client ID.
-    pub fn get_self_client_id(&self) -> Result<u64> {
-        match self.mc_client_id {
-            Some(McClientId::Client(v)) => Ok(v),
-            Some(McClientId::MulticastServer(_)) =>
-                Err(Error::Multicast(McError::McInvalidRole(self.mc_role))),
-            None => Err(Error::Multicast(McError::McInvalidClientId)),
-        }
-    }
-
     /// Sets the [`MulticastAttributes::mc_space_id`] or
     /// [`MulticastAttributes::mc_space_id_auth`] depending on the given local
     /// address from the quiche library.
@@ -862,7 +837,6 @@ impl Default for MulticastAttributes {
             mc_last_expired: None,
             mc_last_time: None,
             mc_client_left_need_sync: false,
-            mc_client_id: None,
             mc_auth_type: McAuthType::None,
             mc_state_in_flight: false,
             mc_recv_stream: VecDeque::new(),
@@ -1475,16 +1449,8 @@ impl MulticastConnection for Connection {
     }
 
     fn mc_timeout(&self, now: time::Instant) -> Option<time::Duration> {
-        // MC-TODO: maybe the timeout should be using timers of all paths?
-
-        let expiration_timer = self
-            .multicast
-            .as_ref()?
-            .get_mc_announce_data(0)?
-            .expiration_timer;
-
-        // MC-TODO: should use mc_role instead of server.
         let multicast = self.multicast.as_ref()?;
+
         if matches!(
             multicast.mc_role,
             McRole::Client(McClientStatus::AwareUnjoined) |
@@ -1492,18 +1458,26 @@ impl MulticastConnection for Connection {
         ) {
             return None;
         }
+
         let timeout = if self.is_server {
-            multicast.mc_last_time? +
-                time::Duration::from_millis(expiration_timer)
+            let path = self.paths.get(1).ok()?;
+            path.recovery.loss_detection_timer()
         } else {
-            multicast.mc_last_time? +
-                time::Duration::from_millis(expiration_timer * 3)
+            let fc_idx = fc_chan_idx!(multicast).ok()?;
+            let expiration_timer =
+                multicast.get_mc_announce_data(fc_idx)?.expiration_timer;
+            Some(
+                multicast.mc_last_time? +
+                    time::Duration::from_millis(expiration_timer * 3),
+            )
         };
-        if timeout <= now {
-            Some(time::Duration::ZERO)
-        } else {
-            Some(timeout.duration_since(now))
-        }
+        timeout.map(|t| {
+            if t <= now {
+                time::Duration::ZERO
+            } else {
+                t.duration_since(now)
+            }
+        })
     }
 
     fn on_mc_timeout(&mut self, now: time::Instant) -> Result<ExpiredPkt> {
@@ -1548,7 +1522,6 @@ impl MulticastConnection for Connection {
                                 //     mc_ack.remove_up_to(e);
                                 // }
                             }
-
                             self.send_ack_eliciting_on_path_with_id(space_id)?;
 
                             Ok(exp_pkt)
@@ -1758,54 +1731,19 @@ impl MulticastConnection for Connection {
             // Unicast connection asks the multicast channel for a new client ID.
             // MC-TODO: now we assign a new client ID even before the client joins
             // the multicast channel.
-            if matches!(
-                multicast.mc_role,
-                McRole::ServerUnicast(McClientStatus::JoinedNoKey)
-            ) && multicast.mc_client_id.is_none()
-            {
-                let client_id = if let Some(McClientId::MulticastServer(map)) =
-                    mc_channel.multicast.as_mut().unwrap().mc_client_id.as_mut()
-                {
-                    map.new_client(self.source_id().as_ref())?
-                } else {
-                    return Err(Error::Multicast(McError::McInvalidClientId));
-                };
-
-                let multicast = self.multicast.as_mut().unwrap();
-
-                multicast.mc_client_id = Some(McClientId::Client(client_id));
-                let max_pn = mc_channel
-                    .multicast
-                    .as_ref()
-                    .unwrap()
-                    .mc_last_expired
-                    .and_then(|exp| exp.pn)
-                    .unwrap_or(0);
-                mc_channel
-                    .get_mc_ack_mut()
-                    .map(|mc_ack| mc_ack.new_recv(max_pn));
-            }
-
-            // Unicast connection asks the multicast channel to remove its client
-            // ID. This is done because the client left the multicast
-            // channel.
-            let multicast = self.multicast.as_ref().unwrap();
-            if matches!(
-                multicast.mc_role,
-                McRole::ServerUnicast(McClientStatus::AwareUnjoined)
-            ) && multicast.mc_client_id.is_some()
-            {
-                if let Some(McClientId::MulticastServer(map)) =
-                    mc_channel.multicast.as_mut().unwrap().mc_client_id.as_mut()
-                {
-                    map.remove_from_cid(self.source_id().as_ref())
-                        .ok_or(Error::Multicast(McError::McInvalidClientId))?;
-
-                    // Remove the client ID from the server.
-                    // MC-TODO: this currently disables the possibility of a
-                    // client re-joinging the channel.
-                    let multicast = self.multicast.as_mut().unwrap();
-                    multicast.mc_client_id = None;
+            if let Some(rmc) = multicast.rmc_get_mut().server_mut() {
+                if !rmc.notified_fc_source {
+                    let max_pn = mc_channel
+                        .multicast
+                        .as_ref()
+                        .unwrap()
+                        .mc_last_expired
+                        .and_then(|exp| exp.pn)
+                        .unwrap_or(0);
+                    mc_channel
+                        .get_mc_ack_mut()
+                        .map(|mc_ack| mc_ack.new_recv(max_pn));
+                    rmc.notified_fc_source = true;
                 }
             }
 
@@ -2074,11 +2012,6 @@ impl Connection {
                         if uc_path.recovery.cwnd_available() == usize::MAX {
                             return None;
                         }
-                        debug!(
-                            "Client {:?} has a cwnd of {:?}",
-                            multicast.get_self_client_id(),
-                            uc_path.recovery.cwnd()
-                        );
                         return Some(uc_path.recovery.cwnd());
                         // return Some(uc_path.recovery.cwnd_available());
                     }
@@ -2280,9 +2213,6 @@ impl MulticastChannelSource {
         conn_server.multicast = Some(MulticastAttributes {
             mc_private_key: signature_eddsa,
             mc_role: McRole::ServerMulticast,
-            mc_client_id: Some(McClientId::MulticastServer(
-                McClientIdSource::default(),
-            )),
             mc_auth_type: fc_config.authentication,
             mc_last_time: Some(time::Instant::now()),
             mc_sent_repairs: Some(ranges::RangeSet::default()),
@@ -3403,11 +3333,6 @@ mod tests {
         multicast.mc_announce_data[fc_config.mc_announce_to_join]
             .fc_channel_secret = Some(mc_channel_key.clone());
 
-        assert!(!pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
-        assert_eq!(
-            pipe.server.multicast.as_mut().unwrap().set_client_id(0),
-            Ok(())
-        );
         assert!(pipe.server.multicast.as_ref().unwrap().should_send_mc_key());
         assert_eq!(pipe.advance(), Ok(()));
 
@@ -5122,96 +5047,6 @@ mod tests {
     }
 
     #[test]
-    /// Tests the client ID given by the multicast source.
-    fn test_mc_client_id() {
-        let mut fc_config = FcConfig {
-            authentication: McAuthType::AsymSign,
-            use_fec: true,
-            probe_mc_path: false,
-            ..Default::default()
-        };
-        let nb_clients = 5;
-        let mut mc_pipe = MulticastPipe::new(
-            nb_clients,
-            "/tmp/test_mc_client_id.txt",
-            &mut fc_config,
-        )
-        .unwrap();
-
-        let client_id_map = mc_pipe
-            .mc_channel
-            .channel
-            .multicast
-            .as_ref()
-            .unwrap()
-            .mc_client_id
-            .as_ref();
-        let client_id_map = match client_id_map {
-            Some(McClientId::MulticastServer(v)) => v,
-            _ => return assert!(false),
-        };
-        assert_eq!(client_id_map.max_client_id, 5);
-
-        for (i, pipe) in mc_pipe.unicast_pipes.iter().enumerate() {
-            let client_id = pipe
-                .0
-                .client
-                .multicast
-                .as_ref()
-                .unwrap()
-                .get_self_client_id();
-            assert_eq!(client_id, Ok(i as u64));
-
-            let client_id = pipe
-                .0
-                .server
-                .multicast
-                .as_ref()
-                .unwrap()
-                .get_self_client_id();
-            assert_eq!(client_id, Ok(i as u64));
-
-            let cid = client_id_map.get_client_cid(i as u64);
-            assert_eq!(cid, Some(pipe.0.server.source_id().as_ref()));
-            assert_eq!(
-                client_id_map.get_client_id(cid.unwrap()),
-                Some(client_id.unwrap())
-            );
-        }
-
-        // A client leave the multicast channel. The multicast source removes
-        // the associated client ID.
-        assert_eq!(
-            mc_pipe.unicast_pipes[2].0.client.mc_leave_channel(),
-            Ok(McClientStatus::Leaving(false))
-        );
-        assert_eq!(mc_pipe.unicast_pipes[2].0.advance(), Ok(()));
-        assert_eq!(
-            mc_pipe.server_control_to_mc_source(time::Instant::now()),
-            Ok(())
-        );
-        if let Some(McClientId::MulticastServer(map)) = mc_pipe
-            .mc_channel
-            .channel
-            .multicast
-            .as_ref()
-            .unwrap()
-            .mc_client_id
-            .as_ref()
-        {
-            assert_eq!(map.cid_to_id.len(), nb_clients - 1);
-            assert_eq!(map.id_to_cid.len(), nb_clients - 1);
-            let mut ids: Vec<_> = map.id_to_cid.keys().map(|&i| i).collect();
-            ids.sort();
-            assert_eq!(ids, vec![0, 1, 3, 4]);
-
-            let mut ids: Vec<_> = map.cid_to_id.values().map(|&i| i).collect();
-            ids.sort();
-            assert_eq!(ids, vec![0, 1, 3, 4]);
-        }
-    }
-
-    #[test]
     fn test_mc_authentication_methods() {
         let mut fc_config = FcConfig {
             authentication: McAuthType::AsymSign,
@@ -5760,15 +5595,45 @@ mod tests {
         let res = mc_pipe.mc_channel.channel.on_mc_timeout(expired_timer);
         assert_eq!(res, Ok((Some(7), Some(5)).into()));
     }
+
+    #[test]
+    /// Tests that the flexicast source can timeout alone multiple times.
+    fn test_fc_source_timeout() {
+        let mut fc_config = FcConfig {
+            authentication: McAuthType::StreamAsym,
+            use_fec: true,
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_pipe = MulticastPipe::new(
+            1,
+            "/tmp/test_fc_source_timeout.txt",
+            &mut fc_config,
+        )
+        .unwrap();
+
+        let expiration_timer = fc_pipe.mc_announce_data.expiration_timer;
+        let expiration_timer = time::Duration::from_millis(expiration_timer);
+
+        // First send some data to be sure that we trigger the timeout.
+        fc_pipe.source_send_single_stream(true, None, 3).unwrap();
+
+        for _ in 0..500 {
+            std::thread::sleep(expiration_timer);
+            let now = time::Instant::now();
+            assert!(fc_pipe.mc_channel.channel.on_mc_timeout(now).is_ok());
+            _ = fc_pipe.source_send_single(None);
+        }
+    }
 }
 
 pub mod authentication;
 use authentication::McAuthType;
 pub mod ack;
+pub mod control;
 pub mod multi_channel;
 pub mod reliable;
 pub mod rotate;
-pub mod control;
 
 use self::authentication::McAuthentication;
 use self::reliable::RMcClient;

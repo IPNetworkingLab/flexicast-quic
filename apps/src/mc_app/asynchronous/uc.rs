@@ -1,5 +1,7 @@
 //! Module for the asynchronous communication with the unicast server instances.
 
+use crate::mc_app::asynchronous::controller::optional_timeout;
+
 use super::controller;
 use super::controller::MsgFcCtl;
 use super::controller::MsgMain;
@@ -7,7 +9,6 @@ use super::controller::MsgRecv;
 use super::Result;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::MulticastConnection;
-use tokio::net::UdpSocket;
 
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
@@ -51,13 +52,12 @@ impl Client {
 
         let mut buf = [0u8; 1500];
         loop {
-            let timeout =
-                self.conn.timeout().unwrap_or(time::Duration::from_secs(10));
+            let timeout = self.conn.timeout();
 
             if !first_read {
                 tokio::select! {
                     // Timeout sleep.
-                    _ = tokio::time::sleep(timeout) => self.conn.on_timeout(),
+                    Some(_) = optional_timeout(timeout) => self.conn.on_timeout(),
 
                     // Data on the control channel.
                     Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
@@ -104,7 +104,10 @@ impl Client {
 
                 // Send the packet to the main thread to send it on the wire.
                 let msg = MsgMain::SendPkt((buf[..write].to_vec(), send_info));
-                debug!("Send packet to main thread with send_info={:?}", send_info);
+                debug!(
+                    "Send packet to main thread with send_info={:?}",
+                    send_info
+                );
                 self.tx_main.send(msg).await?;
             }
 
@@ -184,7 +187,9 @@ impl Client {
         Ok(())
     }
 
-    async fn recv(&mut self, pkt_buf: &mut [u8], recv_info: quiche::RecvInfo) -> Result<()> {
+    async fn recv(
+        &mut self, pkt_buf: &mut [u8], recv_info: quiche::RecvInfo,
+    ) -> Result<()> {
         debug!(
             "Receive a packet from the client socket! recv_info={:?}",
             recv_info
@@ -328,12 +333,4 @@ impl Client {
             }
         }
     }
-
-    // async fn on_mp_socket_readable(socket: Option<&UdpSocket>) -> Option<()> {
-    //     if let Some(s) = socket {
-    //         s.readable().await.ok()
-    //     } else {
-    //         None
-    //     }
-    // }
 }
