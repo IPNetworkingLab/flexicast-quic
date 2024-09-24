@@ -34,7 +34,7 @@ impl Connection {
     /// had been delegated on the unicast path and have been acknowledged by the
     /// client. Returns an error if invalid role.
     ///
-    /// Needs mutagle"
+    /// Needs mutable.
     pub fn get_new_ack_pn_streams(
         &mut self,
     ) -> Result<(Option<RangeSet>, Option<McStreamOff>)> {
@@ -70,7 +70,8 @@ impl Connection {
     /// since the last time this function was called and that are still in the
     /// sent queue of the flexicast source. Returns an error if this
     /// function is called with the wrong role.
-    pub fn fc_get_sent_pkt(&mut self) -> Result<Vec<Sent>> {
+    /// Also resets the RTT to the expiration timer.
+    pub fn fc_get_sent_pkt(&mut self, from: Option<u64>) -> Result<Vec<Sent>> {
         if self.multicast.is_none() {
             return Err(Error::Multicast(McError::McDisabled));
         }
@@ -85,9 +86,12 @@ impl Connection {
         let space_id = multicast
             .mc_space_id
             .ok_or(Error::Multicast(McError::McPath))?;
-        let max_pn = multicast.cur_max_pn;
+        let max_pn = match from {
+            Some(v) => v,
+            None => multicast.cur_max_pn,
+        };
 
-        let path = self.paths.get(space_id);
+        let path = self.paths.get_mut(space_id);
         if let Ok(path) = path {
             let (new_max_pn, sent) = path.recovery.fc_get_sent_pkt(
                 space_id as u32,
@@ -98,6 +102,15 @@ impl Connection {
             if sent.is_empty() {
                 return Err(Error::Done);
             }
+
+            // Reset the RTT.
+            path.recovery.mc_set_rtt(time::Duration::from_millis(
+                multicast
+                    .get_mc_announce_data(0)
+                    .ok_or(Error::Multicast(McError::McAnnounce))?
+                    .expiration_timer,
+            ));
+
             Ok(sent)
         } else {
             Err(Error::Multicast(McError::McPath))
@@ -114,11 +127,18 @@ impl Connection {
             return Err(Error::Multicast(McError::McDisabled));
         }
 
-        let multicast = self.multicast.as_ref().unwrap();
+        let multicast = self.multicast.as_mut().unwrap();
         if !matches!(multicast.get_mc_role(), McRole::ServerUnicast(_)) {
             return Err(Error::Multicast(McError::McInvalidRole(
                 multicast.get_mc_role(),
             )));
+        }
+
+        let cur_max_pn = multicast.cur_max_pn;
+
+        // Update new max packet number.
+        if let Some(sent) = sent.last() {
+            multicast.cur_max_pn = sent.pkt_num.pn() + 1;
         }
 
         // Maybe during channel change we receive "old" sent packets. Avoid
@@ -137,7 +157,7 @@ impl Connection {
         let path = self.paths.get_mut(space_id)?;
         let now = time::Instant::now();
 
-        for pkt in sent.drain(..) {
+        for pkt in sent.drain(..).filter(|s| s.pkt_num.pn() >= cur_max_pn) {
             path.recovery.on_packet_sent(
                 pkt,
                 Epoch::Application,

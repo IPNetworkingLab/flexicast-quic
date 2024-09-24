@@ -1700,11 +1700,8 @@ impl MulticastConnection for Connection {
 
             // Unicast connection asks for the oldest valid packet number of the
             // multicast path.
-            if let Some(exp_pkt) =
-                mc_channel.multicast.as_ref().unwrap().mc_last_expired
-            {
-                multicast.mc_last_expired = Some(exp_pkt);
-            }
+            self.fc_set_last_expired(mc_channel.multicast.as_ref().unwrap().mc_last_expired);
+            let multicast = self.multicast.as_mut().unwrap();
 
             // Flexicast stream rotation.
             // Unicast server asks for the stream state of the flexicast source.
@@ -1808,7 +1805,7 @@ impl MulticastConnection for Connection {
         // Multicast source notifies the unicast server with the packets sent on
         // the multicast channel. This is used for the unicast server to compute
         // the congestion window.
-        mc_channel.mc_notify_sent_packets(self);
+        let _ = mc_channel.mc_notify_sent_packets(self);
 
         // FC-TODO: useful?
         if let Some(multicast) = self.multicast.as_ref() {
@@ -1956,44 +1953,16 @@ impl MulticastConnection for Connection {
 
 impl Connection {
     /// The multicast source notifies the unicast server of the packets sent.
-    fn mc_notify_sent_packets(&mut self, uc: &mut Connection) {
-        if let Some(multicast) = self.multicast.as_ref() {
-            // This just delays the problem.
-            if let Some(mc_uc) = uc.get_multicast_attributes() {
-                if !matches!(
-                    mc_uc.get_mc_role(),
-                    McRole::ServerUnicast(McClientStatus::ListenMcPath(true))
-                ) {
-                    return;
-                }
-            } else {
-                return;
-            }
-            if let Some(mc_space_id) = multicast.get_mc_space_id() {
-                let mc_path = self.paths.get(mc_space_id);
-                let uc_trace_id = uc.trace_id().to_string();
-                let cur_max_pn = if let Some(mc) = uc.multicast.as_ref() {
-                    mc.cur_max_pn
-                } else {
-                    return;
-                };
-                let uc_path = uc.paths.get_mut(mc_space_id);
-                if let (Ok(mc_path), Ok(uc_path)) = (mc_path, uc_path) {
-                    let new_max_pn = mc_path.recovery.copy_sent(
-                        &mut uc_path.recovery,
-                        mc_space_id as u32,
-                        Epoch::Application,
-                        self.handshake_status(),
-                        &uc_trace_id,
-                        cur_max_pn,
-                    );
-                    let uc_mc = uc.multicast.as_mut().unwrap();
-                    uc_mc.cur_max_pn = new_max_pn;
-                    uc_mc.mc_last_expired =
-                        self.multicast.as_ref().unwrap().mc_last_expired;
-                }
-            }
-        }
+    fn mc_notify_sent_packets(&mut self, uc: &mut Connection) -> Result<()> {
+        let uc_mc = uc
+            .get_multicast_attributes()
+            .ok_or(Error::Multicast(McError::McDisabled))?;
+        let max_pn = uc_mc.cur_max_pn;
+        let fc_id = fc_chan_idx!(uc_mc)?;
+        let sent = self.fc_get_sent_pkt(Some(max_pn))?;
+        uc.fc_on_new_pkt_sent(fc_id as u64, sent)?;
+
+        Ok(())
     }
 
     /// Sets the congestion window of the multicast source based on the
@@ -5468,72 +5437,6 @@ mod tests {
         );
     }
 
-    // The following test is no longer valid with multirate flexicast, as the
-    // client must perform a new path probing phase.
-    // #[test]
-    // /// Tests that the client can leave and join the multicast channel on the
-    // /// fly.
-    // fn test_mc_client_loop_join_leave() {
-    //     let mut fc_config = FcConfig {
-    //         authentication: McAuthType::None,
-    //         use_fec: true,
-    //         probe_mc_path: true,
-    //         ..Default::default()
-    //     };
-    //     let mut mc_pipe = MulticastPipe::new(
-    //         1,
-    //         "/tmp/test_mc_client_loop_join_leave.txt",
-    //         &mut fc_config,
-    //     )
-    //     .unwrap();
-
-    //     let mut client = &mut mc_pipe.unicast_pipes[0].0.client;
-    //     assert_eq!(
-    //         client.multicast.as_ref().unwrap().get_mc_role(),
-    //         McRole::Client(McClientStatus::ListenMcPath(true))
-    //     );
-
-    //     for _ in 0..100 {
-    //         client = &mut mc_pipe.unicast_pipes[0].0.client;
-    //         assert_eq!(
-    //             client.mc_leave_channel(),
-    //             Ok(McClientStatus::Leaving(false))
-    //         );
-
-    //         mc_pipe.unicast_pipes[0].0.advance().unwrap();
-
-    //         let server = &mut mc_pipe.unicast_pipes[0].0.server;
-    //         assert_eq!(
-    //             server.multicast.as_ref().unwrap().mc_role,
-    //             McRole::ServerUnicast(McClientStatus::AwareUnjoined)
-    //         );
-
-    //         client = &mut mc_pipe.unicast_pipes[0].0.client;
-    //         assert_eq!(
-    //             client.multicast.as_ref().unwrap().mc_role,
-    //             McRole::Client(McClientStatus::AwareUnjoined)
-    //         );
-
-    //         assert_eq!(
-    //             client.mc_join_channel(false, None),
-    //             Ok(McClientStatus::WaitingToJoin)
-    //         );
-
-    //         mc_pipe.unicast_pipes[0].0.advance().unwrap();
-
-    //         client = &mut mc_pipe.unicast_pipes[0].0.client;
-    //         assert_eq!(
-    //             client.multicast.as_ref().unwrap().mc_role,
-    //             McRole::Client(McClientStatus::ListenMcPath(true))
-    //         );
-    //         let server = &mut mc_pipe.unicast_pipes[0].0.server;
-    //         assert_eq!(
-    //             server.multicast.as_ref().unwrap().mc_role,
-    //             McRole::ServerUnicast(McClientStatus::ListenMcPath(true))
-    //         );
-    //     }
-    // }
-
     #[test]
     fn test_mc_unordered_streams() {
         let mut fc_config = FcConfig {
@@ -5641,4 +5544,3 @@ use self::reliable::RMcServer;
 use self::reliable::ReliableMc;
 use self::rotate::FcRotate;
 use self::rotate::FcRotateServer;
-use super::recovery::multicast::ReliableMulticastRecovery;

@@ -157,14 +157,6 @@ pub trait ReliableMulticastRecovery {
     fn mark_inflight_as_lost_app_up_to(
         &mut self, now: Instant, trace_id: &str, pn: u64,
     ) -> (usize, usize);
-
-    /// Transfers to the unicast servers the frames sent on the multicast
-    /// channel. This is used to allow each unicast server to compute its
-    /// congestion window using the data sent by the multicast source.
-    fn copy_sent(
-        &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
-        handshake_status: HandshakeStatus, trace_id: &str, cur_max_pn: u64,
-    ) -> u64;
 }
 
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
@@ -504,35 +496,6 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         }
 
         (lost_packets, lost_bytes)
-    }
-
-    fn copy_sent(
-        &self, uc: &mut Recovery, space_id: u32, epoch: Epoch,
-        handshake_status: HandshakeStatus, trace_id: &str, cur_max_pn: u64,
-    ) -> u64 {
-        let new_max_pn = self.sent[Epoch::Application]
-            .back()
-            .map(|s| s.pkt_num.1)
-            .unwrap_or(0);
-        let sent_pkts = self.sent[epoch]
-            .iter()
-            .filter(|s| s.pkt_num.0 == space_id && s.pkt_num.1 >= cur_max_pn);
-        for pkt in sent_pkts {
-            trace!(
-                "{:?}: Add new packet to unicast: {:?}",
-                trace_id,
-                pkt.pkt_num
-            );
-            uc.on_packet_sent(
-                pkt.clone(),
-                epoch,
-                handshake_status,
-                pkt.time_sent,
-                trace_id,
-            );
-        }
-
-        new_max_pn + 1
     }
 }
 

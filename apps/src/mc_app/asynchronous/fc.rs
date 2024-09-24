@@ -231,7 +231,7 @@ impl FcChannelAsync {
     }
 
     async fn sent_pkt_to_controller(&mut self) -> Result<()> {
-        let sent = match self.fc_chan.channel.fc_get_sent_pkt() {
+        let sent = match self.fc_chan.channel.fc_get_sent_pkt(None) {
             Ok(v) => v,
             Err(quiche::Error::Done) => return Ok(()),
             Err(e) => return Err(e.into()),
