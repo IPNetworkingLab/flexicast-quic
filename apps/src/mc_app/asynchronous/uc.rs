@@ -13,7 +13,6 @@ use quiche::multicast::MulticastConnection;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 use std::convert::TryInto;
-use std::time;
 use tokio::sync::mpsc;
 
 pub struct Client {
