@@ -89,7 +89,7 @@ struct Args {
 
     /// Address of the RTP sink.
     #[clap(short = 'r', long = "rtp-addr", value_parser)]
-    rtp_sink_addr: SocketAddr,
+    rtp_sink_addr: Option<SocketAddr>,
 
     /// Whether a system call is performed to kill the GStreamer sink when the
     /// connection is closed.

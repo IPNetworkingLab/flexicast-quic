@@ -32,15 +32,20 @@ pub struct RtpClient {
 
     _output_filename: String,
 
-    udp_sink: UdpSocket,
+    udp_sink: Option<UdpSocket>,
 }
 
 impl RtpClient {
     pub fn new(
-        output_filename: &str, udp_sink_addr: SocketAddr,
+        output_filename: &str, udp_sink_addr: Option<SocketAddr>,
     ) -> io::Result<Self> {
-        let udp_sink = UdpSocket::bind("0.0.0.0:0".parse().unwrap())?;
-        udp_sink.connect(udp_sink_addr)?;
+        let udp_sink = if let Some(addr) = udp_sink_addr {
+            let udp_sink = UdpSocket::bind("0.0.0.0:0".parse().unwrap())?;
+            udp_sink.connect(addr)?;
+            Some(udp_sink)
+        } else {
+            None
+        };
 
         Ok(Self {
             frame_recv: Vec::new(),
@@ -57,8 +62,10 @@ impl RtpClient {
     }
 
     pub fn on_sequential_stream_recv(&mut self, buf: &[u8]) {
-        if let Err(e) = self.udp_sink.send(buf) {
-            error!("RTP Client: error when sending data to UDP sink: {:?}", e);
+        if let Some(socket) = self.udp_sink.as_ref() {
+            if let Err(e) = socket.send(buf) {
+                error!("RTP Client: error when sending data to UDP sink: {:?}", e);
+            }
         }
     }
 }
