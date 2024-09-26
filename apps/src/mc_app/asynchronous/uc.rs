@@ -8,6 +8,8 @@ use super::controller::MsgMain;
 use super::controller::MsgRecv;
 use super::Result;
 use quiche::multicast::McAnnounceData;
+use quiche::multicast::McClientStatus;
+use quiche::multicast::McRole;
 use quiche::multicast::MulticastConnection;
 
 use ring::rand::SecureRandom;
@@ -49,6 +51,9 @@ impl Client {
         // The first read was already performed. Directly go to the write.
         let mut first_read = true;
 
+        // Whether it already notified the controller that it is ready.
+        let mut sent_ready = false;
+
         let mut buf = [0u8; 1500];
         loop {
             let timeout = self.conn.timeout();
@@ -78,6 +83,14 @@ impl Client {
                             *fc_id as u64,
                         )))
                         .await?;
+                }
+            }
+
+            // Informs the controller that it is ready to listen to flexicast content.
+            if let Some(mc) = self.conn.get_multicast_attributes() {
+                if let (false, McRole::Client(McClientStatus::ListenMcPath(true))) = (sent_ready, mc.get_mc_role()) {
+                    let msg = MsgFcCtl::RecvReady(self.client_id);
+                    self.tx_tcl.send(msg).await.unwrap();
                 }
             }
 
