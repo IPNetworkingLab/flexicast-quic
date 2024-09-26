@@ -98,11 +98,15 @@ pub enum MsgFcSource {
 
 /// Messages sent to the main thread.
 pub enum MsgMain {
-    /// A receiver notifies that a new connection ID is mapped to its connection.
+    /// A receiver notifies that a new connection ID is mapped to its
+    /// connection.
     NewCID((u64, Vec<u8>)),
 
     /// A receiver notifies that a new packet must be sent on the wire.
     SendPkt((Vec<u8>, SendInfo)),
+
+    /// The flexicast flow stopped.
+    FcFlowStop(u64),
 }
 
 /// Controller structure using tokio to handle messages between the flexicast
@@ -142,6 +146,9 @@ pub struct FcController {
     /// controller delegates STREAM frames to the receiver. Indexed through
     /// the receiver ID.
     recv_ack: Vec<OpenRangeSet>,
+
+    /// Communication towards the main thread.
+    tx_main: mpsc::Sender<MsgMain>,
 }
 
 impl FcController {
@@ -150,6 +157,7 @@ impl FcController {
         rx_fc_ctl: mpsc::Receiver<MsgFcCtl>,
         mc_announce_data: Vec<McAnnounceData>,
         tx_fc_sources: Vec<mpsc::Sender<MsgFcSource>>,
+        tx_main: mpsc::Sender<MsgMain>,
     ) -> Self {
         Self {
             rx_fc_ctl,
@@ -161,6 +169,7 @@ impl FcController {
             recv_ack: vec![OpenRangeSet::default(); mc_announce_data.len()],
             _mc_announce_data: mc_announce_data,
             tx_fc_sources,
+            tx_main,
         }
     }
 
@@ -248,6 +257,8 @@ impl FcController {
 
     /// Sends to clients listening to a particular flexicast flow that RTP is
     /// closed.
+    /// Also notifies the main thread that a flexicast flow stopped to close the
+    /// main loop.
     async fn send_close_rtp(&mut self, id: u64) -> Result<()> {
         debug!("Close RTP {id}");
         if let Some(group) = self.active_clients.get(id as usize) {
@@ -258,6 +269,8 @@ impl FcController {
                 self.nb_clients = self.nb_clients.map(|n| n.saturating_sub(1));
             }
         }
+        let msg = MsgMain::FcFlowStop(id);
+        self.tx_main.send(msg).await?;
 
         Ok(())
     }
@@ -358,7 +371,10 @@ impl FcController {
     }
 }
 
-pub async fn handle_msg(msg: MsgMain, clients_ids: &mut ClientIdMap, socket: &UdpSocket) -> Result<()> {
+pub async fn handle_msg(
+    msg: MsgMain, clients_ids: &mut ClientIdMap, socket: &UdpSocket,
+    stopped_flows: &mut HashSet<u64>,
+) -> Result<()> {
     match msg {
         MsgMain::NewCID((client_id, cid)) => {
             debug!("Receiver {client_id} adds a new CID!");
@@ -366,20 +382,30 @@ pub async fn handle_msg(msg: MsgMain, clients_ids: &mut ClientIdMap, socket: &Ud
         },
 
         MsgMain::SendPkt((pkt_buf, send_info)) => {
-            debug!("Will send the packet to the wire with send_info={:?}", send_info);
+            debug!(
+                "Will send the packet to the wire with send_info={:?}",
+                send_info
+            );
             socket.send_to(&pkt_buf, send_info.to).await?;
-        }
+        },
+
+        MsgMain::FcFlowStop(id) => {
+            debug!("New flexicast flow stopped: {}", id);
+            stopped_flows.insert(id);
+        },
     }
 
     Ok(())
 }
 
-pub async fn optional_timeout(timeout: Option<std::time::Duration>) -> Option<()> {
-        match timeout {
-            Some(t) => {
-                tokio::time::sleep(t).await;
-                Some(())
-            },
-            None => None,
-        }
+pub async fn optional_timeout(
+    timeout: Option<std::time::Duration>,
+) -> Option<()> {
+    match timeout {
+        Some(t) => {
+            tokio::time::sleep(t).await;
+            Some(())
+        },
+        None => None,
     }
+}

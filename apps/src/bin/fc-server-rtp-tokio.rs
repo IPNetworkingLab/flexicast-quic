@@ -2,6 +2,7 @@
 extern crate log;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::convert::TryInto;
 use std::net;
 use std::net::SocketAddr;
@@ -28,9 +29,9 @@ use quiche::multicast::MulticastConnection;
 #[cfg(feature = "qlog")]
 use quiche_apps::common::make_qlog_writer;
 use quiche_apps::common::ClientIdMap;
-use quiche_apps::mc_app::rtp::RtpServer;
 use quiche_apps::mc_app::asynchronous;
 use quiche_apps::mc_app::asynchronous::fc::FcChannelAsync;
+use quiche_apps::mc_app::rtp::RtpServer;
 
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
@@ -184,7 +185,8 @@ async fn main() {
         Vec::new() // Empty.
     };
 
-    // Channel to communicate with the main thread (this one). Used to notify of new Connection IDs mapped to specific clients.
+    // Channel to communicate with the main thread (this one). Used to notify of
+    // new Connection IDs mapped to specific clients.
     let (tx_main, mut rx_main) = mpsc::channel(20);
 
     // Compute the mapping between Flexicast channel ID and index.
@@ -221,7 +223,8 @@ async fn main() {
         .map(|fc| fc.mc_announce_data.clone())
         .collect();
 
-    // Also get the decryption keys and algos, indexed in the same order as the McAnnounceData.
+    // Also get the decryption keys and algos, indexed in the same order as the
+    // McAnnounceData.
     let mc_master_secret: Vec<Vec<u8>> = fc_channels
         .iter()
         .map(|fc| fc.fc_chan.master_secret.clone())
@@ -263,13 +266,21 @@ async fn main() {
 
     // Create the controller structure that will manage the communication between
     // the flexicast source and the unicast server instances.
-    let mut controller = asynchronous::controller::FcController::new(rx_fc_ctl, mc_announce_data.clone(), tx_fc_source);
+    let mut controller = asynchronous::controller::FcController::new(
+        rx_fc_ctl,
+        mc_announce_data.clone(),
+        tx_fc_source,
+        tx_main.clone(),
+    );
     tokio::spawn(async move {
         controller.run().await.unwrap();
     });
 
     // All the transmission channels for the client.
     let mut clients_tx = Vec::new();
+
+    // All the flexicast flows that are stopped.
+    let mut fc_flows_stopped = HashSet::new();
 
     // Listens to incoming connections from new clients.
     loop {
@@ -278,7 +289,7 @@ async fn main() {
             _ = socket.readable() => (),
 
             // Receive a message for control.
-            Some(msg) = rx_main.recv() => handle_msg(msg, &mut clients_ids, &socket).await.unwrap(),
+            Some(msg) = rx_main.recv() => handle_msg(msg, &mut clients_ids, &socket, &mut fc_flows_stopped).await.unwrap(),
         }
         let (len, from) = match socket.try_recv_from(&mut buf) {
             Ok(v) => v,
@@ -422,7 +433,10 @@ async fn main() {
                 rng: rng.clone(),
                 mc_announce_data: mc_announce_data.clone(),
                 mc_master_secret: mc_master_secret.clone(),
-                mc_key_algo: mc_key_algo.iter().map(|key| *key).collect::<Vec<_>>(),
+                mc_key_algo: mc_key_algo
+                    .iter()
+                    .map(|key| *key)
+                    .collect::<Vec<_>>(),
                 rx_ctl: rx,
                 tx_tcl: tx_fc_ctl.clone(),
                 tx_main: tx_main.clone(),
@@ -457,8 +471,9 @@ async fn main() {
 
             client
         } else {
-            // This is an existing receiver that sends a QUIC packet from a new address.
-            // We notify the receiver that it must handle this packet and all new packets from this address.
+            // This is an existing receiver that sends a QUIC packet from a new
+            // address. We notify the receiver that it must handle
+            // this packet and all new packets from this address.
             let client_id = clients_ids.get(&hdr.dcid).unwrap();
             let recv_info = quiche::RecvInfo {
                 from,
@@ -466,7 +481,10 @@ async fn main() {
                 from_mc: false,
             };
             let msg = MsgRecv::NewPkt((pkt_buf.to_vec(), recv_info));
-            debug!("Send message to {:?} because recv_info={:?}", client_id, recv_info);
+            debug!(
+                "Send message to {:?} because recv_info={:?}",
+                client_id, recv_info
+            );
             clients_tx[*client_id as usize].send(msg).await.unwrap();
             continue;
         };
@@ -491,7 +509,14 @@ async fn main() {
         tokio::spawn(async move {
             client.run().await.unwrap();
         });
+
+        // All the flexicast flows stopped. We do not expect new clients and can exit the loop.
+        if fc_flows_stopped.len() == args.rtp_src_addr.len() {
+            break;
+        }
     }
+
+    println!("Finishing!");
 }
 
 fn get_config(args: &Args) -> quiche::Config {
