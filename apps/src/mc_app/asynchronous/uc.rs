@@ -149,6 +149,8 @@ impl Client {
             MsgRecv::NewPkt((pkt_to_read, new_addr)) => {
                 self.handle_new_pkt(pkt_to_read, new_addr).await?;
             },
+
+            MsgRecv::Ping => (),
         }
 
         Ok(())

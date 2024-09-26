@@ -277,7 +277,7 @@ async fn main() {
     });
 
     // All the transmission channels for the client.
-    let mut clients_tx = Vec::new();
+    let mut clients_tx: Vec<mpsc::Sender<MsgRecv>> = Vec::new();
 
     // All the flexicast flows that are stopped.
     let mut fc_flows_stopped = HashSet::new();
@@ -289,8 +289,29 @@ async fn main() {
             _ = socket.readable() => (),
 
             // Receive a message for control.
-            Some(msg) = rx_main.recv() => handle_msg(msg, &mut clients_ids, &socket, &mut fc_flows_stopped).await.unwrap(),
+            Some(msg) = rx_main.recv() => {
+                handle_msg(msg, &mut clients_ids, &socket, &mut fc_flows_stopped).await.unwrap();
+
+                // Stop the loop only if all flexicast flows stopped and all active receiver stopped.
+                if fc_flows_stopped.len() == args.rtp_src_addr.len() {
+                    // Try to poll any receiver.
+                    let mut any_not_none = false;
+                    'ping_client: for client_tx in clients_tx.iter() {
+                        let msg = MsgRecv::Ping;
+                        if let Ok(_) = client_tx.send(msg).await {
+                            any_not_none = true;
+                            break 'ping_client;
+                        }
+                    }
+
+                    // Break only now.
+                    if !any_not_none {
+                        break;
+                    }
+                }
+            },
         }
+
         let (len, from) = match socket.try_recv_from(&mut buf) {
             Ok(v) => v,
 
@@ -509,11 +530,6 @@ async fn main() {
         tokio::spawn(async move {
             client.run().await.unwrap();
         });
-
-        // All the flexicast flows stopped. We do not expect new clients and can exit the loop.
-        if fc_flows_stopped.len() == args.rtp_src_addr.len() {
-            break;
-        }
     }
 
     println!("Finishing!");
