@@ -83,9 +83,6 @@ pub enum MsgRecv {
 
     /// New packet from this receiver for the unicast instance to handle.
     NewPkt((Vec<u8>, RecvInfo)),
-
-    /// A simple PING message for the client.
-    Ping,
 }
 
 /// Messages sent to the flexicast source.

@@ -11,6 +11,7 @@ use std::path::Path;
 use std::u64;
 
 use quiche_apps::mc_app::asynchronous::controller::handle_msg;
+use quiche_apps::mc_app::asynchronous::controller::optional_timeout;
 use quiche_apps::mc_app::asynchronous::controller::MsgFcCtl;
 use quiche_apps::mc_app::asynchronous::controller::MsgRecv;
 use quiche_apps::mc_app::asynchronous::fc::FcChannelInfo;
@@ -282,8 +283,19 @@ async fn main() {
     // All the flexicast flows that are stopped.
     let mut fc_flows_stopped = HashSet::new();
 
+    // Timer once all receivers and flexicast flows stopped.
+    let mut end_time: Option<std::time::Instant> = None;
+    let end_sleep = std::time::Duration::from_secs(5);
+
     // Listens to incoming connections from new clients.
     loop {
+        let now = std::time::Instant::now();
+
+        // Comute the timeout once all connections are closed before exiting.
+        let exit_timeout = end_time
+            .map(|t| t.checked_add(end_sleep).map(|t| t.duration_since(now)))
+            .flatten();
+
         tokio::select! {
             // Receive new packet from unconnected address.
             _ = socket.readable() => (),
@@ -297,8 +309,7 @@ async fn main() {
                     // Try to poll any receiver.
                     let mut any_not_none = false;
                     'ping_client: for client_tx in clients_tx.iter() {
-                        let msg = MsgRecv::Ping;
-                        if let Ok(_) = client_tx.send(msg).await {
+                        if !client_tx.is_closed() {
                             any_not_none = true;
                             break 'ping_client;
                         }
@@ -306,10 +317,16 @@ async fn main() {
 
                     // Break only now.
                     if !any_not_none {
-                        break;
+                        end_time = Some(std::time::Instant::now());
                     }
                 }
             },
+
+            // Exit timer.
+            Some(_) = optional_timeout(exit_timeout) => {
+                debug!("Exiting main thread");
+                break;
+            }
         }
 
         let (len, from) = match socket.try_recv_from(&mut buf) {
