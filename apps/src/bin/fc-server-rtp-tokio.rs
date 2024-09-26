@@ -127,6 +127,10 @@ struct Args {
     /// RTP message to indicate the end of the stream.
     #[clap(long = "rtp-stop", value_parser, default_value = "STOP RTP")]
     rtp_stop: String,
+
+    /// Number of clients to listen before actually sending data to the wire.
+    #[clap(long = "wait", value_parser)]
+    wait: Option<u64>,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -254,6 +258,7 @@ async fn main() {
             sync_tx: tx_fc_ctl.clone(),
             id: id_fc_chan,
             rx_ctl: rx,
+            must_wait: args.wait.is_some(),
         };
 
         tx_fc_source.push(tx);
@@ -272,6 +277,7 @@ async fn main() {
         mc_announce_data.clone(),
         tx_fc_source,
         tx_main.clone(),
+        args.wait,
     );
     tokio::spawn(async move {
         controller.run().await.unwrap();

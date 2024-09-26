@@ -62,6 +62,9 @@ pub enum MsgFcCtl {
     /// of the unicast retransmission to simplify the work of the flexicast
     /// source.
     DelegateStreams((u64, Vec<FcDelegatedStream>)),
+
+    /// The new receiver is ready to receive content on the flexicast path.
+    RecvReady(u64),
 }
 
 /// Messages sent to the receiver.
@@ -94,6 +97,9 @@ pub enum MsgFcSource {
     /// Stream pieces that were delegated and now received by all clients that
     /// should receive it.
     AckStreamPieces(McStreamOff),
+
+    /// All intended receivers are ready to receive content.
+    Ready,
 }
 
 /// Messages sent to the main thread.
@@ -149,6 +155,12 @@ pub struct FcController {
 
     /// Communication towards the main thread.
     tx_main: mpsc::Sender<MsgMain>,
+
+    /// Number of clients to wait before actually sending data.
+    wait: Option<u64>,
+
+    /// Number of receivers ready to receive content?
+    nb_ready: u64,
 }
 
 impl FcController {
@@ -158,6 +170,7 @@ impl FcController {
         mc_announce_data: Vec<McAnnounceData>,
         tx_fc_sources: Vec<mpsc::Sender<MsgFcSource>>,
         tx_main: mpsc::Sender<MsgMain>,
+        wait: Option<u64>,
     ) -> Self {
         Self {
             rx_fc_ctl,
@@ -166,10 +179,12 @@ impl FcController {
             active_clients: vec![HashSet::new(); mc_announce_data.len()],
             mc_acks: vec![McAck::new(); mc_announce_data.len()],
             last_expired_pn: vec![None; mc_announce_data.len()],
-            recv_ack: vec![OpenRangeSet::default(); mc_announce_data.len()],
+            recv_ack: Vec::new(),
             _mc_announce_data: mc_announce_data,
             tx_fc_sources,
             tx_main,
+            wait,
+            nb_ready: 0,
         }
     }
 
@@ -201,6 +216,7 @@ impl FcController {
                 self.nb_clients =
                     Some(self.nb_clients.unwrap_or(0).saturating_add(1));
                 self.tx_clients.push(tx);
+                self.recv_ack.push(OpenRangeSet::default());
             },
 
             MsgFcCtl::Join((client_id, fc_chan_id)) => {
@@ -250,6 +266,11 @@ impl FcController {
                 self.handle_delegated_streams(fc_id, delegated_streams)
                     .await?;
             },
+
+            MsgFcCtl::RecvReady(id) => {
+                debug!("New ready client {id}");
+                self.handle_new_ready(id).await?;
+            },
         }
 
         Ok(())
@@ -271,6 +292,25 @@ impl FcController {
         }
         let msg = MsgMain::FcFlowStop(id);
         self.tx_main.send(msg).await?;
+
+        Ok(())
+    }
+
+    /// A new receiver is ready to listen to multicast content.
+    /// If all receivers are ready, the controller notifies the flexicast sources.
+    async fn handle_new_ready(&mut self, _id: u64) -> Result<()> {
+        self.nb_ready += 1;
+        
+        if Some(self.nb_ready) == self.wait {
+            // Notify all flexicast flows.
+            for tx_fc in self.tx_fc_sources.iter() {
+                let msg = MsgFcSource::Ready;
+                tx_fc.send(msg).await?;
+            }
+
+            // Reset to avoid going multiple times here.
+            self.wait = None;
+        }
 
         Ok(())
     }

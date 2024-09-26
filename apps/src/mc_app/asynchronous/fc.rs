@@ -42,6 +42,9 @@ pub struct FcChannelAsync {
 
     /// Reception channel for the flexicast source.
     pub rx_ctl: mpsc::Receiver<MsgFcSource>,
+
+    /// Whether the flexicast source must wait to send packets on the wire.
+    pub must_wait: bool,
 }
 
 impl FcChannelAsync {
@@ -170,33 +173,37 @@ impl FcChannelAsync {
                 };
 
                 // Send the packets on the wire.
-                let mut off = 0;
-                let mut left = write;
-                let mut written = 0;
-
-                while left > 0 {
-                    let pkt_len = cmp::min(left, super::MAX_DATAGRAM_SIZE);
-
-                    match self
-                        .socket
-                        .send_to(&buf[off..off + pkt_len], self.fc_chan.mc_send_addr)
-                        .await
-                    {
-                        Ok(v) => written += v,
-                        Err(e) => {
-                            if e.kind() == io::ErrorKind::WouldBlock {
-                                debug!("Flexicast send() would block");
-                                break 'fc;
-                            }
-
-                            panic!("Flexicast send() failed: {:?}", e);
-                        },
+                if !self.must_wait {
+                    let mut off = 0;
+                    let mut left = write;
+                    let mut written = 0;
+    
+                    while left > 0 {
+                        let pkt_len = cmp::min(left, super::MAX_DATAGRAM_SIZE);
+    
+                        match self
+                            .socket
+                            .send_to(&buf[off..off + pkt_len], self.fc_chan.mc_send_addr)
+                            .await
+                        {
+                            Ok(v) => written += v,
+                            Err(e) => {
+                                if e.kind() == io::ErrorKind::WouldBlock {
+                                    debug!("Flexicast send() would block");
+                                    break 'fc;
+                                }
+    
+                                panic!("Flexicast send() failed: {:?}", e);
+                            },
+                        }
+                        off += pkt_len;
+                        left -= pkt_len;
                     }
-                    off += pkt_len;
-                    left -= pkt_len;
+    
+                    debug!("Flexicast written {:?} bytes to {:?}", written, send_info);
+                } else {
+                    debug!("Not actually sending data on the wire because we wait...");
                 }
-
-                debug!("Flexicast written {:?} bytes to {:?}", written, send_info);
             }
 
             // Notify the controller of the sent packets.
@@ -225,6 +232,10 @@ impl FcChannelAsync {
                     }
                 }
             },
+
+            MsgFcSource::Ready => {
+                self.must_wait = false;
+            }
         }
 
         Ok(())
