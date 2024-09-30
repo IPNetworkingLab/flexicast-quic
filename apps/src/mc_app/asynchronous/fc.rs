@@ -14,6 +14,7 @@ use crate::mc_app::rtp::RtpServer;
 use std::cmp;
 use std::io;
 use std::time;
+use std::usize;
 use tokio::sync::mpsc;
 
 pub struct FcChannelInfo {
@@ -45,6 +46,10 @@ pub struct FcChannelAsync {
 
     /// Whether the flexicast source must wait to send packets on the wire.
     pub must_wait: bool,
+
+    /// Whether the flexicast channel will be limited by the application or not.
+    /// If set to true, will set an almost infinite congestion window.
+    pub bitrate_unlimited: bool,
 }
 
 impl FcChannelAsync {
@@ -212,6 +217,11 @@ impl FcChannelAsync {
 
             // Notify the controller of the sent packets.
             self.sent_pkt_to_controller().await?;
+
+            // Potentially unlimit the congestion window.
+            if self.bitrate_unlimited {
+                self.fc_chan.channel.mc_set_cwnd(usize::MAX - 1000);
+            }
         }
 
         Ok(())

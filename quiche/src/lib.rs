@@ -5653,9 +5653,9 @@ impl Connection {
                     Some(source_symbol_metadata);
             }
         }
-        println!("{} tx on space_id={} pn={}", self.trace_id, space_id, pn);
+        trace!("{} tx on space_id={} pn={}", self.trace_id, space_id, pn);
         for frame in &mut frames {
-            println!("{} tx frm {:?}", self.trace_id, frame);
+            trace!("{} tx frm {:?}", self.trace_id, frame);
 
             qlog_with_type!(QLOG_PACKET_TX, self.qlog, _q, {
                 qlog_frames.push(frame.to_qlog());

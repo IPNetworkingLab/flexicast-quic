@@ -259,6 +259,7 @@ async fn main() {
             id: id_fc_chan,
             rx_ctl: rx,
             must_wait: args.wait.is_some(),
+            bitrate_unlimited: true,
         };
 
         tx_fc_source.push(tx);
