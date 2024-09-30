@@ -141,7 +141,10 @@ impl FcChannelAsync {
                             panic!("Error while setting stream priority: {:?}", e),
                     }
 
-                    let written = match self
+                    let written = if self.must_wait {
+                        app_data.len()
+                    } else {
+                        match self
                         .fc_chan
                         .channel
                         .stream_send(stream_id, &app_data, true)
@@ -149,6 +152,7 @@ impl FcChannelAsync {
                         Ok(v) => v,
                         Err(quiche::Error::Done) => break 'rtp,
                         Err(e) => panic!("Other error: {:?}", e),
+                    }
                     };
 
                     self.rtp_server.stream_written(written);

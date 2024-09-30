@@ -88,9 +88,10 @@ impl Client {
 
             // Informs the controller that it is ready to listen to flexicast content.
             if let Some(mc) = self.conn.get_multicast_attributes() {
-                if let (false, McRole::Client(McClientStatus::ListenMcPath(true))) = (sent_ready, mc.get_mc_role()) {
+                if let (false, McRole::ServerUnicast(McClientStatus::ListenMcPath(true))) = (sent_ready, mc.get_mc_role()) {
                     let msg = MsgFcCtl::RecvReady(self.client_id);
                     self.tx_tcl.send(msg).await.unwrap();
+                    sent_ready = true;
                 }
             }
 
