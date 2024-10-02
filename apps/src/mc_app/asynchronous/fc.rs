@@ -62,10 +62,7 @@ impl FcChannelAsync {
 
         loop {
             let now = time::Instant::now();
-            let timeout = self
-                .fc_chan
-                .channel
-                .mc_timeout(now);
+            let timeout = self.fc_chan.channel.mc_timeout(now);
 
             let sock_rtp = self
                 .rtp_server
@@ -134,30 +131,33 @@ impl FcChannelAsync {
             'rtp: loop {
                 if self.rtp_server.should_send_app_data() {
                     let (stream_id, app_data) = self.rtp_server.get_app_data();
-                    match self
-                        .fc_chan
-                        .channel
-                        .stream_priority(stream_id, 0, false)
-                    {
-                        Ok(()) => (),
-                        Err(quiche::Error::StreamLimit) => (),
-                        Err(quiche::Error::Done) => (),
-                        Err(e) =>
-                            panic!("Error while setting stream priority: {:?}", e),
-                    }
 
                     let written = if self.must_wait {
                         app_data.len()
                     } else {
                         match self
-                        .fc_chan
-                        .channel
-                        .stream_send(stream_id, &app_data, true)
-                    {
-                        Ok(v) => v,
-                        Err(quiche::Error::Done) => break 'rtp,
-                        Err(e) => panic!("Other error: {:?}", e),
-                    }
+                            .fc_chan
+                            .channel
+                            .stream_priority(stream_id, 0, false)
+                        {
+                            Ok(()) => (),
+                            Err(quiche::Error::StreamLimit) => (),
+                            Err(quiche::Error::Done) => (),
+                            Err(e) => panic!(
+                                "Error while setting stream priority: {:?}",
+                                e
+                            ),
+                        }
+                        
+                        match self
+                            .fc_chan
+                            .channel
+                            .stream_send(stream_id, &app_data, true)
+                        {
+                            Ok(v) => v,
+                            Err(quiche::Error::Done) => break 'rtp,
+                            Err(e) => panic!("Other error: {:?}", e),
+                        }
                     };
 
                     self.rtp_server.stream_written(written);
@@ -186,13 +186,16 @@ impl FcChannelAsync {
                     let mut off = 0;
                     let mut left = write;
                     let mut written = 0;
-    
+
                     while left > 0 {
                         let pkt_len = cmp::min(left, super::MAX_DATAGRAM_SIZE);
-    
+
                         match self
                             .socket
-                            .send_to(&buf[off..off + pkt_len], self.fc_chan.mc_send_addr)
+                            .send_to(
+                                &buf[off..off + pkt_len],
+                                self.fc_chan.mc_send_addr,
+                            )
                             .await
                         {
                             Ok(v) => written += v,
@@ -201,15 +204,18 @@ impl FcChannelAsync {
                                     debug!("Flexicast send() would block");
                                     break 'fc;
                                 }
-    
+
                                 panic!("Flexicast send() failed: {:?}", e);
                             },
                         }
                         off += pkt_len;
                         left -= pkt_len;
                     }
-    
-                    debug!("Flexicast written {:?} bytes to {:?}", written, send_info);
+
+                    debug!(
+                        "Flexicast written {:?} bytes to {:?}",
+                        written, send_info
+                    );
                 } else {
                     debug!("Not actually sending data on the wire because we wait...");
                 }
@@ -249,7 +255,7 @@ impl FcChannelAsync {
 
             MsgFcSource::Ready => {
                 self.must_wait = false;
-            }
+            },
         }
 
         Ok(())

@@ -38,6 +38,7 @@ use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
+const CHANNEL_BUFFER_SIZE: usize = 10_000;
 
 #[derive(Parser)]
 struct Args {
@@ -192,7 +193,7 @@ async fn main() {
 
     // Channel to communicate with the main thread (this one). Used to notify of
     // new Connection IDs mapped to specific clients.
-    let (tx_main, mut rx_main) = mpsc::channel(20);
+    let (tx_main, mut rx_main) = mpsc::channel(CHANNEL_BUFFER_SIZE);
 
     // Compute the mapping between Flexicast channel ID and index.
     let _fcid_to_idx: HashMap<Vec<u8>, usize> = fc_channels
@@ -220,7 +221,7 @@ async fn main() {
 
     // Create the communication channel. Because it is a MPSC, we can just clone
     // the sender.
-    let (tx_fc_ctl, rx_fc_ctl) = mpsc::channel(20);
+    let (tx_fc_ctl, rx_fc_ctl) = mpsc::channel(CHANNEL_BUFFER_SIZE);
 
     // Get the McAnnounceData to forward them to the clients.
     let mc_announce_data: Vec<_> = fc_channels
@@ -247,7 +248,7 @@ async fn main() {
     for (fc_chan_info, rtp_server) in
         fc_channels.drain(..).zip(rtp_servers.drain(..))
     {
-        let (tx, rx) = mpsc::channel(20);
+        let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
 
         let mut fc_struct = FcChannelAsync {
             fc_chan: fc_chan_info.fc_chan,
@@ -279,6 +280,7 @@ async fn main() {
         tx_fc_source,
         tx_main.clone(),
         args.wait,
+        Some(std::time::Duration::from_millis(args.expiration_timer / 2)),
     );
     tokio::spawn(async move {
         controller.run().await.unwrap();
@@ -468,7 +470,7 @@ async fn main() {
             let client_id = next_client_id;
 
             // Create a new channel to communicate with the client.
-            let (tx, rx) = mpsc::channel(10);
+            let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
             clients_tx.push(tx.clone());
 
             let client = quiche_apps::mc_app::asynchronous::uc::Client {

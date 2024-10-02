@@ -2,6 +2,7 @@
 //! tokio.
 
 use std::collections::HashSet;
+use std::time;
 
 use crate::common::ClientIdMap;
 
@@ -161,6 +162,12 @@ pub struct FcController {
 
     /// Number of receivers ready to receive content?
     nb_ready: u64,
+
+    /// Last time an aggregated ack was (tried to be) sent.
+    last_ack_sent: Option<time::Instant>,
+
+    /// Delay between two aggregated ack instants.
+    ack_delay: Option<time::Duration>,
 }
 
 impl FcController {
@@ -169,8 +176,8 @@ impl FcController {
         rx_fc_ctl: mpsc::Receiver<MsgFcCtl>,
         mc_announce_data: Vec<McAnnounceData>,
         tx_fc_sources: Vec<mpsc::Sender<MsgFcSource>>,
-        tx_main: mpsc::Sender<MsgMain>,
-        wait: Option<u64>,
+        tx_main: mpsc::Sender<MsgMain>, wait: Option<u64>,
+        ack_delay: Option<time::Duration>,
     ) -> Self {
         Self {
             rx_fc_ctl,
@@ -185,14 +192,23 @@ impl FcController {
             tx_main,
             wait,
             nb_ready: 0,
+            last_ack_sent: None,
+            ack_delay,
         }
     }
 
     /// Run the controller.
     pub async fn run(&mut self) -> Result<()> {
         loop {
+            // Compute timeout of acknowledgment forwarding to the source.
+            let timeout = self.send_ack_timeout();
             tokio::select! {
+                // Timeout to send acknowledgment to the flexicast source.
+                Some(_) = optional_timeout(timeout) => self.handle_send_ack().await?,
+
+                // Receive message.
                 Some(msg) = self.rx_fc_ctl.recv() => self.handle_fc_msg(msg).await?,
+
                 else => debug!("Error in select controller"),
             }
 
@@ -297,10 +313,11 @@ impl FcController {
     }
 
     /// A new receiver is ready to listen to multicast content.
-    /// If all receivers are ready, the controller notifies the flexicast sources.
+    /// If all receivers are ready, the controller notifies the flexicast
+    /// sources.
     async fn handle_new_ready(&mut self, _id: u64) -> Result<()> {
         self.nb_ready += 1;
-        
+
         if Some(self.nb_ready) == self.wait {
             // Notify all flexicast flows.
             for tx_fc in self.tx_fc_sources.iter() {
@@ -346,16 +363,20 @@ impl FcController {
             }
         }
 
-        // Maybe now the controller can acknowledge some packets numbers.
-        if let Some(fully_acked) = mc_ack.full_ack() {
-            let msg = MsgFcSource::AckPn(fully_acked);
-            self.tx_fc_sources[fc_id as usize].send(msg).await?;
-        }
-
-        // And stream pieces may also be acknowledged now.
-        if let Some(fully_acked_stream_pieces) = mc_ack.acked_stream_off() {
-            let msg = MsgFcSource::AckStreamPieces(fully_acked_stream_pieces);
-            self.tx_fc_sources[fc_id as usize].send(msg).await?;
+        // Only bother if no ack delay is provided.
+        // Otherwise we will aggregate acknowledgment notification later.
+        if self.ack_delay.is_none() {
+            // Maybe now the controller can acknowledge some packets numbers.
+            if let Some(fully_acked) = mc_ack.full_ack() {
+                let msg = MsgFcSource::AckPn(fully_acked);
+                self.tx_fc_sources[fc_id as usize].send(msg).await?;
+            }
+    
+            // And stream pieces may also be acknowledged now.
+            if let Some(fully_acked_stream_pieces) = mc_ack.acked_stream_off() {
+                let msg = MsgFcSource::AckStreamPieces(fully_acked_stream_pieces);
+                self.tx_fc_sources[fc_id as usize].send(msg).await?;
+            }
         }
 
         Ok(())
@@ -406,6 +427,51 @@ impl FcController {
                 self.recv_ack[client_id as usize].remove_until(max_pn);
             }
         }
+
+        Ok(())
+    }
+
+    /// Computes the next timeout to send an acknowledgment aggregation to the
+    /// source.
+    fn send_ack_timeout(&self) -> Option<time::Duration> {
+        if self.ack_delay.is_none() {
+            return None;
+        }
+
+        if let Some(t) = self.last_ack_sent {
+            let now = time::Instant::now();
+            Some(
+                self.ack_delay
+                    .unwrap()
+                    .saturating_sub(now.duration_since(t)),
+            )
+        } else {
+            Some(time::Duration::ZERO)
+        }
+    }
+
+    /// Sends acknowledgment to the flexicast sources if an ack delay is provided.
+    async fn handle_send_ack(&mut self) -> Result<()> {
+        if self.ack_delay.is_none() {
+            return Ok(());
+        }
+
+        for (i, mc_ack) in self.mc_acks.iter_mut().enumerate() {
+            // Fully acknowledged packet numbers.
+            if let Some(fully_acked) = mc_ack.full_ack() {
+                let msg = MsgFcSource::AckPn(fully_acked);
+                self.tx_fc_sources[i].send(msg).await?;
+            }
+
+            // Stream pieces.
+            if let Some(fully_acked_stream_pieces) = mc_ack.acked_stream_off() {
+                let msg = MsgFcSource::AckStreamPieces(fully_acked_stream_pieces);
+                self.tx_fc_sources[i].send(msg).await?;
+            }
+        }
+
+        let now = time::Instant::now();
+        self.last_ack_sent = Some(now);
 
         Ok(())
     }
