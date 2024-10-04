@@ -203,10 +203,10 @@ impl FcChannelAsync {
     
                             match self
                                 .socket
-                                .try_send_to(
+                                .send_to(
                                     &buf[off..off + pkt_len],
                                     self.fc_chan.mc_send_addr,
-                                )
+                                ).await
                             {
                                 Ok(v) => written += v,
                                 Err(e) => {
