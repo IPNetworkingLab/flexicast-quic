@@ -54,12 +54,6 @@ struct Args {
     #[clap(long = "auth", default_value = "none")]
     authentication: McAuthType,
 
-    /// Wait that the indicated number of clients are ready to receive the data.
-    /// If flexicast is enabled, waits for flexicast channel establishement.
-    /// If unicast is used, waits for the connections to be established.
-    #[clap(long = "wait", value_parser)]
-    wait_clients: Option<u32>,
-
     /// Source address of the server.
     #[clap(long = "src", default_value = "127.0.0.1:4433")]
     src_addr: net::SocketAddr,
