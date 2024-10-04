@@ -60,6 +60,16 @@ impl FcChannelAsync {
         let mut rtp_stopped = None;
         let mut can_close_conn_after_rtp = false;
 
+        // Compute a second mc send address.
+        let mut addr_buf = self.mc_announce_data.group_ip;
+        addr_buf[0] += 1;
+        let second_mc_ip_addr = std::net::Ipv4Addr::from(addr_buf);
+        let _second_mc_addr =
+            std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+                second_mc_ip_addr,
+                self.mc_announce_data.udp_port,
+            ));
+
         loop {
             let now = time::Instant::now();
             let timeout = self.fc_chan.channel.mc_timeout(now);
@@ -148,7 +158,7 @@ impl FcChannelAsync {
                                 e
                             ),
                         }
-                        
+
                         match self
                             .fc_chan
                             .channel
@@ -183,39 +193,40 @@ impl FcChannelAsync {
 
                 // Send the packets on the wire.
                 if !self.must_wait {
-                    let mut off = 0;
-                    let mut left = write;
-                    let mut written = 0;
-
-                    while left > 0 {
-                        let pkt_len = cmp::min(left, super::MAX_DATAGRAM_SIZE);
-
-                        match self
-                            .socket
-                            .send_to(
-                                &buf[off..off + pkt_len],
-                                self.fc_chan.mc_send_addr,
-                            )
-                            .await
-                        {
-                            Ok(v) => written += v,
-                            Err(e) => {
-                                if e.kind() == io::ErrorKind::WouldBlock {
-                                    debug!("Flexicast send() would block");
-                                    break 'fc;
-                                }
-
-                                panic!("Flexicast send() failed: {:?}", e);
-                            },
+                    //for send_to_addr in [self.fc_chan.mc_send_addr, second_mc_addr] {
+                        let mut off = 0;
+                        let mut left = write;
+                        let mut written = 0;
+    
+                        while left > 0 {
+                            let pkt_len = cmp::min(left, super::MAX_DATAGRAM_SIZE);
+    
+                            match self
+                                .socket
+                                .try_send_to(
+                                    &buf[off..off + pkt_len],
+                                    self.fc_chan.mc_send_addr,
+                                )
+                            {
+                                Ok(v) => written += v,
+                                Err(e) => {
+                                    if e.kind() == io::ErrorKind::WouldBlock {
+                                        debug!("Flexicast send() would block");
+                                        break 'fc;
+                                    }
+    
+                                    panic!("Flexicast send() failed: {:?}", e);
+                                },
+                            }
+                            off += pkt_len;
+                            left -= pkt_len;
                         }
-                        off += pkt_len;
-                        left -= pkt_len;
-                    }
+                        debug!(
+                            "Flexicast written {:?} bytes to {:?}",
+                            written, send_info
+                        );
+                    // }
 
-                    debug!(
-                        "Flexicast written {:?} bytes to {:?}",
-                        written, send_info
-                    );
                 } else {
                     debug!("Not actually sending data on the wire because we wait...");
                 }

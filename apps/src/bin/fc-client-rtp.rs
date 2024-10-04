@@ -237,7 +237,7 @@ fn main() {
 
         let timers = [
             conn.timeout(),        // QUIC timeout
-            conn.mc_timeout(now),  // FC-QUIC timeout
+            // conn.mc_timeout(now),  // FC-QUIC timeout
             conn.rmc_timeout(now), // Reliable FC-QUIC timeout
             timer_change,          // FC Channel change
         ];
