@@ -2770,8 +2770,6 @@ impl Connection {
 
                 debug!("Here because no crypto context");
 
-                println!("Err donne: {:?}", e);
-
                 return Err(e);
             },
         };
