@@ -13,6 +13,7 @@ use crate::mc_app::asynchronous::controller::MsgFcCtl;
 use crate::mc_app::rtp::RtpServer;
 use std::cmp;
 use std::io;
+use std::sync::Arc;
 use std::time;
 use std::usize;
 use tokio::sync::mpsc;
@@ -50,6 +51,14 @@ pub struct FcChannelAsync {
     /// Whether the flexicast channel will be limited by the application or not.
     /// If set to true, will set an almost infinite congestion window.
     pub bitrate_unlimited: bool,
+
+    /// Whether unicast fall-back is used.
+    /// Used to know whether the source must forward application data to the controller.
+    pub allow_unicast: bool,
+
+    /// Whether flexicast is enabled.
+    /// Used to know whether the source must send data on the wire.
+    pub do_flexicast: bool,
 }
 
 impl FcChannelAsync {
@@ -142,7 +151,13 @@ impl FcChannelAsync {
                 if self.rtp_server.should_send_app_data() {
                     let (stream_id, app_data) = self.rtp_server.get_app_data();
 
-                    let written = if self.must_wait {
+                    // If allow unicast, sends the data to the controller to ensure that all unicast receiver get it.
+                    if self.allow_unicast {
+                        let msg = MsgFcCtl::RtpData((Arc::new(app_data), stream_id));
+                        self.sync_tx.send(msg).await?;
+                    }
+
+                    let written = if self.must_wait || !self.do_flexicast {
                         app_data.len()
                     } else {
                         match self
@@ -178,6 +193,11 @@ impl FcChannelAsync {
 
             // Generate outgoing QUIC packets to send on the Flexicast path.
             'fc: loop {
+                // Do nothing if flexicast is disabled.
+                if !self.do_flexicast {
+                    break 'fc;
+                }
+
                 // Ask quiche to generate the packets.
                 let (write, send_info) = match self.fc_chan.mc_send(&mut buf[..])
                 {

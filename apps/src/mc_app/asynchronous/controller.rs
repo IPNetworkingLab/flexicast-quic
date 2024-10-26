@@ -66,6 +66,13 @@ pub enum MsgFcCtl {
 
     /// The new receiver is ready to receive content on the flexicast path.
     RecvReady(u64),
+
+    /// New RTP frame is received and must be sent via the unicast path.
+    /// This message MUST only been used for receivers that are not part of a
+    /// flexicast flow, included when flexicast is disabled.
+    /// The controller is in charge to split the traffic towards the corrected
+    /// receivers, i.e., receivers that are not part of a flexicast flow.
+    RtpData((Arc<Vec<u8>>, u64)),
 }
 
 /// Messages sent to the receiver.
@@ -87,6 +94,11 @@ pub enum MsgRecv {
 
     /// New packet from this receiver for the unicast instance to handle.
     NewPkt((Vec<u8>, RecvInfo)),
+
+    /// The flexicast source is responsible to read RTP traffic.
+    /// It sends the payload to the controller to allow receivers to fall-back
+    /// on unicast / disable flexicast and still receive the content.
+    RtpData((Arc<Vec<u8>>, u64)),
 }
 
 /// Messages sent to the flexicast source.
@@ -129,12 +141,17 @@ pub struct FcController {
     nb_clients: Option<u64>,
 
     /// All transmission channels to communicate with the receivers.
-    /// Indexed by the client ID.
+    /// Indexed by the client ID, and the ID of the channel they listen to,
+    /// `None` if they listen only on unicast.
     tx_clients: Vec<mpsc::Sender<MsgRecv>>,
 
     /// Mapping between the ID of the flexicast source and the IDs of the
     /// clients. Indexed by the the flexicast source ID.
     active_clients: Vec<HashSet<u64>>,
+
+    /// All receivers that currently do not listen to any flexicast flow.
+    /// Indexed by the receiver ID.
+    unicast_recv: HashSet<u64>,
 
     /// All McAck structures that the controller maintains.
     mc_acks: Vec<McAck>,
@@ -184,6 +201,7 @@ impl FcController {
             nb_clients: None,
             tx_clients: Vec::new(),
             active_clients: vec![HashSet::new(); mc_announce_data.len()],
+            unicast_recv: HashSet::new(),
             mc_acks: vec![McAck::new(); mc_announce_data.len()],
             last_expired_pn: vec![None; mc_announce_data.len()],
             recv_ack: Vec::new(),
@@ -226,18 +244,20 @@ impl FcController {
         match msg {
             MsgFcCtl::CloseRtp(id) => self.send_close_rtp(id).await?,
 
-            MsgFcCtl::NewClient((_id, tx)) => {
+            MsgFcCtl::NewClient((id, tx)) => {
                 // Push new client.
                 debug!("New receiver connected to the source");
                 self.nb_clients =
                     Some(self.nb_clients.unwrap_or(0).saturating_add(1));
                 self.tx_clients.push(tx);
                 self.recv_ack.push(OpenRangeSet::default());
+                self.unicast_recv.insert(id);
             },
 
             MsgFcCtl::Join((client_id, fc_chan_id)) => {
                 debug!("New client {client_id} joins flow {fc_chan_id}");
                 _ = self.active_clients[fc_chan_id as usize].insert(client_id);
+                _ = self.unicast_recv.remove(&client_id);
                 self.mc_acks[fc_chan_id as usize].new_recv(
                     self.last_expired_pn[fc_chan_id as usize].unwrap_or(0),
                 );
@@ -286,6 +306,13 @@ impl FcController {
             MsgFcCtl::RecvReady(id) => {
                 debug!("New ready client {id}");
                 self.handle_new_ready(id).await?;
+            },
+
+            MsgFcCtl::RtpData((data, stream_id)) => {
+                for recv_id in self.unicast_recv.iter() {
+                    let msg = MsgRecv::RtpData((data, stream_id));
+                    self.tx_clients[*recv_id as usize].send(msg).await?;
+                }
             },
         }
 
@@ -371,7 +398,7 @@ impl FcController {
                 let msg = MsgFcSource::AckPn(fully_acked);
                 self.tx_fc_sources[fc_id as usize].send(msg).await?;
             }
-    
+
             // And stream pieces may also be acknowledged now.
             if let Some(fully_acked_stream_pieces) = mc_ack.acked_stream_off() {
                 let msg = MsgFcSource::AckStreamPieces(fully_acked_stream_pieces);
@@ -450,7 +477,8 @@ impl FcController {
         }
     }
 
-    /// Sends acknowledgment to the flexicast sources if an ack delay is provided.
+    /// Sends acknowledgment to the flexicast sources if an ack delay is
+    /// provided.
     async fn handle_send_ack(&mut self) -> Result<()> {
         if self.ack_delay.is_none() {
             return Ok(());

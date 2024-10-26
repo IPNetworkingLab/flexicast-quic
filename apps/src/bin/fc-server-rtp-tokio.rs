@@ -218,10 +218,14 @@ async fn main() {
     let (tx_fc_ctl, rx_fc_ctl) = mpsc::channel(CHANNEL_BUFFER_SIZE);
 
     // Get the McAnnounceData to forward them to the clients.
-    let mc_announce_data: Vec<_> = fc_channels
+    let mc_announce_data: Vec<_> = if args.flexicast {
+        fc_channels
         .iter()
         .map(|fc| fc.mc_announce_data.clone())
-        .collect();
+        .collect()
+    } else {
+        Vec::new()
+    };
 
     // Also get the decryption keys and algos, indexed in the same order as the
     // McAnnounceData.
@@ -255,6 +259,8 @@ async fn main() {
             rx_ctl: rx,
             must_wait: args.wait.is_some(),
             bitrate_unlimited: true,
+            allow_unicast: args.allow_unicast,
+            do_flexicast: args.flexicast,
         };
 
         tx_fc_source.push(tx);
@@ -481,6 +487,7 @@ async fn main() {
                 rx_ctl: rx,
                 tx_tcl: tx_fc_ctl.clone(),
                 tx_main: tx_main.clone(),
+                rtp_source: RtpServer::new_without_socket(&args.rtp_stop),
             };
 
             // Notify the controller with a new client.

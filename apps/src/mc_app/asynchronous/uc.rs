@@ -1,6 +1,7 @@
 //! Module for the asynchronous communication with the unicast server instances.
 
 use crate::mc_app::asynchronous::controller::optional_timeout;
+use crate::mc_app::rtp::RtpServer;
 
 use super::controller;
 use super::controller::MsgFcCtl;
@@ -15,6 +16,7 @@ use quiche::multicast::MulticastConnection;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 use std::convert::TryInto;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub struct Client {
@@ -30,6 +32,9 @@ pub struct Client {
     pub mc_key_algo: Vec<u8>,
 
     pub tx_main: mpsc::Sender<MsgMain>,
+
+    /// Give an RTP source in case the receiver uses unicast.
+    pub rtp_source: RtpServer,
 }
 
 impl Client {
@@ -86,12 +91,50 @@ impl Client {
                 }
             }
 
-            // Informs the controller that it is ready to listen to flexicast content.
+            // Informs the controller that it is ready to listen to flexicast
+            // content.
             if let Some(mc) = self.conn.get_multicast_attributes() {
-                if let (false, McRole::ServerUnicast(McClientStatus::ListenMcPath(true))) = (sent_ready, mc.get_mc_role()) {
+                if let (
+                    false,
+                    McRole::ServerUnicast(McClientStatus::ListenMcPath(true)),
+                ) = (sent_ready, mc.get_mc_role())
+                {
                     let msg = MsgFcCtl::RecvReady(self.client_id);
                     self.tx_tcl.send(msg).await.unwrap();
                     sent_ready = true;
+                }
+            }
+
+            /// Sends to QUIC RTP frames that must be sent through unicast.
+            'rtp: loop {
+                if self.rtp_source.should_send_app_data() {
+                    let (stream_id, app_data) = self.rtp_server.get_app_data();
+
+                    match self
+                        .fc_chan
+                        .channel
+                        .stream_priority(stream_id, 0, false)
+                    {
+                        Ok(()) => (),
+                        Err(quiche::Error::StreamLimit) => (),
+                        Err(quiche::Error::Done) => (),
+                        Err(e) =>
+                            panic!("Error while setting stream priority: {:?}", e),
+                    }
+
+                    let written = match self
+                        .fc_chan
+                        .channel
+                        .stream_send(stream_id, &app_data, true)
+                    {
+                        Ok(v) => v,
+                        Err(quiche::Error::Done) => break 'rtp,
+                        Err(e) => panic!("Other error: {:?}", e),
+                    };
+
+                    self.rtp_source.stream_written(written);
+                } else {
+                    break;
                 }
             }
 
@@ -162,6 +205,10 @@ impl Client {
 
             MsgRecv::NewPkt((pkt_to_read, new_addr)) => {
                 self.handle_new_pkt(pkt_to_read, new_addr).await?;
+            },
+
+            MsgRecv::RtpData((data, stream_id)) => {
+                self.handle_new_rtp(data, stream_id).await?;
             },
         }
 
@@ -255,6 +302,19 @@ impl Client {
         &mut self, mut pkt_to_read: Vec<u8>, recv_info: quiche::RecvInfo,
     ) -> Result<()> {
         self.recv(&mut pkt_to_read, recv_info).await?;
+        Ok(())
+    }
+
+    async fn handle_new_rtp(
+        &mut self, data: Arc<Vec<u8>>, stream_id: u64,
+    ) -> Result<()> {
+        // Do not say it is an error, but it should not happen.
+        if self.listen_fc_channel {
+            return Ok(());
+        }
+
+        self.rtp_source.handle_new_rtp_frame(n, stream_id);
+
         Ok(())
     }
 

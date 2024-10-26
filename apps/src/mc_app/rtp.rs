@@ -9,20 +9,21 @@ use std::time::SystemTime;
 pub enum SockType {
     Mio(mio::net::UdpSocket),
     Tokio(tokio::net::UdpSocket),
+    None,
 }
 
 impl SockType {
     fn mio_mut(&mut self) -> Option<&mut mio::net::UdpSocket> {
         match self {
             Self::Mio(ref mut s) => Some(s),
-            _ => None
+            _ => None,
         }
     }
 
     fn tokio(&self) -> Option<&tokio::net::UdpSocket> {
         match self {
             Self::Tokio(ref s) => Some(s),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -64,7 +65,10 @@ impl RtpClient {
     pub fn on_sequential_stream_recv(&mut self, buf: &[u8]) {
         if let Some(socket) = self.udp_sink.as_ref() {
             if let Err(e) = socket.send(buf) {
-                error!("RTP Client: error when sending data to UDP sink: {:?}", e);
+                error!(
+                    "RTP Client: error when sending data to UDP sink: {:?}",
+                    e
+                );
             }
         }
     }
@@ -114,7 +118,7 @@ impl RtpServer {
             to_quic_filename: to_quic_filename.to_string(),
             to_wire_filename: to_wire_filename.to_string(),
             buf: [0; 2000],
-            
+
             stop_msg: stop_msg.as_bytes().to_vec(),
             is_stopped: false,
         })
@@ -127,7 +131,9 @@ impl RtpServer {
         info!("new RTP server listening for RTP in {}", bind_addr);
         info!("Stop msg in bytes: {:?}", stop_msg.as_bytes());
         Ok(Self {
-            socket: SockType::Tokio(tokio::net::UdpSocket::bind(bind_addr).await?),
+            socket: SockType::Tokio(
+                tokio::net::UdpSocket::bind(bind_addr).await?,
+            ),
             queued_streams: VecDeque::new(),
             time_sent_to_quic: Vec::new(),
             time_sent_to_wire: Vec::new(),
@@ -139,10 +145,30 @@ impl RtpServer {
             to_quic_filename: to_quic_filename.to_string(),
             to_wire_filename: to_wire_filename.to_string(),
             buf: [0; 2000],
-            
+
             stop_msg: stop_msg.as_bytes().to_vec(),
             is_stopped: false,
         })
+    }
+
+    pub async fn new_without_socket(stop_msg: &str) -> Self {
+        Self {
+            socket: SockType::None,
+            queued_streams: VecDeque::new(),
+            time_sent_to_quic: Vec::new(),
+            time_sent_to_wire: Vec::new(),
+            start_rtp: Some(time::Instant::now()),
+
+            last_provided_stream: 0,
+            next_stream_id: 3,
+
+            to_quic_filename: to_quic_filename.to_string(),
+            to_wire_filename: to_wire_filename.to_string(),
+            buf: [0; 2000],
+
+            stop_msg: stop_msg.as_bytes().to_vec(),
+            is_stopped: false,
+        }
     }
 
     #[inline]
@@ -210,28 +236,11 @@ impl RtpServer {
             let res = match &self.socket {
                 SockType::Mio(s) => s.recv_from(&mut self.buf[..]),
                 SockType::Tokio(s) => s.try_recv_from(&mut self.buf[..]),
+                SockType::None => return,
             };
             match res {
                 Ok((n, _)) => {
-                    trace!(
-                        "read {} bytes from RTP socket, enqueue in stream {}",
-                        n,
-                        self.next_stream_id
-                    );
-                    if n - 1 == self.stop_msg.len() && &self.buf[..n - 1] == &self.stop_msg {
-                        // STOP RTP message.
-                        self.is_stopped = true;
-                        debug!("Received the end of the RTP stream");
-                        return;
-                    }
-                    
-                    self.queued_streams.push_back(UDPPacketSendingBuf {
-                        queued_packet: (
-                            self.next_stream_id,
-                            self.buf[..n].to_vec(),
-                        ),
-                        sent: 0,
-                    });
+                    self.handle_new_rtp_frame(n, self.next_stream_id);
                     self.next_stream_id += 4;
                 },
                 Err(e) => {
@@ -243,6 +252,27 @@ impl RtpServer {
                 },
             }
         }
+    }
+
+    #[inline]
+    pub fn handle_new_rtp_frame(&mut self, n: usize, next_stream_id: u64) {
+        trace!(
+            "read {} bytes from RTP socket, enqueue in stream {}",
+            n,
+            next_stream_id
+        );
+        if n - 1 == self.stop_msg.len() && &self.buf[..n - 1] == &self.stop_msg {
+            // STOP RTP message.
+            self.is_stopped = true;
+            debug!("Received the end of the RTP stream");
+            return;
+        }
+
+        self.queued_streams.push_back(UDPPacketSendingBuf {
+            queued_packet: (next_stream_id, self.buf[..n].to_vec()),
+            sent: 0,
+        });
+        self.next_stream_id = next_stream_id;
     }
 
     #[inline]
