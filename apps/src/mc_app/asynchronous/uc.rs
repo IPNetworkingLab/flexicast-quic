@@ -1,6 +1,7 @@
 //! Module for the asynchronous communication with the unicast server instances.
 
 use crate::mc_app::asynchronous::controller::optional_timeout;
+use crate::mc_app::rtp::BufType;
 use crate::mc_app::rtp::RtpServer;
 
 use super::controller;
@@ -105,14 +106,13 @@ impl Client {
                 }
             }
 
-            /// Sends to QUIC RTP frames that must be sent through unicast.
+            // Sends to QUIC RTP frames that must be sent through unicast.
             'rtp: loop {
                 if self.rtp_source.should_send_app_data() {
-                    let (stream_id, app_data) = self.rtp_server.get_app_data();
+                    let (stream_id, app_data) = self.rtp_source.get_app_data();
 
                     match self
-                        .fc_chan
-                        .channel
+                        .conn
                         .stream_priority(stream_id, 0, false)
                     {
                         Ok(()) => (),
@@ -123,8 +123,7 @@ impl Client {
                     }
 
                     let written = match self
-                        .fc_chan
-                        .channel
+                        .conn
                         .stream_send(stream_id, &app_data, true)
                     {
                         Ok(v) => v,
@@ -313,7 +312,7 @@ impl Client {
             return Ok(());
         }
 
-        self.rtp_source.handle_new_rtp_frame(n, stream_id);
+        self.rtp_source.handle_new_rtp_frame(BufType::Buffer(&data), stream_id);
 
         Ok(())
     }

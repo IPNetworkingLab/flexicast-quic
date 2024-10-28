@@ -1578,8 +1578,8 @@ impl MulticastConnection for Connection {
         to_uc_server: bool,
     ) -> Result<u64> {
         if let Some(multicast) = self.multicast.as_ref() {
-            if !matches!(multicast.mc_role, McRole::Client(_)) {
-                return Err(Error::Multicast(McError::McInvalidRole(
+            if matches!(multicast.mc_role, McRole::ServerMulticast) {
+            return Err(Error::Multicast(McError::McInvalidRole(
                     multicast.mc_role,
                 )));
             }

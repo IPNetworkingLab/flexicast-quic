@@ -79,6 +79,11 @@ struct UDPPacketSendingBuf {
     sent: usize,
 }
 
+pub enum BufType<'a> {
+    Size(usize),
+    Buffer(&'a [u8]),
+}
+
 pub struct RtpServer {
     socket: SockType,
     queued_streams: VecDeque<UDPPacketSendingBuf>,
@@ -151,7 +156,7 @@ impl RtpServer {
         })
     }
 
-    pub async fn new_without_socket(stop_msg: &str) -> Self {
+    pub fn new_without_socket(stop_msg: &str) -> Self {
         Self {
             socket: SockType::None,
             queued_streams: VecDeque::new(),
@@ -162,8 +167,8 @@ impl RtpServer {
             last_provided_stream: 0,
             next_stream_id: 3,
 
-            to_quic_filename: to_quic_filename.to_string(),
-            to_wire_filename: to_wire_filename.to_string(),
+            to_quic_filename: "/tmp/out.txt".to_string(),
+            to_wire_filename: "/tmp/out2.txt".to_string(),
             buf: [0; 2000],
 
             stop_msg: stop_msg.as_bytes().to_vec(),
@@ -240,7 +245,7 @@ impl RtpServer {
             };
             match res {
                 Ok((n, _)) => {
-                    self.handle_new_rtp_frame(n, self.next_stream_id);
+                    self.handle_new_rtp_frame(BufType::Size(n), self.next_stream_id);
                     self.next_stream_id += 4;
                 },
                 Err(e) => {
@@ -255,13 +260,17 @@ impl RtpServer {
     }
 
     #[inline]
-    pub fn handle_new_rtp_frame(&mut self, n: usize, next_stream_id: u64) {
+    pub fn handle_new_rtp_frame(&mut self, buf_type: BufType, next_stream_id: u64) {
+        let (n, buf) = match buf_type {
+            BufType::Size(n) => (n, &self.buf[..n]),
+            BufType::Buffer(buff) => (buff.len(), buff),
+        };
         trace!(
             "read {} bytes from RTP socket, enqueue in stream {}",
             n,
             next_stream_id
         );
-        if n - 1 == self.stop_msg.len() && &self.buf[..n - 1] == &self.stop_msg {
+        if n - 1 == self.stop_msg.len() && &buf[..n - 1] == &self.stop_msg {
             // STOP RTP message.
             self.is_stopped = true;
             debug!("Received the end of the RTP stream");
@@ -269,7 +278,7 @@ impl RtpServer {
         }
 
         self.queued_streams.push_back(UDPPacketSendingBuf {
-            queued_packet: (next_stream_id, self.buf[..n].to_vec()),
+            queued_packet: (next_stream_id, buf[..n].to_vec()),
             sent: 0,
         });
         self.next_stream_id = next_stream_id;

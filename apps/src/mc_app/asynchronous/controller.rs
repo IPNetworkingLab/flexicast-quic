@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::time;
+use std::sync::Arc;
 
 use crate::common::ClientIdMap;
 
@@ -310,7 +311,7 @@ impl FcController {
 
             MsgFcCtl::RtpData((data, stream_id)) => {
                 for recv_id in self.unicast_recv.iter() {
-                    let msg = MsgRecv::RtpData((data, stream_id));
+                    let msg = MsgRecv::RtpData((data.clone(), stream_id));
                     self.tx_clients[*recv_id as usize].send(msg).await?;
                 }
             },

@@ -126,6 +126,10 @@ struct Args {
     /// Number of clients to listen before actually sending data to the wire.
     #[clap(long = "wait", value_parser)]
     wait: Option<u64>,
+
+    /// Whether the application allows unicast delivery instead of flexicast.
+    #[clap(long = "unicast")]
+    allow_unicast: bool,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -169,20 +173,16 @@ async fn main() {
     // If no bitrate is provided (i.e., the `bitrates` parameter is not used),
     // creates a single flexicast channel with the classical implemented
     // congestion control algorithm.
-    let mut fc_channels = if args.flexicast {
-        if let Some(bitrates) = args.bitrates.as_ref() {
-            let mut chans = Vec::with_capacity(bitrates.len());
-            for i in 0..bitrates.len() as u8 {
-                let chan = get_multicast_channel(&args, &rng, Some(i)).await;
-                chans.push(chan);
-            }
-            chans
-        } else {
-            let chan = get_multicast_channel(&args, &rng, None).await;
-            vec![chan]
+    let mut fc_channels = if let Some(bitrates) = args.bitrates.as_ref() {
+        let mut chans = Vec::with_capacity(bitrates.len());
+        for i in 0..bitrates.len() as u8 {
+            let chan = get_multicast_channel(&args, &rng, Some(i)).await;
+            chans.push(chan);
         }
+        chans
     } else {
-        Vec::new() // Empty.
+        let chan = get_multicast_channel(&args, &rng, Some(0)).await;
+        vec![chan]
     };
 
     // Channel to communicate with the main thread (this one). Used to notify of
@@ -220,9 +220,9 @@ async fn main() {
     // Get the McAnnounceData to forward them to the clients.
     let mc_announce_data: Vec<_> = if args.flexicast {
         fc_channels
-        .iter()
-        .map(|fc| fc.mc_announce_data.clone())
-        .collect()
+            .iter()
+            .map(|fc| fc.mc_announce_data.clone())
+            .collect()
     } else {
         Vec::new()
     };
@@ -690,7 +690,7 @@ async fn get_multicast_channel(
         channel_id: channel_id_vec,
         auth_type: args.authentication,
         is_ipv6_addr: false,
-        probe_path: true,
+        probe_path: false,
         reset_stream_on_join: true,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,

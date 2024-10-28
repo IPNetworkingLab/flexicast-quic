@@ -3222,9 +3222,7 @@ impl Connection {
                         if let Some(rmc_server) = self
                             .multicast
                             .as_mut()
-                            .map(|mc| {
-                                mc.rmc_get_mut().server_mut()
-                            })
+                            .map(|mc| mc.rmc_get_mut().server_mut())
                             .flatten()
                         {
                             rmc_server.mc_ack.on_stream_ack_received(
@@ -4250,7 +4248,8 @@ impl Connection {
             self.multicast.as_ref().and_then(|mc| mc.get_mc_space_id());
         let mc_nack_range = mc_active_path_id
             .and_then(|space_id| self.mc_nack_range(epoch, space_id as u64));
-        let mc_should_send_nack = !self.is_server && mc_nack_range.is_some() && false;
+        let mc_should_send_nack =
+            !self.is_server && mc_nack_range.is_some() && false;
         let mut fc_sent_path_ack = false;
         let path = self.paths.get_mut(send_pid)?;
 
@@ -4408,7 +4407,9 @@ impl Connection {
                             .spaces
                             .get_mut(epoch, mc_space_id as u64)?;
                         // Send positive ACK even if not ack eliciting!
-                        if pns.recv_pkt_need_ack.len() > 0 {
+                        if pns.recv_pkt_need_ack.len() > 0 &&
+                            (pns.ack_elicited || ack_elicit_required)
+                        {
                             let ack_delay = pns.largest_rx_pkt_time.elapsed();
 
                             let ack_delay = ack_delay.as_micros() as u64 /
@@ -4432,6 +4433,7 @@ impl Connection {
                                     .unwrap()
                                     .rmc_set_send_ack(false);
                                 fc_sent_path_ack = true;
+                                pns.ack_elicited = false;
                             }
                         }
                     } else {
@@ -4821,7 +4823,11 @@ impl Connection {
                 let frame = frame::Frame::McAnnounce {
                     channel_id: mc_announce_data.channel_id.clone(),
                     auth_type: mc_announce_data.auth_type.into(),
-                    is_ipv6_addr: if mc_announce_data.is_ipv6_addr { 1 } else { 0 },
+                    is_ipv6_addr: if mc_announce_data.is_ipv6_addr {
+                        1
+                    } else {
+                        0
+                    },
                     probe_path: if mc_announce_data.probe_path { 1 } else { 0 },
                     reset_stream_on_join: if mc_announce_data.reset_stream_on_join
                     {
@@ -8983,9 +8989,7 @@ impl Connection {
                         // unicat path, and only on the multicast path. As a
                         // result, we do not need to keep track of the path on
                         // which the source symbol is sent.
-                        if let ReliableMc::Server(s) =
-                            multicast.rmc_get_mut()
-                        {
+                        if let ReliableMc::Server(s) = multicast.rmc_get_mut() {
                             s.set_rmc_received_fec_metadata(ranges);
                             return Ok(());
                         }
@@ -9046,9 +9050,7 @@ impl Connection {
                     if multicast.get_mc_space_id() ==
                         Some(space_identifier as usize)
                     {
-                        if let ReliableMc::Server(s) =
-                            multicast.rmc_get_mut()
-                        {
+                        if let ReliableMc::Server(s) = multicast.rmc_get_mut() {
                             s.set_rmc_received_pn(ranges.clone());
                         }
                     }
@@ -9135,9 +9137,8 @@ impl Connection {
                                 new_ack_rs.insert(pn..pn + 1);
                             }
 
-                            if let Some(rmc_server) = multicast
-                                .rmc_get_mut()
-                                .server_mut()
+                            if let Some(rmc_server) =
+                                multicast.rmc_get_mut().server_mut()
                             {
                                 rmc_server.new_ack_pn_fc = new_ack_rs;
                             }
@@ -9273,6 +9274,47 @@ impl Connection {
                         .ok_or(Error::Multicast(McError::McAnnounce))?;
 
                     multicast.fc_chan_id = Some((channel_id.clone(), idx));
+
+                    // The unicast path server may need to implicitly create path
+                    // state if the receiver joined a flexicast flow without path
+                    // probing.
+                    if matches!(
+                        multicast.get_mc_role(),
+                        multicast::McRole::ServerUnicast(_)
+                    ) {
+                        if multicast::McClientAction::try_from(action) ==
+                            Ok(multicast::McClientAction::Join)
+                        {
+                            if let Some(mc_announce) =
+                                multicast.get_mc_announce_data(idx)
+                            {
+                                if !mc_announce.probe_path {
+                                    let src_addr = std::net::IpAddr::V4(
+                                        std::net::Ipv4Addr::from(
+                                            mc_announce.source_ip,
+                                        ),
+                                    );
+                                    let src_addr = std::net::SocketAddr::new(
+                                        src_addr,
+                                        mc_announce.udp_port,
+                                    );
+                                    let dst_addr = std::net::IpAddr::V4(
+                                        std::net::Ipv4Addr::from(
+                                            mc_announce.group_ip,
+                                        ),
+                                    );
+                                    let dst_addr = std::net::SocketAddr::new(
+                                        dst_addr,
+                                        mc_announce.udp_port,
+                                    );
+                                    let fc_space_id = self.create_mc_path(
+                                        src_addr, dst_addr, false,
+                                    )?;
+                                    self.set_mc_space_id(fc_space_id)?;
+                                }
+                            }
+                        }
+                    }
                 } else {
                     return Err(Error::Multicast(multicast::McError::McDisabled));
                 }
@@ -9823,10 +9865,6 @@ impl Connection {
     fn create_path_on_client(
         &mut self, local_addr: SocketAddr, peer_addr: SocketAddr,
     ) -> Result<usize> {
-        if self.is_server {
-            return Err(Error::InvalidState);
-        }
-
         // If we use zero-length SCID and go over our local active CID limit,
         // the `insert_path()` call will raise an error.
         if !self.ids.zero_length_scid() && self.ids.available_scids() == 0 {

@@ -53,7 +53,8 @@ pub struct FcChannelAsync {
     pub bitrate_unlimited: bool,
 
     /// Whether unicast fall-back is used.
-    /// Used to know whether the source must forward application data to the controller.
+    /// Used to know whether the source must forward application data to the
+    /// controller.
     pub allow_unicast: bool,
 
     /// Whether flexicast is enabled.
@@ -103,6 +104,7 @@ impl FcChannelAsync {
                     // On timeout, also delegate lost STREAM frames to the controller,
                     // that will dispatch them to all unicast paths for retransmission.
                     let delegated_streams = self.fc_chan.channel.fc_get_delegated_stream()?;
+                    debug!("Delegates streams: {:?}", delegated_streams.len());
                     let del_streams_msg = MsgFcCtl::DelegateStreams((self.id, delegated_streams));
                     self.sync_tx.send(del_streams_msg).await?;
 
@@ -151,9 +153,13 @@ impl FcChannelAsync {
                 if self.rtp_server.should_send_app_data() {
                     let (stream_id, app_data) = self.rtp_server.get_app_data();
 
-                    // If allow unicast, sends the data to the controller to ensure that all unicast receiver get it.
+                    // If allow unicast, sends the data to the controller to
+                    // ensure that all unicast receiver get it.
                     if self.allow_unicast {
-                        let msg = MsgFcCtl::RtpData((Arc::new(app_data), stream_id));
+                        let msg = MsgFcCtl::RtpData((
+                            Arc::new(app_data.clone()),
+                            stream_id,
+                        ));
                         self.sync_tx.send(msg).await?;
                     }
 
@@ -191,42 +197,42 @@ impl FcChannelAsync {
                 }
             }
 
-            // Generate outgoing QUIC packets to send on the Flexicast path.
-            'fc: loop {
-                // Do nothing if flexicast is disabled.
-                if !self.do_flexicast {
-                    break 'fc;
-                }
+            // Do nothing if flexicast is disabled.
+            if self.do_flexicast {
+                // Generate outgoing QUIC packets to send on the Flexicast path.
+                'fc: loop {
+                    // Ask quiche to generate the packets.
+                    let (write, send_info) =
+                        match self.fc_chan.mc_send(&mut buf[..]) {
+                            Ok(v) => v,
 
-                // Ask quiche to generate the packets.
-                let (write, send_info) = match self.fc_chan.mc_send(&mut buf[..])
-                {
-                    Ok(v) => v,
+                            Err(quiche::Error::Done) => break,
 
-                    Err(quiche::Error::Done) => break,
+                            Err(e) => {
+                                error!("Flexicast send() failed: {:?}", e);
+                                break 'fc;
+                            },
+                        };
 
-                    Err(e) => {
-                        error!("Flexicast send() failed: {:?}", e);
-                        break 'fc;
-                    },
-                };
-
-                // Send the packets on the wire.
-                if !self.must_wait {
-                    //for send_to_addr in [self.fc_chan.mc_send_addr, second_mc_addr] {
+                    // Send the packets on the wire.
+                    if !self.must_wait {
+                        // for send_to_addr in [self.fc_chan.mc_send_addr,
+                        // second_mc_addr] {
                         let mut off = 0;
                         let mut left = write;
                         let mut written = 0;
-    
+
                         while left > 0 {
-                            let pkt_len = cmp::min(left, super::MAX_DATAGRAM_SIZE);
-    
+                            let pkt_len =
+                                cmp::min(left, super::MAX_DATAGRAM_SIZE);
+
                             match self
                                 .socket
                                 .send_to(
                                     &buf[off..off + pkt_len],
                                     self.fc_chan.mc_send_addr,
-                                ).await
+                                )
+                                .await
                             {
                                 Ok(v) => written += v,
                                 Err(e) => {
@@ -234,7 +240,7 @@ impl FcChannelAsync {
                                         debug!("Flexicast send() would block");
                                         break 'fc;
                                     }
-    
+
                                     panic!("Flexicast send() failed: {:?}", e);
                                 },
                             }
@@ -245,19 +251,19 @@ impl FcChannelAsync {
                             "Flexicast written {:?} bytes to {:?}",
                             written, send_info
                         );
-                    // }
-
-                } else {
-                    debug!("Not actually sending data on the wire because we wait...");
+                        // }
+                    } else {
+                        debug!("Not actually sending data on the wire because we wait...");
+                    }
                 }
-            }
 
-            // Notify the controller of the sent packets.
-            self.sent_pkt_to_controller().await?;
+                // Notify the controller of the sent packets.
+                self.sent_pkt_to_controller().await?;
 
-            // Potentially unlimit the congestion window.
-            if self.bitrate_unlimited {
-                self.fc_chan.channel.mc_set_cwnd(usize::MAX - 1000);
+                // Potentially unlimit the congestion window.
+                if self.bitrate_unlimited {
+                    self.fc_chan.channel.mc_set_cwnd(usize::MAX - 1000);
+                }
             }
         }
 
@@ -299,6 +305,7 @@ impl FcChannelAsync {
             Err(e) => return Err(e.into()),
         };
 
+        println!("SENT PKT");
         let msg = MsgFcCtl::Sent((self.id, sent));
         self.sync_tx.send(msg).await?;
 

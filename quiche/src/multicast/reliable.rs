@@ -312,7 +312,8 @@ impl ReliableMulticastConnection for Connection {
                 random.fill(&mut random_v).ok();
                 let additional_timer = i32::from_be_bytes(random_v) as i128;
                 let et_with_random = expiration_timer as i128 / 2 +
-                    (additional_timer % ((expiration_timer / 10) as i128));
+                    (additional_timer %
+                        ((expiration_timer / 10).max(1) as i128));
                 rmc.rmc_next_time_ack = now.checked_add(
                     time::Duration::from_millis(et_with_random as u64),
                 );
@@ -647,6 +648,11 @@ pub mod testing {
         pub fn new_reliable(
             nb_clients: usize, keylog_filename: &str, fc_config: &mut FcConfig,
         ) -> Result<MulticastPipe> {
+            let probe_path = fc_config.probe_mc_path;
+            fc_config
+                .mc_announce_data
+                .iter_mut()
+                .for_each(|mc| mc.probe_path = probe_path);
             Self::new(nb_clients, keylog_filename, fc_config)
         }
 
