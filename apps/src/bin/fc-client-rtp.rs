@@ -543,8 +543,7 @@ fn main() {
                                         .unwrap()
                                         .group_ip
                                         .to_owned(),
-                                ), // &args.local_ip
-                                &"11.1.6.2".parse().unwrap(),
+                                ), &args.local_ip
                             )
                             .unwrap();
                     }
