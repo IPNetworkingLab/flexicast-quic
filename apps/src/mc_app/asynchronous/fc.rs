@@ -305,7 +305,6 @@ impl FcChannelAsync {
             Err(e) => return Err(e.into()),
         };
 
-        println!("SENT PKT");
         let msg = MsgFcCtl::Sent((self.id, sent));
         self.sync_tx.send(msg).await?;
 
