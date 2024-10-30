@@ -62,11 +62,6 @@ struct Args {
     #[clap(long = "cert-path", value_parser, default_value = "./src/bin")]
     cert_path: Box<Path>,
 
-    /// Whether the multicast packet is proxied. In this case, the provided
-    /// address will receive the multicast packet to transmit.
-    #[clap(long = "proxy")]
-    proxy_addr: Option<net::SocketAddr>,
-
     /// Multicast address.
     #[clap(
         long = "mc-addr",
@@ -130,6 +125,10 @@ struct Args {
     /// Whether the application allows unicast delivery instead of flexicast.
     #[clap(long = "unicast")]
     allow_unicast: bool,
+
+    /// Whether the flexicast flow must be created using path probing.
+    #[clap(long = "probe-path")]
+    probe_path: bool,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -671,7 +670,7 @@ async fn get_multicast_channel(
     let fc_config = FcConfig {
         authentication: args.authentication,
         use_fec: true,
-        probe_mc_path: false,
+        probe_mc_path: args.probe_path,
         mc_cwnd: args.fc_cwnd,
         ..Default::default()
     };
@@ -690,7 +689,7 @@ async fn get_multicast_channel(
         channel_id: channel_id_vec,
         auth_type: args.authentication,
         is_ipv6_addr: false,
-        probe_path: false,
+        probe_path: args.probe_path,
         reset_stream_on_join: true,
         source_ip: [127, 0, 0, 1],
         group_ip: mc_addr_bytes,

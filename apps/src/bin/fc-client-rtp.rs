@@ -109,6 +109,11 @@ struct Args {
     /// client can use 1-RTT changes.
     #[clap(long = "change", value_parser = clap::value_parser!(ChangeFcChan))]
     change_fc_chan: Option<ChangeFcChan>,
+
+    /// Whether the receiver must do explicit PATH_ACK acknowledgment.
+    /// Concretelly, it will make PATH_ACK frames for the flexicast flow ack eliciting by adding a PING frame.
+    #[clap(long = "ack-elicit")]
+    make_ack_elicit: bool,
 }
 
 fn main() {
@@ -518,6 +523,8 @@ fn main() {
                                 Some(&mc_announce_data.channel_id),
                             )
                             .unwrap();
+
+                            conn.fc_make_ack_elicit(args.make_ack_elicit).unwrap();
                         }
                         mc_socket_opt = Some(mc_socket);
                     }

@@ -4250,7 +4250,7 @@ impl Connection {
             .and_then(|space_id| self.mc_nack_range(epoch, space_id as u64));
         let mc_should_send_nack =
             !self.is_server && mc_nack_range.is_some() && false;
-        let mut fc_sent_path_ack = false;
+        let mut fc_make_path_ack_elicit = false;
         let path = self.paths.get_mut(send_pid)?;
 
         // Create ACK_MP frames if needed.
@@ -4432,7 +4432,11 @@ impl Connection {
                                     .as_mut()
                                     .unwrap()
                                     .rmc_set_send_ack(false);
-                                fc_sent_path_ack = true;
+                                fc_make_path_ack_elicit = self
+                                    .multicast
+                                    .as_ref()
+                                    .unwrap()
+                                    .fc_make_ack_elicit;
                                 pns.ack_elicited = false;
                             }
                         }
@@ -5508,7 +5512,7 @@ impl Connection {
         // - if we've sent too many non ack-eliciting packets without having
         // sent an ACK eliciting one; OR
         // - the application requested an ack-eliciting frame be sent.
-        if (ack_elicit_required || path.needs_ack_eliciting || fc_sent_path_ack) &&
+        if (ack_elicit_required || path.needs_ack_eliciting || fc_make_path_ack_elicit) &&
             !ack_eliciting &&
             left >= 1 && // /!\ Commenting this line breaks the test tests::sends_ack_only_pkt_when_full_cwnd_and_ack_elicited_despite_max_unacknowledging.
             !is_closing

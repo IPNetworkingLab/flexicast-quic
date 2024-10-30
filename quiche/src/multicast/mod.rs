@@ -403,6 +403,11 @@ pub struct MulticastAttributes {
     /// Flexicast channel ID that the client joins, and index in the list of
     /// received McAnnounceData.
     pub(crate) fc_chan_id: Option<(Vec<u8>, usize)>,
+
+    /// Whether the receiver must do explicit PATH_ACK acknowledgment.
+    /// Concretelly, it will make PATH_ACK frames for the flexicast flow ack
+    /// eliciting by adding a PING frame.
+    pub(crate) fc_make_ack_elicit: bool,
 }
 
 impl MulticastAttributes {
@@ -852,6 +857,7 @@ impl Default for MulticastAttributes {
             cur_max_pn: 0,
             fc_rotate: None,
             fc_chan_id: None,
+            fc_make_ack_elicit: false,
         }
     }
 }
@@ -1579,7 +1585,7 @@ impl MulticastConnection for Connection {
     ) -> Result<u64> {
         if let Some(multicast) = self.multicast.as_ref() {
             if matches!(multicast.mc_role, McRole::ServerMulticast) {
-            return Err(Error::Multicast(McError::McInvalidRole(
+                return Err(Error::Multicast(McError::McInvalidRole(
                     multicast.mc_role,
                 )));
             }
@@ -1700,7 +1706,9 @@ impl MulticastConnection for Connection {
 
             // Unicast connection asks for the oldest valid packet number of the
             // multicast path.
-            self.fc_set_last_expired(mc_channel.multicast.as_ref().unwrap().mc_last_expired);
+            self.fc_set_last_expired(
+                mc_channel.multicast.as_ref().unwrap().mc_last_expired,
+            );
             let multicast = self.multicast.as_mut().unwrap();
 
             // Flexicast stream rotation.
@@ -1999,6 +2007,16 @@ impl Connection {
                 }
             }
         }
+    }
+
+    /// Whether the receiver must do explicit PATH_ACK acknowledgment.
+    /// Concretelly, it will make PATH_ACK frames for the flexicast flow ack
+    /// eliciting by adding a PING frame.
+    pub fn fc_make_ack_elicit(&mut self, make_ack_elicit: bool) -> Result<()> {
+        if let Some(fc) = self.multicast.as_mut() {
+            fc.fc_make_ack_elicit = make_ack_elicit;
+        }
+        Err(Error::Multicast(McError::McDisabled))
     }
 }
 
