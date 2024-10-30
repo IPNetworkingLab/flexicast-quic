@@ -2015,6 +2015,7 @@ impl Connection {
     pub fn fc_make_ack_elicit(&mut self, make_ack_elicit: bool) -> Result<()> {
         if let Some(fc) = self.multicast.as_mut() {
             fc.fc_make_ack_elicit = make_ack_elicit;
+            return Ok(())
         }
         Err(Error::Multicast(McError::McDisabled))
     }
