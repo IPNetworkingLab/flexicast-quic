@@ -654,7 +654,7 @@ fn get_config(
         .unwrap();
 
     if !multicast {
-        config.set_max_idle_timeout(10_000);
+        config.set_max_idle_timeout(100_000);
     }
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
