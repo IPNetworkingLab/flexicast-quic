@@ -36,6 +36,9 @@ pub struct Client {
 
     /// Give an RTP source in case the receiver uses unicast.
     pub rtp_source: RtpServer,
+
+    /// Give a socket to send data in the network using unicast.
+    pub uc_sock: Arc<tokio::net::UdpSocket>,
 }
 
 impl Client {
@@ -157,13 +160,8 @@ impl Client {
                     },
                 };
 
-                // Send the packet to the main thread to send it on the wire.
-                let msg = MsgMain::SendPkt((buf[..write].to_vec(), send_info));
-                debug!(
-                    "Send packet to main thread with send_info={:?}",
-                    send_info
-                );
-                self.tx_main.send(msg).await?;
+                // Send the packet directly to the wire without going by the main thread.
+                self.uc_sock.send_to(&buf[..write], send_info.to).await?;
             }
 
             // Exit the stap if the connection is closed.

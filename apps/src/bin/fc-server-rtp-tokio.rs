@@ -8,6 +8,7 @@ use std::net;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::path::Path;
+use std::sync::Arc;
 use std::u64;
 
 use quiche_apps::mc_app::asynchronous::controller::handle_msg;
@@ -142,7 +143,7 @@ async fn main() {
     let args = Args::parse();
 
     // Create the general UDP socket that will listen to new incoming connections.
-    let socket = tokio::net::UdpSocket::bind(args.src_addr).await.unwrap();
+    let socket = Arc::new(tokio::net::UdpSocket::bind(args.src_addr).await.unwrap());
 
     // Create the configuration for the QUIC connections.
     let mut config = get_config(&args);
@@ -487,6 +488,7 @@ async fn main() {
                 tx_tcl: tx_fc_ctl.clone(),
                 tx_main: tx_main.clone(),
                 rtp_source: RtpServer::new_without_socket(&args.rtp_stop),
+                uc_sock: socket.clone(),
             };
 
             // Notify the controller with a new client.
