@@ -127,6 +127,10 @@ struct Args {
     #[clap(long = "unicast")]
     allow_unicast: bool,
 
+    /// Whether the unicast path has unlimited congestion window.
+    #[clap(long = "unicast-unlimited-cwnd")]
+    uc_unlimited_cwnd: bool,
+
     /// Whether the flexicast flow must be created using path probing.
     #[clap(long = "probe-path")]
     probe_path: bool,
@@ -489,6 +493,7 @@ async fn main() {
                 tx_main: tx_main.clone(),
                 rtp_source: RtpServer::new_without_socket(&args.rtp_stop),
                 uc_sock: socket.clone(),
+                unlimited_cwnd: args.uc_unlimited_cwnd,
             };
 
             // Notify the controller with a new client.

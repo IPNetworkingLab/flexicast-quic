@@ -39,6 +39,9 @@ pub struct Client {
 
     /// Give a socket to send data in the network using unicast.
     pub uc_sock: Arc<tokio::net::UdpSocket>,
+
+    /// Whether the unicast path has unlimited congestion window.
+    pub unlimited_cwnd: bool,
 }
 
 impl Client {
@@ -176,6 +179,11 @@ impl Client {
 
             // Send control information to the controller.
             self.send_ctl_info().await?;
+
+            // Force an unlimited window if asked.
+            if self.unlimited_cwnd {
+                self.conn.fc_force_cwin_path_id(0, usize::MAX - 1000);
+            }
         }
 
         Ok(())

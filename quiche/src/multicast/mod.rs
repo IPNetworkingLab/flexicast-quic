@@ -2002,10 +2002,15 @@ impl Connection {
     pub fn mc_set_cwnd(&mut self, cwnd: usize) {
         if let Some(multicast) = self.multicast.as_ref() {
             if let Some(mc_space_id) = multicast.get_mc_space_id() {
-                if let Ok(path) = self.paths.get_mut(mc_space_id) {
-                    path.recovery.mc_force_cwin(cwnd);
-                }
+                self.fc_force_cwin_path_id(mc_space_id, cwnd);
             }
+        }
+    }
+
+    /// Force the congestion window to a given value on the given path id, if it exists.
+    pub fn fc_force_cwin_path_id(&mut self, path_id: usize, cwin: usize) {
+        if let Ok(path) = self.paths.get_mut(path_id) {
+            path.recovery.mc_force_cwin(cwin);
         }
     }
 
