@@ -4312,10 +4312,9 @@ impl Connection {
                             .get_mut(epoch, space_id)?;
                         if pns.recv_pkt_need_ack.len() > 0 &&
                             (pns.ack_elicited ||
-                                ack_elicit_required ||
-                                mc_should_send_nack &&
-                                    Some(space_id as usize) ==
-                                        mc_active_path_id)
+                                ack_elicit_required) &&
+                                    Some(space_id as usize) !=
+                                        mc_active_path_id
                         {
                             let ack_delay = pns.largest_rx_pkt_time.elapsed();
 
@@ -4324,32 +4323,7 @@ impl Connection {
                                     self.local_transport_params.ack_delay_exponent
                                         as u32,
                                 );
-                            let ecn_counts = if mc_should_send_nack {
-                                let nb_degree_needed_opt: Option<u64> =
-                                    self.fec_decoder.nb_missing_degrees();
-                                let max_pn =
-                                    self.multicast.as_ref().unwrap().mc_max_pn;
-                                if let Some(nb_degree_needed) =
-                                    nb_degree_needed_opt
-                                {
-                                    self.multicast
-                                        .as_mut()
-                                        .unwrap()
-                                        .set_mc_nack_ranges(
-                                            Some((
-                                                mc_nack_range.as_ref().unwrap(),
-                                                max_pn,
-                                            )),
-                                            Some(nb_degree_needed),
-                                        )?;
-                                    Some(EcnCounts::new(nb_degree_needed, 0, 0))
-                                } else {
-                                    continue; // Does not generate ACKMP if no
-                                              // missing symbol for FEC.
-                                }
-                            } else {
-                                None
-                            };
+                            let ecn_counts = None;
 
                             let frame = frame::Frame::ACKMP {
                                 space_identifier: space_id,
@@ -19137,7 +19111,6 @@ mod tests {
     }
 }
 
-use crate::frame::EcnCounts;
 use crate::multicast::authentication::McAuthType;
 use crate::multicast::authentication::McAuthentication;
 use crate::multicast::reliable::ReliableMc;
