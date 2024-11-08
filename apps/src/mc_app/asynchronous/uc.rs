@@ -8,6 +8,7 @@ use super::controller;
 use super::controller::MsgFcCtl;
 use super::controller::MsgMain;
 use super::controller::MsgRecv;
+use super::scheduler::FcFlowAliveScheduler;
 use super::Result;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::McClientStatus;
@@ -42,6 +43,8 @@ pub struct Client {
 
     /// Whether the unicast path has unlimited congestion window.
     pub unlimited_cwnd: bool,
+
+    pub fcf_scheduler: Option<FcFlowAliveScheduler>,
 }
 
 impl Client {
@@ -69,11 +72,30 @@ impl Client {
         let mut buf = [0u8; 1500];
         loop {
             let timeout = self.conn.timeout();
+            let now = std::time::Instant::now();
+            let fcf_timeout = self
+                .fcf_scheduler
+                .as_ref()
+                .map(|s| s.fcf_timeout(now))
+                .flatten();
+            let fc_chan_id = self
+                .conn
+                .get_multicast_attributes()
+                .map(|mc| mc.get_fc_chan_id().map(|(_, id)| *id as u64))
+                .flatten();
 
             if !first_read {
                 tokio::select! {
                     // Timeout sleep.
                     Some(_) = optional_timeout(timeout) => self.conn.on_timeout(),
+
+                    // Flexicast flow timeout sleep.
+                    Some(_) = optional_timeout(fcf_timeout) => {
+                        info!("Receiver {} flexicast flow timeout. Unicast fall-back", self.client_id);
+                        self.fcf_scheduler.as_mut().map(|s| s.uc_fall_back());
+                        let msg = MsgFcCtl::RecvUcFallBack((self.client_id, fc_chan_id.unwrap()));
+                        self.tx_tcl.send(msg).await?;
+                    },
 
                     // Data on the control channel.
                     Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
@@ -109,6 +131,10 @@ impl Client {
                     let msg = MsgFcCtl::RecvReady(self.client_id);
                     self.tx_tcl.send(msg).await.unwrap();
                     sent_ready = true;
+                    if let Some(ref mut scheduler) = self.fcf_scheduler {
+                        let now = std::time::Instant::now();
+                        scheduler.set_fcf_alive(now);
+                    }
                 }
             }
 
@@ -117,10 +143,7 @@ impl Client {
                 if self.rtp_source.should_send_app_data() {
                     let (stream_id, app_data) = self.rtp_source.get_app_data();
 
-                    match self
-                        .conn
-                        .stream_priority(stream_id, 0, false)
-                    {
+                    match self.conn.stream_priority(stream_id, 0, false) {
                         Ok(()) => (),
                         Err(quiche::Error::StreamLimit) => (),
                         Err(quiche::Error::Done) => (),
@@ -128,14 +151,12 @@ impl Client {
                             panic!("Error while setting stream priority: {:?}", e),
                     }
 
-                    let written = match self
-                        .conn
-                        .stream_send(stream_id, &app_data, true)
-                    {
-                        Ok(v) => v,
-                        Err(quiche::Error::Done) => break 'rtp,
-                        Err(e) => panic!("Other error: {:?}", e),
-                    };
+                    let written =
+                        match self.conn.stream_send(stream_id, &app_data, true) {
+                            Ok(v) => v,
+                            Err(quiche::Error::Done) => break 'rtp,
+                            Err(e) => panic!("Other error: {:?}", e),
+                        };
 
                     self.rtp_source.stream_written(written);
                 } else {
@@ -163,7 +184,8 @@ impl Client {
                     },
                 };
 
-                // Send the packet directly to the wire without going by the main thread.
+                // Send the packet directly to the wire without going by the main
+                // thread.
                 self.uc_sock.send_to(&buf[..write], send_info.to).await?;
             }
 
@@ -243,10 +265,29 @@ impl Client {
             let msg = MsgFcCtl::AckData((
                 self.client_id,
                 fc_id.unwrap() as u64,
-                ack_pn,
+                ack_pn.clone(),
                 ack_stream,
             ));
             self.tx_tcl.send(msg).await?;
+
+            // Also update state of the scheduler.
+            // Maybe now we received acknowkledgment from the receiver that will
+            // update its state in the flexicast flow.
+            if let Some(fc_scheduler) = self.fcf_scheduler.as_mut() {
+                let last_received = ack_pn.unwrap().last();
+                if let Some(pn) = last_received {
+                    let now = std::time::Instant::now();
+                    let fcf_now_alive = fc_scheduler.on_ack_received(pn, now);
+                    if fcf_now_alive {
+                        self.tx_tcl
+                            .send(controller::MsgFcCtl::Join((
+                                self.client_id,
+                                fc_id.unwrap() as u64,
+                            )))
+                            .await?;
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -318,7 +359,8 @@ impl Client {
             return Ok(());
         }
 
-        self.rtp_source.handle_new_rtp_frame(BufType::Buffer(&data), stream_id);
+        self.rtp_source
+            .handle_new_rtp_frame(BufType::Buffer(&data), stream_id);
 
         Ok(())
     }

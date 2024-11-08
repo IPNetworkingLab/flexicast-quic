@@ -121,6 +121,13 @@ impl McAck {
         self.nb_recv += 1;
     }
 
+    /// Removes a receiver from the structure.
+    /// FC-TODO: this may break things...
+    pub fn remove_recv(&mut self) {
+        warn!("Removing a receiver from the MC ACK. May break things.");
+        self.nb_recv -= 1;
+    }
+
     /// Adds a new ACK from a client. Assumes that this is the first time the
     /// client sends this range of ACKs. Potentially generates new fully ack
     /// packets thanks to this range.

@@ -74,6 +74,9 @@ pub enum MsgFcCtl {
     /// The controller is in charge to split the traffic towards the corrected
     /// receivers, i.e., receivers that are not part of a flexicast flow.
     RtpData((Arc<Vec<u8>>, u64)),
+
+    /// The receiver falls-back on unicast and must receive content through its unicast path.
+    RecvUcFallBack((u64, u64)),
 }
 
 /// Messages sent to the receiver.
@@ -257,11 +260,13 @@ impl FcController {
 
             MsgFcCtl::Join((client_id, fc_chan_id)) => {
                 debug!("New client {client_id} joins flow {fc_chan_id}");
-                _ = self.active_clients[fc_chan_id as usize].insert(client_id);
+                let new_insert = self.active_clients[fc_chan_id as usize].insert(client_id);
                 _ = self.unicast_recv.remove(&client_id);
-                self.mc_acks[fc_chan_id as usize].new_recv(
-                    self.last_expired_pn[fc_chan_id as usize].unwrap_or(0),
-                );
+                if new_insert {
+                    self.mc_acks[fc_chan_id as usize].new_recv(
+                        self.last_expired_pn[fc_chan_id as usize].unwrap_or(0),
+                    );
+                }
             },
 
             MsgFcCtl::Change((client_id, old_fc_chan_id, new_fc_chan_id)) => {
@@ -315,6 +320,14 @@ impl FcController {
                     self.tx_clients[*recv_id as usize].send(msg).await?;
                 }
             },
+
+            MsgFcCtl::RecvUcFallBack((id, fc_chan_id)) => {
+                debug!("Receiver {id} falls back on unicast");
+                _ = self.active_clients[fc_chan_id as usize].remove(&id);
+                _ = self.unicast_recv.insert(id);
+                // FC-TODO: remove the receiver from the mc_acks!
+                self.mc_acks[fc_chan_id as usize].remove_recv();
+            }
         }
 
         Ok(())

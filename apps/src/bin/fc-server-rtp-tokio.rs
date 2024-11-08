@@ -16,6 +16,7 @@ use quiche_apps::mc_app::asynchronous::controller::optional_timeout;
 use quiche_apps::mc_app::asynchronous::controller::MsgFcCtl;
 use quiche_apps::mc_app::asynchronous::controller::MsgRecv;
 use quiche_apps::mc_app::asynchronous::fc::FcChannelInfo;
+use quiche_apps::mc_app::asynchronous::scheduler::FcFlowAliveScheduler;
 use tokio::sync::mpsc;
 
 use clap::Parser;
@@ -134,6 +135,10 @@ struct Args {
     /// Whether the flexicast flow must be created using path probing.
     #[clap(long = "probe-path")]
     probe_path: bool,
+
+    /// Unicast fall-back delay for the scheduler, in ms.
+    #[clap(long = "fall-back-delay", value_parser)]
+    fall_back_delay: Option<u64>,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -147,7 +152,8 @@ async fn main() {
     let args = Args::parse();
 
     // Create the general UDP socket that will listen to new incoming connections.
-    let socket = Arc::new(tokio::net::UdpSocket::bind(args.src_addr).await.unwrap());
+    let socket =
+        Arc::new(tokio::net::UdpSocket::bind(args.src_addr).await.unwrap());
 
     // Create the configuration for the QUIC connections.
     let mut config = get_config(&args);
@@ -159,6 +165,9 @@ async fn main() {
     let mut clients_ids = ClientIdMap::new();
     let mut next_client_id = 0;
     let local_addr = socket.local_addr().unwrap();
+    let fall_back_delay = args
+        .fall_back_delay
+        .map(|d| std::time::Duration::from_millis(d));
 
     // Sanity check: there are the same number of flexicast instances as RTP
     // sources, if flexicast is enabled.
@@ -494,6 +503,10 @@ async fn main() {
                 rtp_source: RtpServer::new_without_socket(&args.rtp_stop),
                 uc_sock: socket.clone(),
                 unlimited_cwnd: args.uc_unlimited_cwnd,
+                fcf_scheduler: Some(FcFlowAliveScheduler::new(
+                    fall_back_delay,
+                    None,
+                )),
             };
 
             // Notify the controller with a new client.
