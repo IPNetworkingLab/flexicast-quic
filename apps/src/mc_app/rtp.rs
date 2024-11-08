@@ -270,7 +270,7 @@ impl RtpServer {
             n,
             next_stream_id
         );
-        if n - 1 == self.stop_msg.len() && &buf[..n - 1] == &self.stop_msg {
+        if n >= self.stop_msg.len() && n.abs_diff(self.stop_msg.len()) <= 1 && &buf[..self.stop_msg.len()] == &self.stop_msg {
             // STOP RTP message.
             self.is_stopped = true;
             debug!("Received the end of the RTP stream");
