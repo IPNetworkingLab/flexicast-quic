@@ -77,8 +77,8 @@ impl MulticastRecovery for crate::recovery::Recovery {
         let mut expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
-                now.saturating_duration_since(p.time_sent) >=
-                    Duration::from_millis(timer)
+                now.saturating_duration_since(p.time_sent)
+                    >= Duration::from_millis(timer)
             })
             .filter(|p| p.time_acked.is_none() && p.pkt_num.0 == space_id);
 
@@ -88,8 +88,9 @@ impl MulticastRecovery for crate::recovery::Recovery {
         let exp3 = expired_sent.clone();
         let fec_medatadas = exp3.flat_map(|p| {
             p.frames.as_ref().iter().filter_map(|f| match f {
-                crate::frame::Frame::SourceSymbolHeader { metadata, .. } =>
-                    Some(source_symbol_metadata_to_u64(*metadata)),
+                crate::frame::Frame::SourceSymbolHeader { metadata, .. } => {
+                    Some(source_symbol_metadata_to_u64(*metadata))
+                },
                 _ => None,
             })
         });
@@ -146,9 +147,14 @@ pub trait ReliableMulticastRecovery {
     ///
     /// Returns the number of STREAM frames lost that will be retransmitted to
     /// the client on the unicast path.
+    ///
+    /// The `full_retransmit` flag is set whether all packets that are
+    /// not acknowledged by the receiver MUST be retransmitted,
+    /// even if they are not considered lost by the flexicast source.
+    /// This may be used, e.g., when a receiver falls back on unicast.
     fn deleguate_stream(
         &mut self, uc: &mut Connection, space_id: u32,
-        local_streams: &mut StreamMap, mc_ack: &mut McAck,
+        local_streams: &mut StreamMap, mc_ack: &mut McAck, full_retransmit: bool,
     ) -> Result<(u64, (RangeSet, RangeSet))>;
 
     #[allow(unused)]
@@ -162,7 +168,7 @@ pub trait ReliableMulticastRecovery {
 impl ReliableMulticastRecovery for crate::recovery::Recovery {
     fn deleguate_stream(
         &mut self, uc: &mut Connection, space_id: u32,
-        local_streams: &mut StreamMap, mc_ack: &mut McAck,
+        local_streams: &mut StreamMap, mc_ack: &mut McAck, full_retransmit: bool,
     ) -> Result<(u64, (RangeSet, RangeSet))> {
         let recv_pn = uc.rmc_get_recv_pn()?.to_owned();
         let mut lost_pn = RangeSet::default();
@@ -172,10 +178,15 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let lost_iter = self.sent[Epoch::Application]
             .iter_mut()
             .take_while(|p| {
-                (p.time_lost.is_some() || p.time_acked.is_some()) &&
-                    p.pkt_num.0 == space_id
+                (p.time_lost.is_some()
+                    || p.time_acked.is_some()
+                    || full_retransmit)
+                    && p.pkt_num.0 == space_id
             })
-            .filter(|p| p.time_lost.is_some() && p.pkt_num.0 == space_id);
+            .filter(|p| {
+                (p.time_lost.is_some() || full_retransmit)
+                    && p.pkt_num.0 == space_id
+            });
 
         let mut max_exp_pn: Option<u64> = None;
         let mut max_exp_ss: Option<u64> = None;
@@ -198,8 +209,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
             for r in recv_pn.iter() {
                 let lowest_recovered_in_block = r.start;
                 let largest_recovered_in_block = r.end - 1;
-                if packet.pkt_num.1 >= lowest_recovered_in_block &&
-                    packet.pkt_num.1 <= largest_recovered_in_block
+                if packet.pkt_num.1 >= lowest_recovered_in_block
+                    && packet.pkt_num.1 <= largest_recovered_in_block
                 {
                     continue 'per_packet; // Packet was received.
                 }
@@ -229,8 +240,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                         for r in reco_ss.iter() {
                             let lowest_recovered_in_block = r.start;
                             let largest_recovered_in_block = r.end - 1;
-                            if mdu64 >= lowest_recovered_in_block &&
-                                mdu64 <= largest_recovered_in_block
+                            if mdu64 >= lowest_recovered_in_block
+                                && mdu64 <= largest_recovered_in_block
                             {
                                 // Packet has been recovered through FEC.
                                 continue 'per_packet;
@@ -282,7 +293,9 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
                         // Notify the multicast acknowledgment aggregator that we
                         // deleguate a piece of stream.
-                        mc_ack.delegate(*stream_id, *offset, *length as u64);
+                        if !full_retransmit {
+                            mc_ack.delegate(*stream_id, *offset, *length as u64);
+                        }
 
                         // First mark the stream as rotable for unicast
                         // retransmission if it is the case for the flexicast
@@ -339,17 +352,23 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
 
                         // Notify the unicast instance that this piece of stream
                         // has been deleguated by the flexicast source.
-                        if let Some(mc_ack) = uc
-                            .multicast
-                            .as_mut()
-                            .map(|mc| {
-                                mc.rmc_get_mut()
-                                    .server_mut()
-                                    .map(|s| &mut s.mc_ack)
-                            })
-                            .flatten()
-                        {
-                            mc_ack.delegate(*stream_id, *offset, *length as u64);
+                        // Only notify if this is not a full retransmission,
+                        // i.e., the flexicast source must not be aware that
+                        // the stream was delegated since we entirely rely on unicast now
+                        // (and the stream was not especially considered as lost for the source).
+                        if !full_retransmit {
+                            if let Some(mc_ack) = uc
+                                .multicast
+                                .as_mut()
+                                .map(|mc| {
+                                    mc.rmc_get_mut()
+                                        .server_mut()
+                                        .map(|s| &mut s.mc_ack)
+                                })
+                                .flatten()
+                            {
+                                mc_ack.delegate(*stream_id, *offset, *length as u64);
+                            }
                         }
                     },
                     frame::Frame::McAsym { signature } => {
@@ -381,8 +400,8 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
         let expired_sent = self.sent[Epoch::Application]
             .iter()
             .take_while(|p| {
-                (p.time_lost.is_some() || p.time_acked.is_some()) &&
-                    p.pkt_num.0 == space_id
+                (p.time_lost.is_some() || p.time_acked.is_some())
+                    && p.pkt_num.0 == space_id
             })
             .filter(|p| p.time_lost.is_some() && p.pkt_num.0 == space_id);
 
@@ -549,8 +568,8 @@ impl Recovery {
         let lost_iter = self.sent[Epoch::Application]
             .iter_mut()
             .take_while(|p| {
-                p.pkt_num.0 == space_id &&
-                    (p.time_lost.is_some() || p.time_acked.is_some())
+                p.pkt_num.0 == space_id
+                    && (p.time_lost.is_some() || p.time_acked.is_some())
             })
             .filter(|p| p.time_lost.is_some());
 

@@ -24,6 +24,11 @@ pub struct FcFlowAliveScheduler {
 
     /// The delay before fall-backing the receiver on the unicast path.
     fall_back_delay: Option<time::Duration>,
+
+    /// Whether some data have been retransmitted through the unicast path.
+    /// This will trigger flexicast flow timeout.
+    /// This avoids stating that the flexicast flow is dead when no data is sent.
+    did_uc_retransmit: bool,
 }
 
 impl FcFlowAliveScheduler {
@@ -39,6 +44,7 @@ impl FcFlowAliveScheduler {
             fcf_alive: now.is_some(),
             fcf_last_time: now,
             fall_back_delay,
+            did_uc_retransmit: false,
         }
     }
 
@@ -56,6 +62,9 @@ impl FcFlowAliveScheduler {
             self.fcf_last_recv = Some(last_pn);
             self.fcf_last_time = Some(now);
             self.fcf_alive = true;
+
+            // Reset the fast that we did unicast retransmission to avoid creating a timeout.
+            self.did_uc_retransmit = false;
         } else {
             self.fcf_alive = !self.should_uc_fall_back(now);
         }
@@ -70,6 +79,16 @@ impl FcFlowAliveScheduler {
 
     /// Returns the duration until the flexicast flow timeouts.
     pub fn fcf_timeout(&self, now: time::Instant) -> Option<time::Duration> {
+        // Avoid creating a timeout if it is just that no data was sent on the flexicast flow.
+        if !self.did_uc_retransmit {
+            return None;
+        }
+        
+        // Avoid creating a new timeout if the flexicast flow is already dead.
+        if !self.fcf_alive {
+            return None;
+        }
+
         if let (Some(last_time), Some(delay)) =
             (self.fcf_last_time, self.fall_back_delay)
         {
@@ -81,6 +100,7 @@ impl FcFlowAliveScheduler {
 
     /// Advertises whether the receiver falls-back on unicast.
     pub fn uc_fall_back(&mut self) {
+        info!("Flexicast flow is dead");
         self.fcf_alive = false;
     }
 
@@ -91,8 +111,15 @@ impl FcFlowAliveScheduler {
 
     /// Starts listening to the flexicast flow. Consider it alive.
     pub fn set_fcf_alive(&mut self, now: time::Instant) {
+        info!("Flexicast flow alive!");
         self.fcf_alive = true;
         self.fcf_last_time = Some(now);
+    }
+
+    /// Some data have been retransmitted through the unicast path.
+    /// This notifies the scheduler that the flexicast flow may be dead.
+    pub fn did_uc_retransmit(&mut self) {
+        self.did_uc_retransmit = true;
     }
 }
 

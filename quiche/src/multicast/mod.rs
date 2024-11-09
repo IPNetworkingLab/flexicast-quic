@@ -1469,13 +1469,9 @@ impl MulticastConnection for Connection {
             let path = self.paths.get(1).ok()?;
             path.recovery.loss_detection_timer()
         } else {
-            let fc_idx = fc_chan_idx!(multicast).ok()?;
-            let expiration_timer =
-                multicast.get_mc_announce_data(fc_idx)?.expiration_timer;
-            Some(
-                multicast.mc_last_time? +
-                    time::Duration::from_millis(expiration_timer * 3),
-            )
+            // FC-TODO: cleaner.
+            let path = self.paths.get(1).ok()?;
+            path.recovery.loss_detection_timer()
         };
         timeout.map(|t| {
             if t <= now {
@@ -1528,6 +1524,7 @@ impl MulticastConnection for Connection {
                                 //     mc_ack.remove_up_to(e);
                                 // }
                             }
+                            info!("Ask to send ack eliciting on path with id {space_id}");
                             self.send_ack_eliciting_on_path_with_id(space_id)?;
 
                             Ok(exp_pkt)

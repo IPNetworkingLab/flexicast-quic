@@ -137,6 +137,8 @@ fn main() {
     let mut did_change = false;
     let mut current_fc_idx = args.idx_fc_chan;
 
+    let mut nb_recv = 0;
+
     // Whether the client must leave the multicast socket.
     let mut must_leave_mc_sock = false;
 
@@ -629,6 +631,7 @@ fn main() {
                 if fin {
                     let now_st = SystemTime::now();
                     rtp_client.on_stream_complete(stream_id, now_st, total);
+                    nb_recv += 1;
                 }
             }
         }
@@ -641,6 +644,8 @@ fn main() {
             .output()
             .expect("Failed to kill GStreamer sink.");
     }
+
+    println!("RESULT-NB-PKT-RECV {nb_recv}");
 }
 
 fn get_config(

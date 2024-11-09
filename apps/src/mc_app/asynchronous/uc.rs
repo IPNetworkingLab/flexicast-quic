@@ -91,10 +91,15 @@ impl Client {
 
                     // Flexicast flow timeout sleep.
                     Some(_) = optional_timeout(fcf_timeout) => {
-                        info!("Receiver {} flexicast flow timeout. Unicast fall-back", self.client_id);
-                        self.fcf_scheduler.as_mut().map(|s| s.uc_fall_back());
-                        let msg = MsgFcCtl::RecvUcFallBack((self.client_id, fc_chan_id.unwrap()));
-                        self.tx_tcl.send(msg).await?;
+                        if let Some(scheduler) = self.fcf_scheduler.as_mut() {
+                            let now = std::time::Instant::now();
+                            if scheduler.should_uc_fall_back(now) {
+                                info!("Receiver {} flexicast flow timeout. Unicast fall-back", self.client_id);
+                                self.fcf_scheduler.as_mut().map(|s| s.uc_fall_back());
+                                let msg = MsgFcCtl::RecvUcFallBack((self.client_id, fc_chan_id.unwrap()));
+                                self.tx_tcl.send(msg).await?;
+                            }
+                        }
                     },
 
                     // Data on the control channel.

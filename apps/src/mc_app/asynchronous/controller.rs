@@ -304,7 +304,7 @@ impl FcController {
             },
 
             MsgFcCtl::DelegateStreams((fc_id, delegated_streams)) => {
-                debug!("Flexicast source delegated streams");
+                debug!("Flexicast source delegated streams: {:?}", delegated_streams.len());
                 self.handle_delegated_streams(fc_id, delegated_streams)
                     .await?;
             },
