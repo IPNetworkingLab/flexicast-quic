@@ -604,6 +604,13 @@ impl Connection {
         }
         return Err(Error::Multicast(McError::McDisabled));
     }
+
+    /// Returns whether bytes are in flight on the flexicast path.
+    pub fn fc_bytes_in_flight(&self) -> Option<bool> {
+        fc_chan_idx!(self.multicast.as_ref()?).ok().map(|idx| {
+            self.paths.get(idx).ok().map(|p| p.recovery.bytes_in_flight())
+        }).flatten()
+    }
 }
 
 impl MulticastAttributes {

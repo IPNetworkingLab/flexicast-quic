@@ -629,6 +629,11 @@ impl Recovery {
 
         Ok(delegated_pieces)
     }
+
+    /// Returns whether there are bytes in flight.
+    pub fn bytes_in_flight(&self) -> bool {
+        self.bytes_in_flight > 0
+    }
 }
 
 #[cfg(test)]

@@ -137,8 +137,7 @@ impl Client {
                     self.tx_tcl.send(msg).await.unwrap();
                     sent_ready = true;
                     if let Some(ref mut scheduler) = self.fcf_scheduler {
-                        let now = std::time::Instant::now();
-                        scheduler.set_fcf_alive(now);
+                        scheduler.set_fcf_alive();
                     }
                 }
             }
@@ -229,6 +228,10 @@ impl Client {
 
             MsgRecv::Sent((fc_id, sent)) => {
                 self.conn.fc_on_new_pkt_sent(fc_id, sent)?;
+                if let Some(scheduler) = self.fcf_scheduler.as_mut() {
+                    let now = std::time::Instant::now();
+                    scheduler.on_packet_sent(now);
+                }
             },
 
             MsgRecv::DelegateStreams((fc_id, delegated_streams)) => {
@@ -282,7 +285,7 @@ impl Client {
                 let last_received = ack_pn.unwrap().last();
                 if let Some(pn) = last_received {
                     let now = std::time::Instant::now();
-                    let fcf_now_alive = fc_scheduler.on_ack_received(pn, now);
+                    let fcf_now_alive = fc_scheduler.on_ack_received(pn, now, &self.conn);
                     if fcf_now_alive {
                         self.tx_tcl
                             .send(controller::MsgFcCtl::Join((
