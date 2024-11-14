@@ -103,9 +103,9 @@ impl FcChannelAsync {
 
                     // On timeout, also delegate lost STREAM frames to the controller,
                     // that will dispatch them to all unicast paths for retransmission.
-                    let delegated_streams = self.fc_chan.channel.fc_get_delegated_stream()?;
+                    let delegated_streams = self.fc_chan.channel.fc_get_delegated_stream(false)?;
                     debug!("Delegates streams: {:?}", delegated_streams.len());
-                    let del_streams_msg = MsgFcCtl::DelegateStreams((self.id, delegated_streams));
+                    let del_streams_msg = MsgFcCtl::DelegateStreams((self.id, delegated_streams, false));
                     self.sync_tx.send(del_streams_msg).await?;
 
                 },
@@ -293,6 +293,12 @@ impl FcChannelAsync {
             MsgFcSource::Ready => {
                 self.must_wait = false;
             },
+
+            MsgFcSource::AskStreamPieces => {
+                let delegated_streams = self.fc_chan.channel.fc_get_delegated_stream(true)?;
+                let del_streams_msg = MsgFcCtl::DelegateStreams((self.id, delegated_streams, true));
+                self.sync_tx.send(del_streams_msg).await?;
+            }
         }
 
         Ok(())

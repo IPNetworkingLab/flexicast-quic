@@ -29,9 +29,9 @@ impl SockType {
 }
 
 pub struct RtpClient {
-    frame_recv: Vec<(u64, SystemTime, usize)>,
+    frame_recv: Vec<(u64, SystemTime, usize, Option<u8>)>,
 
-    _output_filename: String,
+    output_filename: String,
 
     udp_sink: Option<UdpSocket>,
 }
@@ -50,15 +50,15 @@ impl RtpClient {
 
         Ok(Self {
             frame_recv: Vec::new(),
-            _output_filename: output_filename.to_owned(),
+            output_filename: output_filename.to_owned(),
             udp_sink,
         })
     }
 
     pub fn on_stream_complete(
-        &mut self, stream_id: u64, now: SystemTime, len: usize,
+        &mut self, stream_id: u64, now: SystemTime, len: usize, from: Option<u8>,
     ) {
-        self.frame_recv.push((stream_id, now, len));
+        self.frame_recv.push((stream_id, now, len, from));
         trace!("RTP Client: stream {stream_id} complete, send {len} bytes to UDP sink");
     }
 
@@ -70,6 +70,20 @@ impl RtpClient {
                     e
                 );
             }
+        }
+    }
+
+    pub fn on_finish(&mut self) {
+        let mut file = std::fs::File::create(&self.output_filename).unwrap();
+        for (stream_id, time, len, from) in self.frame_recv.drain(..) {
+            writeln!(
+                file,
+                "{} {} {} {}",
+                (stream_id - 1) / 4,
+                time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_micros(),
+                len,
+                from.unwrap_or(10),
+            ).unwrap();
         }
     }
 }

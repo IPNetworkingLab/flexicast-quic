@@ -183,7 +183,11 @@ impl Connection {
     /// if the frame needs to be retransmitted.
     ///
     /// FC-TODO: also breaks FEC.
-    pub fn fc_get_delegated_stream(&mut self) -> Result<Vec<FcDelegatedStream>> {
+    /// 
+    /// The `early_retransmit` flag is set whenever the controller asks for
+    /// the delegation of STREAM frames early in the process, i.e., frames that
+    /// may not be lost will be delegated.
+    pub fn fc_get_delegated_stream(&mut self, early_retransmit: bool) -> Result<Vec<FcDelegatedStream>> {
         if self.multicast.is_none() {
             return Err(Error::Multicast(McError::McDisabled));
         }
@@ -203,7 +207,7 @@ impl Connection {
         let streams = &mut self.streams;
         fc_path
             .recovery
-            .fc_get_delegated_stream(space_id as u32, streams)
+            .fc_get_delegated_stream(space_id as u32, streams, early_retransmit)
     }
 
     /// Inserts in the unicast path delegated streams from the flexicast source.

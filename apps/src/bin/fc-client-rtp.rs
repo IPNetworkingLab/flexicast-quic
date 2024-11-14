@@ -252,6 +252,9 @@ fn main() {
 
         poll.poll(&mut events, timeout).unwrap();
 
+        // Little hack to now which socket we are listening on.
+        let mut from_socket_type = 10;
+
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
         'uc_read: loop {
@@ -290,6 +293,7 @@ fn main() {
                     panic!("recv() failed: {:?}", e);
                 },
             };
+            from_socket_type = 0;
             debug!("Recv from socket unicast");
 
             let recv_info = quiche::RecvInfo {
@@ -351,6 +355,7 @@ fn main() {
                         continue 'mc_read;
                     },
                 };
+                from_socket_type = 1;
                 debug!("Recv from socket multicast processed");
             }
         }
@@ -630,7 +635,7 @@ fn main() {
 
                 if fin {
                     let now_st = SystemTime::now();
-                    rtp_client.on_stream_complete(stream_id, now_st, total);
+                    rtp_client.on_stream_complete(stream_id, now_st, total, Some(from_socket_type));
                     nb_recv += 1;
                 }
             }
@@ -645,7 +650,9 @@ fn main() {
             .expect("Failed to kill GStreamer sink.");
     }
 
-    println!("RESULT-NB-PKT-RECV {nb_recv}");
+    rtp_client.on_finish();
+
+    println!("RESULT-NB-STREAM-RECV {nb_recv}");
 }
 
 fn get_config(

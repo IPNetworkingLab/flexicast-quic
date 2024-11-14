@@ -2,8 +2,8 @@
 //! tokio.
 
 use std::collections::HashSet;
-use std::time;
 use std::sync::Arc;
+use std::time;
 
 use crate::common::ClientIdMap;
 
@@ -63,7 +63,10 @@ pub enum MsgFcCtl {
     /// receivers (using their ACK). The controller will handle the dispatch
     /// of the unicast retransmission to simplify the work of the flexicast
     /// source.
-    DelegateStreams((u64, Vec<FcDelegatedStream>)),
+    ///
+    /// The last value indicates either this delegation is issued
+    /// by an early retransmit query from the controller.
+    DelegateStreams((u64, Vec<FcDelegatedStream>, bool)),
 
     /// The new receiver is ready to receive content on the flexicast path.
     RecvReady(u64),
@@ -117,6 +120,12 @@ pub enum MsgFcSource {
 
     /// All intended receivers are ready to receive content.
     Ready,
+
+    /// Asks for a full retransmission.
+    ///
+    /// This call may be triggered if a receiver falls-back on unicast.
+    /// At the same time, will retransmit "lost" frames to all other receivers.
+    AskStreamPieces,
 }
 
 /// Messages sent to the main thread.
@@ -152,6 +161,11 @@ pub struct FcController {
     /// Mapping between the ID of the flexicast source and the IDs of the
     /// clients. Indexed by the the flexicast source ID.
     active_clients: Vec<HashSet<u64>>,
+
+    /// Mapping between the ID of the flexicast source and the IDs of the
+    /// receivers that need early retransmission.
+    /// Indexed by the flexicast source ID.
+    delegated_recv: Vec<HashSet<u64>>,
 
     /// All receivers that currently do not listen to any flexicast flow.
     /// Indexed by the receiver ID.
@@ -205,6 +219,7 @@ impl FcController {
             nb_clients: None,
             tx_clients: Vec::new(),
             active_clients: vec![HashSet::new(); mc_announce_data.len()],
+            delegated_recv: vec![HashSet::new(); mc_announce_data.len()],
             unicast_recv: HashSet::new(),
             mc_acks: vec![McAck::new(); mc_announce_data.len()],
             last_expired_pn: vec![None; mc_announce_data.len()],
@@ -260,7 +275,8 @@ impl FcController {
 
             MsgFcCtl::Join((client_id, fc_chan_id)) => {
                 debug!("New client {client_id} joins flow {fc_chan_id}");
-                let new_insert = self.active_clients[fc_chan_id as usize].insert(client_id);
+                let new_insert =
+                    self.active_clients[fc_chan_id as usize].insert(client_id);
                 _ = self.unicast_recv.remove(&client_id);
                 if new_insert {
                     self.mc_acks[fc_chan_id as usize].new_recv(
@@ -299,13 +315,15 @@ impl FcController {
             },
 
             MsgFcCtl::Sent((fc_id, sent)) => {
-                debug!("Flexicast source {fc_id} sent {:?}", sent.len());
                 self.handle_sent_pkt(fc_id, sent).await?;
             },
 
-            MsgFcCtl::DelegateStreams((fc_id, delegated_streams)) => {
-                debug!("Flexicast source delegated streams: {:?}", delegated_streams.len());
-                self.handle_delegated_streams(fc_id, delegated_streams)
+            MsgFcCtl::DelegateStreams((fc_id, delegated_streams, early_retransmit)) => {
+                debug!(
+                    "Flexicast source delegated streams: {:?}",
+                    delegated_streams.len()
+                );
+                self.handle_delegated_streams(fc_id, delegated_streams, early_retransmit)
                     .await?;
             },
 
@@ -325,9 +343,12 @@ impl FcController {
                 debug!("Receiver {id} falls back on unicast");
                 _ = self.active_clients[fc_chan_id as usize].remove(&id);
                 _ = self.unicast_recv.insert(id);
+                _ = self.delegated_recv[fc_chan_id as usize].insert(id);
                 // FC-TODO: remove the receiver from the mc_acks!
                 self.mc_acks[fc_chan_id as usize].remove_recv();
-            }
+                let msg = MsgFcSource::AskStreamPieces;
+                self.tx_fc_sources[fc_chan_id as usize].send(msg).await?;
+            },
         }
 
         Ok(())
@@ -438,11 +459,21 @@ impl FcController {
 
     /// Dispatchs delegated streams to receivers.
     async fn handle_delegated_streams(
-        &mut self, fc_id: u64, delegated_streams: Vec<FcDelegatedStream>,
+        &mut self, fc_id: u64, delegated_streams: Vec<FcDelegatedStream>, early_retransmit: bool,
     ) -> Result<()> {
         // Iterate over all clients listening to this flexicast source to delegate
         // the appropriate STREAM frame retransmissions.
-        for &client_id in self.active_clients[fc_id as usize].iter() {
+        // Avoid retransmitting frames that may not be lost if this is an early retransmit.
+        let _hs = HashSet::new();
+        let iter = if early_retransmit {
+            println!("DOING EARLY RETRANSMIT ONLY: {:?}", delegated_streams.len());
+            self.delegated_recv[fc_id as usize].iter().chain(_hs.iter())
+        } else {
+            println!("DOING LOSS RETRANSMIT: {:?}", delegated_streams.len());
+            self.delegated_recv[fc_id as usize].iter().chain(self.active_clients[fc_id as usize].iter())
+        };
+        for &client_id in iter
+        {
             let client_ack: HashSet<u64> =
                 self.recv_ack[client_id as usize].flatten().collect();
             let tx_client = &self.tx_clients[client_id as usize];
@@ -467,6 +498,11 @@ impl FcController {
             if let Some(max_pn) = self.last_expired_pn[fc_id as usize] {
                 self.recv_ack[client_id as usize].remove_until(max_pn);
             }
+        }
+
+        // Remove delegated receivers.
+        if early_retransmit {
+            _ = self.delegated_recv[fc_id as usize].drain();
         }
 
         Ok(())

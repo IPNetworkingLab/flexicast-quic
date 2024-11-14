@@ -19,6 +19,7 @@ use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 use std::convert::TryInto;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::mpsc;
 
 pub struct Client {
@@ -94,10 +95,11 @@ impl Client {
                         if let Some(scheduler) = self.fcf_scheduler.as_mut() {
                             let now = std::time::Instant::now();
                             if scheduler.should_uc_fall_back(now) {
-                                info!("Receiver {} flexicast flow timeout. Unicast fall-back", self.client_id);
                                 self.fcf_scheduler.as_mut().map(|s| s.uc_fall_back());
                                 let msg = MsgFcCtl::RecvUcFallBack((self.client_id, fc_chan_id.unwrap()));
                                 self.tx_tcl.send(msg).await?;
+                                let now = SystemTime::now();
+                                println!("{}-RESULT-RECV{} 1", now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_micros(), self.client_id);
                             }
                         }
                     },
@@ -151,8 +153,9 @@ impl Client {
                         Ok(()) => (),
                         Err(quiche::Error::StreamLimit) => (),
                         Err(quiche::Error::Done) => (),
-                        Err(e) =>
-                            panic!("Error while setting stream priority: {:?}", e),
+                        Err(e) => {
+                            panic!("Error while setting stream priority: {:?}", e)
+                        },
                     }
 
                     let written =
@@ -277,25 +280,6 @@ impl Client {
                 ack_stream,
             ));
             self.tx_tcl.send(msg).await?;
-
-            // Also update state of the scheduler.
-            // Maybe now we received acknowkledgment from the receiver that will
-            // update its state in the flexicast flow.
-            if let Some(fc_scheduler) = self.fcf_scheduler.as_mut() {
-                let last_received = ack_pn.unwrap().last();
-                if let Some(pn) = last_received {
-                    let now = std::time::Instant::now();
-                    let fcf_now_alive = fc_scheduler.on_ack_received(pn, now, &self.conn);
-                    if fcf_now_alive {
-                        self.tx_tcl
-                            .send(controller::MsgFcCtl::Join((
-                                self.client_id,
-                                fc_id.unwrap() as u64,
-                            )))
-                            .await?;
-                    }
-                }
-            }
         }
 
         Ok(())
@@ -342,6 +326,44 @@ impl Client {
             self.notify_new_cid(scid.as_ref()).await?;
         }
 
+        // Also update state of the scheduler.
+        // Maybe now we received acknowkledgment from the receiver that will
+        // update its state in the flexicast flow.
+        if let Some(fc_scheduler) = self.fcf_scheduler.as_mut() {
+            let last_pn = self
+                .conn
+                .get_multicast_attributes()
+                .map(|mc| {
+                    mc.rmc_get().server().map(|s| s.get_highest_pn()).flatten()
+                })
+                .flatten();
+            if let Some(pn) = last_pn {
+                if let Some(fc_chan_id) = self
+                    .conn
+                    .get_multicast_attributes()
+                    .unwrap()
+                    .get_fc_chan_id()
+                    .map(|(_, id)| *id)
+                {
+                    let now = std::time::Instant::now();
+                    let fcf_now_alive =
+                        fc_scheduler.on_ack_received(pn, now, &self.conn);
+                    if fcf_now_alive {
+                        self.tx_tcl
+                            .send(controller::MsgFcCtl::Join((
+                                self.client_id,
+                                fc_chan_id as u64,
+                            )))
+                            .await?;
+
+                        // Record on NPF.
+                        let now = SystemTime::now();
+                        println!("{}-RESULT-RECV{} 2", now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_micros(), self.client_id);
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -363,7 +385,13 @@ impl Client {
         &mut self, data: Arc<Vec<u8>>, stream_id: u64,
     ) -> Result<()> {
         // Do not say it is an error, but it should not happen.
-        if self.listen_fc_channel {
+        if self.listen_fc_channel
+            && self
+                .fcf_scheduler
+                .as_ref()
+                .map(|fcs| fcs.fcf_alive())
+                .unwrap_or(true)
+        {
             return Ok(());
         }
 

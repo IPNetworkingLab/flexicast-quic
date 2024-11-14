@@ -90,8 +90,6 @@ impl FcFlowAliveScheduler {
             };
 
             self.fcf_next_timeout = idle_timeout;
-        } else {
-            self.fcf_alive = !self.should_uc_fall_back(now);
         }
         !was_alive && self.fcf_alive
     }
@@ -120,6 +118,7 @@ impl FcFlowAliveScheduler {
 
     /// Advertises whether the receiver falls-back on unicast.
     pub fn uc_fall_back(&mut self) {
+        self.fcf_next_timeout = None;
         self.fcf_alive = false;
     }
 
@@ -144,8 +143,14 @@ impl FcFlowAliveScheduler {
     /// Update the scheduler on new packets sent on the flexicast flow.
     /// This will trigger the start of a new timeout.
     pub fn on_packet_sent(&mut self, now: time::Instant) {
+        // Avoid computing a new timeout if the flexicast flow is not alive.
+        if !self.fcf_alive() {
+            return;
+        }
         // As we sent a new packet, start the timeout.
-        self.fcf_next_timeout = self.fall_back_delay.map(|d| now + d);
+        if self.fcf_next_timeout.is_none() {
+            self.fcf_next_timeout = self.fall_back_delay.map(|d| now + d);
+        }
     }
 }
 

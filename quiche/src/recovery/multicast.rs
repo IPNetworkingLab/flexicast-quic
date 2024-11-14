@@ -367,7 +367,11 @@ impl ReliableMulticastRecovery for crate::recovery::Recovery {
                                 })
                                 .flatten()
                             {
-                                mc_ack.delegate(*stream_id, *offset, *length as u64);
+                                mc_ack.delegate(
+                                    *stream_id,
+                                    *offset,
+                                    *length as u64,
+                                );
                             }
                         }
                     },
@@ -560,8 +564,12 @@ impl Recovery {
     /// if the frame needs to be retransmitted.
     ///
     /// FC-TODO: also breaks FEC.
+    ///
+    /// The `early_retransmit` flag is set whenever the controller asks for
+    /// the delegation of STREAM frames early in the process, i.e., frames that
+    /// may not be lost will be delegated.
     pub fn fc_get_delegated_stream(
-        &mut self, space_id: u32, streams: &mut StreamMap,
+        &mut self, space_id: u32, streams: &mut StreamMap, full_retransmit: bool,
     ) -> Result<Vec<FcDelegatedStream>> {
         let mut delegated_pieces = Vec::new();
 
@@ -569,9 +577,15 @@ impl Recovery {
             .iter_mut()
             .take_while(|p| {
                 p.pkt_num.0 == space_id
-                    && (p.time_lost.is_some() || p.time_acked.is_some())
+                    && (p.time_lost.is_some()
+                        || p.time_acked.is_some()
+                        || full_retransmit)
             })
-            .filter(|p| p.time_lost.is_some());
+            .filter(|p| {
+                (p.time_lost.is_some()
+                    || (full_retransmit && p.time_acked.is_none()))
+                    && !p.is_fc_delegated
+            });
 
         for packet in lost_iter {
             debug!(
@@ -581,7 +595,10 @@ impl Recovery {
 
             // Indicate that this packet was delegated through unicast
             // retransmission.
-            packet.is_fc_delegated = true;
+            // Do not say this if this is an early retransmit because the packet may not be considered as lost.
+            if !full_retransmit {
+                packet.is_fc_delegated = true;
+            }
 
             for frame in &packet.frames {
                 match frame {

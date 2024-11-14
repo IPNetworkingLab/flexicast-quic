@@ -91,6 +91,11 @@ impl RMcServer {
         }
     }
 
+    /// Returns the highest packet number received on the flexicast flow.
+    pub fn get_highest_pn(&self) -> Option<u64> {
+        self.recv_pn_mc.last()
+    }
+
     /// Sets the FEC metadata received bu the client on the multicast channel.
     pub fn set_rmc_received_fec_metadata(&mut self, ranges: RangeSet) {
         for range in ranges.iter() {
