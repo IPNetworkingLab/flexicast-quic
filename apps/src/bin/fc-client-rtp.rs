@@ -566,9 +566,17 @@ fn main() {
             }
         }
 
+        // Limit the number of packets we send in a single loop.
+        let mut n_loop = 0;
+
         // Generate outgoing QUIC packets and send them on the UDP socket, until
         // quiche reports that there are no more packets to be sent.
         loop {
+            n_loop += 1;
+            if n_loop > 10 {
+                break;
+            }
+            
             let (write, send_info) = match conn.send(&mut out) {
                 Ok(v) => v,
 

@@ -92,22 +92,7 @@ impl FcChannelAsync {
             tokio::select! {
                 // Timeout sleep.
                 Some(_) = optional_timeout(timeout) => {
-                    debug!("Flexicast source timeout");
-
-                    let now = time::Instant::now();
-                    let exp_pkt = self.fc_chan.channel.on_mc_timeout(now)?;
-
-                    // On timeout, inform the controller of the last expired packet.
-                    let new_exp_pkt_msg = MsgFcCtl::NewExpiredPkt((self.id, exp_pkt));
-                    self.sync_tx.send(new_exp_pkt_msg).await?;
-
-                    // On timeout, also delegate lost STREAM frames to the controller,
-                    // that will dispatch them to all unicast paths for retransmission.
-                    let delegated_streams = self.fc_chan.channel.fc_get_delegated_stream(false)?;
-                    debug!("Delegates streams: {:?}", delegated_streams.len());
-                    let del_streams_msg = MsgFcCtl::DelegateStreams((self.id, delegated_streams, false));
-                    self.sync_tx.send(del_streams_msg).await?;
-
+                    self.on_timeout().await?;
                 },
 
                 // Generate video content frames.
@@ -121,6 +106,12 @@ impl FcChannelAsync {
 
                 // Data on the control channel.
                 Some(msg) = self.rx_ctl.recv() => self.handle_ctl_msg(msg).await?,
+            }
+
+            // Check again if there is some timeout there.
+            let now = time::Instant::now();
+            if let Some(time::Duration::ZERO) = self.fc_chan.channel.mc_timeout(now) {
+                self.on_timeout().await?;
             }
 
             // Maybe we can close the connection.
@@ -270,6 +261,28 @@ impl FcChannelAsync {
         Ok(())
     }
 
+    async fn on_timeout(&mut self) -> Result<()> {
+        debug!("Flexicast source timeout");
+
+        let now = time::Instant::now();
+        let exp_pkt = self.fc_chan.channel.on_mc_timeout(now)?;
+
+        // On timeout, inform the controller of the last expired packet.
+        let new_exp_pkt_msg = MsgFcCtl::NewExpiredPkt((self.id, exp_pkt));
+        self.sync_tx.send(new_exp_pkt_msg).await?;
+
+        // On timeout, also delegate lost STREAM frames to the controller,
+        // that will dispatch them to all unicast paths for retransmission.
+        let delegated_streams =
+            self.fc_chan.channel.fc_get_delegated_stream(false)?;
+        debug!("Delegates streams: {:?}", delegated_streams.len());
+        let del_streams_msg =
+            MsgFcCtl::DelegateStreams((self.id, delegated_streams, false));
+        self.sync_tx.send(del_streams_msg).await?;
+
+        Ok(())
+    }
+
     async fn handle_ctl_msg(&mut self, msg: MsgFcSource) -> Result<()> {
         let now = time::Instant::now();
 
@@ -295,10 +308,12 @@ impl FcChannelAsync {
             },
 
             MsgFcSource::AskStreamPieces => {
-                let delegated_streams = self.fc_chan.channel.fc_get_delegated_stream(true)?;
-                let del_streams_msg = MsgFcCtl::DelegateStreams((self.id, delegated_streams, true));
+                let delegated_streams =
+                    self.fc_chan.channel.fc_get_delegated_stream(true)?;
+                let del_streams_msg =
+                    MsgFcCtl::DelegateStreams((self.id, delegated_streams, true));
                 self.sync_tx.send(del_streams_msg).await?;
-            }
+            },
         }
 
         Ok(())

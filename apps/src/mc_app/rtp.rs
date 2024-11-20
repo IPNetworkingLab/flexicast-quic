@@ -251,6 +251,8 @@ impl RtpServer {
 
     #[inline]
     pub fn on_additional_udp_socket_readable(&mut self) {
+        let mut nb = 0;
+
         loop {
             let res = match &self.socket {
                 SockType::Mio(s) => s.recv_from(&mut self.buf[..]),
@@ -269,6 +271,13 @@ impl RtpServer {
                     }
                     panic!("unexpected error when readin on RTP socket: {}", e);
                 },
+            }
+
+            nb += 1;
+
+            // Avoid generating too many packets RTP frames at once.
+            if nb > 100 {
+                break;
             }
         }
     }
