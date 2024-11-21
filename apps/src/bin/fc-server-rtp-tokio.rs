@@ -557,8 +557,8 @@ async fn main() {
 
                     // Fc-TODO: This is hardcoded, not beautiful.
                     let mut from_mc = from;
-                    from_mc.set_port(4434);
-                    let msg = MsgSmsg::NewRecv(from);
+                    from_mc.set_port(args.mc_addr.port());
+                    let msg = MsgSmsg::NewRecv(from_mc);
                     tx.send(msg).await.unwrap();
                 }
             }
