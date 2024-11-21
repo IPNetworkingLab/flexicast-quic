@@ -34,6 +34,8 @@ use quiche_apps::common::make_qlog_writer;
 use quiche_apps::common::ClientIdMap;
 use quiche_apps::mc_app::asynchronous;
 use quiche_apps::mc_app::asynchronous::fc::FcChannelAsync;
+use quiche_apps::mc_app::asynchronous::sendmmsg::MsgSmsg;
+use quiche_apps::mc_app::asynchronous::sendmmsg::SendMMsg ;
 use quiche_apps::mc_app::rtp::RtpServer;
 
 use ring::rand::SecureRandom;
@@ -139,6 +141,13 @@ struct Args {
     /// Unicast fall-back delay for the scheduler, in ms.
     #[clap(long = "fall-back-delay", value_parser)]
     fall_back_delay: Option<u64>,
+
+    /// Whether to use `sendmmsg` instead of relying on real multicast
+    /// to distribute data on the flexicast flow.
+    /// The value is the number of instances of sendmmsg to use.
+    /// For now, creates 'sendmmsg' instances for each flexicast flow.
+    #[clap(long = "sendmmsg", value_parser)]
+    sendmmsg: Option<u64>,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -254,6 +263,27 @@ async fn main() {
     // Create the communication channels towards the flexicast sources.
     let mut tx_fc_source = Vec::with_capacity(fc_channels.len());
 
+    // Create the SendMMsg instances if we use this method to forward packets from the flexicast flow.
+    let sendmmsg_txs = if let (true, Some(nb_instances)) = (args.flexicast, args.sendmmsg) {
+        // Not using functionnal programming but it will be clearer.
+        let mut txs = Vec::new();
+
+        for _ in 0..nb_instances {
+            let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+            txs.push(tx);
+            
+            // Directly run the instance.
+            let mut sendmmsg = SendMMsg::new(rx, socket.clone());
+            tokio::spawn(async move {
+                sendmmsg.run().await.unwrap();
+            });
+        }
+
+        Some(txs)
+    } else {
+        None
+    };
+
     // Spawn tokio tasks for the flexicast channel(s).
     let mut id_fc_chan = 0;
     for (fc_chan_info, rtp_server) in
@@ -274,6 +304,7 @@ async fn main() {
             bitrate_unlimited: true,
             allow_unicast: args.allow_unicast,
             do_flexicast: args.flexicast,
+            sendmmsg_txs: sendmmsg_txs.clone(),
         };
 
         tx_fc_source.push(tx);
@@ -513,9 +544,17 @@ async fn main() {
                 },
             };
 
-            // Notify the controller with a new client.
+            // Notify the controller with a new receiver.
             let msg = MsgFcCtl::NewClient((next_client_id, tx.clone()));
             tx_fc_ctl.send(msg).await.unwrap();
+
+            // Also notify the SendMMsg instances that there is a new receiver.
+            if let Some(txs) = sendmmsg_txs.as_ref() {
+                for tx in txs.iter() {
+                    let msg = MsgSmsg::NewRecv(from);
+                    tx.send(msg).await.unwrap();
+                }
+            }
 
             next_client_id += 1;
             clients_ids.insert(scid.clone(), client_id);
@@ -737,7 +776,7 @@ async fn get_multicast_channel(
         .unwrap();
 
     FcChannelInfo {
-        socket,
+        socket: socket,
         fc_chan,
         mc_announce_data,
     }

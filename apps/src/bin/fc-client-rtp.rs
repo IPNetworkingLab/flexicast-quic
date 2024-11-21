@@ -584,7 +584,7 @@ fn main() {
         // quiche reports that there are no more packets to be sent.
         loop {
             n_loop += 1;
-            if n_loop > 10 {
+            if n_loop > 2 {
                 break;
             }
             

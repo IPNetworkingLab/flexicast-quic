@@ -2,6 +2,7 @@
 
 use super::controller;
 use super::controller::MsgFcSource;
+use super::sendmmsg::MsgSmsg;
 use super::Result;
 use quiche::multicast::McAnnounceData;
 use quiche::multicast::MulticastChannelSource;
@@ -60,6 +61,11 @@ pub struct FcChannelAsync {
     /// Whether flexicast is enabled.
     /// Used to know whether the source must send data on the wire.
     pub do_flexicast: bool,
+
+    /// The SendMMsg instances.
+    /// If this value is not `None`, it means that we use `sendmmsg` instead of relying
+    /// on a multicast network to send the packets on the flexicast flow.
+    pub sendmmsg_txs: Option<Vec<mpsc::Sender<MsgSmsg>>>,
 }
 
 impl FcChannelAsync {
@@ -79,6 +85,9 @@ impl FcChannelAsync {
                 second_mc_ip_addr,
                 self.mc_announce_data.udp_port,
             ));
+
+        // If we use `sendmmsg` insteaf or real multicast, we will round-robin to spread the traffic.
+        let mut sendmmsg_idx = 0;
 
         loop {
             let now = time::Instant::now();
@@ -135,6 +144,14 @@ impl FcChannelAsync {
                 self.sync_tx
                     .send(controller::MsgFcCtl::CloseRtp(self.id))
                     .await?;
+
+                // Notify the SendMMsg instances.
+                if let Some(txs) = self.sendmmsg_txs.as_ref() {
+                    for tx in txs.iter() {
+                        let msg = MsgSmsg::Stop;
+                        tx.send(msg).await?;
+                    }
+                }
 
                 break;
             }
@@ -207,42 +224,51 @@ impl FcChannelAsync {
 
                     // Send the packets on the wire.
                     if !self.must_wait {
-                        // for send_to_addr in [self.fc_chan.mc_send_addr,
-                        // second_mc_addr] {
-                        let mut off = 0;
-                        let mut left = write;
-                        let mut written = 0;
-
-                        while left > 0 {
-                            let pkt_len =
-                                cmp::min(left, super::MAX_DATAGRAM_SIZE);
-
-                            match self
-                                .socket
-                                .send_to(
-                                    &buf[off..off + pkt_len],
-                                    self.fc_chan.mc_send_addr,
-                                )
-                                .await
-                            {
-                                Ok(v) => written += v,
-                                Err(e) => {
-                                    if e.kind() == io::ErrorKind::WouldBlock {
-                                        debug!("Flexicast send() would block");
-                                        break 'fc;
-                                    }
-
-                                    panic!("Flexicast send() failed: {:?}", e);
-                                },
+                        // Use `sendmmsg` instead.
+                        if let Some(sendmmsg_tx) = &self.sendmmsg_txs {
+                            let tx = sendmmsg_tx.get(sendmmsg_idx);
+                            if let Some(tx) = tx {
+                                let msg = MsgSmsg::Packet(buf[..write].to_vec());
+                                tx.send(msg).await?;
                             }
-                            off += pkt_len;
-                            left -= pkt_len;
+
+                            // Next time we use another instance.
+                            sendmmsg_idx = (sendmmsg_idx + 1) % sendmmsg_tx.len();
+                        } else {
+                            let mut off = 0;
+                            let mut left = write;
+                            let mut written = 0;
+    
+                            while left > 0 {
+                                let pkt_len =
+                                    cmp::min(left, super::MAX_DATAGRAM_SIZE);
+    
+                                match self
+                                    .socket
+                                    .send_to(
+                                        &buf[off..off + pkt_len],
+                                        self.fc_chan.mc_send_addr,
+                                    )
+                                    .await
+                                {
+                                    Ok(v) => written += v,
+                                    Err(e) => {
+                                        if e.kind() == io::ErrorKind::WouldBlock {
+                                            debug!("Flexicast send() would block");
+                                            break 'fc;
+                                        }
+    
+                                        panic!("Flexicast send() failed: {:?}", e);
+                                    },
+                                }
+                                off += pkt_len;
+                                left -= pkt_len;
+                            }
+                            debug!(
+                                "Flexicast written {:?} bytes to {:?}",
+                                written, send_info
+                            );
                         }
-                        debug!(
-                            "Flexicast written {:?} bytes to {:?}",
-                            written, send_info
-                        );
-                        // }
                     } else {
                         debug!("Not actually sending data on the wire because we wait...");
                     }
