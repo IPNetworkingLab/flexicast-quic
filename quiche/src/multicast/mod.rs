@@ -1907,42 +1907,39 @@ impl MulticastConnection for Connection {
     fn mc_stream_recv(
         &mut self, stream_id: u64, out: &mut [u8],
     ) -> Result<(usize, bool)> {
-        let multicast = self
-            .multicast
-            .as_ref()
-            .ok_or(Error::Multicast(McError::McDisabled))?;
-
-        if multicast.mc_auth_type == McAuthType::StreamAsym {
-            if !matches!(multicast.mc_role, McRole::Client(_)) {
-                return Err(Error::Multicast(McError::McInvalidRole(
-                    multicast.mc_role,
-                )));
-            }
-
-            let stream = self
-                .streams
-                .get_mut(stream_id)
-                .ok_or(Error::InvalidStreamState(stream_id))?;
-            if !stream.mc_asym_verified {
-                if !stream.recv.is_fully_readable() {
-                    return Err(Error::Done);
+        if let Some(multicast) = self.multicast.as_ref() {
+            if multicast.mc_auth_type == McAuthType::StreamAsym {
+                if !matches!(multicast.mc_role, McRole::Client(_)) {
+                    return Err(Error::Multicast(McError::McInvalidRole(
+                        multicast.mc_role,
+                    )));
                 }
-
-                // MC-TODO: 32 should not be hardcoded.
-                let authentication = stream
-                    .mc_get_asym_sign()
-                    .ok_or(Error::Multicast(McError::McInvalidAuth))?;
-                let mut buf = vec![0u8; 32 + authentication.len()];
-                let mut data = stream.recv.hash_stream(&mut buf[..32])?;
-                // let mut data = stream.recv.hash_stream_incr()?.to_vec();
-                buf[32..].copy_from_slice(authentication);
-                data.extend_from_slice(authentication);
-                self.mc_verify_asym(&data)?;
+    
                 let stream = self
                     .streams
                     .get_mut(stream_id)
                     .ok_or(Error::InvalidStreamState(stream_id))?;
-                stream.mc_asym_verified = true;
+                if !stream.mc_asym_verified {
+                    if !stream.recv.is_fully_readable() {
+                        return Err(Error::Done);
+                    }
+    
+                    // MC-TODO: 32 should not be hardcoded.
+                    let authentication = stream
+                        .mc_get_asym_sign()
+                        .ok_or(Error::Multicast(McError::McInvalidAuth))?;
+                    let mut buf = vec![0u8; 32 + authentication.len()];
+                    let mut data = stream.recv.hash_stream(&mut buf[..32])?;
+                    // let mut data = stream.recv.hash_stream_incr()?.to_vec();
+                    buf[32..].copy_from_slice(authentication);
+                    data.extend_from_slice(authentication);
+                    self.mc_verify_asym(&data)?;
+                    let stream = self
+                        .streams
+                        .get_mut(stream_id)
+                        .ok_or(Error::InvalidStreamState(stream_id))?;
+                    stream.mc_asym_verified = true;
+                }
             }
         }
 

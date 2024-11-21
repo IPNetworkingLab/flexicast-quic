@@ -138,6 +138,9 @@ fn main() {
     let mut current_fc_idx = args.idx_fc_chan;
 
     let mut nb_recv = 0;
+    let mut uc_recv = 0;
+    let mut mc_recv = 0;
+    let mut uc_send = 0;
 
     // Whether the client must leave the multicast socket.
     let mut must_leave_mc_sock = false;
@@ -295,6 +298,10 @@ fn main() {
             };
             from_socket_type = 0;
             debug!("Recv from socket unicast");
+            uc_recv += 1;
+            if uc_recv % 1000 == 0 {
+                println!("UC send {uc_recv}");
+            }
 
             let recv_info = quiche::RecvInfo {
                 to: socket.local_addr().unwrap(),
@@ -330,6 +337,10 @@ fn main() {
                         panic!("recv() failed: {:?}", e);
                     },
                 };
+                mc_recv += 1;
+                if mc_recv % 1000 == 0 {
+                    println!("MC recv {mc_recv}");
+                }
 
                 let recv_info = quiche::RecvInfo {
                     to: mc_addr,
@@ -610,6 +621,11 @@ fn main() {
                 }
 
                 panic!("send() failed: {:?}", e);
+            }
+
+            uc_send += 1;
+            if uc_send % 1000 == 0 {
+                println!("UC send {uc_send}");
             }
         }
 
