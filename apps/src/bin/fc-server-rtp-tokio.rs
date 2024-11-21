@@ -268,12 +268,15 @@ async fn main() {
         // Not using functionnal programming but it will be clearer.
         let mut txs = Vec::new();
 
-        for _ in 0..nb_instances {
+        for i in 0..nb_instances {
             let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
             txs.push(tx);
             
             // Directly run the instance.
-            let mut sendmmsg = SendMMsg::new(rx, socket.clone());
+            let mut src_addr = args.src_addr;
+            src_addr.set_port(4534 + i as u16);
+            let new_socket = tokio::net::UdpSocket::bind(src_addr).await.unwrap();
+            let mut sendmmsg = SendMMsg::new(rx, Arc::new(new_socket));
             tokio::spawn(async move {
                 sendmmsg.run().await.unwrap();
             });
@@ -551,6 +554,10 @@ async fn main() {
             // Also notify the SendMMsg instances that there is a new receiver.
             if let Some(txs) = sendmmsg_txs.as_ref() {
                 for tx in txs.iter() {
+
+                    // Fc-TODO: This is hardcoded, not beautiful.
+                    let mut from_mc = from;
+                    from_mc.set_port(4434);
                     let msg = MsgSmsg::NewRecv(from);
                     tx.send(msg).await.unwrap();
                 }
