@@ -230,7 +230,7 @@ impl Client {
             },
 
             MsgRecv::Sent((fc_id, sent)) => {
-                self.conn.fc_on_new_pkt_sent(fc_id, sent)?;
+                let _ = self.conn.fc_on_new_pkt_sent(fc_id, sent);
                 if let Some(scheduler) = self.fcf_scheduler.as_mut() {
                     let now = std::time::Instant::now();
                     scheduler.on_packet_sent(now);

@@ -503,10 +503,14 @@ async fn main() {
                 rtp_source: RtpServer::new_without_socket(&args.rtp_stop),
                 uc_sock: socket.clone(),
                 unlimited_cwnd: args.uc_unlimited_cwnd,
-                fcf_scheduler: Some(FcFlowAliveScheduler::new(
-                    fall_back_delay,
-                    None,
-                )),
+                fcf_scheduler: if args.fall_back_delay.is_some() {
+                    Some(FcFlowAliveScheduler::new(
+                        fall_back_delay,
+                        None,
+                    ))
+                } else {
+                    None
+                },
             };
 
             // Notify the controller with a new client.
