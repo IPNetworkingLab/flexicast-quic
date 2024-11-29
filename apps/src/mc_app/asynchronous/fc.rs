@@ -119,7 +119,9 @@ impl FcChannelAsync {
 
             // Check again if there is some timeout there.
             let now = time::Instant::now();
-            if let Some(time::Duration::ZERO) = self.fc_chan.channel.mc_timeout(now) {
+            if let Some(time::Duration::ZERO) =
+                self.fc_chan.channel.mc_timeout(now)
+            {
                 self.on_timeout().await?;
             }
 
@@ -127,8 +129,8 @@ impl FcChannelAsync {
             if let Some(timer) = rtp_stopped {
                 if self
                     .rtp_stop_timer
-                    .saturating_sub(now.duration_since(timer)) ==
-                    time::Duration::ZERO
+                    .saturating_sub(now.duration_since(timer))
+                    == time::Duration::ZERO
                 {
                     // Yes, we can close now.
                     can_close_conn_after_rtp = true;
@@ -238,11 +240,11 @@ impl FcChannelAsync {
                             let mut off = 0;
                             let mut left = write;
                             let mut written = 0;
-    
+
                             while left > 0 {
                                 let pkt_len =
                                     cmp::min(left, super::MAX_DATAGRAM_SIZE);
-    
+
                                 match self
                                     .socket
                                     .send_to(
@@ -254,11 +256,16 @@ impl FcChannelAsync {
                                     Ok(v) => written += v,
                                     Err(e) => {
                                         if e.kind() == io::ErrorKind::WouldBlock {
-                                            debug!("Flexicast send() would block");
+                                            debug!(
+                                                "Flexicast send() would block"
+                                            );
                                             break 'fc;
                                         }
-    
-                                        panic!("Flexicast send() failed: {:?}", e);
+
+                                        panic!(
+                                            "Flexicast send() failed: {:?}",
+                                            e
+                                        );
                                     },
                                 }
                                 off += pkt_len;
@@ -339,6 +346,15 @@ impl FcChannelAsync {
                 let del_streams_msg =
                     MsgFcCtl::DelegateStreams((self.id, delegated_streams, true));
                 self.sync_tx.send(del_streams_msg).await?;
+            },
+
+            MsgFcSource::NewCwnd(cwnd) => {
+                // Ignore when we do not care about cwnd.
+                if !self.bitrate_unlimited {
+                    let time = std::time::SystemTime::now();
+                    println!("{}-RESULT-CWND {}", time.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_micros(), cwnd);
+                    self.fc_chan.channel.mc_set_cwnd(cwnd);
+                }
             },
         }
 

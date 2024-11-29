@@ -299,9 +299,6 @@ fn main() {
             from_socket_type = 0;
             debug!("Recv from socket unicast");
             uc_recv += 1;
-            if uc_recv % 1000 == 0 {
-                println!("UC send {uc_recv}");
-            }
 
             let recv_info = quiche::RecvInfo {
                 to: socket.local_addr().unwrap(),
@@ -338,9 +335,6 @@ fn main() {
                     },
                 };
                 mc_recv += 1;
-                if mc_recv % 1000 == 0 {
-                    println!("MC recv {mc_recv}");
-                }
 
                 let recv_info = quiche::RecvInfo {
                     to: mc_addr,
@@ -624,9 +618,6 @@ fn main() {
             }
 
             uc_send += 1;
-            if uc_send % 1000 == 0 {
-                println!("UC send {uc_send}");
-            }
         }
 
         if conn.is_closed() {

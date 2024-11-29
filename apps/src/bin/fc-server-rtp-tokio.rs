@@ -304,7 +304,7 @@ async fn main() {
             id: id_fc_chan,
             rx_ctl: rx,
             must_wait: args.wait.is_some(),
-            bitrate_unlimited: true,
+            bitrate_unlimited: args.fc_cwnd.is_none(),
             allow_unicast: args.allow_unicast,
             do_flexicast: args.flexicast,
             sendmmsg_txs: sendmmsg_txs.clone(),
@@ -545,6 +545,7 @@ async fn main() {
                 } else {
                     None
                 },
+                previous_cwnd: args.fc_cwnd.map(|_| 0),
             };
 
             // Notify the controller with a new receiver.

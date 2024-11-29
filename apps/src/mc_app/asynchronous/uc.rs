@@ -45,6 +45,11 @@ pub struct Client {
     /// Whether the unicast path has unlimited congestion window.
     pub unlimited_cwnd: bool,
 
+    /// Previously sent congestion window update.
+    /// Only send new congestion window updates if it changed.
+    /// `None` means that we should never forward the cwnd.
+    pub previous_cwnd: Option<usize>,
+
     pub fcf_scheduler: Option<FcFlowAliveScheduler>,
 }
 
@@ -282,6 +287,19 @@ impl Client {
             self.tx_tcl.send(msg).await?;
         }
 
+        // Send new congestion window update if the new value is significantly different from the previously sent value.
+        if let (Some(cwnd), Some(previous_cwnd)) =
+            (self.conn.fc_get_cwnd_recv(), self.previous_cwnd)
+        {
+            // TODO: define "significant".
+            if cwnd > previous_cwnd || cwnd < previous_cwnd {
+                self.previous_cwnd = Some(cwnd);
+                let msg =
+                    MsgFcCtl::Cwnd((self.client_id, fc_id.unwrap() as u64, cwnd));
+                self.tx_tcl.send(msg).await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -356,9 +374,28 @@ impl Client {
                             )))
                             .await?;
 
+                        // Must also send a message to notify
+                        // its state regarding the congestion window,
+                        // because the controller might have erased state for this receiver.
+                        if let Some(cwnd) = self.conn.fc_get_cwnd_recv() {
+                            self.previous_cwnd = Some(cwnd);
+                            let msg = MsgFcCtl::Cwnd((
+                                self.client_id,
+                                fc_chan_id as u64,
+                                cwnd,
+                            ));
+                            self.tx_tcl.send(msg).await?;
+                        }
+
                         // Record on NPF.
                         let now = SystemTime::now();
-                        println!("{}-RESULT-RECV{} 2", now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_micros(), self.client_id);
+                        println!(
+                            "{}-RESULT-RECV{} 2",
+                            now.duration_since(SystemTime::UNIX_EPOCH)
+                                .unwrap()
+                                .as_micros(),
+                            self.client_id
+                        );
                     }
                 }
             }

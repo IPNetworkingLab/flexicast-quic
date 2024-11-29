@@ -47,7 +47,7 @@ macro_rules! ucs_to_mc_cwnd {
     ( $mc:expr, $ucs: expr, $now: expr, $cwnd_limit: expr ) => {
         let min_cwnd = $ucs
             .filter_map(|uc| {
-                let cwnd = uc.mc_get_uc_cwnd();
+                let cwnd = uc.fc_get_cwnd_recv();
 
                 if let (Some(c), Some(cl)) = (cwnd, $cwnd_limit) {
                     if c < cl {
@@ -1967,24 +1967,19 @@ impl Connection {
         Ok(())
     }
 
-    /// Sets the congestion window of the multicast source based on the
-    /// congestion window of the unicast connection.
-    pub fn mc_get_uc_cwnd(&self) -> Option<usize> {
-        // Get paths.
+    /// Returns the congestion window of the active flexicast flow for this receiver.
+    pub fn fc_get_cwnd_recv(&self) -> Option<usize> {
         if let Some(multicast) = self.multicast.as_ref() {
-            // Do not give the multicast window if not in the multicast channel.
             if matches!(
                 multicast.get_mc_role(),
                 McRole::ServerUnicast(McClientStatus::ListenMcPath(_))
             ) {
-                if let Some(_mc_space_id) = multicast.get_mc_space_id() {
-                    let uc_path = self.paths.get(1);
-                    if let Ok(uc_path) = uc_path {
+                if let Some(space_id) = multicast.get_mc_space_id() {
+                    if let Ok(uc_path) = self.paths.get(space_id) {
                         if uc_path.recovery.cwnd_available() == usize::MAX {
                             return None;
                         }
                         return Some(uc_path.recovery.cwnd());
-                        // return Some(uc_path.recovery.cwnd_available());
                     }
                 }
             }

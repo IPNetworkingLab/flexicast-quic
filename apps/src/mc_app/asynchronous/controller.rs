@@ -1,6 +1,7 @@
 //! Asynchronous control loop between flexicast source and unicast server with
 //! tokio.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time;
@@ -80,6 +81,9 @@ pub enum MsgFcCtl {
 
     /// The receiver falls-back on unicast and must receive content through its unicast path.
     RecvUcFallBack((u64, u64)),
+
+    /// New estimation of the congestion window for this receiver.
+    Cwnd((u64, u64, usize)),
 }
 
 /// Messages sent to the receiver.
@@ -126,6 +130,9 @@ pub enum MsgFcSource {
     /// This call may be triggered if a receiver falls-back on unicast.
     /// At the same time, will retransmit "lost" frames to all other receivers.
     AskStreamPieces,
+
+    /// New estimation of the common congestion window.
+    NewCwnd(usize),
 }
 
 /// Messages sent to the main thread.
@@ -203,6 +210,15 @@ pub struct FcController {
 
     /// Delay between two aggregated ack instants.
     ack_delay: Option<time::Duration>,
+
+    /// Congestion windows of active receivers for each active flexicast flow.
+    recv_cwnd: Vec<HashMap<u64, usize>>,
+
+    /// Last sent congestion window update to each flexicast flow.
+    /// This to avoid sending a new estimation of the congestion window if there is no change.
+    /// The first value of the tuple is the index of the receiver who was responsible for the last
+    /// minimum cwnd.
+    last_cwnd: Vec<Option<(u64, usize)>>,
 }
 
 impl FcController {
@@ -224,6 +240,8 @@ impl FcController {
             mc_acks: vec![McAck::new(); mc_announce_data.len()],
             last_expired_pn: vec![None; mc_announce_data.len()],
             recv_ack: Vec::new(),
+            recv_cwnd: vec![HashMap::new(); mc_announce_data.len()],
+            last_cwnd: vec![None; mc_announce_data.len()],
             _mc_announce_data: mc_announce_data,
             tx_fc_sources,
             tx_main,
@@ -318,13 +336,21 @@ impl FcController {
                 self.handle_sent_pkt(fc_id, sent).await?;
             },
 
-            MsgFcCtl::DelegateStreams((fc_id, delegated_streams, early_retransmit)) => {
+            MsgFcCtl::DelegateStreams((
+                fc_id,
+                delegated_streams,
+                early_retransmit,
+            )) => {
                 debug!(
                     "Flexicast source delegated streams: {:?}",
                     delegated_streams.len()
                 );
-                self.handle_delegated_streams(fc_id, delegated_streams, early_retransmit)
-                    .await?;
+                self.handle_delegated_streams(
+                    fc_id,
+                    delegated_streams,
+                    early_retransmit,
+                )
+                .await?;
             },
 
             MsgFcCtl::RecvReady(id) => {
@@ -348,6 +374,67 @@ impl FcController {
                 self.mc_acks[fc_chan_id as usize].remove_recv();
                 let msg = MsgFcSource::AskStreamPieces;
                 self.tx_fc_sources[fc_chan_id as usize].send(msg).await?;
+
+                // Remove congestion window state for this receiver.
+                _ = self.recv_cwnd[fc_chan_id as usize].remove(&id);
+                if let Some((i, cwnd)) = self.last_cwnd[fc_chan_id as usize] {
+                    // The receiver that left was the bottleneck. Must elect new bottleneck.
+                    if i == id {
+                        let min = self.recv_cwnd[fc_chan_id as usize]
+                            .iter()
+                            .min_by(|a, b| a.1.cmp(b.1));
+                        if let Some((i, v)) = min {
+                            self.last_cwnd[fc_chan_id as usize] = Some((*i, *v));
+                            let msg = MsgFcSource::NewCwnd(cwnd);
+                            self.tx_fc_sources[fc_chan_id as usize].send(msg).await?;
+                        }
+                    }
+                }
+            },
+
+            MsgFcCtl::Cwnd((recv_id, fc_id, cwnd)) => {
+                debug!("New congestion window update fro {recv_id}: {cwnd}");
+
+                // First check if the receiver is active in this flow.
+                if self.active_clients[fc_id as usize].contains(&recv_id) {
+                    self.recv_cwnd[fc_id as usize].insert(recv_id, cwnd);
+
+                    // Maybe now we have a new congestion window!
+                    // There are three possibilities:
+                    // 1) There was no minimum.
+                    // 2) This is an absolute new minimum. Update directly.
+                    // 3) Increase but this recv was responsible for the old new.
+                    //    We must define the new minimum.
+                    let mut do_send = false;
+
+                    if let Some((id, last_cwnd)) = self.last_cwnd[fc_id as usize]
+                    {
+                        if cwnd < last_cwnd {
+                            // Case 2).
+                            self.last_cwnd[fc_id as usize] =
+                                Some((recv_id, cwnd));
+                            do_send = true;
+                        } else if recv_id == id {
+                            // Case 3.
+                            let (i, v) = self.recv_cwnd[fc_id as usize]
+                                .iter()
+                                .min_by(|a, b| a.1.cmp(b.1))
+                                .unwrap();
+                            self.last_cwnd[fc_id as usize] = Some((*i, *v));
+                            do_send = true;
+                        }
+                    } else {
+                        // Case 1).
+                        self.last_cwnd[fc_id as usize] = Some((recv_id, cwnd));
+                        do_send = true;
+                    }
+
+                    if do_send {
+                        let cwnd = self.last_cwnd[fc_id as usize].unwrap().1;
+                        let msg = MsgFcSource::NewCwnd(cwnd);
+                        self.tx_fc_sources[fc_id as usize].send(msg).await?;
+                    }
+                }
             },
         }
 
@@ -459,21 +546,26 @@ impl FcController {
 
     /// Dispatchs delegated streams to receivers.
     async fn handle_delegated_streams(
-        &mut self, fc_id: u64, delegated_streams: Vec<FcDelegatedStream>, early_retransmit: bool,
+        &mut self, fc_id: u64, delegated_streams: Vec<FcDelegatedStream>,
+        early_retransmit: bool,
     ) -> Result<()> {
         // Iterate over all clients listening to this flexicast source to delegate
         // the appropriate STREAM frame retransmissions.
         // Avoid retransmitting frames that may not be lost if this is an early retransmit.
         let _hs = HashSet::new();
         let iter = if early_retransmit {
-            println!("DOING EARLY RETRANSMIT ONLY: {:?}", delegated_streams.len());
+            println!(
+                "DOING EARLY RETRANSMIT ONLY: {:?}",
+                delegated_streams.len()
+            );
             self.delegated_recv[fc_id as usize].iter().chain(_hs.iter())
         } else {
             println!("DOING LOSS RETRANSMIT: {:?}", delegated_streams.len());
-            self.delegated_recv[fc_id as usize].iter().chain(self.active_clients[fc_id as usize].iter())
+            self.delegated_recv[fc_id as usize]
+                .iter()
+                .chain(self.active_clients[fc_id as usize].iter())
         };
-        for &client_id in iter
-        {
+        for &client_id in iter {
             let client_ack: HashSet<u64> =
                 self.recv_ack[client_id as usize].flatten().collect();
             let tx_client = &self.tx_clients[client_id as usize];
