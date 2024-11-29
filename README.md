@@ -11,7 +11,7 @@ The core implementation, [quiche], is extended to support flexicast QUIC.
 The applications are in the [apps](apps/) repository.
 For this paper, we implemented and used the [fc-client-rtp](apps/src/bin/fc-client-rtp.rs) and [fc-server-rtp-tokio](apps/src/bin/fc-server-rtp-tokio.rs) applications. The other applications are initially part of quiche or rely on applications not evaluated.
 
-Please use the __main__ branch of this project, as other branches contain outdated code.
+Please use the __refactoring__ branch of this project, as other branches contain outdated code.
 We will make sure to clean as well as possible the repository in the future.
 
 ## Compilation
