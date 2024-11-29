@@ -1,3 +1,45 @@
+# Flexicast QUIC
+
+This repository contains the source code of Flexicast QUIC, for the submission to SIGCOMM CCR (December 2024 deadline).
+Please, do not share the source code while the paper is still confidential.
+
+## From quiche and multipath
+
+This project builds upon quiche and multipath. The core implementation of flexicast-quic relies on quiche and its multipath branch (see the paper).
+
+The core implementation, [quiche], is extended to support flexicast QUIC.
+The applications are in the [apps](apps/) repository.
+For this paper, we implemented and used the [fc-client-rtp](apps/src/bin/fc-client-rtp.rs) and [fc-server-rtp-tokio](apps/src/bin/fc-server-rtp-tokio.rs) applications. The other applications are initially part of quiche or rely on applications not evaluated.
+
+Please use the __main__ branch of this project, as other branches contain outdated code.
+We will make sure to clean as well as possible the repository in the future.
+
+## Compilation
+
+Do __not forget__ to pull the submodules (boringssl in particular), otherwise the code won't compile!
+
+```
+git submodule update --init
+```
+
+The source historically relies on network coding, even if this is not supported anymore in the implementation. Normally, you should have access thanks to the access token. Do not hesitate to send us an email if this is not the case.
+At the time of writing, the token is still valid and works perfectly.
+
+To compile the code, simply run
+
+```
+cargo build [--release] [--bin fc-server-rtp-tokio/fc-client-rtp]
+```
+
+The brother directory contains examples of usage of the applications running Flexicast QUIC. To get this repository, clone is using:
+
+```
+git clone https://sigcomm-ccr:Wh4skuR7ae92_pzxGbFa@forge.uclouvain.be/inl/multicast-quic/flexicast-quic/experiments.git
+```
+
+----------------------------------------------------
+
+
 ![quiche](quiche.svg)
 
 [![crates.io](https://img.shields.io/crates/v/quiche.svg)](https://crates.io/crates/quiche)
