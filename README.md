@@ -31,11 +31,16 @@ To compile the code, simply run
 cargo build [--release] [--bin fc-server-rtp-tokio/fc-client-rtp]
 ```
 
-The brother directory contains examples of usage of the applications running Flexicast QUIC. To get this repository, clone is using:
+The scripts used for evaluation are available in the [experiments](experiments/) folder.
+These are two Network Performance Framework files. This requires that dependencies must be installed with Python pip:
 
 ```
-git clone https://sigcomm-ccr:Wh4skuR7ae92_pzxGbFa@forge.uclouvain.be/inl/multicast-quic/flexicast-quic/experiments.git
+pip install -r requirements.txt
 ```
+
+The simplest experiment to run is the experiment from Section 6.2, as it does not require to have access to d6515 nodes on CloudLab (which often requires a reservation due to their popularity).
+
+The [run.sh](experiments/run.sh) file executes the experiments to produce the results presented in Figures 7, 8, and 9.
 
 ----------------------------------------------------
 
