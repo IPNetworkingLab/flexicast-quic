@@ -14,6 +14,14 @@ For this paper, we implemented and used the [fc-client-rtp](apps/src/bin/fc-clie
 Please use the __refactoring__ branch of this project, as other branches contain outdated code.
 We will make sure to clean as well as possible the repository in the future.
 
+## Main contributions
+
+The main contributions inside the code repository of quiche lies in the [multicast](quiche/src/multicast) module.
+This module contains as much as possible of the control of flexicast to avoid modifying to much the main part of quiche.
+However, we still had to modify the main functions (in [lib.rs](quiche/src/lib.rs)) at some point; as well as the frames, the recovery, etc...
+
+The message passing implementation to enable processing Flexicast QUIC on multiple threads is in the [asynchronous](apps/src/mc_app/asynchronous) module of the applications.
+
 ## Compilation
 
 Do __not forget__ to pull the submodules (boringssl in particular), otherwise the code won't compile!
