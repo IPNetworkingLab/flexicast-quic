@@ -1,0 +1,295 @@
+%config
+timeout=600
+result_append={NB-STREAM-RECV}
+
+%variables
+NB_CLIENTS=1
+TIMER=0
+MC_FAILURE=0
+DURATION=30
+FAILURE=15
+FAILURE_DURATION=3000
+FAILURE_INTERVAL=4000
+TCPDUMP=1
+TCPDUMP_GRANULARITY=0.1
+RTP_SINK=0
+FAILURE_PROBA=1.0
+MULTICAST=1
+PB_DELAY=100
+FB_DELAY=50
+ENABLE_CWND=0
+
+
+// ******** INIT ******** //
+%init@receiver
+cd /home/louisna/multicast-quic/apps
+~/.cargo/bin/cargo build --release --bin fc-client-rtp
+~/.cargo/bin/cargo build --release --bin fc-server-rtp-tokio
+cd /home/louisna/flexicast-experiments/dummy
+~/.cargo/bin/cargo build --release --bin send_stop
+~/.cargo/bin/cargo build --release --bin mc_failure
+
+
+// ******** RECEIVER ******** //
+%script@receiver delay=1 waitfor=NS_READY autokill=false
+RES_DIR=res-${MULTICAST}-${MC_FAILURE}-${PB_DELAY}-${NB_CLIENTS}-${FAILURE_PROBA}-${FB_DELAY}
+cd /home/louisna/flexicast-experiments/mobility/${RES_DIR}
+for i in $(seq $NB_CLIENTS) ; do
+    IPADDR=10.7.\$((1 + $i)).2
+
+    # Create RTP sink address if this is the correct ID.
+    if [ $RTP_SINK -ne 0 ] ; then
+        RTP_ADDR="--rtp-addr 127.0.0.1:22222"
+        
+        # Start the RTP sink for the receiver.
+        ip netns exec npfns$i gst-launch-1.0 -e -v udpsrc port=22222 ! application/x-rtp,payload=96,media="video",encoding-name="H264",clock-rate="90000" ! rtpjitterbuffer drop-on-latency=true latency=$PB_DELAY ! rtph264depay ! h264parse ! avimux ! filesink location=out_${i}.avi &
+    else
+        RTP_ADDR=""
+    fi
+    ip netns exec npfns$i /home/louisna/multicast-quic/target/release/fc-client-rtp https://10.10.1.1:5678 -l $IPADDR -o client_${i}.csv --kill-gst $(( "--flexicast" if $MULTICAST else "" )) $RTP_ADDR &
+
+    sleep 0.01
+done
+echo "Waiting for receivers to finish..."
+wait
+echo "Receivers finished!"
+
+
+// ******** SOURCE ******** //
+%script@source waitfor=NS_READY autokill=false
+# Create directory for results.
+cd /home/louisna/flexicast-experiments/mobility/
+mkdir res-${MULTICAST}-${MC_FAILURE}-${PB_DELAY}-${NB_CLIENTS}-${FAILURE_PROBA}-${FB_DELAY}
+
+# Start flexicast source.
+RES_DIR=res-${MULTICAST}-${MC_FAILURE}-${PB_DELAY}-${NB_CLIENTS}-${FAILURE_PROBA}-${FB_DELAY}
+cd /home/louisna/flexicast-experiments/mobility/${RES_DIR}
+ip netns exec npfnss /home/louisna/multicast-quic/target/release/fc-server-rtp-tokio --src 10.10.1.1:5678  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --mc-addr 239.239.239.35:4433 $(( "--flexicast" if $MULTICAST else "" )) --rtp-addr 10.10.0.1:11111 --bitrates 100000000000 --wait $NB_CLIENTS --unicast --fall-back-delay $FB_DELAY $(( "--fc-cwnd 100" if $ENABLE_CWND else "" )) &
+# Start the RTP stream.
+## Wait a bit before to let receivers join the flow.
+sleep 10
+
+## Launch the sauce.
+echo "START VIDEO"
+echo "EVENT RTP_START"
+# ip netns exec npfnss /home/louisna/flexicast-experiments/dummy/target/release/traffic_gen 10.10.0.1:11111 1200 15 $DURATION
+
+ip netns exec npfnss ffmpeg -re -f h264 -i /home/louisna/flexicast-experiments/mobility/train_5M.avi -preset veryfast -vcodec copy -tune zerolatency -f rtp "rtp://10.10.0.1:11111?pkt_size=1100" > /dev/null 2>&1
+
+## Stop RTP.
+echo "SEND STOP RTP"
+ip netns exec npfnss /home/louisna/flexicast-experiments/dummy/target/release/send_stop 10.10.0.1:11111 "STOP RTP"
+sleep 3
+ip netns exec npfnss /home/louisna/flexicast-experiments/dummy/target/release/send_stop 10.10.0.1:11111 "STOP RTP"
+echo "Server ended!"
+sleep 5
+echo "Enough now, killing eveyrbody"
+pkill fc-
+pkill tcpdump
+sleep 5
+
+
+// ******** MC FAILURE ******** //
+%script@failure sudo=true waitfor=RTP_START delay=10 autokill=false
+if [ $MC_FAILURE -ne 0 ] ; then
+    cd ..
+    echo "Start changing the state of some links"
+    RUST_LOG=info /home/louisna/flexicast-experiments/dummy/target/release/mc_failure $NB_CLIENTS --fail-duration $FAILURE_DURATION --fail-dist $FAILURE_INTERVAL --duration $FAILURE --proba $FAILURE_PROBA --seed 1
+fi
+
+
+// ******** TCPDUMP ******** //
+%script@tcpdump sudo=true waitfor=RTP_START autokill=false
+RES_DIR=res-${MULTICAST}-${MC_FAILURE}-${PB_DELAY}-${NB_CLIENTS}-${FAILURE_PROBA}-${FB_DELAY}
+cd /home/louisna/flexicast-experiments/mobility/${RES_DIR}
+if [ $TCPDUMP -ne 0 ] ; then
+    echo "Start tcpdump for unicast link"
+    ip netns exec npfnsuc tcpdump -w mobility-uc.pcap -i ns-veth-uc -s 60 host 10.10.1.1 &
+
+    echo "Start tcpdump for multicast link"
+    ip netns exec npfnsmc tcpdump -w mobility-mc.pcap -i ns-veth-mc -s 60 host 10.10.1.1 &
+
+    if [ $RTP_SINK -ne -1 ] ; then
+        echo "Start tcpdump for receiver $RTP_SINK"
+        ip netns exec npfns${RTP_SINK} tcpdump -w mobility-uc-1.pcap -i npfns${RTP_SINK}-veths -s 60 host 10.10.1.1 &
+        ip netns exec npfns${RTP_SINK} tcpdump -w mobility-mc-1.pcap -i npfns${RTP_SINK}-vethmc -s 60 host 10.10.1.1 &
+    fi
+    wait
+
+    tshark -r mobility-uc.pcap -2 -R "ip.src==10.10.1.1" -q -z io,stat,$TCPDUMP_GRANULARITY > mobility-uc-down.txt
+    tshark -r mobility-uc.pcap -2 -R "ip.dst==10.10.1.1" -q -z io,stat,$TCPDUMP_GRANULARITY > mobility-uc-up.txt
+    tshark -r mobility-mc.pcap -2 -R "ip.src==10.10.1.1" -q -z io,stat,$TCPDUMP_GRANULARITY > mobility-mc.txt
+    
+    if [ $RTP_SINK -ne -1 ] ; then
+        tshark -r mobility-uc-1.pcap -2 -R "ip.src==10.10.1.1" -q -z io,stat,$TCPDUMP_GRANULARITY > mobility-uc-1-down.txt
+        tshark -r mobility-uc-1.pcap -2 -R "ip.dst==10.10.1.1" -q -z io,stat,$TCPDUMP_GRANULARITY > mobility-uc-1-up.txt
+        tshark -r mobility-mc-1.pcap -2 -R "ip.src==10.10.1.1" -q -z io,stat,$TCPDUMP_GRANULARITY > mobility-mc-1.txt
+    fi
+    wait
+fi
+
+
+// ******** NETNS ******** //
+%script@client sudo=true autokill=false
+sudo sysctl -w net.core.rmem_max=26214400
+sudo sysctl -w net.core.rmem_default=26214400
+
+
+echo "Initializing client namespaces..."
+function waitfor() {
+    while ! ip link show $1 &> /dev/null ; do
+        sleep 0.1
+    done
+}
+
+function waitwhile() {
+    while ip link show $1 &> /dev/null ; do
+        sleep 0.1
+    done
+}
+
+# Source, unicast and multicast router ns.
+
+## Clean stuff.
+ip link del ns-veth-mc &> /dev/null
+ip link del ns-veth-s0 &> /dev/null
+ip netns del npfnsmc
+
+ip link del ns-veth-uc &> /dev/null
+ip link del ns-veth-s1 &> /dev/null
+ip netns del npfnsuc
+
+### Clean link between source and first router.
+ip link del ns-veth-p0 &> /dev/null
+ip link del ns-veth-p1 &> /dev/null
+ip netns del npfnsr
+ip netns del npfnss
+
+## Add netns and links.
+ip netns add npfnss
+ip netns add npfnsr
+ip netns add npfnsmc
+ip netns add npfnsuc
+
+ip link add ns-veth-s0 type veth peer name ns-veth-mc
+ip link set ns-veth-s0 netns npfnsr up
+ip link set ns-veth-mc netns npfnsmc up
+
+ip link add ns-veth-s1 type veth peer name ns-veth-uc
+ip link set ns-veth-s1 netns npfnsr up
+ip link set ns-veth-uc netns npfnsuc up
+
+ip link add ns-veth-p0 type veth peer name ns-veth-p1
+ip link set ns-veth-p0 netns npfnss up
+ip link set ns-veth-p1 netns npfnsr up
+
+## Add IP addresses.
+ip netns exec npfnsr ip addr add 10.0.0.1/24 dev ns-veth-s0
+ip netns exec npfnsmc ip addr add 10.0.0.2/24 dev ns-veth-mc
+
+ip netns exec npfnsr ip addr add 10.1.0.1/24 dev ns-veth-s1
+ip netns exec npfnsuc ip addr add 10.1.0.2/24 dev ns-veth-uc
+
+ip netns exec npfnss ip addr add 10.10.1.1/24 dev ns-veth-p0
+ip netns exec npfnsr ip addr add 10.10.1.2/24 dev ns-veth-p1
+
+## Add default route for multicast from the source.
+ip netns exec npfnss ip route add 239.239.239.35 via 10.10.1.2 dev ns-veth-p0
+
+## And add default route.
+ip netns exec npfnss ip route add 10.5.0.0/16 via 10.10.1.2
+ip netns exec npfnss ip route add 10.1.0.0/24 via 10.10.1.2
+ip netns exec npfnsr ip route add 10.5.0.0/16 via 10.1.0.2
+
+## Add route for the unicast router towards the source.
+ip netns exec npfnsuc ip route add 10.10.1.1 via 10.1.0.1 dev ns-veth-uc
+
+## Add loopback address for the flexicast source RTP.
+ip netns exec npfnss ip link set dev lo up
+ip netns exec npfnss ip addr add 10.10.0.1/32 dev lo
+
+# Allo IPv4 forwarding.
+ip netns exec npfnsuc sysctl net.ipv4.ip_forward=1
+ip netns exec npfnsr sysctl net.ipv4.ip_forward=1
+
+# Per-client netns.
+for P in $(seq $NB_CLIENTS) ; do
+    (
+    ns=npfns$P
+    echo "Creating ns $ns"
+
+    ## Delete links.
+    ip link del $ns-veths &> /dev/null
+    ip link del $ns-vethmc &> /dev/null
+    sleep 0.1
+    echo "Waiting for veth to disappear"
+    waitwhile $ns-veths
+    waitwhile $ns-vethmc
+    ip netns del $ns &> /dev/null
+    sleep 0.1
+
+    ## Add netns.
+    ip netns add $ns
+    sleep 0.1
+
+    echo "Creating peer NS"
+
+    ### Link with the source.
+    ip link add $ns-veths type veth peer name npfnss-veth-$P
+    sleep 0.1
+    echo "Waiting for veth with source to appear"
+    waitfor $ns-veths
+    waitfor npfnss-veth-$P
+
+    ip link set $ns-veths netns $ns up
+    ip link set npfnss-veth-$P netns npfnsuc up
+    ip netns exec npfnsuc ip addr add 10.5.\$((1 + $P)).1/24 dev npfnss-veth-$P
+    ip netns exec $ns ip addr add 10.5.\$((1 + $P)).2/24 dev $ns-veths
+    ip netns exec npfnsuc tc qdisc add dev npfnss-veth-$P root netem delay 10ms rate 10000mbit
+    ip netns exec $ns tc qdisc add dev $ns-veths root netem delay 10ms rate 10000mbit
+
+    ### Link with multicast router.
+    ip link add $ns-vethmc type veth peer name npfnsmc-veth-$P
+    sleep 0.1
+    echo "Waiting for veth with multicast router to appear"
+    waitfor $ns-vethmc
+    waitfor npfnsmc-veth-$P
+
+    ip link set $ns-vethmc netns $ns up
+    ip link set npfnsmc-veth-$P netns npfnsmc up
+    ip netns exec npfnsmc ip addr add 10.7.\$((1 + $P)).1/24 dev npfnsmc-veth-$P
+    ip netns exec $ns ip addr add 10.7.\$((1 + $P)).2/24 dev $ns-vethmc
+    ip netns exec npfnsmc tc qdisc add dev npfnsmc-veth-$P root netem delay 10ms rate 10000mbit
+    ip netns exec $ns tc qdisc add dev $ns-vethmc root netem delay 10ms rate 10000mbit
+
+    ### Route for multicast.
+    ip netns exec $ns ip route add 239.239.239.35 dev $ns-vethmc
+    sudo ip netns exec $ns ip route add 10.10.1.1 via 10.5.\$((1 + $P)).1
+
+    ### Add a loopback address for the network namespace.
+    ip netns exec $ns ip link set dev lo up
+    ip netns exec $ns ip addr add 127.0.0.1 dev lo
+
+    ) &
+done
+wait
+
+# Build multicast static routing tables.
+
+## Build string with all output interfaces.
+OUT_MC_IF=""
+for P in $(seq $NB_CLIENTS) ; do
+    OUT_MC_IF+="npfnsmc-veth-$P "
+done
+
+## Create multicast routing table and add output interfaces.
+ip netns exec npfnsmc smcrouted -l debug -I smctable
+ip netns exec npfnsmc smcroutectl -I smctable add ns-veth-mc 239.239.239.35 $OUT_MC_IF
+
+## Do the same for the first router.
+ip netns exec npfnsr smcrouted -l debug -I smctable
+ip netns exec npfnsr smcroutectl -I smctable add ns-veth-p1 239.239.239.35 ns-veth-s0
+
+wait
+
+echo "EVENT NS_READY"

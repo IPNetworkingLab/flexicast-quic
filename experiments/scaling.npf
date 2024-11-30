@@ -1,0 +1,318 @@
+%config
+timeout=180
+var_names+={UC-RATE-SUM:Unicast Rate,MC-RATE-SUM:Multicast Rate}
+accept_zero={PROXY-DROPPED,PROXY-TXDROPPED,MC-RATE_SUM}
+result_add={UCBYTES,MCBYTES,BYTES,CLIENTGP,ERROR}
+result_append={DLTIME}
+
+%variables
+MULTICAST=1
+FW_MULTICAST=1
+DEBUG=0
+SERVER_DEBUG=0
+NS_PREFIX=10.20.
+TIMER=300
+NB_CLIENTS=1
+PURE_UDP=0
+NTHREADS=40
+PROBE_PATH=1
+ACK_ELICIT=0
+INTHROUGHPUT=150
+SENDMMSG=0
+
+%late_variables
+FEC?=5
+
+%import@client cpuload waitfor=NS_READY
+%import@server cpuload waitfor=NS_READY
+//%import@client dev_rate waitfor=NS_READY
+//%import@server dev_rate waitfor=NS_READY RATE_THRESH=1000000 SIDE=tx
+
+%script@client sudo=true autokill=false
+pkill mc-
+
+%init@client
+cd ~/multicast-quic
+ ~/.cargo/bin/cargo build --manifest-path ~/multicast-quic/apps/Cargo.toml --bin fc-client-rtp$(( "  --release " if not $DEBUG else "" ))
+
+%file@client exec_client.sh
+cd ~/multicast-quic
+ID=$1
+MAX=$2
+NPF_NODE_ID=$3
+echo "Launching $ID..."
+export RUST_LOG=$(("debug" if $DEBUG else "err"))
+if [ $PURE_UDP -ne 0 ] ; then
+    echo "Using pure UDP"
+    cd ~/flexicast-experiments/dummy
+    ~/.cargo/bin/cargo run --release --bin listen_uc --manifest-path ~/flexicast-experiments/dummy/Cargo.toml -- 0.0.0.0:4433 &> client_${ID}.log
+else
+    if [ $MULTICAST -ne 0 ] ; then
+        nice -n 3 ~/multicast-quic/target/$(( "debug" if $DEBUG else "release"))/fc-client-rtp https://10.10.2.2:5678 -l 10.10.2.0 -o client_test_${ID}.txt --kill-gst $(( "--flexicast --proxy" if $MULTICAST else "" )) $(( "--ack-elicit" if $ACK_ELICIT else "" )) &> client_${ID}.log
+    else
+        nice -n 3 ~/multicast-quic/target/$(( "debug" if $DEBUG else "release"))/fc-client-rtp https://10.10.2.\$(( 2 + $NPF_NODE_ID)):567${NPF_NODE_ID} -l 10.10.2.0 -o client_test_${ID}.txt --kill-gst $(( "--flexicast --proxy" if $MULTICAST else "" )) $(( "--ack-elicit" if $ACK_ELICIT else "" )) &> client_${ID}.log
+    fi
+fi
+
+#python3 perf/sum.py client_test_${ID}.txt
+#if [ $? -ne 0 ] ; then
+#    echo "Error for script ${ID}"
+#    echo "RESULT-ERROR 1"
+#    exit 1
+#fi
+
+%script@client delay=2 waitfor=PROXY_READY autokill=true
+for i in $(seq $NB_CLIENTS) ; do
+    sudo ip netns exec npfns$i bash exec_client.sh  $i $NB_CLIENTS $NPF_NODE_ID &
+    sleep 0.01
+done
+echo "Waiting for clients to finish..."
+wait
+echo "Clients finished!"
+#wait -n
+#sleep 2
+
+%file@proxy FLEX jinja
+
+{% if ${MULTICAST} == 1 and ${SENDMMSG} == 0 %}
+    {% for th in range(${client:node}) %}
+            dup[{{th}}] -> pip{{th}} :: Pipeliner -> dt{{th}} :: FlexiCast(
+            {% for i in range(($NB_CLIENTS / 4)|int) %}
+                        CLIENT 10.20.{{th+10}}.{{5+i}},
+                        DSTMAC ca:e7:0{{th}}:{{((i + 1) / 100)|int}}:{{((i + 1) % 100)|int}}:88,
+            {% endfor %}
+            ) -> avgmc;
+                    StaticThreadSched(pip{{th}} {{th + 1}});
+
+            dup[{{th + ${client:node}}}] -> pip{{th + ${client:node}}} :: Pipeliner -> dt{{th + ${client:node}}} :: FlexiCast(
+            {% for i in range(($NB_CLIENTS / 4)|int | int, ($NB_CLIENTS / 2)|int | int) %}
+                        CLIENT 10.20.{{th+10}}.{{5+i}},
+                        DSTMAC ca:e7:0{{th}}:{{((i + 1) / 100)|int}}:{{((i + 1) % 100)|int}}:88,
+            {% endfor %}
+            ) -> avgmc;
+                    StaticThreadSched(pip{{th + ${client:node}}} {{th + ${client:node} + 1}});
+
+            dup[{{th + ${client:node} + ${client:node}}}] -> pip{{th + ${client:node} + ${client:node}}} :: Pipeliner -> dt{{th + ${client:node} + ${client:node}}} :: FlexiCast(
+            {% for i in range(($NB_CLIENTS / 2)|int | int, (3 * $NB_CLIENTS / 4)|int | int) %}
+                        CLIENT 10.20.{{th+10}}.{{5+i}},
+                        DSTMAC ca:e7:0{{th}}:{{((i + 1) / 100)|int}}:{{((i + 1) % 100)|int}}:88,
+            {% endfor %}
+            ) -> avgmc;
+                    StaticThreadSched(pip{{th + ${client:node} + ${client:node}}} {{th + ${client:node} + ${client:node} + 1}});
+
+            dup[{{th + ${client:node} + ${client:node} + ${client:node}}}] -> pip{{th + ${client:node} + ${client:node} + ${client:node}}} :: Pipeliner -> dt{{th + ${client:node} + ${client:node} + ${client:node}}} :: FlexiCast(
+            {% for i in range((3 * $NB_CLIENTS / 4)|int | int, $NB_CLIENTS) %}
+                        CLIENT 10.20.{{th+10}}.{{5+i}},
+                        DSTMAC ca:e7:0{{th}}:{{((i + 1) / 100)|int}}:{{((i + 1) % 100)|int}}:88,
+            {% endfor %}
+            ) -> avgmc;
+                    StaticThreadSched(pip{{th + ${client:node} + ${client:node} + ${client:node}}} {{th + ${client:node} + ${client:node} + ${client:node} + 1}});
+    {% endfor %}
+{% else %}
+    dup -> Discard;
+    Idle -> avgmc;
+    avguc -> FlexiCast(
+                        UC 1,
+    {% for th in range(${client:node}) %}
+            {% for i in range($NB_CLIENTS) %}
+                        CLIENT 10.20.{{th+10}}.{{5+i}},
+                        DSTMAC ca:e7:0{{th}}:{{((i + 1) / 100)|int}}:{{((i + 1) % 100)|int}}:88,
+            {% endfor %}
+    {% endfor %}
+        ) -> clientio;
+{% endif %}
+
+
+%script@proxy sudo=true delay=1 waitfor=NS_READY
+pkill click
+pkill proxy
+pkill mc-
+
+echo "Launching proxy"
+D=${PWD}
+echo ${PWD} > /tmp/test.txt
+
+if [ $MULTICAST -ne 0 ] && [ $SENDMMSG -eq 0 ] ; then
+    echo "USING MC FILE"
+    cat /proj/improvprot-PG0/louisna/fastclick/flexicast/flexicast.click > C
+else
+    echo "USING UNICAST FILE"
+    cat /proj/improvprot-PG0/louisna/fastclick/flexicast/flexicast-uc.click > C
+fi
+cat FLEX >> C
+
+cat C
+
+export DPDK_PATH=/proj/improvprot-PG0/louisna/dpdk-stable-22.11.6/install
+export LD_LIBRARY_PATH=$DPDK_PATH/lib/x86_64-linux-gnu
+export PKG_CONFIG_PATH=$LD_LIBRARY_PATH/pkgconfig
+export RTE_SDK=$DPDK_PATH
+export RTE_TARGET=x86_64-native-linux-gcc
+
+/proj/improvprot-PG0/louisna/fastclick/bin/click --dpdk -l 0-20 -- C print=$(("true" if $DEBUG > 1 else "false")) multicast=$FW_MULTICAST
+
+%script@server delay=2 waitfor=NS_READY sudo=true
+sudo sysctl -w net.core.rmem_max=26214400
+sudo sysctl -w net.core.rmem_default=26214400
+
+pkill fc-
+
+echo "Server!"
+#sudo ifconfig enp65s0f0 10.10.2.2 netmask 255.255.255.0
+sudo ip route add 10.20.0.0/24 dev enp65s0f0 via 10.10.2.1 &> /dev/null
+
+# Shaping
+sudo ethtool -K enp65s0f0 tso off
+sudo ethtool -K enp65s0f0 gso off
+sudo tc qdisc del root dev enp65s0f0
+sudo ip addr add 10.10.2.3/24 dev enp65s0f0
+sudo ip addr add 10.10.2.4/24 dev enp65s0f0
+sudo ip addr add 10.10.2.5/24 dev enp65s0f0
+if [ $MULTICAST -ne 0 ] ; then
+    # But do not do shaping if we use sendmmsg.
+    if [ $SENDMMSG -eq 0 ] ; then
+        sudo tc qdisc add dev enp65s0f0 root netem rate 115 mbit limit 5000
+    fi
+fi
+
+if [ $PURE_UDP -ne 0 ] ; then
+    echo "Using pure UDP"
+    cd ~/flexicast-experiments/dummy
+    ~/.cargo/bin/cargo run --release --bin simple_mc --manifest-path ~/flexicast-experiments/dummy/Cargo.toml -- 127.0.0.1:11111 10.10.2.1:4433 &
+else
+    cd ~/multicast-quic
+    # Replace the number of threads on the fly. Not very clean.
+    sed -i '153s/.*/#[tokio::main(flavor = "multi_thread", worker_threads = $NTHREADS)]/' apps/src/bin/fc-server-rtp-tokio.rs
+    # Run multiple parallel instances if unicast is used.
+    
+    if [ $MULTICAST -ne 0 ] ; then
+        RUST_LOG=$(("trace" if $SERVER_DEBUG else "err")) ~/.cargo/bin/cargo run --bin fc-server-rtp-tokio --manifest-path ~/multicast-quic/apps/Cargo.toml $(( "--release" if not $SERVER_DEBUG else "" )) -- --src 10.10.2.2:5678  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --max-fec-rs $FEC --mc-addr 10.10.2.1:4433 $(( "--flexicast" if $MULTICAST else "--unicast" )) --rtp-addr 127.0.0.1:11111 --bitrates 100000000000 --wait $(( $NB_CLIENTS * ${client:node} )) $(( "--probe-path" if $PROBE_PATH else "" )) $(( "--sendmmsg 1 " if $SENDMMSG else "" )) > server.log 2>&1 &
+    else
+        RUST_LOG=$(("trace" if $SERVER_DEBUG else "err")) ~/.cargo/bin/cargo run --bin fc-server-rtp-tokio --manifest-path ~/multicast-quic/apps/Cargo.toml $(( "--release" if not $SERVER_DEBUG else "" )) -- --src 10.10.2.2:5670  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --unicast --rtp-addr 127.0.0.1:11111 --bitrates 100000000000 --wait $NB_CLIENTS --unicast-unlimited-cwnd > server.log 2>&1 &
+        RUST_LOG=$(("trace" if $SERVER_DEBUG else "err")) ~/.cargo/bin/cargo run --bin fc-server-rtp-tokio --manifest-path ~/multicast-quic/apps/Cargo.toml $(( "--release" if not $SERVER_DEBUG else "" )) -- --src 10.10.2.3:5671  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --unicast --rtp-addr 127.0.0.1:11112 --bitrates 100000000000 --wait $NB_CLIENTS --unicast-unlimited-cwnd > server.log 2>&1 &
+        RUST_LOG=$(("trace" if $SERVER_DEBUG else "err")) ~/.cargo/bin/cargo run --bin fc-server-rtp-tokio --manifest-path ~/multicast-quic/apps/Cargo.toml $(( "--release" if not $SERVER_DEBUG else "" )) -- --src 10.10.2.4:5672  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --unicast --rtp-addr 127.0.0.1:11113 --bitrates 100000000000 --wait $NB_CLIENTS --unicast-unlimited-cwnd > server.log 2>&1 &
+        RUST_LOG=$(("trace" if $SERVER_DEBUG else "err")) ~/.cargo/bin/cargo run --bin fc-server-rtp-tokio --manifest-path ~/multicast-quic/apps/Cargo.toml $(( "--release" if not $SERVER_DEBUG else "" )) -- --src 10.10.2.5:5673  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --unicast --rtp-addr 127.0.0.1:11114 --bitrates 100000000000 --wait $NB_CLIENTS --unicast-unlimited-cwnd > server.log 2>&1 &
+    fi
+fi
+echo "Wait for the clients to setup before launching the sauce"
+sleep 25
+echo "*************** LAUNCHING THE SAUCE ***************"
+if [ $MULTICAST -ne 0 ] ; then
+    ~/.cargo/bin/cargo run --release --bin traffic_gen --manifest-path ~/flexicast-experiments/dummy/Cargo.toml -- 127.0.0.1:11111 1200 $INTHROUGHPUT 100
+else
+    ~/.cargo/bin/cargo run --release --bin traffic_gen --manifest-path ~/flexicast-experiments/dummy/Cargo.toml -- 127.0.0.1:11111 1200 $INTHROUGHPUT 100 &
+    ~/.cargo/bin/cargo run --release --bin traffic_gen --manifest-path ~/flexicast-experiments/dummy/Cargo.toml -- 127.0.0.1:11112 1200 $INTHROUGHPUT 100 &
+    ~/.cargo/bin/cargo run --release --bin traffic_gen --manifest-path ~/flexicast-experiments/dummy/Cargo.toml -- 127.0.0.1:11113 1200 $INTHROUGHPUT 100 &
+    ~/.cargo/bin/cargo run --release --bin traffic_gen --manifest-path ~/flexicast-experiments/dummy/Cargo.toml -- 127.0.0.1:11114 1200 $INTHROUGHPUT 100
+fi
+
+if [ $MULTICAST -ne 0 ] ; then
+    echo "STOP RTP" >> /dev/udp/localhost/11111
+else
+    for P in $(seq ${client:node}) ; do
+        echo "STOP RTP" >> /dev/udp/localhost/1111$P
+    done
+fi
+sleep 3
+if [ $MULTICAST -ne 0 ] ; then
+    echo "STOP RTP" >> /dev/udp/localhost/11111
+else
+    for P in $(seq ${client:node}) ; do
+        echo "STOP RTP" >> /dev/udp/localhost/1111$P
+    done
+fi
+
+echo "Server ended!"
+sleep 10
+echo "Enough now, killing eveyrbody"
+pkill fc-
+
+//##################
+%script@client sudo=true autokill=false
+sudo sysctl -w net.core.rmem_max=26214400
+sudo sysctl -w net.core.rmem_default=26214400
+
+
+echo "Initializing client namespaces..."
+function waitfor() {
+    while ! ip link show $1 &> /dev/null ; do
+        sleep 0.1
+    done
+}
+
+function waitwhile() {
+    while ip link show $1 &> /dev/null ; do
+        sleep 0.1
+    done
+}
+
+#Cleant old stuffs
+ifconfig brns down &> /dev/null
+brctl delbr brns &> /dev/null
+
+brctl addbr brns
+brctl addif brns ${self:0:ifname}
+ifconfig ${self:0:ifname} promisc up 
+ifconfig ${self:0:ifname} 0.0.0.0
+ifconfig brns up
+
+NB_NS=${self:multi}
+echo "Will create ${NB_NS} attatched to brns..."
+ifconfig brns
+
+for P in $(seq $NB_CLIENTS) ; do
+    (
+    ns=npfns$P
+    echo "Creating ns $ns"
+    ip link del $ns-veth0 &> /dev/null
+    ip link del $ns-veth1 &> /dev/null
+    sleep 0.1
+    echo "Waiting for veth to disappear"
+    waitwhile $ns-veth0
+    waitwhile $ns-veth1
+    ip netns del $ns &> /dev/null
+    sleep 0.1
+    ip netns add $ns
+    sleep 0.1
+
+    echo "Creating peer NS"
+    ip link add $ns-veth0 type veth peer name $ns-veth1
+    sleep 0.1
+    echo "Waiting for veth to appear"
+    waitfor $ns-veth0
+    waitfor $ns-veth1
+
+    ip link set $ns-veth0 netns $ns up
+    ip link set $ns-veth1 up
+
+    ip netns exec $ns ifconfig $ns-veth0 hw ether ca:e7:0$NPF_NODE_ID:\$(( $P / 100 )):\$(( $P % 100 )):88
+    
+    sleep 0.1
+    ip=${NS_PREFIX}$(( 10 + $NPF_NODE_ID)).\$(( 4 + $P ))
+    echo "Creating NS $P ($ns) with ip $ip"
+
+    ip netns exec $ns ifconfig $ns-veth0 $ip netmask 255.255.0.0
+    #ip netns exec $ns ip route add default dev $ns-veth0 
+
+    ip netns exec $ns ip route add 10.10.2.0/24 dev $ns-veth0 via 10.20.0.1
+    #via ${NS_GW}
+    brctl addif brns $ns-veth1
+    ) &
+done
+wait
+echo "EVENT NS_READY"
+
+%pyexit
+import numpy as np
+
+for kind,results in KIND_RESULTS.items():
+    d={}
+    for time, kv in results.items():
+        for k,v in kv.items():
+           d.setdefault(k,[])
+           d[k].append(v)
+    for k,vs in d.items():
+        RESULTS[k + '-SUM'] = vs[np.argmax(vs>np.mean(vs)/5)+1:len(vs)-np.argmax(vs[::-1]>np.mean(vs)/5)-1]
+        RESULTS[k + '-ALL'] = np.trim_zeros(vs)
+
+
