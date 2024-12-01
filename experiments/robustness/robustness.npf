@@ -18,14 +18,16 @@ MULTICAST=1
 PB_DELAY=100
 FB_DELAY=50
 ENABLE_CWND=0
+PATH_TO_DIRS=~
 
 
 // ******** INIT ******** //
 %init@receiver
-cd /home/louisna/multicast-quic/apps
+echo "Did you correctly set the PATH_TO_DIRS variables? Currently=$PATH_TO_DIRS"
+cd $PATH_TO_DIRS/flexicast-quic/apps
 ~/.cargo/bin/cargo build --release --bin fc-client-rtp
 ~/.cargo/bin/cargo build --release --bin fc-server-rtp-tokio
-cd /home/louisna/flexicast-experiments/dummy
+cd $PATH_TO_DIRS/flexicast-quic/experiments
 ~/.cargo/bin/cargo build --release --bin send_stop
 ~/.cargo/bin/cargo build --release --bin mc_failure
 
@@ -33,7 +35,7 @@ cd /home/louisna/flexicast-experiments/dummy
 // ******** RECEIVER ******** //
 %script@receiver delay=1 waitfor=NS_READY autokill=false
 RES_DIR=res-${MULTICAST}-${MC_FAILURE}-${PB_DELAY}-${NB_CLIENTS}-${FAILURE_PROBA}-${FB_DELAY}
-cd /home/louisna/flexicast-experiments/mobility/${RES_DIR}
+cd $PATH_TO_DIRS/flexicast-quic/experiments/robustness/${RES_DIR}
 for i in $(seq $NB_CLIENTS) ; do
     IPADDR=10.7.\$((1 + $i)).2
 
@@ -46,7 +48,7 @@ for i in $(seq $NB_CLIENTS) ; do
     else
         RTP_ADDR=""
     fi
-    ip netns exec npfns$i /home/louisna/multicast-quic/target/release/fc-client-rtp https://10.10.1.1:5678 -l $IPADDR -o client_${i}.csv --kill-gst $(( "--flexicast" if $MULTICAST else "" )) $RTP_ADDR &
+    ip netns exec npfns$i $PATH_TO_DIRS/flexicast-quic/target/release/fc-client-rtp https://10.10.1.1:5678 -l $IPADDR -o client_${i}.csv --kill-gst $(( "--flexicast" if $MULTICAST else "" )) $RTP_ADDR &
 
     sleep 0.01
 done
@@ -58,13 +60,13 @@ echo "Receivers finished!"
 // ******** SOURCE ******** //
 %script@source waitfor=NS_READY autokill=false
 # Create directory for results.
-cd /home/louisna/flexicast-experiments/mobility/
+cd $PATH_TO_DIRS/flexicast-quic/experiments/robustness/
 mkdir res-${MULTICAST}-${MC_FAILURE}-${PB_DELAY}-${NB_CLIENTS}-${FAILURE_PROBA}-${FB_DELAY}
 
 # Start flexicast source.
 RES_DIR=res-${MULTICAST}-${MC_FAILURE}-${PB_DELAY}-${NB_CLIENTS}-${FAILURE_PROBA}-${FB_DELAY}
-cd /home/louisna/flexicast-experiments/mobility/${RES_DIR}
-ip netns exec npfnss /home/louisna/multicast-quic/target/release/fc-server-rtp-tokio --src 10.10.1.1:5678  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --mc-addr 239.239.239.35:4433 $(( "--flexicast" if $MULTICAST else "" )) --rtp-addr 10.10.0.1:11111 --bitrates 100000000000 --wait $NB_CLIENTS --unicast --fall-back-delay $FB_DELAY $(( "--fc-cwnd 100" if $ENABLE_CWND else "" )) &
+cd $PATH_TO_DIRS/flexicast-quic/experiments/robustness/${RES_DIR}
+ip netns exec npfnss $PATH_TO_DIRS/flexicast-quic/target/release/fc-server-rtp-tokio --src 10.10.1.1:5678  --expiration-timer $TIMER --auth none --cert-path ~/flexicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --mc-addr 239.239.239.35:4433 $(( "--flexicast" if $MULTICAST else "" )) --rtp-addr 10.10.0.1:11111 --bitrates 100000000000 --wait $NB_CLIENTS --unicast --fall-back-delay $FB_DELAY $(( "--fc-cwnd 100" if $ENABLE_CWND else "" )) &
 # Start the RTP stream.
 ## Wait a bit before to let receivers join the flow.
 sleep 10
@@ -72,15 +74,15 @@ sleep 10
 ## Launch the sauce.
 echo "START VIDEO"
 echo "EVENT RTP_START"
-# ip netns exec npfnss /home/louisna/flexicast-experiments/dummy/target/release/traffic_gen 10.10.0.1:11111 1200 15 $DURATION
+# ip netns exec npfnss $PATH_TO_DIRS/flexicast-quic/experiments/dummy/target/release/traffic_gen 10.10.0.1:11111 1200 15 $DURATION
 
-ip netns exec npfnss ffmpeg -re -f h264 -i /home/louisna/flexicast-experiments/mobility/train_5M.avi -preset veryfast -vcodec copy -tune zerolatency -f rtp "rtp://10.10.0.1:11111?pkt_size=1100" > /dev/null 2>&1
+ip netns exec npfnss ffmpeg -re -f h264 -i $PATH_TO_DIRS/flexicast-quic/experiments/robustness/train_5M.avi -preset veryfast -vcodec copy -tune zerolatency -f rtp "rtp://10.10.0.1:11111?pkt_size=1100" > /dev/null 2>&1
 
 ## Stop RTP.
 echo "SEND STOP RTP"
-ip netns exec npfnss /home/louisna/flexicast-experiments/dummy/target/release/send_stop 10.10.0.1:11111 "STOP RTP"
+ip netns exec npfnss $PATH_TO_DIRS/flexicast-quic/experiments/dummy/target/release/send_stop 10.10.0.1:11111 "STOP RTP"
 sleep 3
-ip netns exec npfnss /home/louisna/flexicast-experiments/dummy/target/release/send_stop 10.10.0.1:11111 "STOP RTP"
+ip netns exec npfnss $PATH_TO_DIRS/flexicast-quic/experiments/dummy/target/release/send_stop 10.10.0.1:11111 "STOP RTP"
 echo "Server ended!"
 sleep 5
 echo "Enough now, killing eveyrbody"
@@ -94,14 +96,14 @@ sleep 5
 if [ $MC_FAILURE -ne 0 ] ; then
     cd ..
     echo "Start changing the state of some links"
-    RUST_LOG=info /home/louisna/flexicast-experiments/dummy/target/release/mc_failure $NB_CLIENTS --fail-duration $FAILURE_DURATION --fail-dist $FAILURE_INTERVAL --duration $FAILURE --proba $FAILURE_PROBA --seed 1
+    RUST_LOG=info $PATH_TO_DIRS/flexicast-quic/experiments/dummy/target/release/mc_failure $NB_CLIENTS --fail-duration $FAILURE_DURATION --fail-dist $FAILURE_INTERVAL --duration $FAILURE --proba $FAILURE_PROBA --seed 1
 fi
 
 
 // ******** TCPDUMP ******** //
 %script@tcpdump sudo=true waitfor=RTP_START autokill=false
 RES_DIR=res-${MULTICAST}-${MC_FAILURE}-${PB_DELAY}-${NB_CLIENTS}-${FAILURE_PROBA}-${FB_DELAY}
-cd /home/louisna/flexicast-experiments/mobility/${RES_DIR}
+cd $PATH_TO_DIRS/flexicast-quic/experiments/robustness/${RES_DIR}
 if [ $TCPDUMP -ne 0 ] ; then
     echo "Start tcpdump for unicast link"
     ip netns exec npfnsuc tcpdump -w mobility-uc.pcap -i ns-veth-uc -s 60 host 10.10.1.1 &

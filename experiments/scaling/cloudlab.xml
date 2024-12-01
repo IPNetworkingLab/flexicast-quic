@@ -1,0 +1,82 @@
+<rspec xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:jacks="http://www.protogeni.net/resources/rspec/ext/jacks/1" xmlns:client="http://www.protogeni.net/resources/rspec/ext/client/1" xmlns:emulab="http://www.protogeni.net/resources/rspec/ext/emulab/1" xmlns="http://www.geni.net/resources/rspec/3" xsi:schemaLocation="http://www.geni.net/resources/rspec/3 http://www.geni.net/resources/rspec/3/request.xsd" type="request">
+  <rspec_tour xmlns="http://www.protogeni.net/resources/rspec/ext/apt-tour/1">
+    <description type="markdown">The source sends data to a proxy, which then forwards to the clients, using d6515 nodes</description>
+  </rspec_tour>
+  <node client_id="node-0" exclusive="true">
+    <sliver_type name="raw">
+      <disk_image name="urn:publicid:IDN+utah.cloudlab.us+image+netsched-PG0:FEC.node-0"/>
+    </sliver_type>
+    <hardware_type name="d6515"/>
+    <interface client_id="node-0:interface-0" component_id="eth4"/>
+    <services>
+      <execute shell="/bin/bash" command="/proj/improvprot-PG0/louisna/install.sh"/>
+    </services>
+  </node>
+  <node client_id="node-1" exclusive="true">
+    <sliver_type name="raw">
+      <disk_image name="urn:publicid:IDN+utah.cloudlab.us+image+netsched-PG0:FEC.node-0"/>
+    </sliver_type>
+    <hardware_type name="d6515"/>
+    <interface client_id="node-1:interface-1" component_id="eth4"/>
+    <interface client_id="node-1:interface-2" component_id="eth5"/>
+    <services>
+      <execute shell="/bin/bash" command="/proj/improvprot-PG0/louisna/install.sh"/>
+    </services>
+  </node>
+  <node client_id="node-2" exclusive="true">
+    <sliver_type name="raw">
+      <disk_image name="urn:publicid:IDN+utah.cloudlab.us+image+netsched-PG0:FEC.node-0"/>
+    </sliver_type>
+    <hardware_type name="d6515"/>
+    <interface client_id="node-2:interface-3" component_id="eth4"/>
+    <services>
+      <execute shell="/bin/bash" command="/proj/improvprot-PG0/louisna/install.sh"/>
+    </services>
+  </node>
+  <node client_id="node-3" exclusive="true">
+    <sliver_type name="raw">
+      <disk_image name="urn:publicid:IDN+utah.cloudlab.us+image+netsched-PG0:FEC.node-0"/>
+    </sliver_type>
+    <hardware_type name="d6515"/>
+    <interface client_id="node-3:interface-4" component_id="eth4"/>
+    <services>
+      <execute shell="/bin/bash" command="/proj/improvprot-PG0/louisna/install.sh"/>
+    </services>
+  </node>
+  <node client_id="node-4" exclusive="true">
+    <sliver_type name="raw">
+      <disk_image name="urn:publicid:IDN+utah.cloudlab.us+image+netsched-PG0:FEC.node-0"/>
+    </sliver_type>
+    <hardware_type name="d6515"/>
+    <interface client_id="node-4:interface-5" component_id="eth4"/>
+    <services>
+      <execute shell="/bin/bash" command="/proj/improvprot-PG0/louisna/install.sh"/>
+    </services>
+  </node>
+  <node client_id="node-5" exclusive="true">
+    <sliver_type name="raw">
+      <disk_image name="urn:publicid:IDN+utah.cloudlab.us+image+netsched-PG0:FEC.node-0"/>
+    </sliver_type>
+    <hardware_type name="d6515"/>
+    <interface client_id="node-5:interface-6" component_id="eth4"/>
+    <services>
+      <execute shell="/bin/bash" command="/proj/improvprot-PG0/louisna/install.sh"/>
+    </services>
+  </node>
+  <link client_id="link-1">
+    <interface_ref client_id="node-0:interface-0"/>
+    <interface_ref client_id="node-1:interface-1"/>
+    <interface_ref client_id="node-3:interface-4"/>
+    <interface_ref client_id="node-4:interface-5"/>
+    <interface_ref client_id="node-5:interface-6"/>
+    <link_type name="lan"/>
+    <emulab:vlan_tagging enabled="false"/>
+    <emulab:best_effort enabled="true"/>
+    <emulab:link_multiplexing enabled="true"/>
+    <emulab:interswitch allow="false"/>
+  </link>
+  <link client_id="link-srv">
+    <interface_ref client_id="node-1:interface-2"/>
+    <interface_ref client_id="node-2:interface-3"/>
+  </link>
+</rspec>

@@ -39,16 +39,11 @@ To compile the code, simply run
 cargo build [--release] [--bin fc-server-rtp-tokio/fc-client-rtp]
 ```
 
-The scripts used for evaluation are available in the [experiments](experiments/) folder.
-These are two Network Performance Framework files. This requires that dependencies must be installed with Python pip:
+## Experiments from the paper
 
-```
-pip install -r requirements.txt
-```
+We provide as much information as possible to reproduce the experiments from the paper. More information is available in the [README from the experiments folder](experiments/README.md).
 
-The simplest experiment to run is the experiment from Section 6.2, as it does not require to have access to d6515 nodes on CloudLab (which often requires a reservation due to their popularity).
-
-The [run.sh](experiments/run.sh) file executes the experiments to produce the results presented in Figures 7, 8, and 9.
+They rely on the Network Performance Framework (a Python module).
 
 ----------------------------------------------------
 

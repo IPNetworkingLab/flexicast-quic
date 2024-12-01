@@ -134,22 +134,23 @@ echo ${PWD} > /tmp/test.txt
 
 if [ $MULTICAST -ne 0 ] && [ $SENDMMSG -eq 0 ] ; then
     echo "USING MC FILE"
-    cat /proj/improvprot-PG0/louisna/fastclick/flexicast/flexicast.click > C
+    cat ~/fastclick/flexicast/flexicast.click > C
 else
     echo "USING UNICAST FILE"
-    cat /proj/improvprot-PG0/louisna/fastclick/flexicast/flexicast-uc.click > C
+    cat ~/fastclick/flexicast/flexicast-uc.click > C
 fi
 cat FLEX >> C
 
 cat C
 
-export DPDK_PATH=/proj/improvprot-PG0/louisna/dpdk-stable-22.11.6/install
+echo "YOU NEED A VALID DPDK INSTALLATION!"
+export DPDK_PATH=~/dpdk-stable-22.11.6/install
 export LD_LIBRARY_PATH=$DPDK_PATH/lib/x86_64-linux-gnu
 export PKG_CONFIG_PATH=$LD_LIBRARY_PATH/pkgconfig
 export RTE_SDK=$DPDK_PATH
 export RTE_TARGET=x86_64-native-linux-gcc
 
-/proj/improvprot-PG0/louisna/fastclick/bin/click --dpdk -l 0-20 -- C print=$(("true" if $DEBUG > 1 else "false")) multicast=$FW_MULTICAST
+~/fastclick/bin/click --dpdk -l 0-20 -- C print=$(("true" if $DEBUG > 1 else "false")) multicast=$FW_MULTICAST
 
 %script@server delay=2 waitfor=NS_READY sudo=true
 sudo sysctl -w net.core.rmem_max=26214400
@@ -186,7 +187,7 @@ else
     # Run multiple parallel instances if unicast is used.
     
     if [ $MULTICAST -ne 0 ] ; then
-        RUST_LOG=$(("trace" if $SERVER_DEBUG else "err")) ~/.cargo/bin/cargo run --bin fc-server-rtp-tokio --manifest-path ~/multicast-quic/apps/Cargo.toml $(( "--release" if not $SERVER_DEBUG else "" )) -- --src 10.10.2.2:5678  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --max-fec-rs $FEC --mc-addr 10.10.2.1:4433 $(( "--flexicast" if $MULTICAST else "--unicast" )) --rtp-addr 127.0.0.1:11111 --bitrates 100000000000 --wait $(( $NB_CLIENTS * ${client:node} )) $(( "--probe-path" if $PROBE_PATH else "" )) $(( "--sendmmsg 1 " if $SENDMMSG else "" )) > server.log 2>&1 &
+        RUST_LOG=$(("trace" if $SERVER_DEBUG else "err")) ~/.cargo/bin/cargo run --bin fc-server-rtp-tokio --manifest-path ~/multicast-quic/apps/Cargo.toml $(( "--release" if not $SERVER_DEBUG else "" )) -- --src 10.10.2.2:5678  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --max-fec-rs $FEC --mc-addr 10.10.2.1:4433 $(( "--flexicast" if $MULTICAST else "--unicast" )) --rtp-addr 127.0.0.1:11111 --bitrates 100000000000 --wait $(( $NB_CLIENTS * ${client:node} )) $(( "--probe-path" if $PROBE_PATH else "" )) $(( "--sendmmsg 10 " if $SENDMMSG else "" )) > server.log 2>&1 &
     else
         RUST_LOG=$(("trace" if $SERVER_DEBUG else "err")) ~/.cargo/bin/cargo run --bin fc-server-rtp-tokio --manifest-path ~/multicast-quic/apps/Cargo.toml $(( "--release" if not $SERVER_DEBUG else "" )) -- --src 10.10.2.2:5670  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --unicast --rtp-addr 127.0.0.1:11111 --bitrates 100000000000 --wait $NB_CLIENTS --unicast-unlimited-cwnd > server.log 2>&1 &
         RUST_LOG=$(("trace" if $SERVER_DEBUG else "err")) ~/.cargo/bin/cargo run --bin fc-server-rtp-tokio --manifest-path ~/multicast-quic/apps/Cargo.toml $(( "--release" if not $SERVER_DEBUG else "" )) -- --src 10.10.2.3:5671  --expiration-timer $TIMER --auth none --cert-path ~/multicast-quic/apps/src/bin/ -r test_server_output.txt -k server_key.txt --unicast --rtp-addr 127.0.0.1:11112 --bitrates 100000000000 --wait $NB_CLIENTS --unicast-unlimited-cwnd > server.log 2>&1 &
