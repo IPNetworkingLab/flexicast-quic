@@ -30,7 +30,7 @@ octets = { version = "0.2", path = "../octets" }
 ring = "0.16"
 quiche = { path = "../quiche" }
 libc = "0.2"
-nix = { version = "0.27", features = ["net", "socket", "uio"] }
+nix = { version = "0.29", features = ["net", "socket", "uio"] }
 slab = "0.4"
 itertools = "0.10"
 clap = { version = "4.1", features = ["derive"] }
