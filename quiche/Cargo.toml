@@ -69,7 +69,7 @@ qlog = { version = "0.9", path = "../qlog", optional = true }
 sfv = { version = "0.9", optional = true }
 smallvec = { version = "1.10", features = ["serde", "union"] }
 networkcoding = { git = "https://sigcomm-ccr:1H6Wq3BENAHz2BpMw1YZ@forge.uclouvain.be/inl/multicast-quic/fec/networkcoding.git", branch = "missing-degrees" }
-env_logger = "0.6"
+env_logger = "0.11"
 
 [target."cfg(windows)".dependencies]
 winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tcpip"] }
