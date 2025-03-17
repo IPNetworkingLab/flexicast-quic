@@ -75,7 +75,7 @@ env_logger = "0.6"
 winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tcpip"] }
 
 [dev-dependencies]
-mio = { version = "0.8", features = ["net", "os-poll"] }
+mio = { version = "1.0", features = ["net", "os-poll"] }
 url = "1"
 criterion = "0.4"
 
