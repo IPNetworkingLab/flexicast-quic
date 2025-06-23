@@ -1,7 +1,8 @@
 # Flexicast QUIC
 
-This repository contains the source code of Flexicast QUIC, for the submission to SIGCOMM CCR (December 2024 deadline).
-Please, do not share the source code while the paper is still confidential.
+This repository contains the source code of Flexicast QUIC, accepted at SIGCOMM CCR for the April 2025 volume.
+
+**Disclamer: we are currently working on an updated version of Flexicast QUIC to contain the last updates from Multipath QUIC and Cloudflare quiche. It will be released soon.**
 
 ## From quiche and multipath
 
