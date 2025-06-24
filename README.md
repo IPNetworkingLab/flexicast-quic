@@ -46,6 +46,24 @@ We provide as much information as possible to reproduce the experiments from the
 
 They rely on the Network Performance Framework (a Python module).
 
+## Cite Flexicast QUIC
+
+Please use the following bibtex input to cite this work:
+
+```
+@article{navarre2025taking,
+  title={Taking the Best of Multicast and Unicast with Flexicast QUIC},
+  author={Navarre, Louis and De Coninck, Quentin and Barbette, Tom and Bonaventure, Olivier},
+  journal={ACM SIGCOMM Computer Communication Review},
+  volume={55},
+  number={2},
+  pages={},
+  year={2025},
+  note={Postprint},
+  publisher={ACM New York, NY, USA}
+}
+```
+
 ----------------------------------------------------
 
 
