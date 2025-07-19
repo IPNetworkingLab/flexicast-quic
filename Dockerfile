@@ -1,4 +1,4 @@
-FROM rust:1.81 AS build
+FROM rust:1.86 AS build
 
 WORKDIR /build
 
@@ -28,28 +28,23 @@ RUN apt-get update && apt-get install -y ca-certificates && \
 COPY --from=build \
      /build/target/release/quiche-client \
      /build/target/release/quiche-server \
+     /build/target/release/fc-recv-file-transfer \
      /usr/local/bin/
 
 ENV PATH="/usr/local/bin/:${PATH}"
-ENV RUST_LOG=info
-
-##
-## quiche-qns: quiche image for quic-interop-runner
-## https://github.com/marten-seemann/quic-network-simulator
-## https://github.com/marten-seemann/quic-interop-runner
-##
-FROM martenseemann/quic-network-simulator-endpoint:latest AS quiche-qns
+ENV RUST_LOG=debug
 
 WORKDIR /quiche
-
-RUN apt-get update && apt-get install -y wait-for-it && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build \
      /build/target/release/quiche-client \
      /build/target/release/quiche-server \
+     /build/target/release/fc-recv-file-transfer \
      /build/apps/run_endpoint.sh \
+     /build/apps/run_fc_quic_recv.sh \
+     /build/apps/run_fc_quic.sh \
      ./
 
 ENV RUST_LOG=trace
 
-ENTRYPOINT [ "./run_endpoint.sh" ]
+ENTRYPOINT [ "./run_fc_quic_recv.sh" ]

@@ -27,13 +27,17 @@
 use std::convert::TryInto;
 
 use crate::path::NetworkPathId;
+use crate::crypto::Algorithm;
+use crate::flexicast::MC_ANNOUNCE_BW_CODE;
+use crate::flexicast::MC_ANNOUNCE_CODE;
+use crate::flexicast::MC_KEY_CODE;
+use crate::flexicast::MC_STATE_CODE;
 use crate::Error;
 use crate::Result;
 
 use crate::packet;
 use crate::ranges;
 use crate::stream;
-
 #[cfg(feature = "qlog")]
 use qlog::events::quic::AckedRanges;
 #[cfg(feature = "qlog")]
@@ -232,6 +236,51 @@ pub enum Frame {
     PathCidsBlocked {
         path_id: u64,
         next_seq_num: u64,
+    },
+
+    McAnnounce {
+        channel_id: Vec<u8>,
+        is_ipv6_addr: u8,
+        probe_path: u8,
+        reset_stream_on_join: u8,
+        source_ip: [u8; 4],
+        group_ip: [u8; 4],
+        udp_port: u16,
+        fc_timer: u64, // In ms
+        public_key: Vec<u8>,
+        bitrate: Option<u64>,
+    },
+
+    McState {
+        channel_id: Vec<u8>,
+        // MC-TODO: sequence number?
+        action: u64,
+        action_data: u64,
+        // MC-TODO: reason code?
+    },
+
+    McKey {
+        channel_id: Vec<u8>,
+        key: Vec<u8>,
+        algo: Algorithm,
+        first_pn: u64,
+    },
+
+    SourceSymbolHeader {
+        metadata: networkcoding::SourceSymbolMetadata,
+        recovered: bool,
+    },
+
+    SourceSymbol {
+        source_symbol: networkcoding::SourceSymbol,
+    },
+
+    Repair {
+        repair_symbol: networkcoding::RepairSymbol,
+    },
+
+    SourceSymbolAck {
+        ranges: ranges::RangeSet,
     },
 }
 
@@ -436,6 +485,104 @@ impl Frame {
             0x15228c0e => Frame::PathCidsBlocked {
                 path_id: b.get_varint()?,
                 next_seq_num: b.get_varint()?,
+            },
+
+            MC_ANNOUNCE_CODE..=MC_ANNOUNCE_BW_CODE => {
+                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
+                let probe_path = b.get_u8()?;
+                let is_ipv6_addr = b.get_u8()?;
+                let reset_stream_on_join = b.get_u8()?;
+                let source_ip = b
+                    .get_bytes(4)?
+                    .buf()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?;
+                let group_ip = b
+                    .get_bytes(4)?
+                    .buf()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?;
+                let udp_port = b.get_u16()?;
+                let fc_timer = b.get_u64()?;
+                let key_len = b.get_varint()? as usize;
+                let public_key = b
+                    .get_bytes(key_len)?
+                    .buf()
+                    .into();
+
+                // Parse the eventual bitrate information.
+                let bitrate = if frame_type == MC_ANNOUNCE_BW_CODE {
+                    Some(b.get_varint()?)
+                } else {
+                    None
+                };
+
+                Frame::McAnnounce {
+                    channel_id,
+                    probe_path,
+                    is_ipv6_addr,
+                    reset_stream_on_join,
+                    source_ip,
+                    group_ip,
+                    udp_port,
+                    fc_timer,
+                    public_key,
+                    bitrate,
+                }
+            },
+
+            MC_STATE_CODE => Frame::McState {
+                channel_id: b.get_bytes_with_u8_length()?.to_vec(),
+                action: b.get_varint()?,
+                action_data: b.get_varint()?,
+            },
+
+            MC_KEY_CODE => {
+                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
+                let key_len = b.get_varint()?;
+                let key = b
+                    .get_bytes(key_len as usize)?
+                    .buf()
+                    .into();
+                let algo =
+                    b.get_u8()?.try_into().map_err(|_| Error::CryptoFail)?;
+                let first_pn = b.get_varint()?;
+                Frame::McKey {
+                    channel_id,
+                    key,
+                    algo,
+                    first_pn,
+                }
+            },
+
+            0xf6 => {
+                // Assume it is always 64 bits (8 bytes).
+                let metadata = b.get_u64()?.to_be_bytes();
+
+                // Assume that the remaining payload is protected.
+                let source_symbol_data = b.to_vec();
+                Frame::SourceSymbol {
+                    source_symbol: networkcoding::SourceSymbol::new(
+                        metadata,
+                        source_symbol_data,
+                    ),
+                }
+            },
+
+            0xf7 => {
+                // Assume that the remaining payload is the repair symbol.
+                let repair_symbol_data = b.get_bytes(b.cap())?.to_vec();
+                Frame::Repair {
+                    repair_symbol: networkcoding::RepairSymbol::new(
+                        repair_symbol_data,
+                    ),
+                }
+            },
+
+            0xf8 => {
+                let (_, ranges, _) = parse_common_ack_frame(b, false)?;
+
+                Frame::SourceSymbolAck { ranges }
             },
 
             _ => return Err(Error::InvalidFrame),
@@ -770,6 +917,102 @@ impl Frame {
                 b.put_varint(*path_id)?;
                 b.put_varint(*next_sequence_number)?;
             },
+
+            Frame::McAnnounce {
+                channel_id,
+                probe_path,
+                is_ipv6_addr,
+                reset_stream_on_join,
+                source_ip,
+                group_ip,
+                udp_port,
+                fc_timer,
+                public_key,
+                bitrate,
+            } => {
+                let ty = if bitrate.is_some() {
+                    MC_ANNOUNCE_BW_CODE
+                } else {
+                    MC_ANNOUNCE_CODE
+                };
+                b.put_varint(ty)?;
+                b.put_u8(channel_id.len() as u8)?;
+                b.put_bytes(channel_id.as_ref())?;
+                b.put_u8(*probe_path)?;
+                b.put_u8(*is_ipv6_addr)?;
+                b.put_u8(*reset_stream_on_join)?;
+                b.put_bytes(source_ip)?;
+                b.put_bytes(group_ip)?;
+                b.put_u16(*udp_port)?;
+                b.put_u64(*fc_timer)?;
+                b.put_varint(public_key.len() as u64)?;
+                b.put_bytes(public_key)?;
+                if let Some(bw) = bitrate {
+                    b.put_varint(*bw)?;
+                }
+            },
+
+            Frame::McState {
+                channel_id,
+                action,
+                action_data,
+            } => {
+                debug!("Going to encode the MC_STATE frame");
+                b.put_varint(MC_STATE_CODE)?;
+                b.put_u8(channel_id.len() as u8)?;
+                b.put_bytes(channel_id.as_ref())?;
+                b.put_varint(*action)?;
+                b.put_varint(*action_data)?;
+            },
+
+            Frame::McKey {
+                channel_id,
+                key,
+                algo,
+                first_pn,
+            } => {
+                debug!("Going to encode the MC_KEY frame");
+                b.put_varint(MC_KEY_CODE)?;
+                b.put_u8(channel_id.len() as u8)?;
+                b.put_bytes(channel_id.as_ref())?;
+                b.put_varint(key.len() as u64)?;
+                b.put_bytes(key)?;
+                b.put_u8(algo.to_owned().try_into().unwrap())?;
+                b.put_varint(*first_pn)?;
+            },
+
+            Frame::SourceSymbolHeader {
+                metadata,
+                recovered: _,
+            } => {
+                debug!("Going to encode the SOURCE_SYMBOL_HEADER frame");
+                b.put_varint(0xf6)?;
+                b.put_u64(u64::from_be_bytes(*metadata))?;
+            },
+
+            Frame::SourceSymbol { source_symbol } => {
+                // the source symbol frame only writes its metadata and we expect
+                // next protected frames to be written afterwards
+                // This is weird, the best would be to wrap the protected frames
+                // inside the source symbol frame but we would
+                // loose some view on what the packet contains and it would
+                // require many changes to recover that
+                b.put_varint(0xf6)?;
+                b.put_bytes(&source_symbol.metadata())?;
+                b.put_bytes(source_symbol.get())?;
+            },
+
+            Frame::Repair { repair_symbol } => {
+                debug!("Going to encode the Repair FEC frame");
+                b.put_varint(0xf7)?;
+                b.put_bytes(repair_symbol.get())?;
+            },
+
+            Frame::SourceSymbolAck { ranges } => {
+                debug!("Going to encode the Source Symbol Ack frame");
+                b.put_varint(0xf8)?;
+                common_ack_to_bytes(b, &0, ranges, &None)?;
+            }
         }
 
         Ok(before - b.cap())
@@ -1029,6 +1272,93 @@ impl Frame {
                 4 + // frame type
                 octets::varint_len(*path_id) + // path_id
                 octets::varint_len(*next_seq_num) // next_seq_num
+            },
+
+            Frame::McAnnounce {
+                channel_id,
+                probe_path: _,
+                is_ipv6_addr: _,
+                reset_stream_on_join: _,
+                source_ip: _,
+                group_ip: _,
+                udp_port: _,
+                fc_timer: _,
+                public_key,
+                bitrate,
+            } => {
+                let public_key_len_size =
+                    octets::varint_len(public_key.len() as u64);
+                let frame_type_size = if bitrate.is_some() {
+                    octets::varint_len(MC_ANNOUNCE_BW_CODE)
+                } else {
+                    octets::varint_len(MC_ANNOUNCE_CODE)
+                };
+                frame_type_size + // frame type
+                1 + // channel_id len
+                channel_id.len() +
+                1 + // is_ipv6
+                1 + // full_reliability
+                1 + // reset_stream_on_join
+                4 + // source_ip
+                4 + // group_ip
+                2 + // udp_port
+                8 + // fc_timer
+                public_key_len_size +
+                public_key.len()
+            },
+
+            Frame::McState {
+                channel_id,
+                action,
+                action_data,
+            } => {
+                let action_size = octets::varint_len(*action);
+                let action_data_size = octets::varint_len(*action_data);
+                let frame_type_size = octets::varint_len(MC_STATE_CODE);
+                frame_type_size + // frame type
+                1 + // channel_id len
+                channel_id.len() +
+                action_size +
+                action_data_size
+            },
+
+            Frame::McKey {
+                channel_id,
+                key,
+                algo: _,
+                first_pn,
+            } => {
+                let key_len_size = octets::varint_len(key.len() as u64);
+                let first_pn_size = octets::varint_len(*first_pn);
+                let frame_type_size = octets::varint_len(MC_KEY_CODE);
+                frame_type_size + // frame type
+                1 + // channel_id len
+                channel_id.len() +
+                key_len_size +
+                key.len() +
+                1 + // algo len
+                first_pn_size
+            },
+
+            Frame::SourceSymbolHeader {
+                metadata,
+                recovered: _,
+            } => octets::varint_len(0xf6) + metadata.len(),
+
+            Frame::SourceSymbol { source_symbol } => {
+                octets::varint_len(0xf6) + 
+                source_symbol.metadata().len() + // metadata
+                source_symbol.get().len() // FEC-TODO: not sure about this...
+            },
+
+            Frame::Repair { repair_symbol } => {
+                octets::varint_len(0xf7) +
+                repair_symbol.wire_len()
+            },
+
+            Frame::SourceSymbolAck { ranges } => {
+                octets::varint_len(0xf8) +
+                common_ack_wire_len(&0, ranges, &None)
             },
         }
     }
@@ -1344,6 +1674,47 @@ impl Frame {
                 path_id: *path_id,
                 next_sequence_number: *next_seq_num,
             },
+
+            Frame::McAnnounce { .. } => QuicFrame::Unknown {
+                raw_frame_type: MC_ANNOUNCE_CODE,
+                frame_type_value: None,
+                raw: None,
+            },
+
+            Frame::McState { .. } => QuicFrame::Unknown {
+                raw_frame_type: MC_ANNOUNCE_CODE,
+                frame_type_value: None,
+                raw: None,
+            },
+
+            Frame::McKey { .. } => QuicFrame::Unknown {
+                raw_frame_type: MC_ANNOUNCE_CODE,
+                frame_type_value: None,
+                raw: None,
+            },
+
+            Frame::SourceSymbolHeader {
+                metadata: _,
+                recovered: _,
+            } => QuicFrame::Unknown {
+                raw_frame_type: 0xf6,
+                frame_type_value: None,
+                raw: None,
+            },
+
+            Frame::SourceSymbol { source_symbol: _ } => QuicFrame::Unknown {
+                raw_frame_type: 0xf6,
+                frame_type_value: None,
+                raw: None,
+            },
+
+            Frame::Repair { repair_symbol: _ } => QuicFrame::Unknown {
+                raw_frame_type: 0xf7,
+                frame_type_value: None,
+                raw: None
+            },
+
+            Frame::SourceSymbolAck { ranges: _ } => QuicFrame::Unknown { raw_frame_type: 0xf8, frame_type_value: None, raw: None },
         }
     }
 }
@@ -1577,6 +1948,69 @@ impl std::fmt::Debug for Frame {
             } => {
                 write!(f, "PATH_CIDS_BLOCKED path_id={path_id} next_seq_num={next_seq_num}")?;
             },
+
+            Frame::McAnnounce {
+                channel_id,
+                probe_path,
+                is_ipv6_addr,
+                reset_stream_on_join,
+                source_ip,
+                group_ip,
+                udp_port,
+                fc_timer,
+                public_key: _,
+                bitrate,
+            } => {
+                write!(f, "MC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={} reset_stream_on_join={} source_ip={:?}, group_ip={:?}, udp_port={}, fc_timer={}, bitrate={:?}", channel_id, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, fc_timer, bitrate)?;
+            },
+
+            Frame::McState {
+                channel_id,
+                action,
+                action_data,
+            } => {
+                write!(
+                    f,
+                    "MC_STATE channel ID={:?}, action={}, action_data={}",
+                    channel_id, action, action_data,
+                )?;
+            },
+
+            Frame::McKey {
+                channel_id,
+                key,
+                algo,
+                first_pn,
+            } => {
+                write!(
+                    f,
+                    "MC_KEY channel ID={:?} key={:?} algo={:?} first pn={:?}",
+                    channel_id, key, algo, first_pn,
+                )?;
+            },
+
+            Frame::SourceSymbolHeader {
+                metadata,
+                recovered: _,
+            } => {
+                write!(f, "SOURCE_SYMBOL_HEADER metadata={:?}", metadata)?;
+            },
+
+            Frame::SourceSymbol { source_symbol } => {
+                write!(
+                    f,
+                    "SOURCE_SYMBOL frame metadata={:?}",
+                    source_symbol.metadata()
+                )?;
+            },
+
+            Frame::Repair { repair_symbol: _ } => {
+                write!(f, "REPAIR frame")?;
+            },
+
+            Frame::SourceSymbolAck { ranges } => {
+                write!(f, "SOURCE_SYMBOL_ACK frame ranges={:?}", ranges)?;
+            }
         }
 
         Ok(())
@@ -1830,6 +2264,8 @@ fn parse_datagram_frame(ty: u64, b: &mut octets::Octets) -> Result<Frame> {
 
 #[cfg(test)]
 mod tests {
+    use crate::crypto::Algorithm;
+
     use super::*;
 
     #[test]
@@ -2899,5 +3335,160 @@ mod tests {
 
         let mut b = octets::Octets::with_slice(&d);
         assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
+
+    #[test]
+    fn mc_announce() {
+        let mut d = [42; 128];
+
+        let frame = Frame::McAnnounce {
+            channel_id: [
+                180, 12, 104, 233, 220, 221, 226, 11, 141, 195, 27, 5, 100, 51,
+                58, 220,
+            ]
+            .to_vec(),
+            probe_path: 1,
+            is_ipv6_addr: 0,
+            reset_stream_on_join: 0,
+            source_ip: [127, 0, 0, 1],
+            group_ip: [239, 239, 239, 35],
+            udp_port: 8889,
+            fc_timer: 350,
+            public_key: vec![64, 33, 53, 127],
+            bitrate: None,
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 45);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
+
+    #[test]
+    fn mc_announce_with_bw() {
+        let mut d = [42; 128];
+
+        let frame = Frame::McAnnounce {
+            channel_id: [
+                180, 12, 104, 233, 220, 221, 226, 11, 141, 195, 27, 5, 100, 51,
+                58, 220,
+            ]
+            .to_vec(),
+            probe_path: 1,
+            is_ipv6_addr: 0,
+            reset_stream_on_join: 1,
+            source_ip: [127, 0, 0, 1],
+            group_ip: [239, 239, 239, 35],
+            udp_port: 8889,
+            fc_timer: 350,
+            public_key: vec![64, 33, 53, 127],
+            bitrate: Some(10_000_000),
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 49);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
+
+    #[test]
+    fn mc_state() {
+        let mut d = [42; 128];
+
+        let frame = Frame::McState {
+            channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
+            action: 1,
+            action_data: 0xff,
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 13);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
+    }
+
+    #[test]
+    fn mc_key() {
+        let mut d = [41; 400];
+
+        let frame = Frame::McKey {
+            channel_id: [0xff, 0xdd, 0xee, 0xaa, 0xbb, 0x33, 0x66].to_vec(),
+            key: vec![1; 32],
+            algo: Algorithm::AES128_GCM,
+            first_pn: 0xffffff,
+        };
+
+        let wire_len = {
+            let mut b = octets::OctetsMut::with_slice(&mut d);
+            frame.to_bytes(&mut b).unwrap()
+        };
+
+        assert_eq!(wire_len, 48);
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert_eq!(
+            Frame::from_bytes(&mut b, packet::Type::Short),
+            Ok(frame.clone())
+        );
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
+
+        let mut b = octets::Octets::with_slice(&mut d);
+        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake,).is_err());
     }
 }

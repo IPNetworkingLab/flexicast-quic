@@ -146,7 +146,9 @@ impl RecvBuf {
             // get stuck when a buffer with lower offset than the stream's is
             // buffered.
             if self.off_front() > buf.off() {
-                buf = buf.split_off((self.off_front() - buf.off()) as usize);
+                let buf_after =
+                    buf.split_off((self.off_front() - buf.off()) as usize);
+                buf = buf_after;
             }
 
             // Handle overlapping data. If the incoming data's starting offset
@@ -366,6 +368,23 @@ impl RecvBuf {
         };
 
         buf.off() == self.off
+    }
+
+    /// Returns true if the stream can be read until its end.
+    pub fn is_fully_readable(&self) -> bool {
+        if self.fin_off.is_none() {
+            return false;
+        }
+
+        let mut off = self.off;
+        for (_, entry) in self.data.iter() {
+            if off != entry.off {
+                return false; // Not contiguous.
+            }
+            off += entry.len() as u64;
+        }
+
+        Some(off) == self.fin_off
     }
 }
 

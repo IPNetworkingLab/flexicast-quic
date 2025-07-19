@@ -37,6 +37,8 @@ ring = { workspace = true }
 url = { workspace = true }
 slab = "0.4"
 itertools = "0.10"
+clap = { version = "4.1", features = ["derive"] }
+tokio = { version = "1.40.0", features = ["full"] }
 
 [lib]
 crate-type = ["lib"]

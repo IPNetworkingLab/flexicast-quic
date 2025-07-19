@@ -42,6 +42,7 @@ use crate::frame;
 use crate::packet;
 use crate::ranges;
 
+use flexicast::FcRecovery;
 #[cfg(feature = "qlog")]
 use qlog::events::EventData;
 
@@ -92,6 +93,18 @@ struct RecoveryEpoch {
 
     acked_frames: Vec<frame::Frame>,
     lost_frames: Vec<frame::Frame>,
+
+    /// Flexicast.
+    /// Whether this recovery epoch belongs to the flexicast flow.
+    is_fc_source: bool,
+
+    /// Flexicast.
+    /// New lost packets.
+    fc_new_lost_pkt: Option<Vec<u64>>,
+
+    /// Flexicast.
+    /// New acked packets.
+    fc_new_ack_packets: Option<RangeSet>,
 }
 
 struct AckedDetectionResult {
@@ -126,6 +139,13 @@ impl RecoveryEpoch {
         let largest_acked = self.largest_acked_packet.unwrap();
 
         for ack in acked.iter() {
+            // Flexicast.
+            // We consider as acknowledged every packet number advertised by the
+            // peer.
+            if let Some(fc_ack) = self.fc_new_ack_packets.as_mut() {
+                fc_ack.insert(ack.clone());
+            }
+
             // Because packets always have incrementing numbers, they are always
             // in sorted order.
             let start = if self
@@ -232,9 +252,26 @@ impl RecoveryEpoch {
             if unacked.time_sent <= lost_send_time ||
                 largest_acked >= unacked.pkt_num + pkt_thresh
             {
-                self.lost_frames.extend(unacked.frames.drain(..));
+                // Flexicast.
+                // Do not drain the frames if this is the flexicast source because
+                // we will delegate them.
+                //
+                // On the interaction between Forward Erasure Correction and
+                // Flexicast: Because we do not extend the
+                // lost_frames for the Flexicast source, the lost frames will
+                // never be retransmitted. We only need to avoid delegating the
+                // lost frames if it contains a recovered source symbol!
+                if !self.is_fc_source || unacked.is_fc_delegated {
+                    // This line is native quiche.
+                    self.lost_frames.extend(unacked.frames.drain(..));
+                }
 
                 unacked.time_lost = Some(now);
+
+                // Push the lost packet number for flexicast.
+                if let Some(pkts) = self.fc_new_lost_pkt.as_mut() {
+                    pkts.push(unacked.pkt_num);
+                }
 
                 if unacked.pmtud {
                     pmtud_lost_bytes += unacked.size;
@@ -303,6 +340,13 @@ impl RecoveryEpoch {
                 if time_lost > loss_thresh {
                     break;
                 }
+
+                // Flexicast extension.
+                // If this is the flexicast source, and the packet is not
+                // delegated yet, we cannot drain it.
+                if self.is_fc_source && !pkt.is_fc_delegated {
+                    break;
+                }
             }
 
             if pkt.time_acked.is_none() && pkt.time_lost.is_none() {
@@ -359,6 +403,9 @@ pub struct Recovery {
 
     /// A resusable list of acks.
     newly_acked: Vec<Acked>,
+
+    /// Flexicast recovery structure.
+    pub(crate) fc_recovery: Option<FcRecovery>,
 }
 
 pub struct RecoveryConfig {
@@ -417,6 +464,8 @@ impl Recovery {
             congestion: Congestion::from_config(recovery_config),
 
             newly_acked: Vec::new(),
+
+            fc_recovery: None,
         }
     }
 
@@ -545,6 +594,17 @@ impl Recovery {
             rtt_stats,
             trace_id,
         );
+
+        // Flexicast.
+        // Push newly acked, taking into account the spurious losses.
+        if let Some(acked_pkts) = self.epochs[epoch].fc_new_ack_packets.as_mut() {
+            for range in acked_pkts.iter() {
+                if let Some(r) = self.fc_recovery.as_mut() {
+                    r.fc_new_ack_pn.insert(range);
+                }
+            }
+            self.epochs[epoch].fc_new_ack_packets = Some(RangeSet::default());
+        }
 
         self.lost_spurious_count += spurious_losses;
         if let Some(thresh) = spurious_pkt_thresh {
@@ -934,7 +994,7 @@ impl Recovery {
         (lost_packets, lost_bytes)
     }
 
-    fn detect_lost_packets(
+    pub(crate) fn detect_lost_packets(
         &mut self, epoch: packet::Epoch, now: Instant, rtt_stats: &RttStats,
         trace_id: &str,
     ) -> (usize, usize, SmallVec<[(NetworkPathId, Duration); 1]>) {
@@ -950,6 +1010,15 @@ impl Recovery {
             epoch,
             rtt,
         );
+
+        // Flexicast.
+        // Retrieve the lost packets.
+        if let (Some(fcr), Some(fcre)) = (
+            self.fc_recovery.as_mut(),
+            self.epochs[epoch].fc_new_lost_pkt.as_mut(),
+        ) {
+            fcr.fc_new_lost_pn = std::mem::take(fcre);
+        }
 
         if let Some(pkt) = loss.largest_lost_pkt {
             if !self.congestion.in_congestion_recovery(pkt.time_sent) {
@@ -1100,6 +1169,8 @@ pub struct Sent {
     pub has_data: bool,
 
     pub pmtud: bool,
+
+    pub is_fc_delegated: bool,
 }
 
 impl std::fmt::Debug for Sent {
@@ -1328,6 +1399,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1360,6 +1432,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1392,6 +1465,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1423,6 +1497,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1493,6 +1568,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1524,6 +1600,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1603,6 +1680,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1634,6 +1712,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1665,6 +1744,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1696,6 +1776,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1792,6 +1873,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1823,6 +1905,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1854,6 +1937,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1885,6 +1969,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -1988,6 +2073,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2051,6 +2137,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2087,6 +2174,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2120,6 +2208,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2178,6 +2267,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2211,6 +2301,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: true,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2242,6 +2333,7 @@ mod tests {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         r.on_packet_sent(
@@ -2313,4 +2405,6 @@ mod tests {
 }
 
 pub mod congestion;
+pub mod fec;
+pub mod flexicast;
 mod rtt;

@@ -185,6 +185,7 @@ async fn test_handshake_timeout_with_one_client_flight() {
     let recv_info = quiche::RecvInfo {
         from,
         to: socket.local_addr().unwrap(),
+        from_mc: false,
     };
     let _ = quiche_conn.recv(&mut out[..len], recv_info);
 
@@ -201,6 +202,7 @@ async fn test_handshake_timeout_with_one_client_flight() {
                 let recv_info = quiche::RecvInfo {
                     from,
                     to: socket.local_addr().unwrap(),
+                    from_mc: false,
                 };
                 let _ = quiche_conn.recv(&mut out[..len], recv_info);
 

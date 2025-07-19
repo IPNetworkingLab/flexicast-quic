@@ -84,6 +84,7 @@ impl TestSender {
             lost: 0,
             has_data: false,
             pmtud: false,
+            is_fc_delegated: false,
         };
 
         self.cc.on_packet_sent(

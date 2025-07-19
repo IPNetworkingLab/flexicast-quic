@@ -78,6 +78,8 @@ pub struct Congestion {
     max_datagram_size: usize,
 
     pub(crate) lost_count: usize,
+
+    disabled_state: disabled::State,
 }
 
 impl Congestion {
@@ -128,6 +130,8 @@ impl Congestion {
             bbr_state: bbr::State::new(),
 
             bbr2_state: bbr2::State::new(),
+
+            disabled_state: disabled::State::new(usize::MAX - 2),
         };
 
         (cc.cc_ops.on_init)(&mut cc);
@@ -195,7 +199,8 @@ impl Congestion {
 
         self.schedule_next_packet(now, sent_bytes);
 
-        pkt.time_sent = self.get_packet_send_time();
+        pkt.time_sent = std::cmp::max(pkt.time_sent, self.get_packet_send_time());
+        // pkt.time_sent = self.get_packet_send_time();
 
         // bytes_in_flight is already updated. Use previous value.
         self.delivery_rate
@@ -254,13 +259,15 @@ impl Congestion {
 #[repr(C)]
 pub enum CongestionControlAlgorithm {
     /// Reno congestion control algorithm. `reno` in a string form.
-    Reno  = 0,
+    Reno     = 0,
     /// CUBIC congestion control algorithm (default). `cubic` in a string form.
-    CUBIC = 1,
+    CUBIC    = 1,
     /// BBR congestion control algorithm. `bbr` in a string form.
-    BBR   = 2,
+    BBR      = 2,
     /// BBRv2 congestion control algorithm. `bbr2` in a string form.
-    BBR2  = 3,
+    BBR2     = 3,
+    /// Disabled congestion control algorithm. Used for flexicast.
+    DISABLED = 4,
 }
 
 impl FromStr for CongestionControlAlgorithm {
@@ -275,6 +282,7 @@ impl FromStr for CongestionControlAlgorithm {
             "cubic" => Ok(CongestionControlAlgorithm::CUBIC),
             "bbr" => Ok(CongestionControlAlgorithm::BBR),
             "bbr2" => Ok(CongestionControlAlgorithm::BBR2),
+            "disabled" => Ok(CongestionControlAlgorithm::DISABLED),
 
             _ => Err(crate::Error::CongestionControl),
         }
@@ -326,6 +334,7 @@ impl From<CongestionControlAlgorithm> for &'static CongestionControlOps {
             CongestionControlAlgorithm::CUBIC => &cubic::CUBIC,
             CongestionControlAlgorithm::BBR => &bbr::BBR,
             CongestionControlAlgorithm::BBR2 => &bbr2::BBR2,
+            CongestionControlAlgorithm::DISABLED => &disabled::DISABLED,
         }
     }
 }
@@ -334,10 +343,10 @@ mod bbr;
 mod bbr2;
 mod cubic;
 mod delivery_rate;
+mod disabled;
 mod hystart;
 pub(crate) mod pacer;
 mod prr;
 mod reno;
-
 #[cfg(test)]
 mod test_sender;

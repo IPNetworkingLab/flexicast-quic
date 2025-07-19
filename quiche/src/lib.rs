@@ -122,7 +122,7 @@
 //! loop {
 //!     let (read, from) = socket.recv_from(&mut buf).unwrap();
 //!
-//!     let recv_info = quiche::RecvInfo { from, to };
+//!     let recv_info = quiche::RecvInfo { from, to, from_mc: false, };
 //!
 //!     let read = match conn.recv(&mut buf[..read], recv_info) {
 //!         Ok(v) => v,
@@ -383,6 +383,11 @@
 extern crate log;
 
 use cid::PathIdIter;
+use flexicast::FcError;
+use flexicast::FlexicastAttributes;
+use flexicast::FlexicastConnection;
+use flexicast::McRole;
+use networkcoding::source_symbol_metadata_from_u64;
 use octets::BufferTooShortError;
 #[cfg(feature = "qlog")]
 use qlog::events::connectivity::ConnectivityEventType;
@@ -407,6 +412,7 @@ use qlog::events::RawInfo;
 use stream::StreamPriorityKey;
 
 use std::cmp;
+use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::time;
 
@@ -606,6 +612,12 @@ pub enum Error {
 
     /// The requested path does not exist.
     UnknownPath,
+
+    /// Flexicast-related errors.
+    Flexicast(crate::flexicast::FcError),
+
+    /// FEC-related errors.
+    Fec(fec::FecError),
 }
 
 /// QUIC error codes sent on the wire.
@@ -722,6 +734,8 @@ impl Error {
             Error::OutOfPathId => -23,
             Error::NoMorePath => -24,
             Error::UnknownPath => -25,
+            Error::Flexicast(_) => -26,
+            Error::Fec(_) => -27,
         }
     }
 }
@@ -752,6 +766,9 @@ pub struct RecvInfo {
 
     /// The local address the packet was received on.
     pub to: SocketAddr,
+
+    /// Whether the packet was received from a flexicast socket address.
+    pub from_mc: bool,
 }
 
 /// Ancillary information about outgoing packets.
@@ -1652,6 +1669,19 @@ pub struct Connection {
     /// Whether, in multipath, if we reinject all frames directly on other paths
     /// once a path is in PTO.
     reinject_all_on_pto: bool,
+
+    /// Flexicast extension attributes.
+    flexicast: Option<FlexicastAttributes>,
+
+    /// Forward Erasure Correction (FEC) encoder extension.
+    /// The encoder and decoder parts of FEC are separated to enable a host to
+    /// send without receiving and conversely.
+    fec_encoder: Option<fec::encoder::FecEncoder>,
+
+    /// Forward Erasure Correction (FEC) decoder extension.
+    /// The encoder and decoder parts of FEC are separated to enable a host to
+    /// send without receiving and conversely.
+    fec_decoder: Option<fec::decoder::FecDecoder>,
 }
 
 /// Creates a new server-side connection.
@@ -2109,6 +2139,13 @@ impl Connection {
             max_amplification_factor: config.max_amplification_factor,
 
             reinject_all_on_pto: config.reinject_all_on_pto,
+
+            flexicast: None,
+
+            // FEC-TODO: use config values for the maximum window size and symbol
+            // size.
+            fec_encoder: None,
+            fec_decoder: None,
         };
 
         // Don't support multipath with zero-length CIDs.
@@ -2352,6 +2389,7 @@ impl Connection {
     ///     let recv_info = quiche::RecvInfo {
     ///         from,
     ///         to: local,
+    ///         from_mc: false,
     ///     };
     ///
     ///     let read = match conn.recv(&mut buf[..read], recv_info) {
@@ -2802,6 +2840,23 @@ impl Connection {
             packet::INITIAL_PACKET_NUMBER_SPACE_ID
         };
 
+        // If this is a flexicast receiver, it may receive a large first packet
+        // number. If the receiver has a stored value for this, we use it.
+        if let Some(flexicast) = self.flexicast.as_mut() {
+            // We consume the value to avoid doing this multiple times.
+            if flexicast.get_fc_path_id() == Some(space_id) {
+                if let Some(first_pn) = flexicast.fc_first_pn.take() {
+                    let _ = self
+                        .pkt_num_spaces
+                        .spaces
+                        .get_mut(epoch, space_id)
+                        .map(|pns| {
+                            pns.largest_rx_pkt_num = first_pn.saturating_sub(5)
+                        });
+                }
+            }
+        }
+
         // Select AEAD context used to open incoming packet.
         let aead = if hdr.ty == packet::Type::ZeroRTT {
             // Only use 0-RTT key if incoming packet is 0-RTT.
@@ -2810,6 +2865,32 @@ impl Connection {
                 .get(epoch)
                 .crypto_0rtt_open
                 .as_ref()
+        } else if info.from_mc {
+            // The flexicast flow uses the shared key.
+            if let Some(flexicast) = self.flexicast.as_ref() {
+                // The client might not be able to process the packets because
+                // they left.
+                match flexicast.get_mc_role() {
+                    flexicast::McRole::Client(
+                        flexicast::McClientStatus::ListenMcPath(true),
+                    ) |
+                    flexicast::McRole::Client(
+                        flexicast::McClientStatus::JoinedAndKey,
+                    ) => flexicast.get_mc_crypto_open(),
+                    flexicast::McRole::Client(_) => self
+                        .pkt_num_spaces
+                        .crypto
+                        .get(epoch)
+                        .crypto_os
+                        .get_open(space_id),
+                    e =>
+                        return Err(Error::Flexicast(
+                            flexicast::FcError::McInvalidRole(e),
+                        )),
+                }
+            } else {
+                return Err(Error::Flexicast(flexicast::FcError::McDisabled));
+            }
         } else {
             // Otherwise use the packet number space's main key.
             self.pkt_num_spaces
@@ -2914,6 +2995,7 @@ impl Connection {
             hdr.ty != Type::ZeroRTT &&
             hdr.key_phase != self.key_phase
         {
+            error!("Going into key  update here");
             // Check if this packet arrived before key update.
             if let Some(key_update) = self
                 .pkt_num_spaces
@@ -2952,9 +3034,16 @@ impl Connection {
             }
         }
 
+        // For the flexicast flow, the space_id is always 1.
+        let space_id_to_decrypt = if info.from_mc {
+            1 // Always 1 for the flexicast source.
+        } else {
+            space_id as u32
+        };
+
         let mut payload = packet::decrypt_pkt(
             &mut b,
-            space_id as u32,
+            space_id_to_decrypt,
             pn,
             pn_len,
             payload_len,
@@ -3190,6 +3279,14 @@ impl Connection {
                     self.qlog.logged_peer_params = true;
                 }
             });
+
+            // Initiate the FEC decoder if it is not done yet.
+            self.init_fec_decoder();
+
+            // Potentially remove landed symbols.
+            if let Some(fec_encoder) = self.fec_encoder.as_mut() {
+                fec_encoder.get_encoder().remove_landed_symbols();
+            }
         }
 
         // This is used to update the PMTUD if some probes were successful.
@@ -3274,6 +3371,23 @@ impl Connection {
                             let local = stream.local;
                             self.streams.collect(stream_id, local);
                         }
+
+                        // Flexicast extension.
+                        // If the stream was sent through unicast retransmission
+                        // because the flexicast flow delegated it, we must
+                        // acknowledge the multicast ack aggregator that we
+                        // correctly transmitted it to the receiver.
+                        if let Some(rfc) = self
+                            .flexicast
+                            .as_mut()
+                            .and_then(|fc| fc.fc_reliable.server_mut())
+                        {
+                            rfc.mc_ack.on_stream_ack_received(
+                                stream_id,
+                                offset,
+                                length as u64,
+                            );
+                        }
                     },
 
                     frame::Frame::HandshakeDone => {
@@ -3325,6 +3439,101 @@ impl Connection {
 
                     frame::Frame::PathAbandon { path_id, .. } => {
                         path_ids_to_abandon.push(path_id);
+                    },
+
+                    frame::Frame::McAnnounce { channel_id, .. } => {
+                        if let Some(flexicast) = self.flexicast.as_mut() {
+                            if flexicast
+                                .get_mut_mc_announce_data_by_cid(&channel_id)
+                                .is_some()
+                            {
+                                flexicast.update_client_state(
+                                    flexicast::FcClientAction::Notify,
+                                    None,
+                                )?;
+                            }
+                        }
+                    },
+
+                    frame::Frame::McState {
+                        channel_id: _,
+                        action,
+                        action_data,
+                    } => {
+                        if let Some(flexicast) = self.flexicast.as_mut() {
+                            debug!("Receive ack for McState: {:?}, {:?} and current role is {:?}", flexicast::FcClientAction::try_from(action), action_data, flexicast.get_mc_role());
+                            flexicast.set_mc_state_in_flight(false);
+                            match flexicast.get_mc_role() {
+                                flexicast::McRole::Client(
+                                    flexicast::McClientStatus::ListenMcPath(true),
+                                ) if action ==
+                                    std::convert::TryInto::<u64>::try_into(
+                                        flexicast::FcClientAction::Change,
+                                    )
+                                    .unwrap() =>
+                                    flexicast::McClientStatus::ListenMcPath(true),
+                                flexicast::McRole::Client(
+                                    flexicast::McClientStatus::Leaving(true),
+                                ) |
+                                flexicast::McRole::ServerUnicast(
+                                    flexicast::McClientStatus::Leaving(true),
+                                ) if flexicast::FcClientAction::try_from(
+                                    action,
+                                )? == flexicast::FcClientAction::Leave =>
+                                    flexicast.update_client_state(
+                                        action.try_into()?,
+                                        Some(action_data),
+                                    )?,
+                                flexicast::McRole::Client(
+                                    flexicast::McClientStatus::ListenMcPath(
+                                        false,
+                                    ),
+                                ) if flexicast::FcClientAction::try_from(
+                                    action,
+                                )? == flexicast::FcClientAction::McPath =>
+                                    flexicast.update_client_state(
+                                        action.try_into()?,
+                                        Some(action_data),
+                                    )?,
+                                _ => flexicast.update_client_state(
+                                    action.try_into()?,
+                                    Some(action_data),
+                                )?,
+                            };
+                        } else {
+                            // return Err(Error::Multicast(
+                            //     flexicast::McError::McDisabled,
+                            // ));
+                        }
+                    },
+
+                    frame::Frame::McKey { .. } => {
+                        if let Some(flexicast) = self.flexicast.as_mut() {
+                            flexicast.set_mc_key_read(true);
+
+                            flexicast.update_client_state(
+                                flexicast::FcClientAction::DecryptionKey,
+                                None,
+                            )?;
+                        }
+                    },
+
+                    frame::Frame::Repair { .. } => {
+                        if let Some(fec_encoder) = self.fec_encoder.as_mut() {
+                            fec_encoder.fec_on_acked_repair_symbol();
+
+                            // Potentially remove landed symbols.
+                            fec_encoder.get_encoder().remove_landed_symbols();
+                        }
+                    },
+
+                    frame::Frame::SourceSymbolHeader { metadata, .. } => {
+                        if let Some(fec_encoder) = self.fec_encoder.as_mut() {
+                            fec_encoder.get_encoder().symbol_landed(metadata);
+
+                            // Potentially remove landed symbols.
+                            fec_encoder.get_encoder().remove_landed_symbols();
+                        }
                     },
 
                     _ => (),
@@ -3397,6 +3606,14 @@ impl Connection {
                     now,
                 )?;
             }
+        }
+
+        // Flexicast with NACK extension.
+        // Record the newly received packet number on the flexicast flow to find
+        // packet number gaps.
+        // We do this after updating the new received packet.
+        if self.flexicast.is_some() {
+            self.fc_on_pkt_recv(space_id)?;
         }
 
         if let Some(idle_timeout) = self.idle_timeout() {
@@ -3834,6 +4051,18 @@ impl Connection {
             SmallVec::new();
         // Process lost frames. There might be several paths having lost frames.
         for (_, p) in self.paths.iter_mut() {
+            // Flexicast.
+            // Do not retransmit lost frames that the unicast path is aware of and
+            // belong to the flexicast flow.
+            if let Some(flexicast) = self.flexicast.as_ref() {
+                if matches!(flexicast.get_mc_role(), McRole::ServerUnicast(_)) &&
+                    flexicast.get_fc_path_id() == Some(p.path_id())
+                {
+                    // Drain the lost frames to avoid retransmission.
+                    let _ = p.recovery.get_lost_frames(epoch);
+                    continue;
+                }
+            }
             for lost in p.recovery.get_lost_frames(epoch) {
                 match lost {
                     frame::Frame::CryptoHeader { offset, length } => {
@@ -3857,6 +4086,19 @@ impl Connection {
                         length,
                         fin,
                     } => {
+                        // Flexicast.
+                        // Currently do not retransmit lost STREAM frames on the
+                        // flexicast flow. Only use unicast retransmissions.
+                        if let Some(flexicast) = self.flexicast.as_ref() {
+                            if matches!(
+                                flexicast.get_mc_role(),
+                                McRole::ServerFlexicast
+                            ) {
+                                debug!("Flexicast flow does not retransmit lost STREAM frames");
+                                continue;
+                            }
+                        }
+
                         let stream = match self.streams.get_mut(stream_id) {
                             Some(v) => v,
 
@@ -3969,6 +4211,55 @@ impl Connection {
                                 pns.ack_elicited = true;
                             })
                             .ok();
+
+                        // Flexicast with NACK extension.
+                        // If the PATH_ACK frame acknowledged packets received
+                        // on the flexicast flow and NACK extension is used, we
+                        // might need to notify the NACK structure.
+                        if let Some(flexicast) = self.flexicast.as_mut() {
+                            flexicast.fc_on_path_nack_lost(path_identifier);
+                        }
+                    },
+
+                    frame::Frame::McAnnounce { channel_id, .. } =>
+                        if let Some(flexicast) = self.flexicast.as_mut() {
+                            if let Some(mc_announce_data) = flexicast
+                                .get_mut_mc_announce_data_by_cid(&channel_id)
+                            {
+                                mc_announce_data.set_mc_announce_processed(false);
+                            }
+                        },
+
+                    frame::Frame::McKey { .. } => {
+                        if let Some(flexicast) = self.flexicast.as_mut() {
+                            flexicast.set_mc_key_read(false);
+                        }
+                    },
+
+                    frame::Frame::McState { .. } => {
+                        if let Some(flexicast) = self.flexicast.as_mut() {
+                            flexicast.set_mc_state_in_flight(false);
+                        }
+                    },
+
+                    frame::Frame::SourceSymbolAck { ranges } => {
+                        if let Some(decoder) = self.fec_decoder.as_mut() {
+                            // Add back the ranges that were lost.
+                            for range in ranges.iter() {
+                                decoder.recovered_symbols_need_ack.insert(range);
+                            }
+                        }
+                    },
+
+                    frame::Frame::SourceSymbolHeader { metadata, .. } =>
+                        if let Some(ref mut fec_encoder) = self.fec_encoder {
+                            fec_encoder.get_encoder().symbol_landed(metadata);
+                        },
+
+                    frame::Frame::Repair { .. } => {
+                        if let Some(ref mut fec_encoder) = self.fec_encoder {
+                            fec_encoder.fec_on_lost_repair_symbol();
+                        }
                     },
 
                     _ => (),
@@ -3985,7 +4276,6 @@ impl Connection {
         let consider_backup_paths = self.paths.consider_backup_paths();
         let is_app_limited = self.delivery_rate_check_if_app_limited(send_pid);
         let n_paths = self.paths.len();
-        let flow_control = &mut self.flow_control;
         let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
         let multipath_enabled = self.paths.multipath();
         let paths = &mut self.paths;
@@ -4294,8 +4584,59 @@ impl Connection {
                         }
                     }
                 }
+            } else if self.fc_should_send_path_ack(now) {
+                // Flexicast reliable.
+                // Because the receiver cannot send packets on the flexicast
+                // flow, it will never send a PATH_ACK frame for this flow
+                // without sending a PATH_ACK for the unicast path.
+                // If it is not the case, we trigger sending such PATH_ACK for
+                // the flexicast flow on the unicast path.
+                let flexicast = self.flexicast.as_ref().unwrap();
+                if let Some(fcf_id) = flexicast.get_fc_path_id() {
+                    let pns =
+                        self.pkt_num_spaces.spaces.get_mut(epoch, fcf_id)?;
+                    if pns.recv_pkt_need_ack.len() > 0 &&
+                        (pns.ack_elicited || ack_elicit_required)
+                    {
+                        let ack_delay = pns.largest_rx_pkt_time.elapsed();
+
+                        let ack_delay = ack_delay.as_micros() as u64 /
+                            2_u64.pow(
+                                self.local_transport_params.ack_delay_exponent
+                                    as u32,
+                            );
+
+                        let frame = frame::Frame::PathAck {
+                            path_identifier: fcf_id,
+                            ack_delay,
+                            ranges: pns.recv_pkt_need_ack.clone(),
+                            ecn_counts: None, /* sending ECN is not
+                                               * supported at
+                                               * this time */
+                        };
+
+                        if push_frame_to_pkt!(b, frames, frame, left) {
+                            pns.ack_elicited = false;
+
+                            // Receiver sent a PATH_ACK frame. If negative
+                            // acknowledgment is used, notify the NACK
+                            // structure.
+                            let flexicast = self.flexicast.as_mut().unwrap();
+                            if let Some(nack) = flexicast
+                                .fc_reliable
+                                .client_mut()
+                                .and_then(|fc| fc.nack_mut())
+                            {
+                                nack.fc_on_path_ack_sent(now);
+                            }
+                        }
+                    }
+                }
             }
         }
+
+        let flow_control = &mut self.flow_control;
+        let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
 
         // Limit output packet size by congestion window size.
         left = cmp::min(
@@ -4306,6 +4647,7 @@ impl Connection {
 
         let mut challenge_data = None;
 
+        let paths = &mut self.paths;
         let (path, network_path) = paths.get_both_mut(send_pid, send_npid)?;
 
         if pkt_type == packet::Type::Short {
@@ -4701,8 +5043,174 @@ impl Connection {
                     break;
                 }
             }
+
+            // Create FC_ANNOUNCE frame.
+            // Send as many FC_ANNOUNCE frames as there are FC_ANNOUNCE data to
+            // send. We allow for multiple FC_ANNOUNCE frames in the
+            // same QUIC packet.
+            while let Some(mc_data_idx) = self.fc_should_send_fc_announce() {
+                debug!("Will send FC_ANNOUNCE frame");
+                let flexicast = self
+                    .flexicast
+                    .as_mut()
+                    .ok_or(Error::Flexicast(flexicast::FcError::McDisabled))?;
+                let mc_announce_data = flexicast
+                    .get_mut_mc_announce_data(mc_data_idx)
+                    .ok_or(Error::Flexicast(flexicast::FcError::McDisabled))?;
+                let frame = frame::Frame::McAnnounce {
+                    channel_id: mc_announce_data.channel_id.clone(),
+                    is_ipv6_addr: if mc_announce_data.is_ipv6_addr {
+                        1
+                    } else {
+                        0
+                    },
+                    probe_path: if mc_announce_data.probe_path { 1 } else { 0 },
+                    reset_stream_on_join: if mc_announce_data.reset_stream_on_join
+                    {
+                        1
+                    } else {
+                        0
+                    },
+                    source_ip: mc_announce_data.source_ip,
+                    group_ip: mc_announce_data.group_ip,
+                    udp_port: mc_announce_data.udp_port,
+                    fc_timer: mc_announce_data.fc_timer,
+                    public_key: if let Some(key) =
+                        mc_announce_data.public_key.as_ref()
+                    {
+                        key.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    bitrate: mc_announce_data.bitrate,
+                };
+
+                if push_frame_to_pkt!(b, frames, frame, left) {
+                    trace!("Sent a FC_ANNOUNCE frame");
+                    mc_announce_data.set_mc_announce_processed(true);
+
+                    ack_eliciting = true;
+                    in_flight = true;
+                }
+            }
+
+            // Create MC_STATE frame.
+            if let Some(flexicast) = self.flexicast.as_mut() {
+                if flexicast.should_send_fc_state() {
+                    let (action, action_data) = match flexicast.get_mc_role() {
+                        flexicast::McRole::Client(
+                            flexicast::McClientStatus::WaitingToJoin,
+                        ) => (flexicast::FcClientAction::Join, None),
+                        flexicast::McRole::Client(
+                            flexicast::McClientStatus::JoinedAndKey,
+                        ) => (
+                            flexicast::FcClientAction::McPath,
+                            flexicast.get_fc_path_id(),
+                        ),
+                        flexicast::McRole::Client(
+                            flexicast::McClientStatus::Leaving(false),
+                        ) => (flexicast::FcClientAction::Leave, None),
+                        flexicast::McRole::ServerUnicast(
+                            flexicast::McClientStatus::Leaving(false),
+                        ) => (flexicast::FcClientAction::Leave, None),
+                        flexicast::McRole::Client(
+                            flexicast::McClientStatus::Changing,
+                        ) => (
+                            flexicast::FcClientAction::Change,
+                            flexicast.get_fc_path_id(),
+                        ),
+                        flexicast::McRole::ServerUnicast(
+                            flexicast::McClientStatus::UcFallBack,
+                        ) => (
+                            flexicast::FcClientAction::Sync,
+                            flexicast
+                                .fc_reliable
+                                .server()
+                                .and_then(|r| r.fc_highest_pn),
+                        ),
+                        _ =>
+                            return Err(Error::Flexicast(
+                                flexicast::FcError::McInvalidRole(
+                                    flexicast.get_mc_role(),
+                                ),
+                            )),
+                    };
+                    let frame = frame::Frame::McState {
+                        channel_id: flexicast
+                            .get_mc_announce_data_active()
+                            .ok_or(Error::Flexicast(
+                                flexicast::FcError::McAnnounce,
+                            ))?
+                            .channel_id
+                            .clone(),
+                        action: action.try_into()?,
+                        action_data: action_data.unwrap_or(0),
+                    };
+
+                    if push_frame_to_pkt!(b, frames, frame, left) {
+                        debug!(
+                            "Send MC_STATE with {:?} {:?} while {:?}",
+                            action,
+                            action_data,
+                            flexicast.get_mc_role()
+                        );
+                        flexicast.set_mc_state_in_flight(true);
+
+                        ack_eliciting = true;
+                        in_flight = true;
+
+                        // Remove the highest packet number if it was sent.
+                        if action == flexicast::FcClientAction::Sync {
+                            flexicast
+                                .fc_reliable
+                                .server_mut()
+                                .map(|r| r.fc_highest_pn = None);
+                        }
+                    }
+                }
+            }
+
+            // Create MC_KEY frame.
+            if let Some(flexicast) = self.flexicast.as_mut() {
+                if flexicast.should_send_fc_key() {
+                    let mc_announce_data =
+                        flexicast.get_mc_announce_data_active().ok_or(
+                            Error::Flexicast(flexicast::FcError::McAnnounce),
+                        )?;
+                    let first_pn = flexicast.fc_first_pn.unwrap_or(0);
+
+                    let frame = frame::Frame::McKey {
+                        channel_id: mc_announce_data.channel_id.clone(),
+                        key: flexicast.get_decryption_key_secret()?.to_vec(),
+                        algo: flexicast.get_decryption_key_algo(),
+                        first_pn,
+                    };
+
+                    if push_frame_to_pkt!(b, frames, frame, left) {
+                        flexicast.set_mc_key_read(true);
+
+                        ack_eliciting = true;
+                        in_flight = true;
+                    }
+                }
+            }
+
+            // Create SOURCE_SYMBOL_ACK frame.
+            if let Some(decoder) = self.fec_decoder.as_mut() {
+                if decoder.recovered_symbols_need_ack.len() > 0 {
+                    let frame = frame::Frame::SourceSymbolAck {
+                        ranges: decoder.recovered_symbols_need_ack.clone(),
+                    };
+
+                    if push_frame_to_pkt!(b, frames, frame, left) {
+                        decoder.recovered_symbols_need_ack =
+                            ranges::RangeSet::default();
+                    }
+                }
+            }
         }
 
+        let paths = &mut self.paths;
         let (path, network_path) = paths.get_both_mut(send_pid, send_npid)?;
 
         // Create CONNECTION_CLOSE frame. Try to send this only on the active
@@ -4827,6 +5335,133 @@ impl Connection {
         if !do_stream && dgrams_to_emit {
             do_dgram = true;
         }
+
+        // FEC Extension.
+        // Initiate the FEC encoder if it is not done yet.
+        self.init_fec_encoder();
+
+        // Potentially remove landed symbols.
+        if let Some(fec_encoder) = self.fec_encoder.as_mut() {
+            fec_encoder.get_encoder().remove_landed_symbols();
+        }
+
+        // Whether we protect the packet with FEC.
+        let mut fec_protected = false;
+        let (path, network_path) =
+            self.paths.get_both_mut(send_pid, send_npid)?;
+        let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
+
+        // Check whether we can add a SOURCE_SYMBOL_HEADER frame to protect the
+        // STREAM/DATAGRAM following frame.
+        let path_active = path.active(send_npid, network_path);
+        let (fec_should_protect_pkt, fec_overhead) =
+            if let Some(fec_encoder) = self.fec_encoder.as_mut() {
+                let fec_overhead = fec_encoder.fec_overhead()?;
+                let should_protect = !is_closing &&
+                path_active &&
+                pkt_type == packet::Type::Short &&
+                // Check if enough room to add FEC SOURCE_SYMBOL_HEADER frame +
+                // DATAGRAM frame.
+                    ((left >
+                    fec_overhead +
+                        1 +
+                        frame::MAX_DGRAM_OVERHEAD +
+                        self.dgram_send_queue
+                            .peek_front_len()
+                            .unwrap_or(left + 1) &&
+                    do_dgram) ||
+                // STREAM frame.
+                    (left > fec_overhead + 1 + frame::MAX_STREAM_OVERHEAD &&
+                        stream_to_emit));
+
+                (should_protect, fec_overhead)
+            } else {
+                (false, 0)
+            };
+
+        if fec_should_protect_pkt {
+            left -= std::cmp::min(fec_overhead, left);
+        }
+
+        // Create REPAIR frame.
+        let mut sent_repair = false;
+        if let Some(fec_encoder) = self.fec_encoder.as_mut() {
+            // Only send a REPAIR frame if 1-RTT epoch.
+            if pkt_type == Type::Short && fec_encoder.fec_should_send_repair() {
+                if let Some(md) =
+                    fec_encoder.get_latest_md_fec_protected().cloned()
+                {
+                    // Enough room to encode the repair symbol ESI (which is equal
+                    // to the metadata of the last source symbol).
+                    if left >=
+                        octets::varint_len(0xf7) +
+                            fec_encoder
+                                .get_encoder()
+                                .next_repair_symbol_size(md)?
+                    {
+                        match fec_encoder
+                            .get_encoder()
+                            .generate_and_serialize_repair_symbol_up_to(md)
+                        {
+                            Ok(rs) => {
+                                let frame =
+                                    frame::Frame::Repair { repair_symbol: rs };
+                                if push_frame_to_pkt!(b, frames, frame, left) {
+                                    in_flight = true;
+                                    ack_eliciting = true;
+                                    fec_encoder.on_new_fec_repair_sent();
+                                    sent_repair = true;
+                                } else {
+                                    return Err(Error::BufferTooShort);
+                                }
+                            },
+                            // Because generate_up_to may not be able to generate
+                            // even if can_generate returned true.
+                            Err(
+                                networkcoding::EncoderError::NoSymbolToGenerate,
+                            ) => (),
+                            Err(err) => return Err(err.into()),
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create SOURCE_SYMBOL frame.
+        if fec_should_protect_pkt && !sent_repair {
+            let fec_encoder = self.fec_encoder.as_mut().unwrap();
+            left = std::cmp::min(
+                left,
+                fec_encoder
+                    .get_encoder()
+                    .symbol_size()
+                    .saturating_sub(b.off() - payload_offset),
+            );
+
+            let frame = frame::Frame::SourceSymbolHeader {
+                metadata: fec_encoder.get_encoder().next_metadata()?,
+                recovered: false,
+            };
+
+            if frame.wire_len() < left {
+                if push_frame_to_pkt!(b, frames, frame, left) {
+                    in_flight = true;
+                    fec_protected = true;
+                    fec_encoder.fec_sent_source_symbol();
+                } else {
+                    error!(
+                        "Buffer too short when adding SOURCE_SYMBOL_HEADER frame"
+                    );
+                    return Err(Error::BufferTooShort);
+                }
+            } else {
+                warn!("Could not add the SOURCE_SYMBOL_HEADER: buffer too short");
+            }
+        }
+
+        // Retain the offset before the source symbol payload to copy it
+        // afterwards.
+        let fec_source_symbol_offset = b.off();
 
         // Create DATAGRAM frame.
         if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) &&
@@ -5066,6 +5701,7 @@ impl Connection {
         // as Initial always requires padding.
         //
         // 2) this is a probing packet towards an unvalidated peer address.
+        let paths = &mut self.paths;
         let network_path = paths.get_network(send_npid)?;
         if (has_initial || !network_path.validated()) &&
             pkt_type == packet::Type::Short &&
@@ -5124,6 +5760,63 @@ impl Connection {
             qlog_with_type!(QLOG_PACKET_TX, self.qlog, _q, {
                 qlog_frames.push(frame.to_qlog());
             });
+        }
+
+        // FIXME: to avoid inserting FEC inside quiche's code too much,
+        //        we simply rewrite the frames into the FEC buffer, although
+        //        we could have copied it in push_frame_to_pkt!() directly.
+        if fec_protected && !sent_repair {
+            let fec_encoder = self.fec_encoder.as_mut().unwrap();
+            let symbol_size = fec_encoder.get_encoder().symbol_size();
+            // Zeroes at the beginning to add PADDING frames at the front of the
+            // symbol (they are not sent in the packet).
+            let mut source_symbol_data = vec![0; symbol_size];
+            let mut fec_buffer =
+                octets::OctetsMut::with_slice(&mut source_symbol_data);
+
+            // We here re-read the written payload to include it inside the source
+            // symbol We cannot browse through the frames vector as
+            // Stream frames are not completely stored in it but a
+            // StreamHeader is stored instead...
+
+            // This is the best way I found to avoid modifying too much the
+            // packetization code of the stream frames.
+            let unprotected_frames_data_len =
+                fec_source_symbol_offset - payload_offset;
+            let source_symbol_len = payload_len - unprotected_frames_data_len;
+            let protected_data_buf = &b.buf()[fec_source_symbol_offset..
+                fec_source_symbol_offset + source_symbol_len];
+            let mut written_frames =
+                octets::Octets::with_slice(protected_data_buf);
+
+            let mut packet_fec_protected = false;
+
+            while written_frames.cap() > 0 {
+                let off_before_parsing = written_frames.off();
+                let frame =
+                    frame::Frame::from_bytes(&mut written_frames, hdr_ty)?;
+                let wire_len = written_frames.off() - off_before_parsing;
+                packet_fec_protected = true;
+                let written = frame.to_bytes(&mut fec_buffer)?;
+                if written != wire_len {
+                    error!("FEC: did not write the correct amount of bytes");
+                    return Err(fec::FecError::SourceSymbolCreationError.into());
+                }
+            }
+
+            let offset = fec_buffer.off();
+            // Put the padding in front of the symbol to not mess with stream
+            // frames without len.
+            source_symbol_data.rotate_right(symbol_size - offset);
+            let mut source_symbol_metadata = source_symbol_metadata_from_u64(0);
+            fec_encoder
+                .get_encoder()
+                .protect_data(source_symbol_data, &mut source_symbol_metadata)?;
+
+            if packet_fec_protected {
+                fec_encoder.latest_metadata_protected =
+                    Some(source_symbol_metadata);
+            }
         }
 
         qlog_with_type!(QLOG_PACKET_TX, self.qlog, q, {
@@ -5189,6 +5882,7 @@ impl Connection {
             lost: 0,
             has_data,
             pmtud: pmtud_probe,
+            is_fc_delegated: false,
         };
 
         let (path, network_path) = paths.get_both_mut(send_pid, send_npid)?;
@@ -6127,6 +6821,28 @@ impl Connection {
         Ok(())
     }
 
+    /// Schedule an ack-eliciting packet on the specified path using the path
+    /// ID.
+    ///
+    /// See [`send_ack_eliciting()`] for more detail. [`InvalidState`] is
+    /// returned if there is no record of the path.
+    ///
+    /// [`send_ack_eliciting()`]: struct.Connection.html#method.send_ack_eliciting
+    /// [`InvalidState`]: enum.Error.html#variant.InvalidState
+    pub fn send_ack_eliciting_on_path_with_path_id(
+        &mut self, path_id: u64,
+    ) -> Result<()> {
+        if self.is_closed() || self.is_draining() {
+            return Ok(());
+        }
+        let path_id = self
+            .paths
+            .pid_from_path_id(path_id)
+            .ok_or(Error::InvalidState)?;
+        self.paths.get_mut(path_id)?.needs_ack_eliciting = true;
+        Ok(())
+    }
+
     /// Reads the first received DATAGRAM.
     ///
     /// On success the DATAGRAM's data is returned along with its size.
@@ -6260,7 +6976,7 @@ impl Connection {
     /// limit.
     ///
     /// [`Done`]: enum.Error.html#variant.Done
-    /// [`InvalidState`]: enum.Error.html#variant.InvalidState
+    /// [`InvalidState`]: enum.Error.html#variant.InvalidStateshoudl
     /// [`BufferTooShort`]: enum.Error.html#variant.BufferTooShort
     /// [`dgram_max_writable_len()`]:
     /// struct.Connection.html#method.dgram_max_writable_len
@@ -6441,7 +7157,13 @@ impl Connection {
                 .key_update
                 .as_ref()
                 .map(|key_update| key_update.timer);
-            let timers = [self.idle_timer, path_timer, key_update_timer];
+
+            // Flexicast extension.
+            // Potential flexicast timers, e.g., for reliability.
+            let fc_timer = self.fc_timeout_instant();
+
+            let timers =
+                [self.idle_timer, path_timer, key_update_timer, fc_timer];
 
             timers.iter().filter_map(|&x| x).min()
         }
@@ -6619,6 +7341,9 @@ impl Connection {
                 }
             }
         }
+
+        // Flexicast on timeout.
+        _ = self.fc_on_timeout(now);
 
         if close_connection {
             self.mark_closed();
@@ -7077,7 +7802,7 @@ impl Connection {
             self.local_transport_params.active_conn_id_limit,
         ) as usize;
 
-        max_active_source_cids - self.active_scids()
+        max_active_source_cids.saturating_sub(self.active_scids())
     }
 
     /// Requests the retirement of the destination Connection ID used by the
@@ -7995,7 +8720,11 @@ impl Connection {
                 self.paths.has_path_abandon() ||
                 self.paths.has_path_status() ||
                 send_path.needs_ack_eliciting ||
-                send_network_path.probing_required())
+                send_network_path.probing_required()) ||
+            self.fc_has_control_data(send_pid.0) ||
+            self.fec_encoder
+                .as_ref()
+                .is_some_and(|encoder| encoder.fec_should_send_repair())
         {
             // Only clients can send 0-RTT packets.
             if !self.is_server && self.is_in_early_data() {
@@ -8291,6 +9020,16 @@ impl Connection {
 
             frame::Frame::MaxData { max } => {
                 self.max_tx_data = cmp::max(self.max_tx_data, max);
+
+                // Flexicast extension.
+                // If this is the unicast path server, update the max data that
+                // will be sent to the flexicast flow.
+                if let Some(flexicast) = self.flexicast.as_mut() {
+                    if matches!(flexicast.get_mc_role(), McRole::ServerUnicast(_))
+                    {
+                        flexicast.fc_flow_control.fc_set_max_data(max);
+                    }
+                }
             },
 
             frame::Frame::MaxStreamData { stream_id, max } => {
@@ -8311,7 +9050,29 @@ impl Connection {
                 // Note that it makes it impossible to check if the frame is
                 // illegal, since we have no state, but since we ignore the
                 // frame, it should be fine.
-                let stream = match self.get_or_create_stream(stream_id, false) {
+
+                // The `local` value is always `false`, except for the particular
+                // case below. If we use flexicast, and this is
+                // the unicast path server, we might receive a MAX_STREAM_DATA for
+                // a stream that was opened by the flexicast flow but the unicast
+                // path server does not have any state yet for the stream because
+                // no stream piece was delegated.
+                // In that case, to avoid a [`Error::InvalidStreamState`] error,
+                // we set `local` to `true` because the stream was initially
+                // opened by the flexicast flow (i.e., the server).
+                // Note that this opens a potential "attack" using flexicast where
+                // the receiver could open multiple streams on the server.
+                let mut local = false;
+                if let Some(flexicast) = self.flexicast.as_ref() {
+                    if matches!(
+                        flexicast.get_mc_role(),
+                        flexicast::McRole::ServerUnicast(_)
+                    ) {
+                        local = true;
+                    }
+                }
+
+                let stream = match self.get_or_create_stream(stream_id, local) {
                     Ok(v) => v,
 
                     Err(Error::Done) => return Ok(()),
@@ -8336,6 +9097,19 @@ impl Connection {
 
                 if writable {
                     self.streams.insert_writable(&priority_key);
+                }
+
+                // Flexicast extension.
+                // If this is the unicast path server, update the max data for
+                // this stream that will be sent to the flexicast
+                // flow.
+                if let Some(flexicast) = self.flexicast.as_mut() {
+                    if matches!(flexicast.get_mc_role(), McRole::ServerUnicast(_))
+                    {
+                        flexicast
+                            .fc_flow_control
+                            .fc_set_max_stream_data(stream_id, max);
+                    }
                 }
             },
 
@@ -8479,6 +9253,7 @@ impl Connection {
                 ack_delay,
                 ..
             } => {
+                debug!("Recv PathAck frame: {:?} and {:?}", path_identifier, ranges);
                 if !self.use_path_pkt_num_space(epoch) {
                     return Err(Error::PathIdViolation);
                 }
@@ -8517,9 +9292,20 @@ impl Connection {
                     let is_app_limited =
                         self.delivery_rate_check_if_app_limited(pid);
                     let (p, np) = self.paths.get_mut_with_active(pid)?;
+
+                    if let Some(flexicast) = self.flexicast.as_ref() {
+                        if flexicast.get_fc_path_id() == Some(path_identifier) &&
+                            p.recovery.fc_recovery.is_none()
+                        {
+                            p.recovery
+                                .init_fc_recovery_state(flexicast.get_mc_role());
+                        }
+                    }
+
                     if is_app_limited {
                         p.recovery.delivery_rate_update_app_limited(true);
                     }
+
                     let (lost_packets, lost_bytes, acked_bytes) =
                         p.recovery.on_ack_received(
                             &ranges,
@@ -8538,6 +9324,41 @@ impl Connection {
                 // Once the handshake is confirmed, we can drop Handshake keys.
                 if self.handshake_confirmed {
                     self.drop_epoch_state(packet::Epoch::Handshake, now);
+                }
+
+                // Flexicast reliability.
+                // The unicast path records the acknowledgments from the
+                // receiver to later give them to the flexicast flow.
+                if self.is_flexicast_flow(path_identifier) {
+                    // Safe unwrap because was true.
+                    let flexicast = self.flexicast.as_mut().unwrap();
+
+                    // Only get the newly acked.
+                    if let Some(pid) =
+                        self.paths.pid_from_path_id(path_identifier)
+                    {
+                        let p = self.paths.get_mut(pid)?;
+
+                        if let Some(rec_fc) = p.recovery.fc_recovery.as_mut() {
+                            // Sanity check: should be the unicast path.
+                            if let Some(rfc) = flexicast.fc_reliable.server_mut()
+                            {
+                                rfc.mc_ack.on_ack_received(&rec_fc.fc_new_ack_pn);
+
+                                // Also mark the packet as received in the range.
+                                for range in rec_fc.fc_new_ack_pn.iter() {
+                                    rfc.fc_pn_recv.insert(range);
+                                }
+
+                                rec_fc.fc_new_ack_pn =
+                                    crate::ranges::RangeSet::default();
+                            }
+                        }
+                    }
+
+                    // Record the highest packet number received and acknowledged
+                    // by the receiver.
+                    flexicast.fc_highest_ack_pn = ranges.last();
                 }
             },
 
@@ -8611,6 +9432,213 @@ impl Connection {
             frame::Frame::PathsBlocked { .. } => {},
 
             frame::Frame::PathCidsBlocked { .. } => {},
+
+            frame::Frame::McAnnounce {
+                channel_id,
+                probe_path,
+                is_ipv6_addr,
+                reset_stream_on_join,
+                source_ip,
+                group_ip,
+                udp_port,
+                fc_timer,
+                public_key,
+                bitrate,
+            } => {
+                debug!("Received an FC_ANNOUNCE frame! FC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={}, reset_stream_on_joih={}, source_ip={:?}, group_ip={:?}, udp_port={}, fc_timer={}, bitrate={:?}", channel_id, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, fc_timer, bitrate);
+                if self.is_server {
+                    error!("The server should not receive an FC_ANNOUNCE frame!");
+                    return Err(Error::InvalidFrame);
+                }
+
+                let mc_announce_data = flexicast::McAnnounceData {
+                    channel_id,
+                    probe_path: probe_path == 1,
+                    is_ipv6_addr: is_ipv6_addr == 1,
+                    reset_stream_on_join: reset_stream_on_join == 1,
+                    source_ip,
+                    group_ip,
+                    udp_port,
+                    public_key: if public_key.is_empty() {
+                        None
+                    } else {
+                        Some(public_key)
+                    },
+                    fc_timer,
+                    is_processed: true,
+                    bitrate,
+                    fc_channel_algo: None,
+                    fc_channel_secret: None,
+                };
+
+                self.fc_set_announce_data(&mc_announce_data)?;
+            },
+
+            frame::Frame::McState {
+                channel_id,
+                action,
+                action_data,
+            } => {
+                // The client can also receive an MC_STATE.
+                // It can be used to request for a channel leave.
+                if let Some(flexicast) = self.flexicast.as_mut() {
+                    debug!(
+                        "Received an MC_STATE frame! channel ID: {:?}, action: {:?}, action_data: {} and current mc_role: {:?}",
+                        channel_id, flexicast::FcClientAction::try_from(action)?, action_data, flexicast.get_mc_role(),
+                    );
+                    let _new_status = flexicast.update_client_state(
+                        action.try_into()?,
+                        Some(action_data),
+                    )?;
+
+                    // Keep track of the flexicast channel ID that the client
+                    // joins.
+                    let idx = flexicast
+                        .get_mc_announce_data_index(&channel_id)
+                        .ok_or(Error::Flexicast(FcError::McAnnounce))?;
+
+                    flexicast.fc_chan_id = Some((channel_id.clone(), idx));
+
+                    let fc_action = flexicast::FcClientAction::try_from(action)?;
+                    match (flexicast.get_mc_role(), fc_action) {
+                        (
+                            McRole::ServerUnicast(_),
+                            flexicast::FcClientAction::Join,
+                        ) => {
+                            // The unicast path server may need to implicitly
+                            // create path
+                            // state if the receiver joined a flexicast flow
+                            // without path probing.
+                            if let Some(mc_announce) =
+                                flexicast.get_mc_announce_data(idx)
+                            {
+                                if !mc_announce.probe_path {
+                                    let src_addr = std::net::IpAddr::V4(
+                                        std::net::Ipv4Addr::from(
+                                            mc_announce.source_ip,
+                                        ),
+                                    );
+                                    let src_addr = std::net::SocketAddr::new(
+                                        src_addr,
+                                        mc_announce.udp_port,
+                                    );
+                                    let dst_addr = std::net::IpAddr::V4(
+                                        std::net::Ipv4Addr::from(
+                                            mc_announce.group_ip,
+                                        ),
+                                    );
+                                    let dst_addr = std::net::SocketAddr::new(
+                                        dst_addr,
+                                        mc_announce.udp_port,
+                                    );
+                                    let fc_space_id = self.create_mc_path(
+                                        src_addr, dst_addr, false,
+                                    )?;
+                                    self.flexicast
+                                        .as_mut()
+                                        .unwrap()
+                                        .set_fc_path_id(fc_space_id);
+                                }
+                            }
+                        },
+
+                        (McRole::Client(_), flexicast::FcClientAction::Sync) => {
+                            // The receiver synchronizes the packet number sent on
+                            // the flexicast flow.
+                            // Get the packet number space state for the active
+                            // flexicast flow.
+                            if let Some(fc_pid) = flexicast.get_fc_path_id() {
+                                let pns = self.pkt_num_spaces.spaces.get_mut(
+                                    crate::packet::Epoch::Application,
+                                    fc_pid,
+                                )?;
+                                pns.largest_rx_pkt_num = std::cmp::max(
+                                    pns.largest_rx_pkt_num,
+                                    action_data,
+                                );
+                            }
+                        },
+
+                        _ => (),
+                    }
+                } else {
+                    return Err(Error::Flexicast(flexicast::FcError::McDisabled));
+                }
+            },
+
+            frame::Frame::McKey {
+                channel_id: _,
+                key,
+                algo,
+                first_pn,
+            } =>
+                if self.is_server {
+                    return Err(Error::Flexicast(
+                        flexicast::FcError::McInvalidRole(
+                            flexicast::McRole::ServerUnicast(
+                                flexicast::McClientStatus::Unspecified,
+                            ),
+                        ),
+                    ));
+                } else if let Some(flexicast) = self.flexicast.as_mut() {
+                    flexicast.set_decryption_key_secret(key, algo)?;
+
+                    flexicast.update_client_state(
+                        flexicast::FcClientAction::DecryptionKey,
+                        None,
+                    )?;
+
+                    // Record the first packet number to listen to because we
+                    // don't have a FC path id yet.
+                    flexicast.fc_first_pn = Some(first_pn);
+
+                    // TODO: remove the following code because we never have a
+                    // path ID at this step.
+                    if let Some(mc_space_id) = flexicast.get_fc_path_id() {
+                        self.pkt_num_spaces
+                            .spaces
+                            .get_mut_or_create(
+                                packet::Epoch::Application,
+                                mc_space_id,
+                            )
+                            .recv_pkt_need_ack
+                            .insert(first_pn..first_pn + 1);
+                    }
+                } else {
+                    return Err(Error::Flexicast(
+                        flexicast::FcError::McInvalidSymKey,
+                    ));
+                },
+
+            frame::Frame::SourceSymbolHeader { .. } => {
+                unreachable!()
+            },
+
+            frame::Frame::SourceSymbol { source_symbol } => {
+                self.process_source_symbol_frame(
+                    source_symbol,
+                    hdr,
+                    recv_path_id.0,
+                    recv_network_path_id.0,
+                    epoch,
+                    now,
+                )?;
+            },
+
+            frame::Frame::Repair { repair_symbol } => {
+                self.process_repair_frame(
+                    repair_symbol,
+                    hdr,
+                    recv_path_id.0,
+                    recv_network_path_id.0,
+                    epoch,
+                    now,
+                )?;
+            },
+
+            frame::Frame::SourceSymbolAck { ranges } => {
+                self.process_source_symbol_ack_frame(ranges, epoch);
+            },
         };
         Ok(())
     }
@@ -8736,7 +9764,7 @@ impl Connection {
             })
             .map(|(_, p)| p.recovery.cwnd_available())
             .filter(|cwnd| *cwnd != usize::MAX)
-            .sum();
+            .fold(0_usize, |acc, v| acc.saturating_add(v));
         self.tx_cap = cmp::min(
             cwin_available,
             (self.max_tx_data - self.tx_data)
@@ -8951,6 +9979,29 @@ impl Connection {
 
             if let Some((npid, Some(path_id))) = probing.next() {
                 return Ok((path_id, npid));
+            }
+        }
+
+        // If flexicast is enabled, receivers cannot send packets on the flexicast
+        // flow because it is unidirectional.
+        if let Some(flexicast) = self.flexicast.as_ref() {
+            if matches!(
+                flexicast.get_mc_role(),
+                McRole::Client(_) | McRole::ServerUnicast(_)
+            ) {
+                if let Some(path_id) = flexicast.get_fc_path_id() {
+                    if let Some((pid, network_pid)) = self
+                        .paths
+                        .iter()
+                        .filter(|(_, p)| p.path_id() != path_id)
+                        .map(|(_, p)| (p.path_id(), p.network_path_id()))
+                        .next()
+                    {
+                        return Ok((pid, network_pid));
+                    } else {
+                        return Err(Error::Flexicast(FcError::McPath));
+                    }
+                }
             }
         }
 
@@ -9762,6 +10813,12 @@ pub struct TransportParams {
     /// Unknown peer transport parameters and values, if any.
     pub unknown_params: Option<UnknownTransportParameters>,
     // pub preferred_address: ...,
+    /// Flexicast support.
+    pub flexicast_support: bool,
+    /// Send FEC.
+    pub send_fec: bool,
+    /// Receive FEC.
+    pub recv_fec: bool,
 }
 
 impl Default for TransportParams {
@@ -9786,6 +10843,9 @@ impl Default for TransportParams {
             max_datagram_frame_size: None,
             initial_max_path_id: None,
             unknown_params: Default::default(),
+            flexicast_support: false,
+            send_fec: false,
+            recv_fec: false,
         }
     }
 }
@@ -9947,6 +11007,24 @@ impl TransportParams {
 
                 0x0f739bbc1b666d0d => {
                     tp.initial_max_path_id = Some(val.get_varint()?);
+                },
+
+                0xedf3 => {
+                    debug!("Received a flexicast_params TP");
+
+                    // Store information stating that the server is willing to use
+                    // flexicast.
+                    tp.flexicast_support = true;
+                },
+
+                0xedf4 => {
+                    debug!("Received send_fec TP");
+                    tp.send_fec = true;
+                },
+
+                0xedf5 => {
+                    debug!("Received recv_fec TP");
+                    tp.recv_fec = true;
                 },
 
                 // Track unknown transport parameters specially.
@@ -10127,6 +11205,18 @@ impl TransportParams {
                 octets::varint_len(initial_max_path_id),
             )?;
             b.put_varint(initial_max_path_id)?;
+        }
+
+        if tp.flexicast_support {
+            TransportParams::encode_param(&mut b, 0xedf3, 0)?;
+        }
+
+        if tp.send_fec {
+            TransportParams::encode_param(&mut b, 0xedf4, 0)?;
+        }
+
+        if tp.recv_fec {
+            TransportParams::encode_param(&mut b, 0xedf5, 0)?;
         }
 
         let out_len = b.off();
@@ -10446,6 +11536,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: server_path.peer_addr(),
                 from: server_path.local_addr(),
+                from_mc: false,
             };
 
             self.client.recv(buf, info)
@@ -10456,6 +11547,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: client_path.peer_addr(),
                 from: client_path.local_addr(),
+                from_mc: false,
             };
 
             self.server.recv(buf, info)
@@ -10513,6 +11605,7 @@ pub mod testing {
         let info = RecvInfo {
             to: active_path.local_addr(),
             from: active_path.peer_addr(),
+            from_mc: false,
         };
 
         conn.recv(&mut buf[..len], info)?;
@@ -10537,6 +11630,7 @@ pub mod testing {
             let info = RecvInfo {
                 to: si.to,
                 from: si.from,
+                from_mc: false,
             };
 
             conn.recv(&mut pkt, info)?;
@@ -10585,7 +11679,9 @@ pub mod testing {
     pub fn emit_flight(
         conn: &mut Connection,
     ) -> Result<Vec<(Vec<u8>, SendInfo)>> {
-        emit_flight_on_path(conn, None, None, None)
+        let out = emit_flight_on_path(conn, None, None, None)?;
+        Ok(out)
+
     }
 
     pub fn encode_pkt(
@@ -10780,6 +11876,9 @@ mod tests {
             retry_source_connection_id: Some(b"retry".to_vec().into()),
             max_datagram_frame_size: Some(32),
             initial_max_path_id: Some(4),
+            flexicast_support: false,
+            send_fec: false,
+            recv_fec: false,
             unknown_params: Default::default(),
         };
 
@@ -10812,6 +11911,9 @@ mod tests {
             retry_source_connection_id: None,
             max_datagram_frame_size: Some(32),
             initial_max_path_id: Some(4),
+            flexicast_support: false,
+            send_fec: false,
+            recv_fec: false,
             unknown_params: Default::default(),
         };
 
@@ -11586,6 +12688,7 @@ mod tests {
         let info = RecvInfo {
             to: active_path.local_addr(),
             from: active_path.peer_addr(),
+            from_mc: false,
         };
 
         assert_eq!(
@@ -17535,6 +18638,7 @@ mod tests {
         let info = RecvInfo {
             to: active_path.local_addr(),
             from: active_path.peer_addr(),
+            from_mc: false,
         };
 
         assert_eq!(
@@ -17606,6 +18710,7 @@ mod tests {
         let info = RecvInfo {
             to: active_path.local_addr(),
             from: active_path.peer_addr(),
+            from_mc: false,
         };
 
         assert_eq!(
@@ -17883,6 +18988,7 @@ mod tests {
         let info = RecvInfo {
             to: active_path.local_addr(),
             from: active_path.peer_addr(),
+            from_mc: false,
         };
 
         assert_eq!(
@@ -18520,6 +19626,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -18584,6 +19691,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -18601,6 +19709,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -18619,6 +19728,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -18636,6 +19746,7 @@ mod tests {
         let ri = RecvInfo {
             to: si.to,
             from: si.from,
+            from_mc: false,
         };
         assert_eq!(pipe.server.recv(&mut buf[..sent], ri), Ok(sent));
 
@@ -19594,6 +20705,7 @@ mod tests {
             .recv(&mut pkt_buf[..written], RecvInfo {
                 to: server_addr,
                 from: client_addr_2,
+                from_mc: false,
             })
             .expect("server receive path challenge");
 
@@ -20228,6 +21340,7 @@ mod tests {
                 let info = RecvInfo {
                     to: si.to,
                     from: si.from,
+                    from_mc: false,
                 };
                 pipe.client.recv(&mut pkt, info).expect("client recv error");
             }
@@ -20276,6 +21389,7 @@ mod tests {
                         let info = RecvInfo {
                             to: si.to,
                             from: si.from,
+                            from_mc: false,
                         };
                         pipe.client
                             .recv(&mut pkt, info)
@@ -20451,8 +21565,10 @@ pub use crate::stream::StreamIter;
 mod cid;
 mod crypto;
 mod dgram;
+pub mod fec;
 #[cfg(feature = "ffi")]
 mod ffi;
+pub mod flexicast;
 mod flowcontrol;
 mod frame;
 pub mod h3;

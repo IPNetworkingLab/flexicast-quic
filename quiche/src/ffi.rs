@@ -759,6 +759,7 @@ impl From<&RecvInfo<'_>> for crate::RecvInfo {
         crate::RecvInfo {
             from: std_addr_from_c(info.from, info.from_len),
             to: std_addr_from_c(info.to, info.to_len),
+            from_mc: false,
         }
     }
 }

@@ -592,6 +592,7 @@ impl PathConnectionIdentifiers {
             // The insert entry MUST have a sequence higher or equal to the ones
             // being retired.
             if new_entry.seq < retire_prior_to {
+                error!("ERR1");
                 return Err(Error::OutOfIdentifiers);
             }
 
@@ -1095,9 +1096,10 @@ impl ConnectionIdentifiers {
                     ),
                 )?;
 
-                if path_id % 2 == 0 {
-                    self.spare_path_ids.push(Reverse(path_id));
-                }
+                // FC-TODO: why have a %2???
+                // if path_id % 2 == 0 {
+                self.spare_path_ids.push(Reverse(path_id));
+                // }
                 self.largest_path_id = self.largest_path_id.max(path_id);
 
                 Ok(())

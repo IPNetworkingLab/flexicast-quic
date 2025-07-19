@@ -111,6 +111,31 @@ impl Algorithm {
     }
 }
 
+impl TryFrom<u8> for Algorithm {
+    type Error = crate::Error;
+
+    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
+        Ok(match value {
+            0 => Algorithm::AES128_GCM,
+            1 => Algorithm::AES256_GCM,
+            2 => Algorithm::ChaCha20_Poly1305,
+            _ => return Err(Error::CryptoFail),
+        })
+    }
+}
+
+impl TryFrom<Algorithm> for u8 {
+    type Error = crate::Error;
+
+    fn try_from(value: Algorithm) -> std::result::Result<Self, Self::Error> {
+        Ok(match value {
+            Algorithm::AES128_GCM => 0,
+            Algorithm::AES256_GCM => 1,
+            Algorithm::ChaCha20_Poly1305 => 2,
+        })
+    }
+}
+
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
 pub struct EVP_AEAD {

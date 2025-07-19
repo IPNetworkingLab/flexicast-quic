@@ -30,4 +30,5 @@ extern crate log;
 pub mod args;
 pub mod client;
 pub mod common;
+pub mod fc_app;
 pub mod sendto;

@@ -1,4 +1,21 @@
-test-job1:
+stages:
+  - test
+  - build
+
+variables:
+  RUSTFLAGS: "" # TODO "-D warnings"
+  TOOLCHAIN: "stable"
+  RUST_MIN_STACK: 10000000
+
+quiche:
   stage: test
+  image: rust:latest
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
   script:
-    - echo "This job tests nothing"
+    - apt-get update && apt-get install -y cmake libclang-dev gcc-multilib
+    - rustup toolchain install $TOOLCHAIN
+    - rustup default $TOOLCHAIN
+    - rustup component add clippy
+    - cargo test --verbose --all-targets --features=ffi,qlog
+    - cargo test --verbose --doc --features=ffi,qlog

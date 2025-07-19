@@ -2217,5 +2217,6 @@ mod tests {
     }
 }
 
+pub mod flexicast;
 mod recv_buf;
 mod send_buf;
