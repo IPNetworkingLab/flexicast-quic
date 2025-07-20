@@ -817,9 +817,9 @@ pub extern "C" fn quiche_conn_send(
 
 #[no_mangle]
 pub extern "C" fn quiche_conn_send_on_path(
-    conn: &mut Connection, out: *mut u8, out_len: size_t, path_id: u64, from: *const sockaddr,
-    from_len: socklen_t, to: *const sockaddr, to_len: socklen_t,
-    out_info: &mut SendInfo,
+    conn: &mut Connection, out: *mut u8, out_len: size_t, path_id: u64,
+    from: *const sockaddr, from_len: socklen_t, to: *const sockaddr,
+    to_len: socklen_t, out_info: &mut SendInfo,
 ) -> ssize_t {
     if out_len > <ssize_t>::MAX as usize {
         panic!("The provided buffer is too large");
@@ -829,6 +829,7 @@ pub extern "C" fn quiche_conn_send_on_path(
     let to = optional_std_addr_from_c(to, to_len);
     let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
 
+    let path_id = if path_id < 0 { None } else { Some(path_id) };
     match conn.send_on_path(out, path_id, from, to) {
         Ok((v, info)) => {
             out_info.from_len = std_addr_to_c(&info.from, &mut out_info.from);
@@ -1670,12 +1671,12 @@ pub extern "C" fn quiche_conn_is_network_path_validated(
 
 #[no_mangle]
 pub extern "C" fn quiche_conn_probe_path(
-    conn: &mut Connection, path_id: u64, local: &sockaddr, local_len: socklen_t,
+    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
     peer: &sockaddr, peer_len: socklen_t, path_id: *mut u64, cid_seq: *mut u64,
 ) -> c_int {
     let local = std_addr_from_c(local, local_len);
     let peer = std_addr_from_c(peer, peer_len);
-    match conn.probe_path(path_id, local, peer) {
+    match conn.probe_path(*path_id, local, peer) {
         Ok(v) => {
             unsafe { (*path_id, *cid_seq) = v }
             0
@@ -1686,11 +1687,11 @@ pub extern "C" fn quiche_conn_probe_path(
 
 #[no_mangle]
 pub extern "C" fn quiche_conn_migrate_source(
-    conn: &mut Connection, path_id: u64, local: &sockaddr, local_len: socklen_t,
+    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
     path_id: *mut u64, cid_seq: *mut u64,
 ) -> c_int {
     let local = std_addr_from_c(local, local_len);
-    match conn.migrate_source(path_id, local) {
+    match conn.migrate_source(*path_id, local) {
         Ok(v) => {
             unsafe { (*path_id, *cid_seq) = v }
             0
@@ -1701,12 +1702,12 @@ pub extern "C" fn quiche_conn_migrate_source(
 
 #[no_mangle]
 pub extern "C" fn quiche_conn_migrate(
-    conn: &mut Connection, path_id: u64, local: &sockaddr, local_len: socklen_t,
+    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
     peer: &sockaddr, peer_len: socklen_t, path_id: *mut u64, cid_seq: *mut u64,
 ) -> c_int {
     let local = std_addr_from_c(local, local_len);
     let peer = std_addr_from_c(peer, peer_len);
-    match conn.migrate(path_id, local, peer) {
+    match conn.migrate(*path_id, local, peer) {
         Ok(v) => {
             unsafe { (*path_id, *cid_seq) = v }
             0
