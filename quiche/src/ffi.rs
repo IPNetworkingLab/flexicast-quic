@@ -817,7 +817,7 @@ pub extern "C" fn quiche_conn_send(
 
 #[no_mangle]
 pub extern "C" fn quiche_conn_send_on_path(
-    conn: &mut Connection, out: *mut u8, out_len: size_t, from: *const sockaddr,
+    conn: &mut Connection, out: *mut u8, out_len: size_t, path_id: u64, from: *const sockaddr,
     from_len: socklen_t, to: *const sockaddr, to_len: socklen_t,
     out_info: &mut SendInfo,
 ) -> ssize_t {
@@ -829,7 +829,7 @@ pub extern "C" fn quiche_conn_send_on_path(
     let to = optional_std_addr_from_c(to, to_len);
     let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
 
-    match conn.send_on_path(out, from, to) {
+    match conn.send_on_path(out, path_id, from, to) {
         Ok((v, info)) => {
             out_info.from_len = std_addr_to_c(&info.from, &mut out_info.from);
             out_info.to_len = std_addr_to_c(&info.to, &mut out_info.to);
@@ -1642,7 +1642,7 @@ pub extern "C" fn quiche_socket_addr_iter_next(
     iter: &mut SocketAddrIter, peer: &mut sockaddr_storage,
     peer_len: *mut socklen_t,
 ) -> bool {
-    if let Some(v) = iter.next() {
+    if let Some((v, _)) = iter.next() {
         unsafe { *peer_len = std_addr_to_c(&v, peer) }
         return true;
     }
@@ -1656,13 +1656,13 @@ pub extern "C" fn quiche_socket_addr_iter_free(iter: *mut SocketAddrIter) {
 }
 
 #[no_mangle]
-pub extern "C" fn quiche_conn_is_path_validated(
+pub extern "C" fn quiche_conn_is_network_path_validated(
     conn: &Connection, from: &sockaddr, from_len: socklen_t, to: &sockaddr,
     to_len: socklen_t,
 ) -> c_int {
     let from = std_addr_from_c(from, from_len);
     let to = std_addr_from_c(to, to_len);
-    match conn.is_path_validated(from, to) {
+    match conn.is_network_path_validated(from, to) {
         Ok(v) => v as c_int,
         Err(e) => e.to_c() as c_int,
     }
@@ -1670,12 +1670,12 @@ pub extern "C" fn quiche_conn_is_path_validated(
 
 #[no_mangle]
 pub extern "C" fn quiche_conn_probe_path(
-    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
+    conn: &mut Connection, path_id: u64, local: &sockaddr, local_len: socklen_t,
     peer: &sockaddr, peer_len: socklen_t, path_id: *mut u64, cid_seq: *mut u64,
 ) -> c_int {
     let local = std_addr_from_c(local, local_len);
     let peer = std_addr_from_c(peer, peer_len);
-    match conn.probe_path(local, peer) {
+    match conn.probe_path(path_id, local, peer) {
         Ok(v) => {
             unsafe { (*path_id, *cid_seq) = v }
             0
@@ -1686,11 +1686,11 @@ pub extern "C" fn quiche_conn_probe_path(
 
 #[no_mangle]
 pub extern "C" fn quiche_conn_migrate_source(
-    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
+    conn: &mut Connection, path_id: u64, local: &sockaddr, local_len: socklen_t,
     path_id: *mut u64, cid_seq: *mut u64,
 ) -> c_int {
     let local = std_addr_from_c(local, local_len);
-    match conn.migrate_source(local) {
+    match conn.migrate_source(path_id, local) {
         Ok(v) => {
             unsafe { (*path_id, *cid_seq) = v }
             0
@@ -1701,12 +1701,12 @@ pub extern "C" fn quiche_conn_migrate_source(
 
 #[no_mangle]
 pub extern "C" fn quiche_conn_migrate(
-    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
+    conn: &mut Connection, path_id: u64, local: &sockaddr, local_len: socklen_t,
     peer: &sockaddr, peer_len: socklen_t, path_id: *mut u64, cid_seq: *mut u64,
 ) -> c_int {
     let local = std_addr_from_c(local, local_len);
     let peer = std_addr_from_c(peer, peer_len);
-    match conn.migrate(local, peer) {
+    match conn.migrate(path_id, local, peer) {
         Ok(v) => {
             unsafe { (*path_id, *cid_seq) = v }
             0
