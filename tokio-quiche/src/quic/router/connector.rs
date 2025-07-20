@@ -152,6 +152,7 @@ where
         let recv_info = quiche::RecvInfo {
             from: incoming.peer_addr,
             to: incoming.local_addr,
+            from_mc: false,
         };
 
         if let Some(gro) = incoming.gro {

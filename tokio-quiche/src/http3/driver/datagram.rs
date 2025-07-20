@@ -80,7 +80,7 @@ pub(crate) fn send_h3_dgram(
 ) -> quiche::Result<()> {
     let mut prefix = [0u8; 8];
     let mut buf = octets::OctetsMut::with_slice(&mut prefix);
-    let flow_id = buf.put_varint(flow_id)?;
+    let flow_id = buf.put_varint(flow_id).map_err(|_| quiche::Error::BufferTooShort)?;
 
     if dgram.add_prefix(flow_id) {
         conn.dgram_send(&dgram)
@@ -99,7 +99,7 @@ pub(crate) fn receive_h3_dgram(
 ) -> quiche::Result<(u64, InboundFrame)> {
     let dgram = conn.dgram_recv_vec()?;
     let mut buf = octets::Octets::with_slice(&dgram);
-    let flow_id = buf.get_varint()?;
+    let flow_id = buf.get_varint().map_err(|_| quiche::Error::BufferTooShort)?;
     let advance = buf.off();
     let datagram =
         InboundFrame::Datagram(BufFactory::dgram_from_slice(&dgram[advance..]));

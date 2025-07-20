@@ -536,6 +536,7 @@ where
         let recv_info = quiche::RecvInfo {
             from: pkt.peer_addr,
             to: pkt.local_addr,
+            from_mc: false,
         };
 
         if let Some(gro) = pkt.gro {
