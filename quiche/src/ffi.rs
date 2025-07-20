@@ -1676,12 +1676,14 @@ pub extern "C" fn quiche_conn_probe_path(
 ) -> c_int {
     let local = std_addr_from_c(local, local_len);
     let peer = std_addr_from_c(peer, peer_len);
-    match conn.probe_path(*path_id, local, peer) {
-        Ok(v) => {
-            unsafe { (*path_id, *cid_seq) = v }
-            0
-        },
-        Err(e) => e.to_c() as c_int,
+    unsafe {
+        match conn.probe_path(*path_id, local, peer) {
+            Ok(v) => {
+                (*path_id, *cid_seq) = v;
+                0
+            },
+            Err(e) => e.to_c() as c_int,
+        }
     }
 }
 
@@ -1691,12 +1693,14 @@ pub extern "C" fn quiche_conn_migrate_source(
     path_id: *mut u64, cid_seq: *mut u64,
 ) -> c_int {
     let local = std_addr_from_c(local, local_len);
-    match conn.migrate_source(*path_id, local) {
-        Ok(v) => {
-            unsafe { (*path_id, *cid_seq) = v }
-            0
-        },
-        Err(e) => e.to_c() as c_int,
+    unsafe {
+        match conn.migrate_source(*path_id, local) {
+            Ok(v) => {
+                (*path_id, *cid_seq) = v;
+                0
+            },
+            Err(e) => e.to_c() as c_int,
+        }
     }
 }
 
@@ -1707,12 +1711,14 @@ pub extern "C" fn quiche_conn_migrate(
 ) -> c_int {
     let local = std_addr_from_c(local, local_len);
     let peer = std_addr_from_c(peer, peer_len);
-    match conn.migrate(*path_id, local, peer) {
-        Ok(v) => {
-            unsafe { (*path_id, *cid_seq) = v }
-            0
-        },
-        Err(e) => e.to_c() as c_int,
+    unsafe {
+        match conn.migrate(*path_id, local, peer) {
+            Ok(v) => {
+                (*path_id, *cid_seq) = v;
+                0
+            },
+            Err(e) => e.to_c() as c_int,
+        }
     }
 }
 
