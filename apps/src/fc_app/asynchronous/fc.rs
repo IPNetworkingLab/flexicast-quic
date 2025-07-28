@@ -128,6 +128,7 @@ impl FcChannelAsync {
             },
 
             MsgFcSource::Ready => {
+                tokio::time::sleep(time::Duration::from_millis(500)).await;
                 self.must_wait = false;
             },
 
