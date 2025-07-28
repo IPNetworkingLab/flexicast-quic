@@ -16,7 +16,7 @@ const MANIFEST_NAME: &str = "playlist.m3u8";
 const SEGMENT_PREFIX: &str = "segment_";
 const MANIFEST_STREAM_ID: u64 = 3;
 const SEGMENT_STREAM_ID: u64 = 7;
-const SEGMENT_DURATION: time::Duration = time::Duration::from_secs(6);
+const SEGMENT_DURATION: time::Duration = time::Duration::from_secs(2);
 
 #[derive(Debug)]
 /// HLS source structure.
@@ -52,7 +52,7 @@ impl HlsSource {
         let now = time::Instant::now();
         Self {
             dir_path: dir_path.to_string(),
-            manifest_update_dur: time::Duration::from_secs(5),
+            manifest_update_dur: time::Duration::from_secs(2),
             last_manifest_push: now,
             last_segment_push: now,
             manifest_sid: MANIFEST_STREAM_ID,
@@ -66,12 +66,11 @@ impl HlsSource {
     pub async fn run(&mut self) -> asynchronous::Result<()> {
         loop {
             let now = time::Instant::now();
-            let timeout_manifest = now
-                .duration_since(self.last_manifest_push)
-                .saturating_sub(self.manifest_update_dur);
-            let timeout_segment = now
-                .duration_since(self.last_segment_push)
-                .saturating_sub(SEGMENT_DURATION);
+            let timeout_manifest = self.manifest_update_dur.saturating_sub(now
+                .duration_since(self.last_manifest_push));
+            let timeout_segment = SEGMENT_DURATION.saturating_sub(now
+                .duration_since(self.last_segment_push));
+            info!("Timeout manifest: {:?} and timeout segment: {:?}", timeout_manifest, timeout_segment);
             tokio::select! {
                 _ = tokio::time::sleep(timeout_manifest) => self.push_manifest().await?,
 
@@ -82,10 +81,15 @@ impl HlsSource {
 
     /// Push a new version of the manifest.
     async fn push_manifest(&mut self) -> asynchronous::Result<()> {
+        info!("PUSH manifest");
         let filename = path::Path::new(&self.dir_path).join(MANIFEST_NAME);
-        let mut fd = match fs::File::open(filename) {
+        let mut fd = match fs::File::open(filename.clone()) {
             Ok(fd) => fd,
-            Err(_) => return Ok(()),
+            Err(_) => {
+                error!("Cannot find manifest: {:?}", filename);
+                self.last_manifest_push = time::Instant::now();
+                return Ok(())
+            },
         };
         self.send_all(&mut fd, self.manifest_sid).await?;
 
@@ -96,11 +100,16 @@ impl HlsSource {
 
     /// Push a new segment.
     async fn push_segment(&mut self) -> asynchronous::Result<()> {
+        info!("PUSH segment");
         let filename = path::Path::new(&self.dir_path)
             .join(format!("{}{:0>3}.ts", SEGMENT_PREFIX, self.next_segment_id));
-        let mut fd = match fs::File::open(filename) {
+        let mut fd = match fs::File::open(filename.clone()) {
             Ok(fd) => fd,
-            Err(_) => return Ok(()),
+            Err(_) => {
+                error!("Cannot find segment: {:?}", filename);
+                self.last_segment_push = time::Instant::now();
+                return Ok(())
+            },
         };
         self.send_all(&mut fd, self.segment_sid).await?;
 

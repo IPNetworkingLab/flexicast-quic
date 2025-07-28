@@ -306,7 +306,6 @@ impl FcController {
                 if index > 0 {
                     self.app_data = self.app_data.split_off(index as usize);
                     self.app_data_min_off = min_off;
-                    info!("CUT DATA stream {stream_id} min_off={min_off} index={index}");
                 }
 
                 self.app_data_fin = fin;
