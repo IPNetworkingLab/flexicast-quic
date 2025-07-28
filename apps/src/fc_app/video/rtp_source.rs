@@ -1,4 +1,4 @@
-//! Video source.
+//! RTP video source.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use super::Result;
 
 #[derive(Debug)]
 /// Video source structure.
-pub struct VideoSource {
+pub struct RtpSource {
     /// Socket used to receive RTP content from the video feed, e.g., ffmpeg.
     socket_in: UdpSocket,
 
@@ -25,7 +25,7 @@ pub struct VideoSource {
     timeout_opt: Option<time::Duration>,
 }
 
-impl VideoSource {
+impl RtpSource {
     /// Creates a new instance.
     pub async fn new(
         video_feed_sockaddr: SocketAddr, tx: mpsc::Sender<VideoSourceMsg>,
@@ -48,7 +48,7 @@ impl VideoSource {
         loop {
             if let Ok(read) = self.socket_in.recv(&mut buf[..]).await {
                 let data = Arc::new(buf[..read].to_vec());
-                let msg = VideoSourceMsg::Data((self.stream_id, data));
+                let msg = VideoSourceMsg::Data((self.stream_id, data, true));
 
                 match self.timeout_opt {
                     Some(t) => self.tx.send_timeout(msg, t).await?,
@@ -65,5 +65,5 @@ pub enum VideoSourceMsg {
     /// New RTP frame.
     /// First value is the stream ID.
     /// Second value is the bytes.
-    Data((u64, Arc<Vec<u8>>)),
+    Data((u64, Arc<Vec<u8>>, bool)),
 }

@@ -12,6 +12,8 @@ use quiche::ConnectionId;
 use quiche_apps::common::make_qlog_writer;
 use quiche_apps::fc_app::file_transfer::receiver::FileTransferRecv;
 use quiche_apps::fc_app::file_transfer::receiver::FileTransferRecvMsg;
+use quiche_apps::fc_app::video::hls::HlsSink;
+use quiche_apps::fc_app::video::rtp_source::VideoSourceMsg;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 use std::net;
@@ -65,6 +67,11 @@ struct Args {
     /// content.
     #[clap(long = "stay-open")]
     stay_open_on_fin: bool,
+
+    /// Uses video streaming application instead of file transfer.
+    /// TODO: this is very ugly but I want to prototype quickly.
+    #[clap(long = "video")]
+    video_stream_dir: Option<String>,
 }
 
 #[tokio::main]
@@ -151,26 +158,38 @@ async fn main() {
         }
     }
 
-    // Create the application handler at the client.
-    let out_filename = Path::new(url.path_segments().unwrap().last().unwrap());
-    let output_prefix = Path::new(&args.output_prefix);
-    let (tx_app, rx_app) = mpsc::channel(100);
-
-    let tmp_filename = if args.stay_open_on_fin {
-        Path::new("/shared").join(out_filename)
+    let (mut tx_app, mut tx_app2) = if let Some(dir_path) = args.video_stream_dir.as_ref()
+    {
+        let (tx_app, rx_app) = mpsc::channel(100);
+        let mut fc_app = HlsSink::new(dir_path, rx_app);
+        tokio::spawn(async move {
+            fc_app.run().await.unwrap();
+        });
+        (None, Some(tx_app))
     } else {
-        Path::new("/tmp").join(out_filename)
-    };
-    let mut fc_app = FileTransferRecv::new(
-        &output_prefix.join(out_filename),
-        rx_app,
-        &tmp_filename,
-    )
-    .unwrap();
+        let (tx_app, rx_app) = mpsc::channel(100);
+        // Create the application handler at the client.
+        let out_filename =
+            Path::new(url.path_segments().unwrap().last().unwrap());
+        let output_prefix = Path::new(&args.output_prefix);
 
-    tokio::spawn(async move {
-        fc_app.run().await.unwrap();
-    });
+        let tmp_filename = if args.stay_open_on_fin {
+            Path::new("/shared").join(out_filename)
+        } else {
+            Path::new("/tmp").join(out_filename)
+        };
+        let mut fc_app = FileTransferRecv::new(
+            &output_prefix.join(out_filename),
+            rx_app,
+            &tmp_filename,
+        )
+        .unwrap();
+
+        tokio::spawn(async move {
+            fc_app.run().await.unwrap();
+        });
+        (Some(tx_app), None)
+    };
 
     info!(
         "connecting to {:} from {:} with scid {}",
@@ -222,7 +241,7 @@ async fn main() {
                     panic!("recv() failed: {:?}", e);
                 },
             };
-            
+
             trace!("Recv from socket unicast");
             uc_recv += 1;
 
@@ -437,18 +456,30 @@ async fn main() {
                 }
 
                 total_read += read;
-                info!("TOTAL READ: {total_read} because now incremented by {read}");
+                info!(
+                    "TOTAL READ: {total_read} because now incremented by {read}"
+                );
 
-                let msg = FileTransferRecvMsg::Data((
-                    buf[..read].to_vec(),
-                    fin,
-                    stream_id,
-                ));
-                tx_app.send(msg).await.unwrap();
+                if let Some(ref mut tx_app) = tx_app {
+                    let msg = FileTransferRecvMsg::Data((
+                        buf[..read].to_vec(),
+                        fin,
+                        stream_id,
+                    ));
+                    tx_app.send(msg).await.unwrap();
 
-                if fin & !args.stay_open_on_fin {
-                    let _ = conn.close(true, 0, &[0]);
-                    nb_recv += 1;
+                    if fin & !args.stay_open_on_fin {
+                        let _ = conn.close(true, 0, &[0]);
+                        nb_recv += 1;
+                    }
+                } else if let Some(ref mut tx) = tx_app2 {
+                    let msg = VideoSourceMsg::Data((
+                        stream_id,
+                        std::sync::Arc::new(buf[..read].to_vec()),
+                        fin,
+                    ));
+
+                    tx.send(msg).await.unwrap();
                 }
             }
         }
@@ -508,8 +539,10 @@ async fn main() {
         }
     }
 
-    let msg = FileTransferRecvMsg::Close;
-    tx_app.send(msg).await.unwrap();
+    if let Some(ref mut tx_app) = tx_app {
+        let msg = FileTransferRecvMsg::Close;
+        tx_app.send(msg).await.unwrap();
+    }
 
     println!("RESULT-NB-STREAM-RECV {nb_recv}");
     println!("{} {} {}", mc_recv, uc_recv, uc_send);

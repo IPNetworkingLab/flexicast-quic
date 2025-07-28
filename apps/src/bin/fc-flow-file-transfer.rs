@@ -26,6 +26,7 @@ use quiche_apps::fc_app::cca::FcFlowCwnd;
 use quiche_apps::fc_app::file_transfer::fc_flow::FcFlowfileTransfer;
 use quiche_apps::fc_app::file_transfer::sender::FileTransferKind;
 use quiche_apps::fc_app::file_transfer::uc_path::UcPathFileTransfer;
+use quiche_apps::fc_app::video::fc_flow::FcFlowVideo;
 use tokio::sync::mpsc;
 
 use clap::Parser;
@@ -148,6 +149,11 @@ struct Args {
     /// Sets the initial flow control for the flexicast flow.
     #[clap(long = "initial-fc-flow")]
     initial_fc_flow: Option<u64>,
+
+    /// Uses video streaming application instead of file transfer.
+    /// TODO: this is very ugly but I want to prototype quickly.
+    #[clap(long = "video")]
+    video_stream_dir: Option<String>,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 5)]
@@ -291,12 +297,23 @@ async fn main() {
             }
         }
 
-        // Create the file transfer structure.
-        let mut fc_file_transfer = FcFlowfileTransfer { 0: fc_struct };
+        if let Some(dir_path_video) = args.video_stream_dir.as_ref() {
+            let mut fc_video_stream = FcFlowVideo {
+                fc: fc_struct,
+                dir_path: dir_path_video.to_string(),
+            };
 
-        tokio::spawn(async move {
-            fc_file_transfer.run().await.unwrap();
-        });
+            tokio::spawn(async move {
+                fc_video_stream.run().await.unwrap();
+            });
+        } else {
+            // Create the file transfer structure.
+            let mut fc_file_transfer = FcFlowfileTransfer { 0: fc_struct };
+
+            tokio::spawn(async move {
+                fc_file_transfer.run().await.unwrap();
+            });
+        }
 
         id_fc_chan += 1;
     }
