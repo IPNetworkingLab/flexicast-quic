@@ -174,13 +174,14 @@ impl HlsSink {
 
                     let mut fd = fs::OpenOptions::new()
                         .create(true)
+                        .write(true)
                         .open(filename)?;
                     fd.write_all(&data)?;
                 } else if stream_id % 8 == 7 {
                     debug!("Receive segment. ID={stream_id}, len={}, fin={fin}", data.len());
                     // This is a segment.
                     let filename = path::Path::new(&self.dir_path).join(format!(
-                        "{}{}.ts",
+                        "{}{:0>3}.ts",
                         SEGMENT_PREFIX, self.next_segment_id
                     ));
 
