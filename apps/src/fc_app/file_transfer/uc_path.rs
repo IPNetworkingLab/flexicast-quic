@@ -138,17 +138,17 @@ impl UcPathRun for UcPathFileTransfer {
                         },
                     }
 
-                    let data = if let (Some(off), 0) = (off, self.0.pending_data_off) {
+                    let (data, stripped_nb) = if let (Some(off), 0) = (off, self.0.pending_data_off) {
                         let buf_off = self.0.conn.fc_reset_send_off(*stream_id, *off)?;
                         info!("RESET THE FC SEND OFF stream_id={:?} off={:?}. Off given by quiche: {:?}", stream_id, off, buf_off);
 
                         if *off + (data.len() as u64) < buf_off {
-                            &data[0..0] // Empty data. Everything that we could delegate is already received.
+                            (&data[0..0], data.len()) // Empty data. Everything that we could delegate is already received.
                         } else {
-                            &data[buf_off.saturating_sub(*off) as usize..]
+                            (&data[buf_off.saturating_sub(*off) as usize..], buf_off.saturating_sub(*off) as usize)
                         }
                     } else {
-                        data.as_slice()
+                        (data.as_slice(), 0)
                     };
 
                     let written = match self.0.conn.stream_send(
@@ -167,7 +167,7 @@ impl UcPathRun for UcPathFileTransfer {
                         let _ = self.0.pending_data.drain(0..1);
                         self.0.pending_data_off = 0;
                     } else {
-                        self.0.pending_data_off += written;
+                        self.0.pending_data_off += written + stripped_nb;
                     }
                 } else {
                     break;
