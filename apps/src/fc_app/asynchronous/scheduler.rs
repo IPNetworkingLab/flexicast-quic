@@ -43,6 +43,9 @@ pub struct FcFlowAliveScheduler {
     /// This avoids stating that the flexicast flow is dead when no data is
     /// sent.
     did_uc_retransmit: bool,
+
+    /// The highest packet number received on the flexicast flow while the receiver in the flexicast flow.
+    fcf_max_pn_recv_in_flow: Option<u64>,
 }
 
 impl FcFlowAliveScheduler {
@@ -59,6 +62,7 @@ impl FcFlowAliveScheduler {
             fcf_next_timeout: None,
             fall_back_delay,
             did_uc_retransmit: false,
+            fcf_max_pn_recv_in_flow: None,
         }
     }
 
@@ -72,6 +76,10 @@ impl FcFlowAliveScheduler {
     pub fn on_ack_received(
         &mut self, last_pn: u64, now: time::Instant, conn: &dyn BytesInFlight,
     ) -> bool {
+        if self.fcf_alive {
+            self.fcf_max_pn_recv_in_flow = Some(last_pn);
+        }
+
         // The receiver received a new packet on the flexicast flow.
         let was_alive = self.fcf_alive;
         if self.fcf_last_recv.map(|pn| pn < last_pn).unwrap_or(true) {
@@ -153,6 +161,12 @@ impl FcFlowAliveScheduler {
         if self.fcf_next_timeout.is_none() {
             self.fcf_next_timeout = self.fall_back_delay.map(|d| now + d);
         }
+    }
+
+    /// Get the last packet number received on the flexicast flow while in it.
+    #[inline]
+    pub fn get_last_pn_recv_in_flow(&self) -> Option<u64> {
+        self.fcf_max_pn_recv_in_flow
     }
 }
 

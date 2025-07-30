@@ -27,7 +27,10 @@ pub enum MsgFcCtl {
     /// The first value is the client ID.
     /// The second value is the index of the flexicast flow.
     /// The third value is the current flow control limits of the receiver.
-    Join((u64, u64, Option<FcAggregatedMsg>)),
+    /// The fourth value indicates the maximum received packet number on the
+    /// flexicast flow before the last join, in case this was a unicast
+    /// fallback.
+    Join((u64, u64, Option<FcAggregatedMsg>, Option<u64>)),
 
     /// The receiver changes its flexicast flow.
     /// The first value is the client ID.

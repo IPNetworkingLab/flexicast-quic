@@ -308,6 +308,7 @@ impl UcPath {
                                     max_data,
                                     max_stream_datas,
                                 }),
+                                fc_scheduler.get_last_pn_recv_in_flow(),
                             )))
                             .await?;
 

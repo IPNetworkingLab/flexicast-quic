@@ -273,19 +273,33 @@ impl Connection {
             if !*delegate {
                 continue;
             }
+
+            // Insert inside McAck structure.
+            if let Some(rfc) = self
+                .flexicast
+                .as_mut()
+                .and_then(|fc| fc.fc_reliable.server_mut())
+            {
+                rfc.mc_ack.delegate(
+                    del_stream.stream_id,
+                    del_stream.offset,
+                    del_stream.payload.len() as u64,
+                );
+            }
+
             let is_stream_collected =
                 self.streams.is_collected(del_stream.stream_id);
             // FC-TODO: Woops, won't work if not local stream!
             let stream =
                 match self.get_or_create_stream(del_stream.stream_id, true) {
                     Ok(v) => v,
-                    Err(Error::Done) if is_stream_collected => continue,
+                    Err(Error::Done) if is_stream_collected => {
+                        continue;
+                    },
                     Err(e) => return Err(e),
                 };
 
             let was_flushable = stream.is_flushable();
-
-            // FC-TODO: stream rotation?
 
             let _written = match stream.send.write_at_offset(
                 &del_stream.payload,
@@ -293,8 +307,27 @@ impl Connection {
                 del_stream.fin,
             ) {
                 Ok(v) => v,
-                Err(Error::FinalSize) => continue,
-                Err(e) => return Err(e),
+                Err(Error::FinalSize) => {
+                    // Hack by saying that it is correctly received.
+                    // FC-TODO: will it work?
+                    // Insert inside McAck structure.
+                    if let Some(rfc) = self
+                        .flexicast
+                        .as_mut()
+                        .and_then(|fc| fc.fc_reliable.server_mut())
+                    {
+                        rfc.mc_ack.on_stream_ack_received(
+                            del_stream.stream_id,
+                            del_stream.offset,
+                            del_stream.payload.len() as u64,
+                        );
+                    }
+
+                    continue;
+                },
+                Err(e) => {
+                    return Err(e);
+                },
             };
 
             // Mark the stream as flushable.

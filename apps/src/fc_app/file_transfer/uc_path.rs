@@ -102,7 +102,12 @@ impl UcPathRun for UcPathFileTransfer {
                     self.0.listen_fc_channel = true;
                     self.0
                         .tx_tcl
-                        .send(MsgFcCtl::Join((self.0.client_id, *fc_id as u64, None)))
+                        .send(MsgFcCtl::Join((
+                            self.0.client_id,
+                            *fc_id as u64,
+                            None,
+                            None,
+                        )))
                         .await?;
                 }
             }
@@ -125,6 +130,17 @@ impl UcPathRun for UcPathFileTransfer {
             }
 
             // Sends to QUIC RTP frames that must be sent through unicast.
+            // if !self.0.pending_data.is_empty() {
+            //     info!(
+            //         "Before stream data loop: {:?} for {}",
+            //         self.0
+            //             .pending_data
+            //             .iter()
+            //             .map(|(d, fin, off, sid)| (d.len(), fin, off, sid))
+            //             .collect::<Vec<_>>(),
+            //         self.0.client_id
+            //     );
+            // }
             'stream_data: loop {
                 if let Some((data, fin, off, stream_id)) =
                     self.0.pending_data.iter().next()
@@ -138,18 +154,39 @@ impl UcPathRun for UcPathFileTransfer {
                         },
                     }
 
-                    let (data, stripped_nb) = if let (Some(off), 0) = (off, self.0.pending_data_off) {
-                        let buf_off = self.0.conn.fc_reset_send_off(*stream_id, *off)?;
-                        info!("RESET THE FC SEND OFF stream_id={:?} off={:?}. Off given by quiche: {:?}", stream_id, off, buf_off);
+                    let (data, stripped_nb) = if let (Some(off), 0) =
+                        (off, self.0.pending_data_off)
+                    {
+                        let buf_off =
+                            self.0.conn.fc_reset_send_off(*stream_id, *off)?;
+                        // info!("RESET THE FC SEND OFF stream_id={:?} off={:?}. Off given by quiche: {:?} for {}", stream_id, off, buf_off, self.0.client_id);
 
                         if *off + (data.len() as u64) < buf_off {
-                            (&data[0..0], data.len()) // Empty data. Everything that we could delegate is already received.
+                            // info!("Giving empty data for {}.", self.0.client_id);
+                            (&data[0..0], data.len()) // Empty data. Everything
+                                                      // that we could delegate
+                                                      // is already received.
                         } else {
-                            (&data[buf_off.saturating_sub(*off) as usize..], buf_off.saturating_sub(*off) as usize)
+                            // info!("Giving data after {}. So remaining length={:?}. Offset={:?} for {}", buf_off.saturating_sub(*off), data[buf_off.saturating_sub(*off) as usize..].len(), buf_off, self.0.client_id);
+                            (
+                                &data[buf_off.saturating_sub(*off) as usize..],
+                                buf_off.saturating_sub(*off) as usize,
+                            )
                         }
                     } else {
+                        // info!(
+                        //     "Giving the whole data. {:?} for {}",
+                        //     data.len(),
+                        //     self.0.client_id
+                        // );
                         (data.as_slice(), 0)
                     };
+
+                    if data.len() == 0 {
+                        let _ = self.0.pending_data.drain(0..1);
+                        self.0.pending_data_off = 0;
+                        continue;
+                    }
 
                     let written = match self.0.conn.stream_send(
                         *stream_id,
@@ -161,14 +198,27 @@ impl UcPathRun for UcPathFileTransfer {
                         Err(e) => panic!("Other error: {:?}", e),
                     };
 
-                    debug!("{written} was written on the stream!");
-
-                    if self.0.pending_data_off + written == data.len() {
+                    if self.0.pending_data_off + written >= data.len() {
                         let _ = self.0.pending_data.drain(0..1);
                         self.0.pending_data_off = 0;
+                        // info!(
+                        //     "Draining element and reset pending data for {}",
+                        //     self.0.client_id
+                        // );
                     } else {
                         self.0.pending_data_off += written + stripped_nb;
+                        // info!(
+                        //     "Increasing pending data off by {}. Now={} for {}",
+                        //     written + stripped_nb,
+                        //     self.0.pending_data_off,
+                        //     self.0.client_id
+                        // );
                     }
+
+                    // info!(
+                    //     "Total written: {total_written} for {}",
+                    //     self.0.client_id
+                    // );
                 } else {
                     break;
                 }
