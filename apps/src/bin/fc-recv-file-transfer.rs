@@ -366,7 +366,7 @@ async fn main() {
                                     mc_announce_data.udp_port,
                                 )
                             } else {
-                                let group_ip = if args.proxy_uc || true {
+                                let group_ip = if args.proxy_uc {
                                     "0.0.0.0".parse().unwrap()
                                 } else {
                                     net::Ipv4Addr::from(
@@ -385,7 +385,7 @@ async fn main() {
 
                         let mut mc_socket =
                             mio::net::UdpSocket::bind(mc_group_sockaddr).unwrap();
-                        debug!(
+                        info!(
                             "Multicast client binds on address: {:?}",
                             mc_group_sockaddr
                         );
