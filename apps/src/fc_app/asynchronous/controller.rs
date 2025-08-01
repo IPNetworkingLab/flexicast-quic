@@ -21,6 +21,7 @@ use quiche::flexicast::ack::McStreamOff;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
 use quiche::flexicast::McAnnounceData;
+use quiche::flexicast::MissingRangeSet;
 use tokio;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -44,7 +45,7 @@ pub struct FcController {
 
     /// Mapping between the ID of the flexicast source and the IDs of the
     /// clients. Indexed by the the flexicast source ID.
-    active_clients: Vec<HashSet<u64>>,
+    active_clients: Vec<HashMap<u64, u64>>,
 
     /// Mapping between the ID of the flexicast source and the IDs of the
     /// receivers that need early retransmission.
@@ -142,7 +143,7 @@ impl FcController {
             rx_fc_ctl,
             nb_clients: None,
             tx_clients: HashMap::new(),
-            active_clients: vec![HashSet::new(); mc_announce_data.len()],
+            active_clients: vec![HashMap::new(); mc_announce_data.len()],
             delegated_recv: vec![HashSet::new(); mc_announce_data.len()],
             unicast_recv: HashSet::new(),
             mc_acks: vec![McAck::new(false); mc_announce_data.len()],
@@ -208,21 +209,18 @@ impl FcController {
 
             MsgFcCtl::Join((client_id, fc_chan_id, aggr_msg, max_pn)) => {
                 debug!("New client {client_id} joins flow {fc_chan_id}");
-                let new_insert =
-                    self.active_clients[fc_chan_id as usize].insert(client_id);
+                let pn_drain = max_pn.unwrap_or(0).max(
+                    self.mc_acks[fc_chan_id as usize]
+                        .get_largest_pn()
+                        .unwrap_or(0),
+                );
+                let new_insert = self.active_clients[fc_chan_id as usize]
+                    .insert(client_id, pn_drain + 1);
                 _ = self.unicast_recv.remove(&client_id);
                 _ = self.delegated_recv[fc_chan_id as usize].remove(&client_id);
-                if new_insert {
-                    let pn_drain = match max_pn {
-                        Some(pn) => std::cmp::max(
-                            pn,
-                            self.last_drained_pn[fc_chan_id as usize]
-                                .unwrap_or(0),
-                        ),
-                        None =>
-                            self.last_drained_pn[fc_chan_id as usize].unwrap_or(0),
-                    };
-                    // info!("Insert received {client_id} and indicate that up to {:?} was ok", pn_drain);
+                if new_insert.is_none() {
+                    // info!("Insert received {client_id} and indicate that up to
+                    // {:?} was ok", pn_drain);
                     self.mc_acks[fc_chan_id as usize].new_recv(pn_drain);
                 }
 
@@ -245,15 +243,17 @@ impl FcController {
                 debug!("Client {client_id} changes flow {old_fc_chan_id} -> {new_fc_chan_id}");
                 _ = self.active_clients[old_fc_chan_id as usize]
                     .remove(&client_id);
-                _ = self.active_clients[new_fc_chan_id as usize]
-                    .insert(client_id);
+                todo!();
+                // _ = self.active_clients[new_fc_chan_id as usize]
+                //     .insert(client_id);
             },
 
             MsgFcCtl::NewHighestPn((fc_id, highest_pn, lowest_pn)) => {
                 debug!("New expired packet from {fc_id}: {highest_pn:?} {lowest_pn:?}");
                 self.last_drained_pn[fc_id as usize] =
                     Some(lowest_pn.saturating_sub(1));
-                for client_idx in self.active_clients[fc_id as usize].iter() {
+                for (client_idx, _) in self.active_clients[fc_id as usize].iter()
+                {
                     let msg =
                         MsgRecv::NewHighestPn((fc_id, highest_pn, lowest_pn));
                     send_uc_path!(self, *client_idx, msg);
@@ -263,19 +263,30 @@ impl FcController {
             MsgFcCtl::AckData((
                 recv_id,
                 fc_id,
-                ack_pn,
+                mut ack_pn,
                 ack_stream_pieces,
                 rec_md,
             )) => {
-                // info!("Client {recv_id} acknowledges for flexicast flow {fc_id}: pn={ack_pn:?} and streams={ack_stream_pieces:?}");
-                self.handle_ack_pn_stream_pieces(
-                    recv_id,
-                    fc_id,
-                    ack_pn,
-                    ack_stream_pieces,
-                    rec_md,
-                )
-                .await?;
+                info!(
+                    "Client {recv_id} acknowledges for flexicast flow
+                {fc_id}: pn={ack_pn:?} and streams={ack_stream_pieces:?}. Current mc ack: {:?}", self.mc_acks[fc_id as usize]
+                );
+                if let Some(pn) =
+                    self.active_clients[fc_id as usize].get(&recv_id)
+                {
+                    debug!("Remove until {pn} for this range");
+                    if *pn > 0 {
+                        ack_pn.as_mut().map(|rs| rs.remove_until(*pn - 1));
+                    }
+                    self.handle_ack_pn_stream_pieces(
+                        recv_id,
+                        fc_id,
+                        ack_pn,
+                        ack_stream_pieces,
+                        rec_md,
+                    )
+                    .await?;
+                }
             },
 
             MsgFcCtl::Sent((fc_id, sent)) => {
@@ -309,7 +320,9 @@ impl FcController {
                 self.app_data.extend_from_slice(&data);
 
                 let index = min_off.saturating_sub(self.app_data_min_off);
-                // info!("WE GET INFO FROM FC FLOW: stream_id={stream_id}, fin={fin}, min_off={min_off} while app_data_min_off={:?}", self.app_data_min_off);
+                // info!("WE GET INFO FROM FC FLOW: stream_id={stream_id},
+                // fin={fin}, min_off={min_off} while app_data_min_off={:?}",
+                // self.app_data_min_off);
                 if index > 0 {
                     self.app_data = self.app_data.split_off(index as usize);
                     self.app_data_min_off = min_off;
@@ -318,7 +331,8 @@ impl FcController {
                 self.app_data_fin = fin;
                 self.app_data_stream_id = stream_id;
 
-                // info!("Send to UC path: stream_id={stream_id}, fin={fin}, len={}, off={min_off}", data.len());
+                // info!("Send to UC path: stream_id={stream_id}, fin={fin},
+                // len={}, off={min_off}", data.len());
 
                 for recv_id in self.unicast_recv.iter() {
                     let msg =
@@ -328,18 +342,34 @@ impl FcController {
             },
 
             MsgFcCtl::RecvUcFallBack((id, fc_chan_id)) => {
-                // info!("Before fall back of receiver: {id}, this is the state of the McAck: {:?}", self.mc_acks[fc_chan_id as usize]);
+                debug!(
+                    "Before fall back of receiver: {id}, this is the state of
+                the McAck: {:?}",
+                    self.mc_acks[fc_chan_id as usize]
+                );
                 _ = self.active_clients[fc_chan_id as usize].remove(&id);
                 _ = self.unicast_recv.insert(id);
                 // _ = self.delegated_recv[fc_chan_id as usize].insert(id);
                 // FC-TODO: remove the receiver from the mc_acks!
                 self.mc_acks[fc_chan_id as usize].remove_recv();
 
+                if let Some(acks_) = self.recv_ack.get(&id) {
+                    let largest_pn =
+                        self.mc_acks[fc_chan_id as usize].get_largest_pn();
+                    if let Some(largest) = largest_pn {
+                        let missing = acks_.get_missing_up_to(largest);
+                        debug!("UC FB. Hack for {} missing: {:?}", id, missing);
+                        self.mc_acks[fc_chan_id as usize]
+                            .on_ack_received(&missing);
+                    }
+                }
+
                 // And potentially "ack" stream pieces delegated to this receiver
                 // because we will fall back on unicast for this receiver.
                 if let Some(recv_del) = self.delegated_streams.get_mut(&id) {
                     for (stream_id, off, len) in recv_del.drain() {
-                        // info!("During fallback {}. on_stream_ack_received: id={}, off={}, len={}", id, stream_id, off, len);
+                        // info!("During fallback {}. on_stream_ack_received:
+                        // id={}, off={}, len={}", id, stream_id, off, len);
                         self.mc_acks[fc_chan_id as usize]
                             .on_stream_ack_received(stream_id, off, len);
                     }
@@ -355,18 +385,11 @@ impl FcController {
                 ));
                 send_uc_path!(self, id, msg);
 
-                // info!("After fall back of receiver: {id}, this is the state of the McAck: {:?}", self.mc_acks[fc_chan_id as usize]);
-
-                // let msg = MsgFcSource::AskStreamPieces;
-                // self.tx_fc_sources[fc_chan_id as usize].send(msg).await?;
-
-                // // Potentially have updates concerning the flow control now
-                // that a receiver left. let out = self.
-                // fc_aggregator.remove_recv(id)?;
-                // if let Some(out) = out {
-                //     let msg = MsgFcSource::AggregatedInfo(out);
-                //     self.tx_fc_sources[fc_chan_id as usize].send(msg).await?;
-                // }
+                debug!(
+                    "After fall back of receiver: {id}, this is the state
+                of the McAck: {:?}",
+                    self.mc_acks[fc_chan_id as usize]
+                );
             },
 
             MsgFcCtl::PerUcRetransmission((fc_id, recv_id, lost_pn)) => {
@@ -389,6 +412,9 @@ impl FcController {
 
             MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) =>
                 self.on_new_aggr_msg(recv_id, fc_id, aggr_info).await?,
+
+            MsgFcCtl::CollectRecv((recv_id, fc_id)) =>
+                self.on_collect_recv(recv_id, fc_id)?,
         }
 
         Ok(())
@@ -401,7 +427,7 @@ impl FcController {
     async fn send_close_rtp(&mut self, id: u64) -> Result<()> {
         debug!("Close RTP {id}");
         if let Some(group) = self.active_clients.get(id as usize) {
-            for &id_client in group.iter() {
+            for (&id_client, _) in group.iter() {
                 send_uc_path!(self, id_client, MsgRecv::CloseRtp);
                 self.nb_clients = self.nb_clients.map(|n| n.saturating_sub(1));
             }
@@ -497,7 +523,7 @@ impl FcController {
     async fn handle_sent_pkt(
         &mut self, fc_id: u64, sent: Arc<Vec<OpenSent>>,
     ) -> Result<()> {
-        for &client_id in self.active_clients[fc_id as usize].iter() {
+        for (&client_id, _) in self.active_clients[fc_id as usize].iter() {
             let msg = MsgRecv::Sent((fc_id, sent.clone()));
             send_uc_path!(self, client_id, msg);
         }
@@ -515,6 +541,10 @@ impl FcController {
         // Avoid retransmitting frames that may not be lost if this is an early
         // retransmit.
         let _hs = HashSet::new();
+        let iter_set: HashSet<u64> = self.active_clients[fc_id as usize]
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
         let iter = if early_retransmit {
             debug!("DOING EARLY RETRANSMIT ONLY: {:?}", delegated_streams.len());
             self.delegated_recv[fc_id as usize].iter().chain(_hs.iter())
@@ -522,7 +552,7 @@ impl FcController {
             debug!("DOING LOSS RETRANSMIT: {:?}", delegated_streams.len());
             self.delegated_recv[fc_id as usize]
                 .iter()
-                .chain(self.active_clients[fc_id as usize].iter())
+                .chain(iter_set.iter())
         };
 
         // There is a rare case where the flexicast flow delegates stream pieces
@@ -583,7 +613,9 @@ impl FcController {
 
                     if !early_retransmit {
                         // Lost packet on this client, so we mark to delegate it.
-                        // info!("Delegates id={}, off={}, len={} to {}", delegated_piece.stream_id, delegated_piece.offset, delegated_piece.payload.len(), client_id);
+                        // info!("Delegates id={}, off={}, len={} to {}",
+                        // delegated_piece.stream_id, delegated_piece.offset,
+                        // delegated_piece.payload.len(), client_id);
                         self.mc_acks[fc_id as usize].delegate(
                             delegated_piece.stream_id,
                             delegated_piece.offset,
@@ -766,6 +798,33 @@ impl FcController {
             let msg = MsgFcSource::AggregatedInfo(aggr_out);
             self.tx_fc_sources[fc_id as usize].send(msg).await?;
         }
+
+        Ok(())
+    }
+
+    /// Handles a collect from a receiver.
+    /// Internally removes all state related to this receiver.
+    fn on_collect_recv(&mut self, recv_id: u64, fc_id: u64) -> Result<()> {
+        debug!("Collect {recv_id} for FC flow {fc_id}");
+        let value = self.active_clients[fc_id as usize].remove(&recv_id);
+        if value.is_some() {
+            self.mc_acks[fc_id as usize].remove_recv();
+        }
+
+        // And potentially "ack" stream pieces delegated to this receiver
+        // because we will fall back on unicast for this receiver.
+        if let Some(recv_del) = self.delegated_streams.get_mut(&recv_id) {
+            for (stream_id, off, len) in recv_del.drain() {
+                self.mc_acks[fc_id as usize]
+                    .on_stream_ack_received(stream_id, off, len);
+            }
+        }
+        _ = self.delegated_streams.remove(&recv_id);
+        _ = self.tx_clients.remove(&recv_id);
+        _ = self.unicast_recv.remove(&recv_id);
+        _ = self.recv_ack.remove(&recv_id);
+        _ = self.rec_fec_md.remove(&recv_id);
+        self.nb_clients = self.nb_clients.map(|nb| nb.saturating_sub(1));
 
         Ok(())
     }

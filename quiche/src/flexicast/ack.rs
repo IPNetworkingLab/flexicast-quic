@@ -127,19 +127,19 @@ impl McAck {
 
     /// Get largest packet number that is still in the queue.
     pub fn get_largest_pn(&self) -> Option<u64> {
-        self.largest_pn
+        self.acked.last_key_value().map(|(pn, _)| *pn)
     }
 
     /// Adds a new receiver to the structure.
     /// This will "simulate" the fact that the new receiver ACKed all packets
     /// before `first_pn`.
     pub fn new_recv(&mut self, first_pn: u64) {
-        for (&pn, nb) in self.acked.iter_mut() {
+        for (&pn, _nb) in self.acked.iter_mut() {
             if pn >= first_pn {
                 break;
             }
 
-            *nb += 1;
+            // *nb = (*nb).saturating_sub(1);
         }
 
         self.nb_recv += 1;
@@ -149,7 +149,7 @@ impl McAck {
     /// FC-TODO: this may break things...
     pub fn remove_recv(&mut self) {
         warn!("Removing a receiver from the MC ACK. May break things.");
-        self.nb_recv -= 1;
+        self.nb_recv = self.nb_recv.saturating_sub(1);
     }
 
     /// Adds a new ACK from a client. Assumes that this is the first time the
@@ -196,15 +196,15 @@ impl McAck {
             for recv_pn in range {
                 let nb_recv_opt = self.acked.get_mut(&recv_pn);
                 let new_nb = if let Some(nb_recv) = nb_recv_opt {
-                    *nb_recv += 1;
+                    *nb_recv = (*nb_recv).saturating_sub(1);
                     *nb_recv
                 } else {
                     // The first receiver to ACK this packet.
-                    self.acked.insert(recv_pn, 1);
-                    1
+                    self.acked.insert(recv_pn, self.nb_recv.saturating_sub(1));
+                    self.nb_recv.saturating_sub(1)
                 };
 
-                if new_nb == self.nb_recv {
+                if new_nb == 0 {
                     // Not opti at all.
                     fully_range.insert(recv_pn..recv_pn + 1);
 

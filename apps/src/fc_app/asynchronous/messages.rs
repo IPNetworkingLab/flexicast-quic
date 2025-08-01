@@ -105,6 +105,12 @@ pub enum MsgFcCtl {
 
     /// New aggregated control data from this receiver.
     AggregatedInfo((u64, u64, FcAggregatedMsg)),
+
+    /// Collect the receiver information.
+    /// This occurs when the unicast path with the receiver is closed.
+    /// The first value is the ID of the receiver.
+    /// The second value is the flexicast flow ID.
+    CollectRecv((u64, u64)),
 }
 
 /// Messages sent to the receiver.

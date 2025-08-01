@@ -1492,6 +1492,9 @@ pub trait MissingRangeSet {
 
     /// Returns the number of elements in the RangeSet.
     fn nb_elements(&self) -> usize;
+
+    /// Returns a RangeSet containing the number missing in the RangeSet up to.
+    fn get_missing_up_to(&self, pn: u64) -> Self;
 }
 
 impl MissingRangeSet for ranges::RangeSet {
@@ -1515,6 +1518,13 @@ impl MissingRangeSet for ranges::RangeSet {
 
     fn nb_elements(&self) -> usize {
         self.flatten().collect::<Vec<_>>().len()
+    }
+
+    fn get_missing_up_to(&self, pn: u64) -> Self {
+        let mut new_range = self.clone();
+        new_range.insert(pn..pn + 1);
+
+        new_range.get_missing()
     }
 }
 

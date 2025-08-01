@@ -158,16 +158,26 @@ impl UcPathRun for UcPathFileTransfer {
                         (off, self.0.pending_data_off)
                     {
                         let buf_off =
-                            self.0.conn.fc_reset_send_off(*stream_id, *off)?;
-                        // info!("RESET THE FC SEND OFF stream_id={:?} off={:?}. Off given by quiche: {:?} for {}", stream_id, off, buf_off, self.0.client_id);
+                            self.0.conn.fc_reset_send_off(*stream_id, *off).map_err(|e| {
+                                debug!("Error reset send off: {e:?}");
+                                e
+                            })?;
+                        // info!("RESET THE FC SEND OFF stream_id={:?} off={:?}.
+                        // Off given by quiche: {:?} for {}", stream_id, off,
+                        // buf_off, self.0.client_id);
 
                         if *off + (data.len() as u64) < buf_off {
-                            // info!("Giving empty data for {}.", self.0.client_id);
+                            // info!("Giving empty data for {}.",
+                            // self.0.client_id);
                             (&data[0..0], data.len()) // Empty data. Everything
                                                       // that we could delegate
                                                       // is already received.
                         } else {
-                            // info!("Giving data after {}. So remaining length={:?}. Offset={:?} for {}", buf_off.saturating_sub(*off), data[buf_off.saturating_sub(*off) as usize..].len(), buf_off, self.0.client_id);
+                            // info!("Giving data after {}. So remaining
+                            // length={:?}. Offset={:?} for {}",
+                            // buf_off.saturating_sub(*off),
+                            // data[buf_off.saturating_sub(*off) as
+                            // usize..].len(), buf_off, self.0.client_id);
                             (
                                 &data[buf_off.saturating_sub(*off) as usize..],
                                 buf_off.saturating_sub(*off) as usize,
@@ -208,11 +218,11 @@ impl UcPathRun for UcPathFileTransfer {
                     } else {
                         self.0.pending_data_off += written + stripped_nb;
                         // info!(
-                        //     "Increasing pending data off by {}. Now={} for {}",
-                        //     written + stripped_nb,
-                        //     self.0.pending_data_off,
-                        //     self.0.client_id
-                        // );
+                        //     "Increasing pending data off by {}. Now={} for
+                        // {}",     written +
+                        // stripped_nb,     self.0.
+                        // pending_data_off,     self.0.
+                        // client_id );
                     }
 
                     // info!(
@@ -257,11 +267,20 @@ impl UcPathRun for UcPathFileTransfer {
                     self.0.conn.trace_id(),
                     self.0.conn.stats(),
                 );
+
+                if let Some(fc_id) = fc_chan_id {
+                    let msg = MsgFcCtl::CollectRecv((self.0.client_id, fc_id));
+                    self.0.tx_tcl.send(msg).await?;
+                }
+
                 break;
             }
 
             // Send control information to the controller.
-            self.0.send_ctl_info().await?;
+            if let Err(e) = self.0.send_ctl_info().await {
+                debug!("Error when sending control info for {}: {:?}", self.0.client_id, e);
+                return Err(e);
+            }
 
             // Force an unlimited window if asked.
             if self.0.unlimited_cwnd {

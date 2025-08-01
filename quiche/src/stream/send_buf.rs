@@ -535,13 +535,25 @@ impl SendBuf {
         // We "fill" the buffer with no data until we reach the expected offset.
         // This "no data" is never sent, and we ask to retransmit this chunk of
         // data only.
-        if self.off > offset {
-            return Err(Error::FinalSize);
-        } else if self.off != offset {
-            self.reset_at(offset)?;
-        }
-        let written = self.write(data, fin)?;
-        self.retransmit(offset, written);
+        let (data_adjusted, off_adjusted) =
+            if self.off > offset + data.len() as u64 {
+                // Exception 1: we attempt to write a buffer below the current
+                // offset, i.e., duplicate write.
+                return Err(Error::FinalSize);
+            } else if self.off > offset {
+                // Exception 2: part of the data is already buffered. Cut it to
+                // write remaining data. It is contiguous.
+                let cut = self.off.saturating_sub(offset);
+                debug!("write_at_offset. Cut the data from {offset} to {}", self.off);
+                (&data[cut as usize..], self.off)
+            } else if self.off != offset {
+                self.reset_at(offset)?;
+                (data, offset)
+            } else {
+                (data, offset)
+            };
+        let written = self.write(data_adjusted, fin)?;
+        self.retransmit(off_adjusted, written);
 
         Ok(written)
     }
@@ -894,20 +906,22 @@ mod tests {
         assert_eq!(&buf[..8], b", world!");
 
         assert_eq!(send.write_at_offset(b"test1000", 1000, false), Ok(8));
+        // Will write "est1000+8".
         assert_eq!(
             send.write_at_offset(b"test1000+8", 1007, false),
-            Err(Error::FinalSize)
+            Ok(9),
         );
-        assert_eq!(send.write_at_offset(b"test1000+8", 1008, false), Ok(10));
+        // Will write "8".
+        assert_eq!(send.write_at_offset(b"test1000+8", 1008, false), Ok(1));
         assert_eq!(
-            send.write_at_offset(b"test1000+8", 1017, false),
+            send.write_at_offset(b"test1000+8", 1005, false),
             Err(Error::FinalSize)
         );
         assert_eq!(send.write_at_offset(b"test1000+1xx", 1100, true), Ok(12));
         assert_eq!(send.emit(&mut buf), Ok((10, false)));
-        assert_eq!(&buf[..], b"test1000te");
+        assert_eq!(&buf[..], b"test1000es");
         assert_eq!(send.emit(&mut buf), Ok((8, false)));
-        assert_eq!(&buf[..8], b"st1000+8");
+        assert_eq!(&buf[..8], b"t1000+88");
         assert_eq!(send.emit(&mut buf), Ok((10, false)));
         assert_eq!(&buf[..], b"test1000+1");
         assert_eq!(send.emit(&mut buf), Ok((2, true)));
