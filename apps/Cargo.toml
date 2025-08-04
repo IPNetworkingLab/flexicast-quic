@@ -24,6 +24,9 @@ sfv = ["quiche/sfv"]
 
 default = ["qlog", "sfv"]
 
+# Enable tokio tracing
+tokio-tracing = ["tokio/tracing"]
+
 [dependencies]
 docopt = "1"
 env_logger = { workspace = true }
@@ -38,7 +41,9 @@ url = { workspace = true }
 slab = "0.4"
 itertools = "0.10"
 clap = { version = "4.1", features = ["derive"] }
-tokio = { version = "1.40.0", features = ["full"] }
+tokio = { version = "1.40.0", features = ["full", "tracing"] }
+tokio-metrics = { version = "0.4.3" }
+chrono = "0.4.41"
 
 [lib]
 crate-type = ["lib"]

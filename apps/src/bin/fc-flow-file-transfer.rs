@@ -45,6 +45,15 @@ use quiche_apps::fc_app::asynchronous::sendmmsg::SendMMsg;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 
+#[cfg(feature = "tokio-tracing")]
+use std::fs::OpenOptions;
+#[cfg(feature = "tokio-tracing")]
+use std::io::Write;
+#[cfg(feature = "tokio-tracing")]
+use std::time;
+#[cfg(feature = "tokio-tracing")]
+use tokio_metrics::TaskMonitor;
+
 const MAX_DATAGRAM_SIZE: usize = 1350;
 const CHANNEL_BUFFER_SIZE: usize = 100;
 
@@ -158,7 +167,36 @@ struct Args {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 5)]
 async fn main() {
-    env_logger::builder().format_timestamp_nanos().init();
+    // This will create a monitor for the *whole* application.
+    #[cfg(feature = "tokio-tracing")]
+    let start = time::Instant::now();
+    #[cfg(feature = "tokio-tracing")]
+    let frequency = std::time::Duration::from_millis(200);
+    #[cfg(feature = "tokio-tracing")]
+    {
+        let handle: tokio::runtime::Handle = tokio::runtime::Handle::current();
+        let runtime_monitor = tokio_metrics::RuntimeMonitor::new(&handle);
+        tokio::spawn(async move {
+            for metrics in runtime_monitor.intervals() {
+                let mut file = OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("tokio_total.log")
+                    .unwrap();
+
+                writeln!(
+                    file,
+                    "{:?} {:?}",
+                    time::Instant::now().duration_since(start).as_millis(),
+                    metrics
+                )
+                .unwrap();
+                tokio::time::sleep(frequency).await;
+            }
+        });
+    }
+
+    // env_logger::builder().format_timestamp_nanos().init();
     let mut buf = [0; 65535];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -256,6 +294,32 @@ async fn main() {
         None
     };
 
+    // Create flexicast flow monitor.
+    #[cfg(feature = "tokio-tracing")]
+    let monitor_flow = TaskMonitor::new();
+    #[cfg(feature = "tokio-tracing")]
+    {
+        let monitor_flow_clone = monitor_flow.clone();
+        tokio::spawn(async move {
+            for metrics in monitor_flow_clone.intervals() {
+                let mut file = OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("tokio_flow.log")
+                    .unwrap();
+
+                writeln!(
+                    file,
+                    "{:?} {:?}",
+                    time::Instant::now().duration_since(start).as_millis(),
+                    metrics
+                )
+                .unwrap();
+                tokio::time::sleep(frequency).await;
+            }
+        });
+    }
+
     // Spawn tokio tasks for the flexicast channel(s).
     let mut id_fc_chan = 0;
     for fc_chan_info in fc_channels.drain(..) {
@@ -303,6 +367,17 @@ async fn main() {
                 dir_path: dir_path_video.to_string(),
             };
 
+            #[cfg(feature = "tokio-tracing")]
+            {
+                let monitor_flow = monitor_flow.clone();
+                tokio::spawn(async move {
+                    monitor_flow
+                        .instrument(fc_video_stream.run())
+                        .await
+                        .unwrap();
+                });
+            }
+            #[cfg(not(feature = "tokio-tracing"))]
             tokio::spawn(async move {
                 fc_video_stream.run().await.unwrap();
             });
@@ -310,6 +385,17 @@ async fn main() {
             // Create the file transfer structure.
             let mut fc_file_transfer = FcFlowfileTransfer { 0: fc_struct };
 
+            #[cfg(feature = "tokio-tracing")]
+            {
+                let monitor_flow = monitor_flow.clone();
+                tokio::spawn(async move {
+                    monitor_flow
+                        .instrument(fc_file_transfer.run())
+                        .await
+                        .unwrap();
+                });
+            }
+            #[cfg(not(feature = "tokio-tracing"))]
             tokio::spawn(async move {
                 fc_file_transfer.run().await.unwrap();
             });
@@ -329,9 +415,44 @@ async fn main() {
         args.ctl_ack_delay
             .map(|d| std::time::Duration::from_millis(d)),
     );
-    tokio::spawn(async move {
-        controller.run().await.unwrap();
-    });
+
+    // Create controller monitor.
+    #[cfg(feature = "tokio-tracing")]
+    {
+        let monitor_controller = TaskMonitor::new();
+        let monitor_controller_clone = monitor_controller.clone();
+        tokio::spawn(async move {
+            for metrics in monitor_controller_clone.intervals() {
+                let mut file = OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("tokio_controller.log")
+                    .unwrap();
+
+                writeln!(
+                    file,
+                    "{:?} {:?}",
+                    time::Instant::now().duration_since(start).as_millis(),
+                    metrics
+                )
+                .unwrap();
+                tokio::time::sleep(frequency).await;
+            }
+        });
+        tokio::spawn(async move {
+            monitor_controller
+                .instrument(controller.run())
+                .await
+                .unwrap();
+        });
+    }
+
+    #[cfg(not(feature = "tokio-tracing"))]
+    {
+        tokio::spawn(async move {
+            controller.run().await.unwrap();
+        });
+    }
 
     // All the transmission channels for the client.
     let mut clients_tx: Vec<mpsc::Sender<MsgRecv>> = Vec::new();
@@ -342,6 +463,32 @@ async fn main() {
     // Timer once all receivers and flexicast flows stopped.
     let mut end_time: Option<std::time::Instant> = None;
     let end_sleep = std::time::Duration::from_secs(5);
+
+    // Create receiver monitor.
+    #[cfg(feature = "tokio-tracing")]
+    let monitor_recv = TaskMonitor::new();
+    #[cfg(feature = "tokio-tracing")]
+    {
+        let monitor_recv_clone = monitor_recv.clone();
+        tokio::spawn(async move {
+            for metrics in monitor_recv_clone.intervals() {
+                let mut file = OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("tokio_recv.log")
+                    .unwrap();
+
+                writeln!(
+                    file,
+                    "{:?} {:?}",
+                    time::Instant::now().duration_since(start).as_millis(),
+                    metrics
+                )
+                .unwrap();
+                tokio::time::sleep(frequency).await;
+            }
+        });
+    }
 
     // Listens to incoming connections from new clients.
     loop {
@@ -633,9 +780,19 @@ async fn main() {
 
         let mut uc_path = UcPathFileTransfer { 0: client };
 
-        tokio::spawn(async move {
-            uc_path.run().await.unwrap();
-        });
+        #[cfg(feature = "tokio-tracing")]
+        {
+            let monitor_recv = monitor_recv.clone();
+            tokio::spawn(async move {
+                monitor_recv.instrument(uc_path.run()).await.unwrap();
+            });
+        }
+        #[cfg(not(feature = "tokio-tracing"))]
+        {
+            tokio::spawn(async move {
+                uc_path.run().await.unwrap();
+            });
+        }
     }
 
     println!("Finishing!");
