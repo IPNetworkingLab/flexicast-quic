@@ -211,7 +211,7 @@ impl FcController {
             },
 
             MsgFcCtl::NewHighestPn((fc_id, highest_pn, lowest_pn)) => {
-                debug!("New expired packet from {fc_id}: {highest_pn:?} {lowest_pn:?}");
+                debug!("{}: New expired packet from {fc_id}: {highest_pn:?} {lowest_pn:?}", self.controller_role.name());
                 self.on_new_highest_pn(fc_id, highest_pn, lowest_pn).await?;
             },
 
@@ -242,7 +242,8 @@ impl FcController {
                 early_retransmit,
             )) => {
                 debug!(
-                    "Flexicast source delegated streams: {:?}",
+                    "{} Flexicast source delegated streams: {:?}",
+                    self.controller_role.name(),
                     delegated_streams.len()
                 );
                 self.handle_delegated_streams(
@@ -254,7 +255,7 @@ impl FcController {
             },
 
             MsgFcCtl::RecvReady(id) => {
-                debug!("New ready client {id}");
+                debug!("{} New ready client {id}", self.controller_role.name());
                 self.handle_new_ready(id).await?;
             },
 
@@ -311,22 +312,25 @@ impl FcController {
                 }
 
                 debug!(
-                    "Before fall back of receiver: {id}, this is the state of
+                    "{} Before fall back of receiver: {id}, this is the state of
                 the McAck: {:?}",
+                    self.controller_role.name(),
                     self.mc_acks[fc_chan_id as usize]
                 );
-                _ = self.active_clients[fc_chan_id as usize].remove(&id);
+                let pn_drain = self.active_clients[fc_chan_id as usize].remove(&id);
                 _ = self.unicast_recv.insert(id);
                 // _ = self.delegated_recv[fc_chan_id as usize].insert(id);
-                // FC-TODO: remove the receiver from the mc_acks!
-                self.mc_acks[fc_chan_id as usize].remove_recv();
 
                 if let Some(acks_) = self.recv_ack.get(&id) {
                     let largest_pn =
                         self.mc_acks[fc_chan_id as usize].get_largest_pn();
                     if let Some(largest) = largest_pn {
-                        let missing = acks_.get_missing_up_to(largest);
-                        debug!("UC FB. Hack for {} missing: {:?}", id, missing);
+                        let mut missing = acks_.get_missing_up_to(largest);
+                        // Also remove older, out of interest, values!
+                        if let Some(pn) = pn_drain {
+                            missing.remove_until(pn - 1);
+                        }
+                        debug!("{} UC FB. Hack for {} missing: {:?}", self.controller_role.name(), id, missing);
                         self.mc_acks[fc_chan_id as usize]
                             .on_ack_received(&missing);
                     }
@@ -343,6 +347,8 @@ impl FcController {
                     }
                 }
 
+                self.mc_acks[fc_chan_id as usize].remove_recv();
+
                 // Instead of asking for a retransmission, we give the stream data
                 // directly.
                 let msg = MsgRecv::StreamData((
@@ -354,8 +360,9 @@ impl FcController {
                 send_uc_path!(self, id, msg);
 
                 debug!(
-                    "After fall back of receiver: {id}, this is the state
+                    "{} After fall back of receiver: {id}, this is the state
                 of the McAck: {:?}",
+                    self.controller_role.name(),
                     self.mc_acks[fc_chan_id as usize]
                 );
 
@@ -367,7 +374,7 @@ impl FcController {
             },
 
             MsgFcCtl::CollectRecv((recv_id, fc_id)) => {
-                self.on_collect_recv(recv_id, fc_id)?
+                self.on_collect_recv(recv_id, fc_id).await?
             },
         }
 
@@ -551,10 +558,13 @@ impl FcController {
         let mut delegated_once = vec![false; delegated_streams.len()];
 
         for &client_id in iter {
+            if !self.recv_ack.contains_key(&client_id) {
+                continue;
+            }
             let client_ack: HashSet<u64> =
                 self.recv_ack.get(&client_id).unwrap().flatten().collect();
             let recv_rec_fec_md: HashSet<u64> =
-                self.rec_fec_md.get(&client_id).unwrap().flatten().collect();
+                self.rec_fec_md.get(&client_id).unwrap_or(&OpenRangeSet::default()).flatten().collect();
 
             // Get the entry for this receiver.
             let delegated_entry = match self.delegated_streams.entry(client_id) {
@@ -865,8 +875,8 @@ impl FcController {
 
     /// Handles a collect from a receiver.
     /// Internally removes all state related to this receiver.
-    fn on_collect_recv(&mut self, recv_id: u64, fc_id: u64) -> Result<()> {
-        debug!("Collect {recv_id} for FC flow {fc_id}");
+    async fn on_collect_recv(&mut self, recv_id: u64, fc_id: u64) -> Result<()> {
+        debug!("{} Collect {recv_id} for FC flow {fc_id}", self.controller_role.name());
         let value = self.active_clients[fc_id as usize].remove(&recv_id);
         if value.is_some() {
             self.mc_acks[fc_id as usize].remove_recv();
@@ -888,6 +898,15 @@ impl FcController {
         match &mut self.controller_role {
             ControllerRole::Leaf(leaf) => _ = leaf.tx_down.remove(&recv_id),
             ControllerRole::Root(root) => _ = root.tx_down.remove(&recv_id),
+        }
+
+        // If this is a leaf and there is no more receiver, indicate it to the root.
+        if self.nb_clients == Some(0) {
+            if let ControllerRole::Leaf(leaf) = &self.controller_role {
+                debug!("{} sends CollectRecv to root", self.controller_role.name());
+                let msg = MsgFcCtl::CollectRecv((leaf.leaf_id, fc_id));
+                leaf.tx_up.send(msg).await?;
+            }
         }
 
         Ok(())
@@ -1044,7 +1063,7 @@ impl FcController {
         );
 
         if let Some(pn) = self.active_clients[fc_id as usize].get(&recv_id) {
-            debug!("Remove until {pn} for this range");
+            debug!("{} Remove until {pn} for this range", self.controller_role.name());
             if *pn > 0 {
                 ack_pn.as_mut().map(|rs| rs.remove_until(*pn - 1));
             }

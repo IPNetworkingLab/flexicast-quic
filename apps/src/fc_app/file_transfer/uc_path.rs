@@ -158,7 +158,7 @@ impl UcPathRun for UcPathFileTransfer {
                     {
                         let buf_off =
                             self.0.conn.fc_reset_send_off(*stream_id, *off).map_err(|e| {
-                                debug!("Error reset send off: {e:?}");
+                                debug!("{} Error reset send off: {e:?}", self.0.client_id);
                                 e
                             })?;
                         // info!("RESET THE FC SEND OFF stream_id={:?} off={:?}.

@@ -448,7 +448,7 @@ impl Connection {
     /// retransmit a whole chunk of data.
     pub fn fc_reset_send_off(&mut self, stream_id: u64, off: u64) -> Result<u64> {
         if !self.flexicast.as_ref().is_some_and(|fc| {
-            fc.get_mc_role() == McRole::ServerUnicast(McClientStatus::UcFallBack)
+            matches!(fc.get_mc_role(), McRole::ServerUnicast(_))
         }) {
             return Err(Error::Flexicast(FcError::McInvalidRole(
                 McRole::Undefined,
