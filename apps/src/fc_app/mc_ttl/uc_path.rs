@@ -1,4 +1,3 @@
-use crate::fc_app::asynchronous::controller::optional_timeout;
 use crate::fc_app::asynchronous::messages::MsgFcCtl;
 use crate::fc_app::asynchronous::uc::UcPath;
 use crate::fc_app::asynchronous::uc::UcPathRun;
@@ -8,6 +7,7 @@ use quiche::flexicast::McClientStatus;
 use quiche::flexicast::McRole;
 use std::convert::TryInto;
 use tokio::sync::mpsc;
+use std::time;
 
 use super::FcTtlMsg;
 
@@ -146,5 +146,19 @@ impl UcPathRun for UcPathTtl {
         }
 
         Ok(())
+    }
+}
+
+pub async fn optional_timeout(
+    timeout: Option<std::time::Duration>,
+) -> Option<()> {
+    match timeout {
+        Some(t) => {
+            if t != time::Duration::ZERO {
+                tokio::time::sleep(t).await;
+            }
+            Some(())
+        },
+        None => None,
     }
 }

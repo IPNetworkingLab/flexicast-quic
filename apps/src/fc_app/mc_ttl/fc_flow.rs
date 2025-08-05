@@ -1,6 +1,5 @@
 use super::FcTtlMsg;
 use crate::fc_app::asynchronous;
-use crate::fc_app::asynchronous::controller::optional_timeout;
 use crate::fc_app::asynchronous::fc::FcChannelAsync;
 use crate::fc_app::asynchronous::fc::FcFlowRun;
 use std::time;
@@ -115,5 +114,19 @@ impl FcFlowRun for FcFlowTtl {
                 .channel
                 .fc_set_flow_cwnd(usize::MAX - 1000);
         }
+    }
+}
+
+pub async fn optional_timeout(
+    timeout: Option<std::time::Duration>,
+) -> Option<()> {
+    match timeout {
+        Some(t) => {
+            if t != time::Duration::ZERO {
+                tokio::time::sleep(t).await;
+            }
+            Some(())
+        },
+        None => None,
     }
 }

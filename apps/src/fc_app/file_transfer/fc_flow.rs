@@ -1,5 +1,4 @@
 use crate::fc_app::asynchronous;
-use crate::fc_app::asynchronous::controller::optional_timeout;
 use crate::fc_app::asynchronous::fc::conditional_wait_on_app;
 use crate::fc_app::asynchronous::fc::FcChannelAsync;
 use crate::fc_app::asynchronous::fc::FcFlowRun;
@@ -330,5 +329,19 @@ impl FcFlowRun for FcFlowfileTransfer {
         }
 
         Ok(())
+    }
+}
+
+pub async fn optional_timeout(
+    timeout: Option<std::time::Duration>,
+) -> Option<()> {
+    match timeout {
+        Some(t) => {
+            if t != time::Duration::ZERO {
+                tokio::time::sleep(t).await;
+            }
+            Some(())
+        },
+        None => None,
     }
 }

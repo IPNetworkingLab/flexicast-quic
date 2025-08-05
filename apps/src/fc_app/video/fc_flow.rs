@@ -7,7 +7,6 @@ use quiche::flexicast::reliable::FcUnicastRetransmission;
 use tokio::sync::mpsc;
 
 use crate::fc_app::asynchronous;
-use crate::fc_app::asynchronous::controller::optional_timeout;
 use crate::fc_app::asynchronous::fc::FcChannelAsync;
 use crate::fc_app::asynchronous::fc::FcFlowRun;
 use crate::fc_app::asynchronous::messages::MsgFcCtl;
@@ -275,5 +274,19 @@ async fn conditional_wait_on_app(
         rx_app.recv().await
     } else {
         None
+    }
+}
+
+pub async fn optional_timeout(
+    timeout: Option<std::time::Duration>,
+) -> Option<()> {
+    match timeout {
+        Some(t) => {
+            if t != time::Duration::ZERO {
+                tokio::time::sleep(t).await;
+            }
+            Some(())
+        },
+        None => None,
     }
 }

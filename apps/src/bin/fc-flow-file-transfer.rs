@@ -16,7 +16,6 @@ use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McConfig;
 use quiche::CongestionControlAlgorithm;
 use quiche_apps::fc_app::asynchronous::controller::handle_msg;
-use quiche_apps::fc_app::asynchronous::controller::optional_timeout;
 use quiche_apps::fc_app::asynchronous::fc::FcChannelInfo;
 use quiche_apps::fc_app::asynchronous::fc::FcFlowRun;
 use quiche_apps::fc_app::asynchronous::messages::*;
@@ -168,6 +167,8 @@ struct Args {
 #[tokio::main(flavor = "multi_thread", worker_threads = 5)]
 async fn main() {
     // This will create a monitor for the *whole* application.
+    #[cfg(feature = "tokio-tracing")]
+    console_subscriber::init();
     #[cfg(feature = "tokio-tracing")]
     let start = time::Instant::now();
     #[cfg(feature = "tokio-tracing")]
@@ -1033,4 +1034,18 @@ fn validate_token<'a>(
     }
 
     Some(quiche::ConnectionId::from_ref(&token[addr.len()..]))
+}
+
+pub async fn optional_timeout(
+    timeout: Option<std::time::Duration>,
+) -> Option<()> {
+    match timeout {
+        Some(t) => {
+            if t != time::Duration::ZERO {
+                tokio::time::sleep(t).await;
+            }
+            Some(())
+        },
+        None => None,
+    }
 }

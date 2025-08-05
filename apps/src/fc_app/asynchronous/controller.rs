@@ -128,6 +128,11 @@ pub struct FcController {
 
     /// Remember the app data stream ID.
     app_data_stream_id: u64,
+
+    /// Whether new acknowledgment could be sent to the flexicast flow.
+    /// This is done to prevent infinite polling.
+    /// TODO: instead, directly call the handle_send_ack function when we receive info from receivers.
+    possible_send_ack: bool,
 }
 
 impl FcController {
@@ -165,22 +170,23 @@ impl FcController {
             app_data_min_off: 0,
             app_data_fin: false,
             app_data_stream_id: 0,
+            possible_send_ack: false,
         }
     }
 
     /// Run the controller.
     pub async fn run(&mut self) -> Result<()> {
+
+        let mut vec_of_msg = Vec::with_capacity(1000);
+
         loop {
-            // Compute timeout of acknowledgment forwarding to the source.
-            let timeout = self.send_ack_timeout();
-            tokio::select! {
-                // Timeout to send acknowledgment to the flexicast source.
-                Some(_) = optional_timeout(timeout) => self.handle_send_ack().await?,
+            let nb_recv = self.rx_fc_ctl.recv_many(&mut vec_of_msg, 1000).await?;
+            for msg in vec_of_msg.drain(..nb_recv) {
+                self.handle_fc_msg(msg).await?;
+            }
 
-                // Receive message.
-                Some(msg) = self.rx_fc_ctl.recv() => self.handle_fc_msg(msg).await?,
-
-                else => debug!("Error in select controller"),
+            if self.possible_send_ack {
+                self.handle_send_ack().await?;
             }
 
             // Exit controller when no more clients listen to the group.
@@ -390,6 +396,8 @@ impl FcController {
                 of the McAck: {:?}",
                     self.mc_acks[fc_chan_id as usize]
                 );
+
+                self.possible_send_ack = true;
             },
 
             MsgFcCtl::PerUcRetransmission((fc_id, recv_id, lost_pn)) => {
@@ -410,11 +418,13 @@ impl FcController {
                 send_uc_path!(self, recv_id, msg);
             },
 
-            MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) =>
-                self.on_new_aggr_msg(recv_id, fc_id, aggr_info).await?,
+            MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) => {
+                self.on_new_aggr_msg(recv_id, fc_id, aggr_info).await?
+            },
 
-            MsgFcCtl::CollectRecv((recv_id, fc_id)) =>
-                self.on_collect_recv(recv_id, fc_id)?,
+            MsgFcCtl::CollectRecv((recv_id, fc_id)) => {
+                self.on_collect_recv(recv_id, fc_id)?
+            },
         }
 
         Ok(())
@@ -513,6 +523,8 @@ impl FcController {
             // MsgFcSource::AckStreamPieces(fully_acked_stream_pieces);
             //     self.tx_fc_sources[fc_id as usize].send(msg).await?;
             // }
+        } else {
+            self.possible_send_ack = true;
         }
 
         Ok(())
@@ -676,8 +688,8 @@ impl FcController {
                 };
 
                 entry.insert(
-                    stream_piece.offset..
-                        stream_piece.offset + stream_piece.payload.len() as u64,
+                    stream_piece.offset
+                        ..stream_piece.offset + stream_piece.payload.len() as u64,
                 );
             }
         }
@@ -712,6 +724,7 @@ impl FcController {
         if self.ack_delay.is_none() {
             return Ok(());
         }
+        self.possible_send_ack = false;
 
         for (i, mc_ack) in self.mc_acks.iter_mut().enumerate() {
             // Fully acknowledged packet numbers.
@@ -756,8 +769,9 @@ impl FcController {
                     for (stream_id, ranges) in fully_acked_stream_pieces.drain(..)
                     {
                         let entry = match pending_stream_ack.entry(stream_id) {
-                            Vacant(entry) =>
-                                entry.insert(OpenRangeSet::default()),
+                            Vacant(entry) => {
+                                entry.insert(OpenRangeSet::default())
+                            },
                             Occupied(entry) => entry.into_mut(),
                         };
                         for range in ranges.iter() {
@@ -872,16 +886,4 @@ pub async fn handle_msg(
     }
 
     Ok(())
-}
-
-pub async fn optional_timeout(
-    timeout: Option<std::time::Duration>,
-) -> Option<()> {
-    match timeout {
-        Some(t) => {
-            tokio::time::sleep(t).await;
-            Some(())
-        },
-        None => None,
-    }
 }
