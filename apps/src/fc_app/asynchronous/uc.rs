@@ -181,24 +181,6 @@ impl UcPath {
             }
         }
 
-        // If negative acknowledgment extension is used, the unicast path asks for
-        // retransmission based on the losses only, and asks the controller to get
-        // these pieces.
-        if self.conn.fc_uses_nack() {
-            // if let Ok(lost_pn) = self.conn.fc_drain_lost_pn() {
-            //     if !lost_pn.is_empty() {
-            //         if let Some(id) = fc_id {
-            //             let msg = MsgFcCtl::PerUcRetransmission((
-            //                 id as u64,
-            //                 self.client_id,
-            //                 lost_pn,
-            //             ));
-            //             self.tx_tcl.send(msg).await?;
-            //         }
-            //     }
-            // }
-        }
-
         if fc_id.is_none() {
             return Ok(());
         }

@@ -29,6 +29,9 @@ use tokio::sync::mpsc;
 /// Controller structure using tokio to handle messages between the flexicast
 /// source and the unicast server instances.
 pub struct FcController {
+    /// Role and transmissions channels of the controller.
+    controller_role: ControllerRole,
+
     /// The reception channel for the controller.
     rx_fc_ctl: mpsc::Receiver<MsgFcCtl>,
 
@@ -37,11 +40,6 @@ pub struct FcController {
 
     /// Number of clients.
     nb_clients: Option<u64>,
-
-    /// All transmission channels to communicate with the receivers.
-    /// Indexed by the client ID, and the ID of the channel they listen to,
-    /// `None` if they listen only on unicast.
-    tx_clients: HashMap<u64, mpsc::Sender<MsgRecv>>,
 
     /// Mapping between the ID of the flexicast source and the IDs of the
     /// clients. Indexed by the the flexicast source ID.
@@ -61,9 +59,6 @@ pub struct FcController {
 
     /// Last expired packets for each flexicast flow.
     last_drained_pn: Vec<Option<u64>>,
-
-    /// Communication channels with towards flexicast sources.
-    tx_fc_sources: Vec<mpsc::Sender<MsgFcSource>>,
 
     /// Keeps state of the received packet numbers for each client.
     /// This state is used to delegated STREAM frames that were lost on the
@@ -139,15 +134,14 @@ impl FcController {
     /// New controller.
     pub fn new(
         rx_fc_ctl: mpsc::Receiver<MsgFcCtl>,
-        mc_announce_data: Vec<McAnnounceData>,
-        tx_fc_sources: Vec<mpsc::Sender<MsgFcSource>>,
+        mc_announce_data: Vec<McAnnounceData>, controller_role: ControllerRole,
         tx_main: mpsc::Sender<MsgMain>, wait: Option<u64>,
         ack_delay: Option<time::Duration>,
     ) -> Self {
         Self {
+            controller_role,
             rx_fc_ctl,
             nb_clients: None,
-            tx_clients: HashMap::new(),
             active_clients: vec![HashMap::new(); mc_announce_data.len()],
             delegated_recv: vec![HashSet::new(); mc_announce_data.len()],
             unicast_recv: HashSet::new(),
@@ -158,7 +152,6 @@ impl FcController {
             pending_ack: vec![OpenRangeSet::default(); mc_announce_data.len()],
             pending_stream_ack: vec![HashMap::new(); mc_announce_data.len()],
             _mc_announce_data: mc_announce_data,
-            tx_fc_sources,
             tx_main,
             wait,
             nb_ready: 0,
@@ -176,11 +169,13 @@ impl FcController {
 
     /// Run the controller.
     pub async fn run(&mut self) -> Result<()> {
-
         let mut vec_of_msg = Vec::with_capacity(1000);
 
         loop {
-            let nb_recv = self.rx_fc_ctl.recv_many(&mut vec_of_msg, 1000).await?;
+            let nb_recv = self.rx_fc_ctl.recv_many(&mut vec_of_msg, 1000).await;
+            if nb_recv == 0 {
+                break;
+            }
             for msg in vec_of_msg.drain(..nb_recv) {
                 self.handle_fc_msg(msg).await?;
             }
@@ -195,7 +190,7 @@ impl FcController {
             }
         }
 
-        // Ok(())
+        Ok(())
     }
 
     /// Handle the reception of a message from the flexicast source channel.
@@ -204,95 +199,37 @@ impl FcController {
             MsgFcCtl::CloseRtp(id) => self.send_close_rtp(id).await?,
 
             MsgFcCtl::NewClient((id, tx)) => {
-                // Push new client.
-                self.nb_clients =
-                    Some(self.nb_clients.unwrap_or(0).saturating_add(1));
-                self.tx_clients.insert(id, tx);
-                self.recv_ack.insert(id, OpenRangeSet::default());
-                self.rec_fec_md.insert(id, OpenRangeSet::default());
-                self.unicast_recv.insert(id);
+                self.new_recv(id, tx);
             },
 
-            MsgFcCtl::Join((client_id, fc_chan_id, aggr_msg, max_pn)) => {
-                debug!("New client {client_id} joins flow {fc_chan_id}");
-                let pn_drain = max_pn.unwrap_or(0).max(
-                    self.mc_acks[fc_chan_id as usize]
-                        .get_largest_pn()
-                        .unwrap_or(0),
-                );
-                let new_insert = self.active_clients[fc_chan_id as usize]
-                    .insert(client_id, pn_drain + 1);
-                _ = self.unicast_recv.remove(&client_id);
-                _ = self.delegated_recv[fc_chan_id as usize].remove(&client_id);
-                if new_insert.is_none() {
-                    // info!("Insert received {client_id} and indicate that up to
-                    // {:?} was ok", pn_drain);
-                    self.mc_acks[fc_chan_id as usize].new_recv(pn_drain);
-                }
-
-                // Must notify this new client of the first packet number of
-                // interest.
-                let pn = self.last_drained_pn[fc_chan_id as usize]
-                    .unwrap_or(0)
-                    .saturating_sub(1);
-                let msg = MsgRecv::NewHighestPn((fc_chan_id, pn, pn));
-                send_uc_path!(self, client_id, msg);
-
-                // Update flow control limits.
-                if let Some(aggr_msg) = aggr_msg {
-                    self.on_new_aggr_msg(client_id, fc_chan_id, aggr_msg)
-                        .await?;
-                }
+            MsgFcCtl::Join((recv_id, fc_id, aggr_msg, max_pn)) => {
+                self.on_join(recv_id, fc_id, aggr_msg, max_pn).await?;
             },
 
-            MsgFcCtl::Change((client_id, old_fc_chan_id, new_fc_chan_id)) => {
-                debug!("Client {client_id} changes flow {old_fc_chan_id} -> {new_fc_chan_id}");
-                _ = self.active_clients[old_fc_chan_id as usize]
-                    .remove(&client_id);
+            MsgFcCtl::Change(_) => {
                 todo!();
-                // _ = self.active_clients[new_fc_chan_id as usize]
-                //     .insert(client_id);
             },
 
             MsgFcCtl::NewHighestPn((fc_id, highest_pn, lowest_pn)) => {
                 debug!("New expired packet from {fc_id}: {highest_pn:?} {lowest_pn:?}");
-                self.last_drained_pn[fc_id as usize] =
-                    Some(lowest_pn.saturating_sub(1));
-                for (client_idx, _) in self.active_clients[fc_id as usize].iter()
-                {
-                    let msg =
-                        MsgRecv::NewHighestPn((fc_id, highest_pn, lowest_pn));
-                    send_uc_path!(self, *client_idx, msg);
-                }
+                self.on_new_highest_pn(fc_id, highest_pn, lowest_pn).await?;
             },
 
             MsgFcCtl::AckData((
                 recv_id,
                 fc_id,
-                mut ack_pn,
+                ack_pn,
                 ack_stream_pieces,
                 rec_md,
             )) => {
-                info!(
-                    "Client {recv_id} acknowledges for flexicast flow
-                {fc_id}: pn={ack_pn:?} and streams={ack_stream_pieces:?}. Current mc ack: {:?}", self.mc_acks[fc_id as usize]
-                );
-                if let Some(pn) =
-                    self.active_clients[fc_id as usize].get(&recv_id)
-                {
-                    debug!("Remove until {pn} for this range");
-                    if *pn > 0 {
-                        ack_pn.as_mut().map(|rs| rs.remove_until(*pn - 1));
-                    }
-                    self.handle_ack_pn_stream_pieces(
-                        recv_id,
-                        fc_id,
-                        ack_pn,
-                        ack_stream_pieces,
-                        rec_md,
-                    )
-                    .await?;
-                }
+                self.on_new_ack_data(
+                    recv_id,
+                    fc_id,
+                    ack_pn,
+                    ack_stream_pieces,
+                    rec_md,
+                )
+                .await?;
             },
 
             MsgFcCtl::Sent((fc_id, sent)) => {
@@ -340,14 +277,39 @@ impl FcController {
                 // info!("Send to UC path: stream_id={stream_id}, fin={fin},
                 // len={}, off={min_off}", data.len());
 
-                for recv_id in self.unicast_recv.iter() {
-                    let msg =
-                        MsgRecv::StreamData((data.clone(), stream_id, None, fin));
-                    send_uc_path!(self, *recv_id, msg);
+                match &self.controller_role {
+                    ControllerRole::Leaf(_leaf) => {
+                        for recv_id in self.unicast_recv.iter() {
+                            let msg = MsgRecv::StreamData((
+                                data.clone(),
+                                stream_id,
+                                None,
+                                fin,
+                            ));
+                            send_uc_path!(self, *recv_id, msg);
+                        }
+                    },
+
+                    ControllerRole::Root(root) => {
+                        for tx in root.tx_down.values() {
+                            let msg = MsgFcCtl::StreamData((
+                                data.clone(),
+                                stream_id,
+                                fin,
+                                min_off,
+                            ));
+                            tx.send(msg).await?;
+                        }
+                    },
                 }
             },
 
             MsgFcCtl::RecvUcFallBack((id, fc_chan_id)) => {
+                // Do nothing if this is the root.
+                if matches!(self.controller_role, ControllerRole::Root(_)) {
+                    return Ok(());
+                }
+
                 debug!(
                     "Before fall back of receiver: {id}, this is the state of
                 the McAck: {:?}",
@@ -400,24 +362,6 @@ impl FcController {
                 self.possible_send_ack = true;
             },
 
-            MsgFcCtl::PerUcRetransmission((fc_id, recv_id, lost_pn)) => {
-                // FC-TODO: buffer here the retransmissions to avoid asking the
-                // flexicast flow each time there is a loss.
-
-                let msg = MsgFcSource::PerUcRetransmission((recv_id, lost_pn));
-                self.tx_fc_sources[fc_id as usize].send(msg).await?;
-            },
-
-            MsgFcCtl::PerUcRetransmitted((fc_id, recv_id, delegated_streams)) => {
-                let delegate = vec![true; delegated_streams.len()];
-                let msg = MsgRecv::DelegateStreams((
-                    fc_id,
-                    delegated_streams,
-                    delegate,
-                ));
-                send_uc_path!(self, recv_id, msg);
-            },
-
             MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) => {
                 self.on_new_aggr_msg(recv_id, fc_id, aggr_info).await?
             },
@@ -452,17 +396,28 @@ impl FcController {
     /// If all receivers are ready, the controller notifies the flexicast
     /// sources.
     async fn handle_new_ready(&mut self, _id: u64) -> Result<()> {
+        let name = self.controller_role.name();
+        info!("{name} receives a RecvReady!");
         self.nb_ready += 1;
 
-        if Some(self.nb_ready) == self.wait {
-            // Notify all flexicast flows.
-            for tx_fc in self.tx_fc_sources.iter() {
-                let msg = MsgFcSource::Ready;
-                tx_fc.send(msg).await?;
-            }
+        match &self.controller_role {
+            // The leaf controller directly notifies the root for each new arriving receiver.
+            // The root is responsible to handle the number of receivers.
+            ControllerRole::Leaf(leaf) => {
+                let msg = MsgFcCtl::RecvReady(leaf.leaf_id);
+                leaf.tx_up.send(msg).await?;
+            },
 
-            // Reset to avoid going multiple times here.
-            self.wait = None;
+            ControllerRole::Root(root) => {
+                if Some(self.nb_ready) == self.wait {
+                    for tx in root.tx_up.iter() {
+                        let msg = MsgFcSource::Ready;
+                        tx.send(msg).await?;
+                    }
+                    // Reset to avoid going multiple times here.
+                    self.wait = None;
+                }
+            },
         }
 
         Ok(())
@@ -535,9 +490,22 @@ impl FcController {
     async fn handle_sent_pkt(
         &mut self, fc_id: u64, sent: Arc<Vec<OpenSent>>,
     ) -> Result<()> {
-        for (&client_id, _) in self.active_clients[fc_id as usize].iter() {
-            let msg = MsgRecv::Sent((fc_id, sent.clone()));
-            send_uc_path!(self, client_id, msg);
+        match &mut self.controller_role {
+            ControllerRole::Leaf(_leaf) => {
+                for (&down_id, _) in self.active_clients[fc_id as usize].iter() {
+                    let msg = MsgRecv::Sent((fc_id, sent.clone()));
+                    send_uc_path!(self, down_id, msg);
+                }
+            },
+
+            ControllerRole::Root(root) => {
+                for (down_id, _) in self.active_clients[fc_id as usize].iter() {
+                    let msg = MsgFcCtl::Sent((fc_id, sent.clone()));
+                    if let Some(tx) = root.tx_down.get(down_id) {
+                        tx.send(msg).await?;
+                    }
+                }
+            },
         }
 
         Ok(())
@@ -548,6 +516,8 @@ impl FcController {
         &mut self, fc_id: u64, delegated_streams: Arc<Vec<FcDelegatedStream>>,
         early_retransmit: bool,
     ) -> Result<()> {
+        let name = self.controller_role.name().to_string();
+
         // Iterate over all clients listening to this flexicast source to delegate
         // the appropriate STREAM frame retransmissions.
         // Avoid retransmitting frames that may not be lost if this is an early
@@ -558,10 +528,16 @@ impl FcController {
             .map(|(id, _)| *id)
             .collect();
         let iter = if early_retransmit {
-            debug!("DOING EARLY RETRANSMIT ONLY: {:?}", delegated_streams.len());
+            debug!(
+                "{name}: DOING EARLY RETRANSMIT ONLY: {:?}",
+                delegated_streams.len()
+            );
             self.delegated_recv[fc_id as usize].iter().chain(_hs.iter())
         } else {
-            debug!("DOING LOSS RETRANSMIT: {:?}", delegated_streams.len());
+            debug!(
+                "{name}: DOING LOSS RETRANSMIT: {:?}",
+                delegated_streams.len()
+            );
             self.delegated_recv[fc_id as usize]
                 .iter()
                 .chain(iter_set.iter())
@@ -644,18 +620,34 @@ impl FcController {
             // Optimistation: we send all delegated streams and rely on the
             // unicast path to filter the ones to send.
             debug!(
-                "Delegate stream {:?} to {client_id}",
+                "{name}: Delegate stream {:?} to {client_id}",
                 delegated_streams
                     .iter()
                     .map(|s| (s.stream_id, s.offset))
                     .collect::<Vec<_>>()
             );
-            let msg = MsgRecv::DelegateStreams((
-                fc_id,
-                delegated_streams.clone(),
-                do_delegate,
-            ));
-            send_uc_path!(self, client_id, msg);
+
+            match &self.controller_role {
+                ControllerRole::Leaf(_leaf) => {
+                    let msg = MsgRecv::DelegateStreams((
+                        fc_id,
+                        delegated_streams.clone(),
+                        do_delegate,
+                    ));
+                    send_uc_path!(self, client_id, msg);
+                },
+
+                ControllerRole::Root(root) => {
+                    if let Some(tx) = root.tx_down.get(&client_id) {
+                        let msg = MsgFcCtl::DelegateStreams((
+                            fc_id,
+                            delegated_streams.clone(),
+                            early_retransmit,
+                        ));
+                        tx.send(msg).await?;
+                    }
+                },
+            }
 
             // Release memory based on the highest packet number.
             // Fc-TODO: not sure this will work because the last expired may be
@@ -699,25 +691,6 @@ impl FcController {
         Ok(())
     }
 
-    /// Computes the next timeout to send an acknowledgment aggregation to the
-    /// source.
-    fn send_ack_timeout(&self) -> Option<time::Duration> {
-        if self.ack_delay.is_none() {
-            return None;
-        }
-
-        if let Some(t) = self.last_ack_sent {
-            let now = time::Instant::now();
-            Some(
-                self.ack_delay
-                    .unwrap()
-                    .saturating_sub(now.duration_since(t)),
-            )
-        } else {
-            Some(time::Duration::ZERO)
-        }
-    }
-
     /// Sends acknowledgment to the flexicast sources if an ack delay is
     /// provided.
     async fn handle_send_ack(&mut self) -> Result<()> {
@@ -727,6 +700,7 @@ impl FcController {
         self.possible_send_ack = false;
 
         for (i, mc_ack) in self.mc_acks.iter_mut().enumerate() {
+            let fc_id = i as u64;
             // Fully acknowledged packet numbers.
             // Maybe we have some pending data.
             let pending_ack = &mut self.pending_ack[i];
@@ -744,15 +718,54 @@ impl FcController {
                 // Also send to the unicast fall-back receivers the lowest sent
                 // packet number.
                 if let Some(first) = pending_ack.first() {
-                    for &client_id in self.unicast_recv.iter() {
-                        let msg = MsgRecv::NewHighestPn((i as u64, first, first));
-                        send_uc_path!(self, client_id, msg);
+                    match &self.controller_role {
+                        ControllerRole::Leaf(_leaf) => {
+                            for &client_id in self.unicast_recv.iter() {
+                                let msg = MsgRecv::NewHighestPn((
+                                    i as u64, first, first,
+                                ));
+                                send_uc_path!(self, client_id, msg);
+                            }
+                        },
+
+                        ControllerRole::Root(root) => {
+                            for client_id in self.unicast_recv.iter() {
+                                let msg = MsgFcCtl::NewHighestPn((
+                                    i as u64, first, first,
+                                ));
+                                if let Some(tx) = root.tx_down.get(client_id) {
+                                    tx.send(msg).await?;
+                                }
+                            }
+                        },
                     }
                 }
-                let msg = MsgFcSource::AckPn(pending_ack.clone());
-                match self.tx_fc_sources[i].try_send(msg) {
-                    Ok(_) => self.pending_ack[i] = OpenRangeSet::default(),
-                    Err(_e) => (),
+                match &self.controller_role {
+                    ControllerRole::Leaf(leaf) => {
+                        let msg = MsgFcCtl::AckData((
+                            leaf.leaf_id,
+                            fc_id,
+                            Some(self.pending_ack[i].clone()),
+                            None,
+                            None,
+                        ));
+                        match leaf.tx_up.try_send(msg) {
+                            Ok(_) => {
+                                self.pending_ack[i] = OpenRangeSet::default()
+                            },
+                            Err(_e) => (),
+                        }
+                    },
+
+                    ControllerRole::Root(root) => {
+                        let msg = MsgFcSource::AckPn(self.pending_ack[i].clone());
+                        match root.tx_up[i].try_send(msg) {
+                            Ok(_) => {
+                                self.pending_ack[i] = OpenRangeSet::default()
+                            },
+                            Err(_e) => (),
+                        }
+                    },
                 }
             }
 
@@ -782,15 +795,39 @@ impl FcController {
             }
 
             if !pending_stream_ack.is_empty() {
-                let msg = MsgFcSource::AckStreamPieces(
-                    pending_stream_ack
-                        .iter()
-                        .map(|(pn, rs)| (*pn, rs.clone()))
-                        .collect(),
-                );
-                match self.tx_fc_sources[i].try_send(msg) {
-                    Ok(_) => self.pending_stream_ack[i] = HashMap::new(),
-                    Err(_e) => (),
+                match &self.controller_role {
+                    ControllerRole::Leaf(leaf) => {
+                        let msg = MsgFcCtl::AckData((
+                            leaf.leaf_id,
+                            fc_id,
+                            None,
+                            Some(
+                                self.pending_stream_ack[i]
+                                    .iter()
+                                    .map(|(pn, rs)| (*pn, rs.clone()))
+                                    .collect(),
+                            ),
+                            None,
+                        ));
+
+                        match leaf.tx_up.try_send(msg) {
+                            Ok(_) => self.pending_stream_ack[i] = HashMap::new(),
+                            Err(_e) => (),
+                        }
+                    },
+
+                    ControllerRole::Root(root) => {
+                        let msg = MsgFcSource::AckStreamPieces(
+                            self.pending_stream_ack[i]
+                                .iter()
+                                .map(|(pn, rs)| (*pn, rs.clone()))
+                                .collect(),
+                        );
+                        match root.tx_up[i].try_send(msg) {
+                            Ok(_) => self.pending_stream_ack[i] = HashMap::new(),
+                            Err(_e) => (),
+                        }
+                    },
                 }
             }
         }
@@ -809,8 +846,18 @@ impl FcController {
     ) -> Result<()> {
         let out = self.fc_aggregator.on_new_aggr_msg(recv_id, aggr_msg)?;
         if let Some(aggr_out) = out {
-            let msg = MsgFcSource::AggregatedInfo(aggr_out);
-            self.tx_fc_sources[fc_id as usize].send(msg).await?;
+            match &self.controller_role {
+                ControllerRole::Leaf(leaf) => {
+                    let msg =
+                        MsgFcCtl::AggregatedInfo((leaf.leaf_id, fc_id, aggr_out));
+                    leaf.tx_up.send(msg).await?;
+                },
+
+                ControllerRole::Root(root) => {
+                    let msg = MsgFcSource::AggregatedInfo(aggr_out);
+                    root.tx_up[fc_id as usize].send(msg).await?;
+                },
+            }
         }
 
         Ok(())
@@ -834,11 +881,14 @@ impl FcController {
             }
         }
         _ = self.delegated_streams.remove(&recv_id);
-        _ = self.tx_clients.remove(&recv_id);
         _ = self.unicast_recv.remove(&recv_id);
         _ = self.recv_ack.remove(&recv_id);
         _ = self.rec_fec_md.remove(&recv_id);
         self.nb_clients = self.nb_clients.map(|nb| nb.saturating_sub(1));
+        match &mut self.controller_role {
+            ControllerRole::Leaf(leaf) => _ = leaf.tx_down.remove(&recv_id),
+            ControllerRole::Root(root) => _ = root.tx_down.remove(&recv_id),
+        }
 
         Ok(())
     }
@@ -850,12 +900,17 @@ impl FcController {
 #[macro_export]
 macro_rules! send_uc_path {
     ($ctl:expr, $recv_id:expr, $msg:expr) => {
-        if let Some(tx_client) = $ctl.tx_clients.get(&$recv_id) {
-            if let Err(_send_error) = tx_client.send($msg).await {
-                // Remove this unicast path from the structure.
-                let _ = $ctl.tx_clients.remove(&$recv_id);
-                let _ = $ctl.recv_ack.remove(&$recv_id);
-                let _ = $ctl.rec_fec_md.remove(&$recv_id);
+        if let ControllerRole::Leaf(leaf) = &mut $ctl.controller_role {
+            if let Some(tx_client) = leaf.tx_down.get(&$recv_id) {
+                if let Err(_send_error) = tx_client.send($msg).await {
+                    // Remove this unicast path from the structure.
+                    let _ = $ctl.recv_ack.remove(&$recv_id);
+                    let _ = $ctl.rec_fec_md.remove(&$recv_id);
+                    if let ControllerRole::Leaf(leaf) = &mut $ctl.controller_role
+                    {
+                        leaf.tx_down.remove(&$recv_id);
+                    }
+                }
             }
         }
     };
@@ -886,4 +941,232 @@ pub async fn handle_msg(
     }
 
     Ok(())
+}
+
+impl FcController {
+    /// Inserts a new receiver in the state.
+    /// This only has an effect on the Leaf controller.
+    fn new_recv(&mut self, id: u64, tx: mpsc::Sender<MsgRecv>) {
+        if let ControllerRole::Leaf(leaf) = &mut self.controller_role {
+            self.nb_clients =
+                Some(self.nb_clients.unwrap_or(0).saturating_add(1));
+            self.recv_ack.insert(id, OpenRangeSet::default());
+            self.rec_fec_md.insert(id, OpenRangeSet::default());
+            self.unicast_recv.insert(id);
+            leaf.tx_down.insert(id, tx);
+        }
+    }
+
+    /// A receiver joins a flexicast flow.
+    /// This only has an effect on the Leaf controller.
+    async fn on_join(
+        &mut self, recv_id: u64, fc_id: u64, aggr_msg: Option<FcAggregatedMsg>,
+        max_pn: Option<u64>,
+    ) -> Result<()> {
+        let name = self.controller_role.name();
+        info!("{name} enters on_join");
+        if let ControllerRole::Leaf(_leaf) = &self.controller_role {
+            let pn_drain = max_pn
+                .unwrap_or(0)
+                .max(self.mc_acks[fc_id as usize].get_largest_pn().unwrap_or(0));
+            let new_insert =
+                self.active_clients[fc_id as usize].insert(recv_id, pn_drain + 1);
+            _ = self.unicast_recv.remove(&recv_id);
+            _ = self.delegated_recv[fc_id as usize].remove(&recv_id);
+            if new_insert.is_none() {
+                // info!("Insert received {recv_id} and indicate that up to
+                // {:?} was ok", pn_drain);
+                self.mc_acks[fc_id as usize].new_recv(pn_drain);
+            }
+
+            // Must notify this new client of the first packet number of
+            // interest.
+            let pn = self.last_drained_pn[fc_id as usize]
+                .unwrap_or(0)
+                .saturating_sub(1);
+            let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
+            info!("SEND NEW HIGHEST PN??");
+            send_uc_path!(self, recv_id, msg);
+
+            // Update flow control limits.
+            if let Some(aggr_msg) = aggr_msg {
+                self.on_new_aggr_msg(recv_id, fc_id, aggr_msg).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handles a new highest packet number received.
+    async fn on_new_highest_pn(
+        &mut self, fc_id: u64, highest_pn: u64, lowest_pn: u64,
+    ) -> Result<()> {
+        self.last_drained_pn[fc_id as usize] = Some(lowest_pn.saturating_sub(1));
+        match &mut self.controller_role {
+            ControllerRole::Leaf(_leaf) => {
+                for (recv_id, _) in self.active_clients[fc_id as usize].iter() {
+                    let msg =
+                        MsgRecv::NewHighestPn((fc_id, highest_pn, lowest_pn));
+                    send_uc_path!(self, *recv_id, msg);
+                }
+            },
+
+            ControllerRole::Root(root) => {
+                for (ctl_id, _) in self.active_clients[fc_id as usize].iter() {
+                    let msg =
+                        MsgFcCtl::NewHighestPn((fc_id, highest_pn, lowest_pn));
+                    if let Some(tx_leaf) = root.tx_down.get(ctl_id) {
+                        tx_leaf.send(msg).await?;
+                    }
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Handles a new acknowledgment message from downwards.
+    async fn on_new_ack_data(
+        &mut self, recv_id: u64, fc_id: u64, mut ack_pn: Option<OpenRangeSet>,
+        ack_stream_pieces: Option<Vec<(u64, OpenRangeSet)>>,
+        rec_md: Option<OpenRangeSet>,
+    ) -> Result<()> {
+        let name = self.controller_role.name();
+        info!(
+            "{} receives an ACK: {} acknowledges for flexicast flow
+                {}: pn={:?} and streams={:?}. Current mc ack: {:?}",
+            name,
+            recv_id,
+            fc_id,
+            ack_pn,
+            ack_stream_pieces,
+            self.mc_acks[fc_id as usize]
+        );
+
+        if let Some(pn) = self.active_clients[fc_id as usize].get(&recv_id) {
+            debug!("Remove until {pn} for this range");
+            if *pn > 0 {
+                ack_pn.as_mut().map(|rs| rs.remove_until(*pn - 1));
+            }
+            self.handle_ack_pn_stream_pieces(
+                recv_id,
+                fc_id,
+                ack_pn,
+                ack_stream_pieces,
+                rec_md,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Add a new leaf controller to the root controller.
+    pub fn add_new_leaf_ctl(&mut self, leaf_id: u64, tx: mpsc::Sender<MsgFcCtl>) {
+        if let ControllerRole::Root(root) = &mut self.controller_role {
+            root.add_leaf_tx(tx, leaf_id);
+
+            self.nb_clients =
+                Some(self.nb_clients.unwrap_or(0).saturating_add(1));
+            self.recv_ack.insert(leaf_id, OpenRangeSet::default());
+            self.rec_fec_md.insert(leaf_id, OpenRangeSet::default());
+            self.unicast_recv.insert(leaf_id);
+
+            for fc_id in 0..root.tx_up.len() {
+                let pn_drain =
+                    self.mc_acks[fc_id as usize].get_largest_pn().unwrap_or(0);
+                let new_insert = self.active_clients[fc_id as usize]
+                    .insert(leaf_id, pn_drain + 1);
+                _ = self.unicast_recv.remove(&leaf_id);
+                _ = self.delegated_recv[fc_id as usize].remove(&leaf_id);
+                if new_insert.is_none() {
+                    // info!("Insert received {recv_id} and indicate that up to
+                    // {:?} was ok", pn_drain);
+                    self.mc_acks[fc_id as usize].new_recv(pn_drain);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+/// Role of the controller.
+/// The controller may either be a final controller (i.e., directly communicating with the flexicast flow) or an initial controller (i.e., directly communicating with the unicast paths).
+/// Future extensions will also include intermediate controller, only communicating with controllers.
+/// The first value is the tx towards the leaves.
+/// The second value is the tx towards the root.
+pub enum ControllerRole {
+    /// Root controller.
+    /// It communicates with the flexicast flow.
+    Root(ControllerRoot),
+
+    /// Leaf controller.
+    /// It communicates with the unicat paths.
+    Leaf(ControllerLeaf),
+}
+
+impl ControllerRole {
+    /// Returns the name.
+    pub fn name(&self) -> String {
+        match self {
+            ControllerRole::Leaf(leaf) => format!("leaf {:?}", leaf.leaf_id),
+            ControllerRole::Root(_) => "root".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+/// Root controller.
+pub struct ControllerRoot {
+    /// TX towards the leaf controllers.
+    tx_down: HashMap<u64, mpsc::Sender<MsgFcCtl>>,
+
+    /// TX towards the flexicast flows.
+    tx_up: Vec<mpsc::Sender<MsgFcSource>>,
+}
+
+impl ControllerRoot {
+    /// Creates a new instance.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a new flexicast flow tx.
+    pub fn add_flow_tx(&mut self, tx: mpsc::Sender<MsgFcSource>) {
+        self.tx_up.push(tx);
+    }
+
+    /// Inserts a new leaf controller tx.
+    fn add_leaf_tx(&mut self, tx: mpsc::Sender<MsgFcCtl>, leaf_id: u64) {
+        self.tx_down.insert(leaf_id, tx);
+    }
+}
+
+#[derive(Debug)]
+/// Leaf controller.
+pub struct ControllerLeaf {
+    /// TX towards the unicast paths.
+    tx_down: HashMap<u64, mpsc::Sender<MsgRecv>>,
+
+    /// TX towards the root controller.
+    tx_up: mpsc::Sender<MsgFcCtl>,
+
+    /// Identifier of the leaf controller.
+    leaf_id: u64,
+}
+
+impl ControllerLeaf {
+    /// Creates a new instance with a defined root controller tx and ID.
+    pub fn new(leaf_id: u64, tx_up: mpsc::Sender<MsgFcCtl>) -> Self {
+        Self {
+            tx_down: HashMap::new(),
+            tx_up,
+            leaf_id,
+        }
+    }
+
+    /// Returns the leaf ID.
+    pub fn leaf_id(&self) -> u64 {
+        self.leaf_id
+    }
 }

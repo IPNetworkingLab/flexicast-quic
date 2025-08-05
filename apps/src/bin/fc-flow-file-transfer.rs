@@ -16,6 +16,9 @@ use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McConfig;
 use quiche::CongestionControlAlgorithm;
 use quiche_apps::fc_app::asynchronous::controller::handle_msg;
+use quiche_apps::fc_app::asynchronous::controller::ControllerLeaf;
+use quiche_apps::fc_app::asynchronous::controller::ControllerRole;
+use quiche_apps::fc_app::asynchronous::controller::ControllerRoot;
 use quiche_apps::fc_app::asynchronous::fc::FcChannelInfo;
 use quiche_apps::fc_app::asynchronous::fc::FcFlowRun;
 use quiche_apps::fc_app::asynchronous::messages::*;
@@ -86,24 +89,6 @@ struct Args {
     #[clap(long, value_parser, default_value = "0")]
     fc_timer: u64,
 
-    /// Sent video frames results (timestamps sent on the wire).
-    #[clap(
-        short = 'r',
-        long,
-        value_parser,
-        default_value = "mc-server-result-wire.txt"
-    )]
-    result_wire_trace: String,
-
-    /// Keylog file for flexicast channel.
-    #[clap(
-        short = 'k',
-        long,
-        value_parser,
-        default_value = "/tmp/mc-server.txt"
-    )]
-    mc_keylog_file: String,
-
     /// Specify the congestion window for the flexicast flow.
     /// The possible values are:
     /// - A string value representing a congestion control algorithm;
@@ -164,8 +149,9 @@ struct Args {
     video_stream_dir: Option<String>,
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 5)]
+#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
+    env_logger::builder().format_timestamp_nanos().init();
     // This will create a monitor for the *whole* application.
     #[cfg(feature = "tokio-tracing")]
     console_subscriber::init();
@@ -405,17 +391,50 @@ async fn main() {
         id_fc_chan += 1;
     }
 
-    // Create the controller structure that will manage the communication between
+    // Create the controller structures that will manage the communication between
     // the flexicast source and the unicast server instances.
+    // We create two levels of controllers to improve scalability: leaves and root.
+    let mut ctl_root_struct = ControllerRoot::new();
+    tx_fc_source
+        .iter()
+        .for_each(|tx| ctl_root_struct.add_flow_tx(tx.clone()));
     let mut controller = asynchronous::controller::FcController::new(
         rx_fc_ctl,
         mc_announce_data.clone(),
-        tx_fc_source,
+        ControllerRole::Root(ctl_root_struct),
         tx_main.clone(),
         args.wait,
         args.ctl_ack_delay
             .map(|d| std::time::Duration::from_millis(d)),
     );
+
+    let nb_ctl_leaves = 2;
+    let mut ctl_leaves_struct = (0..nb_ctl_leaves)
+        .map(|id| ControllerLeaf::new(id, tx_fc_ctl.clone()))
+        .collect::<Vec<_>>();
+
+    // Keep the leaf controller txs.
+    let mut ctl_leaf_txs = Vec::with_capacity(nb_ctl_leaves as usize);
+    for ctl_leaf_struct in ctl_leaves_struct.drain(..) {
+        let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        controller.add_new_leaf_ctl(ctl_leaf_struct.leaf_id(), tx.clone());
+        ctl_leaf_txs.push(tx);
+
+        let mut ctl_leaf = asynchronous::controller::FcController::new(
+            rx,
+            mc_announce_data.clone(),
+            ControllerRole::Leaf(ctl_leaf_struct),
+            tx_main.clone(),
+            args.wait.map(|n| n / nb_ctl_leaves),
+            args.ctl_ack_delay
+                .map(|d| std::time::Duration::from_millis(d)),
+        );
+
+        // TODO: monitoring.
+        tokio::spawn(async move {
+            ctl_leaf.run().await.unwrap();
+        });
+    }
 
     // Create controller monitor.
     #[cfg(feature = "tokio-tracing")]
@@ -570,8 +589,8 @@ async fn main() {
         // is no connection matching, create a new one.
         // We should not enter in the else case because the UDP socket should be
         // connected.
-        let mut client = if !clients_ids.contains_key(&hdr.dcid) &&
-            !clients_ids.contains_key(&hdr.dcid)
+        let mut client = if !clients_ids.contains_key(&hdr.dcid)
+            && !clients_ids.contains_key(&hdr.dcid)
         {
             if hdr.ty != quiche::Type::Initial {
                 error!("Packet is not Initial");
@@ -669,6 +688,10 @@ async fn main() {
             let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
             clients_tx.push(tx.clone());
 
+            // We round-robin the receivers on the different instances of ctl leaves.
+            let tx_ctl =
+                ctl_leaf_txs[(client_id % nb_ctl_leaves) as usize].clone();
+
             let mut client = quiche_apps::fc_app::asynchronous::uc::UcPath {
                 conn,
                 client_id,
@@ -681,7 +704,7 @@ async fn main() {
                     .map(|key| *key)
                     .collect::<Vec<_>>(),
                 rx_ctl: rx,
-                tx_tcl: tx_fc_ctl.clone(),
+                tx_tcl: tx_ctl.clone(),
                 tx_main: tx_main.clone(),
                 pending_data: Vec::new(),
                 pending_data_off: 0,
@@ -703,7 +726,7 @@ async fn main() {
 
             // Notify the controller with a new receiver.
             let msg = MsgFcCtl::NewClient((next_client_id, tx.clone()));
-            tx_fc_ctl.send(msg).await.unwrap();
+            tx_ctl.send(msg).await.unwrap();
 
             // Also notify the SendMMsg instances that there is a new receiver.
             if let Some(txs) = sendmmsg_txs.as_ref() {
@@ -1041,7 +1064,7 @@ pub async fn optional_timeout(
 ) -> Option<()> {
     match timeout {
         Some(t) => {
-            if t != time::Duration::ZERO {
+            if t != std::time::Duration::ZERO {
                 tokio::time::sleep(t).await;
             }
             Some(())

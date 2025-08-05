@@ -145,19 +145,6 @@ impl FcChannelAsync {
                 self.sync_tx.send(del_streams_msg).await?;
             },
 
-            MsgFcSource::PerUcRetransmission((recv_id, lost_pn)) => {
-                let delegated_streams =
-                    self.fc_chan.channel.fc_get_delegated_stream(
-                        FcUnicastRetransmission::PerUcPath(lost_pn),
-                    )?;
-                let msg = MsgFcCtl::PerUcRetransmitted((
-                    self.id,
-                    recv_id,
-                    Arc::new(delegated_streams),
-                ));
-                self.sync_tx.send(msg).await?;
-            },
-
             MsgFcSource::AggregatedInfo(aggr_info) => {
                 info!("New AggregatedInfo message: {:?}", aggr_info);
                 // Get the updated MAX_DATA and MAX_STREAM_DATA for existing

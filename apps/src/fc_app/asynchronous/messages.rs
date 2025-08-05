@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use quiche::flexicast::ack::FcDelegatedStream;
@@ -91,18 +90,6 @@ pub enum MsgFcCtl {
     /// unicast path.
     RecvUcFallBack((u64, u64)),
 
-    /// The unicast path asks for per-unicast retransmission.
-    /// First value is the flexicast flow ID.
-    /// Second value is the receiver ID.
-    /// Third value is the vector of lost packet numbers.
-    ///
-    /// Used for Flexicast NACK extension.
-    PerUcRetransmission((u64, u64, HashSet<u64>)),
-
-    /// The flexicast flow source sends the per-unicast path retransmission to
-    /// the controller.
-    PerUcRetransmitted((u64, u64, Arc<Vec<FcDelegatedStream>>)),
-
     /// New aggregated control data from this receiver.
     AggregatedInfo((u64, u64, FcAggregatedMsg)),
 
@@ -160,14 +147,6 @@ pub enum MsgFcSource {
     /// This call may be triggered if a receiver falls-back on unicast.
     /// At the same time, will retransmit "lost" frames to all other receivers.
     AskStreamPieces,
-
-    /// The unicast path asks for per-unicast retransmission.
-    /// First value is the receiver ID. It is not directly used by the flexicast
-    /// flow source, but it will give back the information to the controller.
-    /// Third value is the vector of lost packet numbers.
-    ///
-    /// Used for Flexicast NACK extension.
-    PerUcRetransmission((u64, HashSet<u64>)),
 
     /// The controller sends aggregated control information to the flexicast
     /// flow.
