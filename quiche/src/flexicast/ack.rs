@@ -411,6 +411,11 @@ impl McAck {
     ) -> (&BTreeMap<u64, u64>, &HashMap<u64, McStream>, u64) {
         (&self.acked, &self.stream_map, self.nb_recv)
     }
+
+    /// Returns the number of receivers.
+    pub fn get_nb_recv(&self) -> u64 {
+        self.nb_recv
+    }
 }
 
 impl Connection {

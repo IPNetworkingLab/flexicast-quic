@@ -317,7 +317,8 @@ impl FcController {
                     self.controller_role.name(),
                     self.mc_acks[fc_chan_id as usize]
                 );
-                let pn_drain = self.active_clients[fc_chan_id as usize].remove(&id);
+                let pn_drain =
+                    self.active_clients[fc_chan_id as usize].remove(&id);
                 _ = self.unicast_recv.insert(id);
                 // _ = self.delegated_recv[fc_chan_id as usize].insert(id);
 
@@ -330,7 +331,12 @@ impl FcController {
                         if let Some(pn) = pn_drain {
                             missing.remove_until(pn - 1);
                         }
-                        debug!("{} UC FB. Hack for {} missing: {:?}", self.controller_role.name(), id, missing);
+                        debug!(
+                            "{} UC FB. Hack for {} missing: {:?}",
+                            self.controller_role.name(),
+                            id,
+                            missing
+                        );
                         self.mc_acks[fc_chan_id as usize]
                             .on_ack_received(&missing);
                     }
@@ -367,6 +373,16 @@ impl FcController {
                 );
 
                 self.possible_send_ack = true;
+
+                // If everyone fell back, the controller will ACK one every two packets to decrease the source's congestion window while keeping sending data.
+                if self.mc_acks[fc_chan_id as usize].get_nb_recv() == 0 {
+                    if let ControllerRole::Leaf(leaf) = &mut self.controller_role
+                    {
+                        let pn =
+                            self.mc_acks[fc_chan_id as usize].get_largest_pn();
+                        leaf.set_dummy_ack(true, pn);
+                    }
+                }
             },
 
             MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) => {
@@ -498,7 +514,37 @@ impl FcController {
         &mut self, fc_id: u64, sent: Arc<Vec<OpenSent>>,
     ) -> Result<()> {
         match &mut self.controller_role {
-            ControllerRole::Leaf(_leaf) => {
+            ControllerRole::Leaf(leaf) => {
+                // If the leaf controller is in the dummy ack mode, it means that it currently does not have any receiver in the flexicast flow.
+                // To avoid blocking the flexicast flow from sending new data, we ack one every two packets directly.
+                // This is ugly, I know, but it is the simplest way to keep advancing.
+                if let Some(dummy_ack_pn) = leaf.get_dummy_ack() {
+                    // Only keep even packets.
+                    let mut rs = OpenRangeSet::default();
+                    sent.iter()
+                        .skip_while(|s| s.pkt_num < dummy_ack_pn)
+                        .filter(|s| s.pkt_num % 2 == 0)
+                        .for_each(|s| rs.insert(s.pkt_num..s.pkt_num + 1));
+
+                    // Send the dummy ACK to the root controller.
+                    let msg = MsgFcCtl::AckData((
+                        leaf.leaf_id,
+                        fc_id,
+                        Some(rs.clone()),
+                        None,
+                        None,
+                    ));
+                    leaf.tx_up.send(msg).await?;
+
+                    // Update the largest pn dummy acked.
+                    if let Some(new_highest) = rs.last() {
+                        leaf.set_dummy_ack(true, Some(new_highest));
+                    }
+
+                    let name = self.controller_role.name();
+                    debug!("{:?} sends dummy ack with {:?}!", name, rs);
+                }
+
                 for (&down_id, _) in self.active_clients[fc_id as usize].iter() {
                     let msg = MsgRecv::Sent((fc_id, sent.clone()));
                     send_uc_path!(self, down_id, msg);
@@ -563,8 +609,12 @@ impl FcController {
             }
             let client_ack: HashSet<u64> =
                 self.recv_ack.get(&client_id).unwrap().flatten().collect();
-            let recv_rec_fec_md: HashSet<u64> =
-                self.rec_fec_md.get(&client_id).unwrap_or(&OpenRangeSet::default()).flatten().collect();
+            let recv_rec_fec_md: HashSet<u64> = self
+                .rec_fec_md
+                .get(&client_id)
+                .unwrap_or(&OpenRangeSet::default())
+                .flatten()
+                .collect();
 
             // Get the entry for this receiver.
             let delegated_entry = match self.delegated_streams.entry(client_id) {
@@ -876,7 +926,10 @@ impl FcController {
     /// Handles a collect from a receiver.
     /// Internally removes all state related to this receiver.
     async fn on_collect_recv(&mut self, recv_id: u64, fc_id: u64) -> Result<()> {
-        debug!("{} Collect {recv_id} for FC flow {fc_id}", self.controller_role.name());
+        debug!(
+            "{} Collect {recv_id} for FC flow {fc_id}",
+            self.controller_role.name()
+        );
         let value = self.active_clients[fc_id as usize].remove(&recv_id);
         if value.is_some() {
             self.mc_acks[fc_id as usize].remove_recv();
@@ -903,7 +956,10 @@ impl FcController {
         // If this is a leaf and there is no more receiver, indicate it to the root.
         if self.nb_clients == Some(0) {
             if let ControllerRole::Leaf(leaf) = &self.controller_role {
-                debug!("{} sends CollectRecv to root", self.controller_role.name());
+                debug!(
+                    "{} sends CollectRecv to root",
+                    self.controller_role.name()
+                );
                 let msg = MsgFcCtl::CollectRecv((leaf.leaf_id, fc_id));
                 leaf.tx_up.send(msg).await?;
             }
@@ -1011,6 +1067,13 @@ impl FcController {
             if let Some(aggr_msg) = aggr_msg {
                 self.on_new_aggr_msg(recv_id, fc_id, aggr_msg).await?;
             }
+
+            // If everyone fell back, the controller will ACK one every two packets to decrease the source's congestion window while keeping sending data.
+            if self.mc_acks[fc_id as usize].get_nb_recv() == 1 {
+                if let ControllerRole::Leaf(leaf) = &mut self.controller_role {
+                    leaf.set_dummy_ack(false, None);
+                }
+            }
         }
 
         Ok(())
@@ -1063,7 +1126,10 @@ impl FcController {
         );
 
         if let Some(pn) = self.active_clients[fc_id as usize].get(&recv_id) {
-            debug!("{} Remove until {pn} for this range", self.controller_role.name());
+            debug!(
+                "{} Remove until {pn} for this range",
+                self.controller_role.name()
+            );
             if *pn > 0 {
                 ack_pn.as_mut().map(|rs| rs.remove_until(*pn - 1));
             }
@@ -1172,6 +1238,12 @@ pub struct ControllerLeaf {
 
     /// Identifier of the leaf controller.
     leaf_id: u64,
+
+    /// Whether the leaf controller enters the dummy ack mode.
+    dummy_ack: bool,
+
+    /// To avoid dummy ack multiple times the same packet, we keep in memory the highest packet number dummy acked.
+    highest_pn_dummy_ack: u64,
 }
 
 impl ControllerLeaf {
@@ -1181,11 +1253,26 @@ impl ControllerLeaf {
             tx_down: HashMap::new(),
             tx_up,
             leaf_id,
+            dummy_ack: false,
+            highest_pn_dummy_ack: 0,
         }
     }
 
     /// Returns the leaf ID.
     pub fn leaf_id(&self) -> u64 {
         self.leaf_id
+    }
+
+    /// Returns whether the leaf controller is in the dummy ack mode.
+    pub fn get_dummy_ack(&self) -> Option<u64> {
+        self.dummy_ack.then(|| self.highest_pn_dummy_ack)
+    }
+
+    /// Sets whether the leaf controller is in the dummy ack mode.
+    pub fn set_dummy_ack(&mut self, v: bool, pn: Option<u64>) {
+        self.dummy_ack = v;
+        if let Some(v) = pn {
+            self.highest_pn_dummy_ack = self.highest_pn_dummy_ack.max(v);
+        }
     }
 }
