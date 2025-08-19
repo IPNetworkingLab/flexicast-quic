@@ -176,7 +176,7 @@ async fn main() {
         let tmp_filename = if args.stay_open_on_fin {
             Path::new("/shared").join(out_filename)
         } else {
-            Path::new("/tmp").join(out_filename)
+            Path::new("/dev/shm").join(out_filename)
         };
         let mut fc_app = FileTransferRecv::new(
             &output_prefix.join(out_filename),

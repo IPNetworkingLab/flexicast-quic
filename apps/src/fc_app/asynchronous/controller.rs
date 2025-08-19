@@ -357,13 +357,15 @@ impl FcController {
 
                 // Instead of asking for a retransmission, we give the stream data
                 // directly.
-                let msg = MsgRecv::StreamData((
-                    Arc::new(self.app_data.clone()),
-                    self.app_data_stream_id,
-                    Some(self.app_data_min_off),
-                    self.app_data_fin,
-                ));
-                send_uc_path!(self, id, msg);
+                if !self.app_data.is_empty() {
+                    let msg = MsgRecv::StreamData((
+                        Arc::new(self.app_data.clone()),
+                        self.app_data_stream_id,
+                        Some(self.app_data_min_off),
+                        self.app_data_fin,
+                    ));
+                    send_uc_path!(self, id, msg);
+                }
 
                 debug!(
                     "{} After fall back of receiver: {id}, this is the state
