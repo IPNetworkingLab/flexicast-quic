@@ -4672,8 +4672,8 @@ impl Connection {
                 cwnd_available,
             );
 
-            trace!("{} pmtud probe status {} hs_con={} hs_sent={} cwnd_avail={} out_len={} left={}", self.trace_id, pmtu_probe, self.handshake_confirmed, self.handshake_done_sent,
-            cwnd_available, out_len, left);
+            //trace!("{} pmtud probe status {} hs_con={} hs_sent={} //cwnd_avail={} out_len={} left={}", self.trace_id, pmtu_probe, self.handshake_confirmed, self.handshake_done_sent,
+            //cwnd_available, out_len, left);
 
             if pmtu_probe {
                 trace!(

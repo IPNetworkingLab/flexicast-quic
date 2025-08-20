@@ -326,7 +326,19 @@ impl FcController {
                     let largest_pn =
                         self.mc_acks[fc_chan_id as usize].get_largest_pn();
                     if let Some(largest) = largest_pn {
-                        let mut missing = acks_.get_missing_up_to(largest);
+                        let ack_to_use = if acks_.len() == 0 {
+                            let mut rs = OpenRangeSet::default();
+                            let first_pn =
+                                self.mc_acks[fc_chan_id as usize].get_lowest_pn();
+                            if let Some(first) = first_pn {
+                                rs.insert(first.saturating_sub(1)..first);
+                            }
+
+                            rs
+                        } else {
+                            acks_.clone()
+                        };
+                        let mut missing = ack_to_use.get_missing_up_to(largest);
                         // Also remove older, out of interest, values!
                         if let Some(pn) = pn_drain {
                             missing.remove_until(pn - 1);
@@ -715,9 +727,16 @@ impl FcController {
             // Fc-TODO: not sure this will work because the last expired may be
             // another than the largest lost.
             if let Some(max_pn) = self.last_drained_pn[fc_id as usize] {
-                self.recv_ack
-                    .get_mut(&client_id)
-                    .map(|r| r.remove_until(max_pn));
+                if let Some(recv_ack) = self.recv_ack.get_mut(&client_id) {
+                    // Keep in memory the last received to be sure that this is not empty except if something is actually missing.
+                    let max_ack_pn = recv_ack.last();
+
+                    recv_ack.remove_until(max_pn);
+
+                    if let Some(pn) = max_ack_pn {
+                        recv_ack.insert(pn..pn + 1);
+                    }
+                }
             }
         }
 

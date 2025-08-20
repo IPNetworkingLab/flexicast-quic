@@ -683,6 +683,7 @@ async fn main() {
             .unwrap();
 
             let client_id = next_client_id;
+            info!("I give client_id={client_id} to sockaddr={:?}", from);
 
             // Create a new channel to communicate with the client.
             let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);

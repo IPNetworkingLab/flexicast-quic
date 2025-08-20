@@ -130,6 +130,11 @@ impl McAck {
         self.acked.last_key_value().map(|(pn, _)| *pn)
     }
 
+    /// Get the lowest packet number that is still in the queue.
+    pub fn get_lowest_pn(&self) -> Option<u64> {
+        self.acked.first_key_value().map(|(pn, _)| *pn)
+    }
+
     /// Adds a new receiver to the structure.
     /// This will "simulate" the fact that the new receiver ACKed all packets
     /// before `first_pn`.
