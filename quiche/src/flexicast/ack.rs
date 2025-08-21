@@ -80,6 +80,9 @@ pub struct McAck {
     stream_full: HashMap<u64, RangeSet>,
 
     /// Lowest packet number potentially in the acked ranges.
+    lowest_pn: Option<u64>,
+
+    /// Largest packet number seen in the ack ranges.
     largest_pn: Option<u64>,
 
     /// Sets of already received packets numbers.
@@ -97,6 +100,7 @@ impl McAck {
             acked_full: None,
             stream_map: HashMap::new(),
             stream_full: HashMap::new(),
+            lowest_pn: None,
             largest_pn: None,
             recv_pkt_num: is_uc_path.then(RangeSet::default),
         }
@@ -115,19 +119,20 @@ impl McAck {
 
     /// Sets the largest packet number in the structure.
     /// This drains entries that are below this value.
-    pub fn drain_packets(&mut self, largest_pn: Option<u64>) {
-        if let Some(largest_pn) = largest_pn {
-            self.acked = self.acked.split_off(&largest_pn);
-            self.largest_pn = Some(largest_pn - 1);
+    pub fn drain_packets(&mut self, lowest_pn: Option<u64>) {
+        if let Some(lowest_pn) = lowest_pn {
+            self.acked = self.acked.split_off(&lowest_pn);
+            self.lowest_pn = Some(lowest_pn - 1);
         } else {
-            self.largest_pn = self.acked.pop_last().map(|(_, v)| v);
+            self.lowest_pn = self.acked.pop_last().map(|(_, v)| v);
             self.acked = BTreeMap::new();
         }
     }
 
     /// Get largest packet number that is still in the queue.
     pub fn get_largest_pn(&self) -> Option<u64> {
-        self.acked.last_key_value().map(|(pn, _)| *pn)
+        // self.acked.last_key_value().map(|(pn, _)| *pn)
+        self.largest_pn
     }
 
     /// Get the lowest packet number that is still in the queue.
@@ -163,6 +168,15 @@ impl McAck {
     pub fn on_ack_received(&mut self, ranges: &RangeSet) {
         let mut fully_range = self.acked_full.take().unwrap_or_default();
 
+        // Update the largest PN seen.
+        if let Some(largest_in_range) = ranges.last() {
+            self.largest_pn = Some(
+                self.largest_pn
+                    .unwrap_or(largest_in_range)
+                    .max(largest_in_range),
+            );
+        }
+
         for init_range in ranges.clone().iter() {
             let mut range = init_range.clone();
             let mut process_range = true;
@@ -174,13 +188,13 @@ impl McAck {
                         continue;
                     } else if recv_range.start > range.end {
                         break;
-                    } else if recv_range.start <= range.start &&
-                        recv_range.end >= range.end
+                    } else if recv_range.start <= range.start
+                        && recv_range.end >= range.end
                     {
                         process_range = false;
                         break;
-                    } else if recv_range.start <= range.start &&
-                        recv_range.end > range.start
+                    } else if recv_range.start <= range.start
+                        && recv_range.end > range.start
                     {
                         range.start = recv_range.end;
                         continue;

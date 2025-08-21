@@ -1060,7 +1060,7 @@ impl FcController {
         max_pn: Option<u64>,
     ) -> Result<()> {
         let name = self.controller_role.name();
-        info!("{name} enters on_join");
+        info!("{name} enters on_join for client {recv_id} and max_pn: {max_pn:?}");
         if let ControllerRole::Leaf(_leaf) = &self.controller_role {
             let pn_drain = max_pn
                 .unwrap_or(0)

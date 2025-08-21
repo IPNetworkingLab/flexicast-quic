@@ -256,7 +256,7 @@ impl UcPathRun for UcPathFileTransfer {
                 // Send the packet directly to the wire without going by the main
                 // thread.
                 self.0.uc_sock.send_to(&buf[..write], send_info.to).await?;
-                info!("UC path sent packet of len {write}");
+                trace!("UC path sent packet of len {write}");
             }
 
             // Exit the stap if the connection is closed.
