@@ -336,6 +336,7 @@ impl UcPath {
                 .map(|fcs| fcs.fcf_alive())
                 .unwrap_or(true)
         {
+            info!("Recv {} says it's okay, don't need the data", self.client_id);
             return Ok(());
         }
 

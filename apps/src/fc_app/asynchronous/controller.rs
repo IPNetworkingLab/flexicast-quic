@@ -260,6 +260,8 @@ impl FcController {
             },
 
             MsgFcCtl::StreamData((data, stream_id, fin, min_off)) => {
+                let original_off = self.app_data_min_off;
+                let original_len = self.app_data.len();
                 // Buffer the data, up to the flow control limits.
                 self.app_data.extend_from_slice(&data);
 
@@ -274,6 +276,8 @@ impl FcController {
 
                 self.app_data_fin = fin;
                 self.app_data_stream_id = stream_id;
+
+                info!("{:?} StreamData. Before updating: off={original_off} and len={original_len}. Given by msg len={}, off={min_off}. Cut at {index} after extend from slice. So total min_off={} and len={}", self.controller_role.name(), data.len(), self.app_data_min_off, self.app_data.len());
 
                 // info!("Send to UC path: stream_id={stream_id}, fin={fin},
                 // len={}, off={min_off}", data.len());
@@ -311,7 +315,7 @@ impl FcController {
                     return Ok(());
                 }
 
-                debug!(
+                info!(
                     "{} Before fall back of receiver: {id}, this is the state of
                 the McAck: {:?}",
                     self.controller_role.name(),
@@ -322,28 +326,23 @@ impl FcController {
                 _ = self.unicast_recv.insert(id);
                 // _ = self.delegated_recv[fc_chan_id as usize].insert(id);
 
-                if let Some(acks_) = self.recv_ack.get(&id) {
+                if let Some(mut acks_) = self.recv_ack.get(&id).cloned() {
                     let largest_pn =
                         self.mc_acks[fc_chan_id as usize].get_largest_pn();
                     if let Some(largest) = largest_pn {
-                        let ack_to_use = if acks_.len() == 0 {
-                            let mut rs = OpenRangeSet::default();
-                            let first_pn =
-                                self.mc_acks[fc_chan_id as usize].get_lowest_pn();
-                            if let Some(first) = first_pn {
-                                rs.insert(first.saturating_sub(1)..first);
-                            }
+                        // Also add potential packets that were before what we ACK.
+                        if let Some(first_pn) = self.last_drained_pn[fc_chan_id as usize] {
+                            acks_.insert(first_pn..first_pn + 1);
+                        }
 
-                            rs
-                        } else {
-                            acks_.clone()
-                        };
-                        let mut missing = ack_to_use.get_missing_up_to(largest);
+                        let largest_pn_considered = largest.max(acks_.last().unwrap_or(0));
+                        let mut missing = acks_.get_missing_up_to(largest_pn_considered);
+                        info!("Largest={largest_pn:?}. Largest pn considered={largest_pn_considered:?}. ack_to_use={acks_:?}. Missing={missing:?}. Remove_until={pn_drain:?}");
                         // Also remove older, out of interest, values!
                         if let Some(pn) = pn_drain {
                             missing.remove_until(pn - 1);
                         }
-                        debug!(
+                        info!(
                             "{} UC FB. Hack for {} missing: {:?}",
                             self.controller_role.name(),
                             id,
@@ -376,10 +375,11 @@ impl FcController {
                         Some(self.app_data_min_off),
                         self.app_data_fin,
                     ));
+                    info!("Send StreamData len={} with off={}", self.app_data.len(), self.app_data_min_off);
                     send_uc_path!(self, id, msg);
                 }
 
-                debug!(
+                info!(
                     "{} After fall back of receiver: {id}, this is the state
                 of the McAck: {:?}",
                     self.controller_role.name(),
@@ -693,7 +693,7 @@ impl FcController {
             // Send the delegated pieces to the client.
             // Optimistation: we send all delegated streams and rely on the
             // unicast path to filter the ones to send.
-            debug!(
+            info!(
                 "{name}: Delegate stream {:?} to {client_id}",
                 delegated_streams
                     .iter()
