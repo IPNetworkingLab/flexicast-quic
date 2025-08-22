@@ -2,6 +2,7 @@
 
 use super::sendmmsg::MsgSmsg;
 use super::Result;
+use quiche::flexicast::ack::FcDelegatedStream;
 use quiche::flexicast::control::OpenSent;
 use quiche::flexicast::reliable::FcUnicastRetransmission;
 use quiche::flexicast::FlexicastChannelSource;
@@ -83,6 +84,9 @@ pub struct FcChannelAsync {
 
     /// Pending rangeset to send to the controller.
     pub pending_sent_pkt: Vec<OpenSent>,
+
+    /// Pending delegated stream pieces in case the controller is full of messages.
+    pub pending_stream_pieces: Vec<FcDelegatedStream>,
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the

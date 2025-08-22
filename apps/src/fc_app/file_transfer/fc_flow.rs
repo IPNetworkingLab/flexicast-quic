@@ -57,10 +57,10 @@ impl FcFlowRun for FcFlowfileTransfer {
                     .saturating_sub(now.duration_since(timer))
             });
 
-            if timeout.is_none() &&
-                self.0.pending_data.is_none() &&
-                app_close_timeout.is_none() &&
-                self.0.rx_ctl.is_closed()
+            if timeout.is_none()
+                && self.0.pending_data.is_none()
+                && app_close_timeout.is_none()
+                && self.0.rx_ctl.is_closed()
             {
                 break;
             }
@@ -88,7 +88,7 @@ impl FcFlowRun for FcFlowfileTransfer {
 
             // Delegate lost STREAM frames to the controller,
             // that will dispatch them to all unicast paths for retransmission.
-            let delegated_streams =
+            let mut delegated_streams =
                 self.0.fc_chan.channel.fc_get_delegated_stream(
                     FcUnicastRetransmission::Delegates(true),
                 )?;
@@ -101,12 +101,27 @@ impl FcFlowRun for FcFlowfileTransfer {
                         .map(|d| (d.offset, d.payload.len()))
                         .collect::<Vec<_>>()
                 );
+
+                // Push with old ones.
+                self.0.pending_stream_pieces.append(&mut delegated_streams);
+
+                // Give an Arc of it.
+                let stream_pieces_arc: Arc<Vec<_>> =
+                    Arc::new(self.0.pending_stream_pieces.drain(..).collect());
+
                 let del_streams_msg = MsgFcCtl::DelegateStreams((
                     self.0.id,
-                    Arc::new(delegated_streams),
+                    stream_pieces_arc.clone(),
                     false,
                 ));
-                self.0.sync_tx.send(del_streams_msg).await?;
+                match self.0.sync_tx.try_send(del_streams_msg) {
+                    Ok(_) => (),
+                    Err(_e) => {
+                        // We can do this because we are the only having the Arc.
+                        self.0.pending_stream_pieces =
+                            Arc::try_unwrap(stream_pieces_arc).unwrap()
+                    },
+                }
             }
 
             // Maybe we can close the connection.
@@ -122,8 +137,8 @@ impl FcFlowRun for FcFlowfileTransfer {
                 if self
                     .0
                     .rtp_stop_timer
-                    .saturating_sub(now.duration_since(timer)) ==
-                    time::Duration::ZERO
+                    .saturating_sub(now.duration_since(timer))
+                    == time::Duration::ZERO
                 {
                     // Yes, we can close now.
                     can_close_conn_after_rtp = true;
@@ -174,8 +189,14 @@ impl FcFlowRun for FcFlowfileTransfer {
                                 .fc_get_stream_off_front(*stream_id)
                                 .unwrap_or(0),
                         ));
-                        self.0.sync_tx.send(msg).await?;
-                        self.0.pending_data_sent_uc = true;
+                        match self.0.sync_tx.try_send(msg) {
+                            Ok(_) => self.0.pending_data_sent_uc = true,
+                            Err(_e) => {
+                                // Avoid sending data if we cannot forward it to unicast.
+                                // FC-TODO: not sure this will work.
+                                break 'rtp;
+                            },
+                        }
                     }
 
                     let written = if !self.0.do_flexicast {
@@ -320,10 +341,12 @@ impl FcFlowRun for FcFlowfileTransfer {
 
                 // Potentially unlimit the congestion window.
                 match self.0.cca {
-                    FcFlowCwnd::Unlimited =>
-                        self.0.fc_chan.channel.fc_set_flow_cwnd(usize::MAX - 1000),
-                    FcFlowCwnd::Limited(v) =>
-                        self.0.fc_chan.channel.fc_set_flow_cwnd(v as usize),
+                    FcFlowCwnd::Unlimited => {
+                        self.0.fc_chan.channel.fc_set_flow_cwnd(usize::MAX - 1000)
+                    },
+                    FcFlowCwnd::Limited(v) => {
+                        self.0.fc_chan.channel.fc_set_flow_cwnd(v as usize)
+                    },
                     _ => (),
                 }
             }

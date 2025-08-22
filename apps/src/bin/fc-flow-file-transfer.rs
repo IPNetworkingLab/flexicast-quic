@@ -329,6 +329,7 @@ async fn main() {
             pending_data: None,
             pending_data_sent_uc: false,
             pending_sent_pkt: Vec::new(),
+            pending_stream_pieces: Vec::new(),
         };
 
         tx_fc_source.push(tx);

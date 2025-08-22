@@ -304,6 +304,7 @@ impl FcController {
                                 fin,
                                 min_off,
                             ));
+                            info!("Waiting before sending stream data. Root controller.");
                             tx.send(msg).await?;
                         }
                     },
@@ -549,15 +550,13 @@ impl FcController {
                         None,
                         None,
                     ));
+                    info!("Before leaf{:?} send dummy ack", leaf.leaf_id);
                     leaf.tx_up.send(msg).await?;
 
                     // Update the largest pn dummy acked.
                     if let Some(new_highest) = rs.last() {
                         leaf.set_dummy_ack(true, Some(new_highest));
                     }
-
-                    let name = self.controller_role.name();
-                    debug!("{:?} sends dummy ack with {:?}!", name, rs);
                 }
 
                 for (&down_id, _) in self.active_clients[fc_id as usize].iter() {
@@ -570,6 +569,7 @@ impl FcController {
                 for (down_id, _) in self.active_clients[fc_id as usize].iter() {
                     let msg = MsgFcCtl::Sent((fc_id, sent.clone()));
                     if let Some(tx) = root.tx_down.get(down_id) {
+                        info!("Before root sending SentPkt");
                         tx.send(msg).await?;
                     }
                 }
@@ -719,6 +719,7 @@ impl FcController {
                             delegated_streams.clone(),
                             early_retransmit,
                         ));
+                        info!("Before root controller sends DelegatedStreams to {client_id}");
                         tx.send(msg).await?;
                     }
                 },
@@ -816,6 +817,7 @@ impl FcController {
                                     i as u64, first, first,
                                 ));
                                 if let Some(tx) = root.tx_down.get(client_id) {
+                                    info!("Before root controller sends NewhighestPN to {client_id}");
                                     tx.send(msg).await?;
                                 }
                             }
@@ -932,11 +934,13 @@ impl FcController {
                 ControllerRole::Leaf(leaf) => {
                     let msg =
                         MsgFcCtl::AggregatedInfo((leaf.leaf_id, fc_id, aggr_out));
+                    info!("Before leaf{} sends aggregate info to root", leaf.leaf_id);
                     leaf.tx_up.send(msg).await?;
                 },
 
                 ControllerRole::Root(root) => {
                     let msg = MsgFcSource::AggregatedInfo(aggr_out);
+                    info!("Before root controller sends aggregate to fc");
                     root.tx_up[fc_id as usize].send(msg).await?;
                 },
             }
@@ -978,7 +982,7 @@ impl FcController {
         // If this is a leaf and there is no more receiver, indicate it to the root.
         if self.nb_clients == Some(0) {
             if let ControllerRole::Leaf(leaf) = &self.controller_role {
-                debug!(
+                info!(
                     "{} sends CollectRecv to root",
                     self.controller_role.name()
                 );
@@ -1121,6 +1125,7 @@ impl FcController {
                     let msg =
                         MsgFcCtl::NewHighestPn((fc_id, highest_pn, lowest_pn));
                     if let Some(tx_leaf) = root.tx_down.get(ctl_id) {
+                        info!("Before root controller sends NewhighestPn 2 to {ctl_id}");
                         tx_leaf.send(msg).await?;
                     }
                 }
