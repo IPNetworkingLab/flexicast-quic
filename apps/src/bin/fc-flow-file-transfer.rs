@@ -57,7 +57,7 @@ use std::time;
 use tokio_metrics::TaskMonitor;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
-const CHANNEL_BUFFER_SIZE: usize = 100;
+const CHANNEL_BUFFER_SIZE: usize = 100_000;
 
 #[derive(Parser)]
 struct Args {

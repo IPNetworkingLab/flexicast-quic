@@ -50,6 +50,7 @@ impl FcFlowRun for FcFlowfileTransfer {
         loop {
             let now = time::Instant::now();
             let timeout = self.0.fc_chan.channel.timeout();
+            info!("timeout of the flexicast flow: {timeout:?}");
             let app_close_timeout = rtp_stopped.map(|timer| {
                 self.0
                     .rtp_stop_timer

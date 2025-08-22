@@ -167,6 +167,7 @@ impl UcPath {
                         .map(|fc_fec| fc_fec.fc_get_recovered_esi())
                 })
                 .flatten();
+            info!("Recv {} will send ack data {pn:?}", self.client_id);
             let msg = MsgFcCtl::AckData((
                 self.client_id,
                 fc_id.unwrap() as u64,
@@ -253,8 +254,8 @@ impl UcPath {
                 .conn
                 .get_flexicast_attributes()
                 .map(|fc| {
-                    fc.get_mc_role() ==
-                        McRole::ServerUnicast(
+                    fc.get_mc_role()
+                        == McRole::ServerUnicast(
                             quiche::flexicast::McClientStatus::UcFallBack,
                         )
                 })
@@ -330,14 +331,17 @@ impl UcPath {
         fin: bool,
     ) -> Result<()> {
         // Do not say it is an error, but it should not happen.
-        if self.listen_fc_channel &&
-            self.fcf_scheduler
+        if self.listen_fc_channel
+            && self
+                .fcf_scheduler
                 .as_ref()
                 .map(|fcs| fcs.fcf_alive())
                 .unwrap_or(true)
         {
-            info!("Recv {} says it's okay, don't need the data", self.client_id);
-            return Ok(());
+            info!("Recv {} says it's okay, don't need the data. It is still important to send data if there is an offset: {off:?}", self.client_id);
+            if off.is_none() {
+                return Ok(());
+            }
         }
 
         info!("The UC Path pushes pending data stream_id={stream_id} off={:?} len={:?}", off, data.len());

@@ -174,14 +174,15 @@ impl FcController {
         loop {
             let nb_recv = self.rx_fc_ctl.recv_many(&mut vec_of_msg, 1000).await;
             if nb_recv == 0 {
+                info!("{} closing the channel RX.", self.controller_role.name());
                 break;
             }
             for msg in vec_of_msg.drain(..nb_recv) {
-                self.handle_fc_msg(msg).await?;
+                if let Err(e) = self.handle_fc_msg(msg).await { info!("ERROR {:?}: {e:?}.", self.controller_role.name()); return Err(e); }
             }
 
             if self.possible_send_ack {
-                self.handle_send_ack().await?;
+                if let Err(e) = self.handle_send_ack().await { info!("ERROR2 {:?}: {e:?}.", self.controller_role.name()); return Err(e); }
             }
 
             // Exit controller when no more clients listen to the group.
@@ -288,7 +289,7 @@ impl FcController {
                             let msg = MsgRecv::StreamData((
                                 data.clone(),
                                 stream_id,
-                                None,
+                                Some(min_off),
                                 fin,
                             ));
                             send_uc_path!(self, *recv_id, msg);
@@ -999,6 +1000,7 @@ macro_rules! send_uc_path {
         if let ControllerRole::Leaf(leaf) = &mut $ctl.controller_role {
             if let Some(tx_client) = leaf.tx_down.get(&$recv_id) {
                 if let Err(_send_error) = tx_client.send($msg).await {
+                    info!("Error for this client: {:?}. Remove it from the structure", $recv_id);
                     // Remove this unicast path from the structure.
                     let _ = $ctl.recv_ack.remove(&$recv_id);
                     let _ = $ctl.rec_fec_md.remove(&$recv_id);

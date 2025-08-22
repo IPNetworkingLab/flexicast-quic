@@ -176,7 +176,7 @@ impl FcChannelAsync {
 
         let sent_arc = Arc::new(self.pending_sent_pkt.clone());
 
-        info!("Fc Flow has new sent packets: {:?}", sent_arc);
+        info!("Fc Flow has new sent packets: {:?}", sent_arc.iter().map(|sent| sent.pkt_num).collect::<Vec<_>>());
         let msg = MsgFcCtl::Sent((self.id, sent_arc.clone()));
         if let Err(_e) = self.sync_tx.try_send(msg) {
             debug!("This is a timeout on the fc flow. send later");
