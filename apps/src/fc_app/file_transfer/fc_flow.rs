@@ -62,6 +62,7 @@ impl FcFlowRun for FcFlowfileTransfer {
                 && app_close_timeout.is_none()
                 && self.0.rx_ctl.is_closed()
             {
+                info!("Exiting the flexicast flow");
                 break;
             }
 

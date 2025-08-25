@@ -242,7 +242,7 @@ impl Connection {
     /// in a transient state because the receiver changed its flexicast flow.
     pub fn fc_delegated_streams(
         &mut self, fc_id: u64, delegated_streams: Arc<Vec<FcDelegatedStream>>,
-        do_delegate: Vec<bool>,
+        do_delegate: Vec<bool>, do_send: bool,
     ) -> Result<()> {
         let flexicast = self
             .flexicast
@@ -301,39 +301,45 @@ impl Connection {
 
             let was_flushable = stream.is_flushable();
 
-            let _written = match stream.send.write_at_offset(
-                &del_stream.payload,
-                del_stream.offset,
-                del_stream.fin,
-            ) {
-                Ok(v) => v,
-                Err(Error::FinalSize) => {
-                    // Hack by saying that it is correctly received.
-                    // FC-TODO: will it work?
-                    // Insert inside McAck structure.
-                    if let Some(rfc) = self
-                        .flexicast
-                        .as_mut()
-                        .and_then(|fc| fc.fc_reliable.server_mut())
-                    {
-                        rfc.mc_ack.on_stream_ack_received(
-                            del_stream.stream_id,
-                            del_stream.offset,
-                            del_stream.payload.len() as u64,
-                        );
-                    }
-
-                    continue;
-                },
-                Err(e) => {
-                    return Err(e);
-                },
-            };
-
-            // Mark the stream as flushable.
-            let priority_key = Arc::clone(&stream.priority_key);
-            if !was_flushable {
-                self.streams.insert_flushable(&priority_key);
+            let before = stream.send.off_back();
+            if do_send {
+                let _written = match stream.send.write_at_offset(
+                    &del_stream.payload,
+                    del_stream.offset,
+                    del_stream.fin,
+                ) {
+                    Ok(v) => v,
+                    Err(Error::FinalSize) => {
+                        // Hack by saying that it is correctly received.
+                        // FC-TODO: will it work?
+                        // Insert inside McAck structure.
+                        if let Some(rfc) = self
+                            .flexicast
+                            .as_mut()
+                            .and_then(|fc| fc.fc_reliable.server_mut())
+                        {
+                            rfc.mc_ack.on_stream_ack_received(
+                                del_stream.stream_id,
+                                del_stream.offset,
+                                del_stream.payload.len() as u64,
+                            );
+                        }
+    
+                        continue;
+                    },
+                    Err(e) => {
+                        return Err(e);
+                    },
+                };
+    
+                let after = stream.send.off_back();
+                debug!("Delegate piece for offset={} and length={}. Before back off={before}. Now={after}", del_stream.offset, del_stream.payload.len());
+    
+                // Mark the stream as flushable.
+                let priority_key = Arc::clone(&stream.priority_key);
+                if !was_flushable {
+                    self.streams.insert_flushable(&priority_key);
+                }
             }
         }
 

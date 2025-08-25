@@ -13,6 +13,7 @@ use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 use std::collections::hash_map::Entry::Occupied;
 use std::collections::hash_map::Entry::Vacant;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -38,7 +39,7 @@ pub struct UcPath {
     /// The second value indicates whether this is the last piece of data, i.e.,
     /// 'fin'.
     /// The last value indicates the stream ID.
-    pub pending_data: Vec<(Arc<Vec<u8>>, bool, Option<u64>, u64)>,
+    pub pending_data: HashMap<u64, BTreeMap<u64, (Arc<Vec<u8>>, bool)>>,
 
     /// Number of bytes written in the first pending data.
     pub pending_data_off: usize,
@@ -94,11 +95,40 @@ impl UcPath {
             },
 
             MsgRecv::DelegateStreams((fc_id, delegated_streams, do_delegate)) => {
-                debug!("Delegated streams on unicast");
+                for (delegated_stream, do_del) in
+                    delegated_streams.iter().zip(do_delegate.iter())
+                {
+                    if !*do_del {
+                        continue;
+                    }
+
+                    // Append data in the hashmap of pending data and don't directly delegate it.
+                    let stream_map =
+                        match self.pending_data.entry(delegated_stream.stream_id)
+                        {
+                            Vacant(entry) => entry.insert(BTreeMap::new()),
+                            Occupied(entry) => entry.into_mut(),
+                        };
+                    debug!(
+                        "Recv {}: inserts {} of len {} by delegation",
+                        self.client_id,
+                        delegated_stream.offset,
+                        delegated_stream.payload.len()
+                    );
+                    stream_map.insert(
+                        delegated_stream.offset,
+                        (
+                            Arc::new(delegated_stream.payload.clone()),
+                            delegated_stream.fin,
+                        ),
+                    );
+                }
+
                 self.conn.fc_delegated_streams(
                     fc_id,
                     delegated_streams,
                     do_delegate,
+                    false,
                 )?;
             },
 
@@ -177,6 +207,10 @@ impl UcPath {
             ));
 
             if let Err(_e) = self.tx_tcl.try_send(msg) {
+                info!(
+                    "Recv {} cannot send the ack because full..",
+                    self.client_id
+                );
                 self.pending_ack = pn;
                 self.pending_stream_ack = stream;
             }
@@ -260,6 +294,7 @@ impl UcPath {
                         )
                 })
                 .unwrap_or(false);
+            debug!("Recv {} was fallback: {}", self.client_id, was_fall_back);
             if let Some(pn) = self.conn.fc_get_highest_ack_pn() {
                 if let Some(fc_chan_id) = self
                     .conn
@@ -327,8 +362,7 @@ impl UcPath {
     }
 
     pub async fn handle_new_stream_data(
-        &mut self, data: Arc<Vec<u8>>, stream_id: u64, off: Option<u64>,
-        fin: bool,
+        &mut self, data: Arc<Vec<u8>>, stream_id: u64, off: u64, fin: bool,
     ) -> Result<()> {
         // Do not say it is an error, but it should not happen.
         if self.listen_fc_channel
@@ -339,14 +373,18 @@ impl UcPath {
                 .unwrap_or(true)
         {
             info!("Recv {} says it's okay, don't need the data. It is still important to send data if there is an offset: {off:?}", self.client_id);
-            if off.is_none() {
-                return Ok(());
-            }
+            // if off.is_none() {
+            //     return Ok(());
+            // }
         }
 
-        info!("The UC Path pushes pending data stream_id={stream_id} off={:?} len={:?}", off, data.len());
+        info!("Recv {}: The UC Path pushes pending data stream_id={stream_id} off={:?} len={:?}", self.client_id, off, data.len());
 
-        self.pending_data.push((data, fin, off, stream_id));
+        let stream_map = match self.pending_data.entry(stream_id) {
+            Vacant(entry) => entry.insert(BTreeMap::new()),
+            Occupied(entry) => entry.into_mut(),
+        };
+        stream_map.insert(off, (data, fin));
 
         Ok(())
     }

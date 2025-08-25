@@ -4221,14 +4221,15 @@ impl Connection {
                         }
                     },
 
-                    frame::Frame::McAnnounce { channel_id, .. } =>
+                    frame::Frame::McAnnounce { channel_id, .. } => {
                         if let Some(flexicast) = self.flexicast.as_mut() {
                             if let Some(mc_announce_data) = flexicast
                                 .get_mut_mc_announce_data_by_cid(&channel_id)
                             {
                                 mc_announce_data.set_mc_announce_processed(false);
                             }
-                        },
+                        }
+                    },
 
                     frame::Frame::McKey { .. } => {
                         if let Some(flexicast) = self.flexicast.as_mut() {
@@ -4672,8 +4673,10 @@ impl Connection {
                 cwnd_available,
             );
 
-            //trace!("{} pmtud probe status {} hs_con={} hs_sent={} //cwnd_avail={} out_len={} left={}", self.trace_id, pmtu_probe, self.handshake_confirmed, self.handshake_done_sent,
-            //cwnd_available, out_len, left);
+            // trace!("{} pmtud probe status {} hs_con={} hs_sent={}
+            // //cwnd_avail={} out_len={} left={}", self.trace_id, pmtu_probe,
+            // self.handshake_confirmed, self.handshake_done_sent,
+            // cwnd_available, out_len, left);
 
             if pmtu_probe {
                 trace!(
@@ -9253,7 +9256,6 @@ impl Connection {
                 ack_delay,
                 ..
             } => {
-                debug!("Recv PathAck frame: {:?} and {:?}", path_identifier, ranges);
                 if !self.use_path_pkt_num_space(epoch) {
                     return Err(Error::PathIdViolation);
                 }
@@ -9571,7 +9573,7 @@ impl Connection {
                 key,
                 algo,
                 first_pn,
-            } =>
+            } => {
                 if self.is_server {
                     return Err(Error::Flexicast(
                         flexicast::FcError::McInvalidRole(
@@ -9608,7 +9610,8 @@ impl Connection {
                     return Err(Error::Flexicast(
                         flexicast::FcError::McInvalidSymKey,
                     ));
-                },
+                }
+            },
 
             frame::Frame::SourceSymbolHeader { .. } => {
                 unreachable!()
@@ -11681,7 +11684,6 @@ pub mod testing {
     ) -> Result<Vec<(Vec<u8>, SendInfo)>> {
         let out = emit_flight_on_path(conn, None, None, None)?;
         Ok(out)
-
     }
 
     pub fn encode_pkt(

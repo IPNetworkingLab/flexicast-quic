@@ -81,6 +81,7 @@ impl FcFlowAliveScheduler {
         }
 
         // The receiver received a new packet on the flexicast flow.
+        debug!("Chec, fc flow alive: {:?} vs {:?}", self.fcf_last_recv, last_pn);
         let was_alive = self.fcf_alive;
         if self.fcf_last_recv.map(|pn| pn < last_pn).unwrap_or(true) {
             self.fcf_last_recv = Some(last_pn);

@@ -126,7 +126,7 @@ pub enum MsgRecv {
     /// It sends the payload to the controller to allow receivers to fall-back
     /// on unicast / disable flexicast and still receive the content.
     /// The last value indicates whether the stream is finished.
-    StreamData((Arc<Vec<u8>>, u64, Option<u64>, bool)),
+    StreamData((Arc<Vec<u8>>, u64, u64, bool)),
 }
 
 /// Messages sent to the flexicast source.

@@ -124,11 +124,13 @@ impl SendBuf {
         if let Some(fin_off) = self.fin_off {
             // Can't write past final offset.
             if max_off > fin_off {
+                debug!("Error::FinalSize 1: {:?} while I say that I write {} bytes from {:?}", self.fin_off, data.len(), self.off);
                 return Err(Error::FinalSize);
             }
 
             // Can't "undo" final offset.
             if max_off == fin_off && !fin {
+                debug!("Error::FinalSize 2: {:?} while I say that I write {} bytes from {:?} and fin!", self.fin_off, data.len(), self.off);
                 return Err(Error::FinalSize);
             }
         }

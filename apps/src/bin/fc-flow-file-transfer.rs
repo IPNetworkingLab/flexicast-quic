@@ -708,7 +708,7 @@ async fn main() {
                 rx_ctl: rx,
                 tx_tcl: tx_ctl.clone(),
                 tx_main: tx_main.clone(),
-                pending_data: Vec::new(),
+                pending_data: HashMap::new(),
                 pending_data_off: 0,
                 uc_sock: socket.clone(),
                 unlimited_cwnd: args.uc_unlimited_cwnd,

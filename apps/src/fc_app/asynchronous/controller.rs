@@ -172,6 +172,7 @@ impl FcController {
         let mut vec_of_msg = Vec::with_capacity(1000);
 
         loop {
+            info!("Before call recv_many: {:?}", self.controller_role.name());
             let nb_recv = self.rx_fc_ctl.recv_many(&mut vec_of_msg, 1000).await;
             if nb_recv == 0 {
                 info!("{} closing the channel RX.", self.controller_role.name());
@@ -181,7 +182,7 @@ impl FcController {
                 if let Err(e) = self.handle_fc_msg(msg).await { info!("ERROR {:?}: {e:?}.", self.controller_role.name()); return Err(e); }
             }
 
-            if self.possible_send_ack {
+            if self.possible_send_ack || true {
                 if let Err(e) = self.handle_send_ack().await { info!("ERROR2 {:?}: {e:?}.", self.controller_role.name()); return Err(e); }
             }
 
@@ -289,7 +290,7 @@ impl FcController {
                             let msg = MsgRecv::StreamData((
                                 data.clone(),
                                 stream_id,
-                                Some(min_off),
+                                min_off,
                                 fin,
                             ));
                             send_uc_path!(self, *recv_id, msg);
@@ -374,7 +375,7 @@ impl FcController {
                     let msg = MsgRecv::StreamData((
                         Arc::new(self.app_data.clone()),
                         self.app_data_stream_id,
-                        Some(self.app_data_min_off),
+                        self.app_data_min_off,
                         self.app_data_fin,
                     ));
                     info!("Send StreamData len={} with off={}", self.app_data.len(), self.app_data_min_off);
@@ -575,6 +576,7 @@ impl FcController {
                 }
             },
         }
+        info!("After sending message: {:?}", self.controller_role.name());
 
         Ok(())
     }
@@ -837,7 +839,7 @@ impl FcController {
                             Ok(_) => {
                                 self.pending_ack[i] = OpenRangeSet::default()
                             },
-                            Err(_e) => (),
+                            Err(_e) => info!("Leaf {} cannot send ACK to the root.", leaf.leaf_id),
                         }
                     },
 
@@ -847,7 +849,7 @@ impl FcController {
                             Ok(_) => {
                                 self.pending_ack[i] = OpenRangeSet::default()
                             },
-                            Err(_e) => (),
+                            Err(_e) => info!("Root cannot send ACK to the source"),
                         }
                     },
                 }
@@ -1141,17 +1143,17 @@ impl FcController {
         ack_stream_pieces: Option<Vec<(u64, OpenRangeSet)>>,
         rec_md: Option<OpenRangeSet>,
     ) -> Result<()> {
-        let name = self.controller_role.name();
-        info!(
-            "{} receives an ACK: {} acknowledges for flexicast flow
-                {}: pn={:?} and streams={:?}. Current mc ack: {:?}",
-            name,
-            recv_id,
-            fc_id,
-            ack_pn,
-            ack_stream_pieces,
-            self.mc_acks[fc_id as usize]
-        );
+        // let name = self.controller_role.name();
+        // info!(
+        //     "{} receives an ACK: {} acknowledges for flexicast flow
+        //         {}: pn={:?} and streams={:?}. Current mc ack: {:?}",
+        //     name,
+        //     recv_id,
+        //     fc_id,
+        //     ack_pn,
+        //     ack_stream_pieces,
+        //     self.mc_acks[fc_id as usize]
+        // );
 
         if let Some(pn) = self.active_clients[fc_id as usize].get(&recv_id) {
             debug!(

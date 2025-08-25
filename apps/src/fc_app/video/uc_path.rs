@@ -131,55 +131,110 @@ impl UcPathRun for UcPathVideo {
 
             // Sends to QUIC RTP frames that must be sent through unicast.
             'stream_data: loop {
-                if let Some((data, fin, off, stream_id)) =
-                    self.0.pending_data.iter().next()
-                {
-                    match self.0.conn.stream_priority(*stream_id, 0, false) {
-                        Ok(()) => (),
-                        Err(quiche::Error::StreamLimit) => (),
-                        Err(quiche::Error::Done) => (),
-                        Err(e) => {
-                            panic!("Error while setting stream priority: {:?}", e)
-                        },
-                    }
+                let stream_ids: Vec<_> =
+                    self.0.pending_data.keys().map(|id| *id).collect();
+                for stream_id in stream_ids.iter() {
+                    loop {
+                        if let Some((&first_off, (data_arc, fin))) = self
+                            .0
+                            .pending_data
+                            .get(stream_id)
+                            .and_then(|btree_map| btree_map.iter().next())
+                        {
+                            match self
+                                .0
+                                .conn
+                                .stream_priority(*stream_id, 0, false)
+                            {
+                                Ok(()) => (),
+                                Err(quiche::Error::StreamLimit) => (),
+                                Err(quiche::Error::Done) => (),
+                                Err(e) => {
+                                    panic!(
+                                    "Error while setting stream priority: {:?}",
+                                    e
+                                )
+                                },
+                            }
 
-                    let data = if let (Some(off), 0) =
-                        (off, self.0.pending_data_off)
-                    {
-                        let buf_off =
-                            self.0.conn.fc_reset_send_off(*stream_id, *off)?;
-                        info!("RESET THE FC SEND OFF stream_id={:?} off={:?}. Off given by quiche: {:?}", stream_id, off, buf_off);
+                            let data = &data_arc[self.0.pending_data_off..];
+                            let off = first_off + self.0.pending_data_off as u64;
+                            let buf_off = self
+                                .0
+                                .conn
+                                .fc_reset_send_off(*stream_id, off)
+                                .map_err(|e| {
+                                    debug!(
+                                        "{} Error reset send off: {e:?}",
+                                        self.0.client_id
+                                    );
+                                    e
+                                })?;
+                            info!(
+                                "RESET THE FC SEND OFF stream_id={:?} off={:?}.
+                        Off given by quiche: {:?} for {}",
+                                stream_id, off, buf_off, self.0.client_id
+                            );
 
-                        if *off + (data.len() as u64) < buf_off {
-                            &data[0..0] // Empty data. Everything that we could
-                                        // delegate is already received.
-                        } else {
-                            &data[buf_off.saturating_sub(*off) as usize..]
+                            let (data, stripped_nb) = if off + (data.len() as u64)
+                                < buf_off
+                            {
+                                info!(
+                                    "Giving empty data for {}.",
+                                    self.0.client_id
+                                );
+                                (&data[0..0], data.len()) // Empty data. Everything
+                                                          // that we could delegate
+                                                          // is already received.
+                            } else {
+                                info!(
+                                    "Giving data after {}. So remaining
+                            length={:?}. Offset={:?} for {}",
+                                    buf_off.saturating_sub(off),
+                                    data[buf_off.saturating_sub(off) as usize..]
+                                        .len(),
+                                    buf_off,
+                                    self.0.client_id
+                                );
+                                (
+                                    &data[buf_off.saturating_sub(off) as usize..],
+                                    buf_off.saturating_sub(off) as usize,
+                                )
+                            };
+
+                            let written = match self
+                                .0
+                                .conn
+                                .stream_send(*stream_id, &data, *fin)
+                            {
+                                Ok(v) => v,
+                                Err(quiche::Error::Done) => break 'stream_data,
+                                Err(e) => panic!("Other error: {:?}", e),
+                            };
+
+                            if self.0.pending_data_off + written >= data.len() {
+                                self.0.pending_data.get_mut(stream_id).and_then(
+                                    |btree_map| {
+                                        btree_map.remove_entry(&first_off)
+                                    },
+                                );
+                                self.0.pending_data_off = 0;
+                                // info!(
+                                //     "Draining element and reset pending data for {}",
+                                //     self.0.client_id
+                                // );
+                            } else {
+                                self.0.pending_data_off += written + stripped_nb;
+                                info!(
+                                "Increasing pending data off by {}. Now={} for
+                            {}",
+                                written + stripped_nb,
+                                self.0.pending_data_off,
+                                self.0.client_id
+                            );
+                            }
                         }
-                    } else {
-                        data.as_slice()
-                    };
-
-                    let written = match self.0.conn.stream_send(
-                        *stream_id,
-                        &data[self.0.pending_data_off..],
-                        *fin,
-                    ) {
-                        Ok(v) => v,
-                        Err(quiche::Error::Done) => break 'stream_data,
-                        Err(e) => panic!("Other error: {:?}", e),
-                    };
-
-                    debug!("{written} was written on the stream!");
-
-                    if self.0.pending_data_off + written == data.len() {
-                        let _ = self.0.pending_data.drain(0..1);
-                        self.0.pending_data_off = 0;
-                    } else {
-                        self.0.pending_data_off += written;
                     }
-                } else {
-                    break;
                 }
             }
 
