@@ -132,7 +132,7 @@ struct Args {
     /// Can be a file transfer (bytes, file, unix datagram) or a video stream
     /// (hls, rtp). The second value is specific on the application being
     /// used.
-    #[clap(long = "transfer-kind", default_value = "bytes:1000")]
+    #[clap(long = "transfer-kind", default_value = "file,bytes,1000")]
     transfer_kind: TransferKind,
 
     /// Sets the delay (in ms) before sending aggregated acknowledgments to the

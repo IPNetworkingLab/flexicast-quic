@@ -24,7 +24,7 @@ impl FromStr for TransferKind {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut tab = s.split(":");
+        let mut tab = s.split(",");
 
         match tab.next().ok_or("No transfer kink")? {
             "stream" =>

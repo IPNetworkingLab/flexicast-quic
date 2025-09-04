@@ -54,6 +54,8 @@ impl RtpSource {
                     Some(t) => self.tx.send_timeout(msg, t).await?,
                     None => self.tx.send(msg).await?,
                 }
+
+                self.stream_id += 4;
             }
         }
     }
@@ -66,16 +68,24 @@ pub struct RtpSink {
 
     /// Channel to receive the messages from Flexicast QUIC.
     rx: mpsc::Receiver<VideoSourceMsg>,
+
+    /// Socket address to send the RTP frames.
+    socketaddr_out: SocketAddr,
 }
 
 impl RtpSink {
     /// Creates a new instance.
     pub async fn new(
-        rx: mpsc::Receiver<VideoSourceMsg>, video_sink_sockaddr: SocketAddr,
+        rx: mpsc::Receiver<VideoSourceMsg>, socketaddr_out: SocketAddr,
     ) -> Result<Self> {
-        let socket_out = UdpSocket::bind(video_sink_sockaddr).await?;
+        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let socket_out = UdpSocket::bind(bind_addr).await?;
 
-        Ok(Self { socket_out, rx })
+        Ok(Self {
+            socket_out,
+            rx,
+            socketaddr_out,
+        })
     }
 
     /// Asynchronously runs the sink.
@@ -83,7 +93,7 @@ impl RtpSink {
         loop {
             if let Some(msg) = self.rx.recv().await {
                 let VideoSourceMsg::Data((_stream_id, data, _fin)) = msg;
-                self.socket_out.send(&data).await?;
+                self.socket_out.send_to(&data, self.socketaddr_out).await?;
             }
         }
     }

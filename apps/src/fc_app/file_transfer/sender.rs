@@ -36,7 +36,7 @@ impl FromStr for FileTransferKind {
     type Err = String;
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        let mut tab = value.split(":");
+        let mut tab = value.split(",");
         let _ = tab.next();
 
         match tab.next().ok_or("No transfer kind")? {

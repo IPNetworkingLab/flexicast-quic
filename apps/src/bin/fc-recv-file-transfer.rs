@@ -61,7 +61,7 @@ struct Args {
     initial_flow_control: Option<u64>,
 
     /// Receiving-side transfer kind.
-    #[clap(long = "transfer-kind", default_value = "file:file:.")]
+    #[clap(long = "transfer-kind", default_value = "file,file,.")]
     transfer_kind: TransferKind,
 
     /// Whether the receiver does not expect the connection to close after
