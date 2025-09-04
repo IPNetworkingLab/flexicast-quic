@@ -173,6 +173,7 @@ async fn main() {
                     let output_prefix = Path::new(&output_prefix);
 
                     let tmp_filename = if args.stay_open_on_fin {
+                        // Path::new("tmp_filename.txt").into()
                         Path::new("/shared/tmp_filename.txt").into()
                     } else {
                         Path::new("/dev/shm").join(out_filename)
@@ -231,9 +232,6 @@ async fn main() {
     socket.send_to(&out[..write], send_info.to).unwrap();
 
     loop {
-        // Compute (FC-)QUIC timeout.
-        let now = std::time::Instant::now();
-
         let timers = [
             conn.timeout(), /* QUIC timeout
                              * conn.mc_timeout(now),  // FC-QUIC timeout
@@ -481,7 +479,7 @@ async fn main() {
             while let Ok((read, fin)) = conn.stream_recv(stream_id, &mut buf[..])
             {
                 if time_first_byte.is_none() {
-                    time_first_byte = Some(now);
+                    time_first_byte = Some(time::Instant::now());
                 }
 
                 total_read += read;

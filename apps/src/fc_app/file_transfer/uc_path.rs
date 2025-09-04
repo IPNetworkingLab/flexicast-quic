@@ -40,11 +40,11 @@ impl UcPathRun for UcPathFileTransfer {
         let mut fd = if let Some(dir) = self.0.transport_feedback_dir.as_ref() {
             let path = std::path::Path::new(dir)
                 .join(format!("tf_recv_{:?}", self.0.client_id));
-            fs::OpenOptions::new()
+            Some(fs::OpenOptions::new()
                 .create(true)
-                .append(false)
+                .write(true)
                 .open(path)
-                .ok()
+                .unwrap())
         } else {
             None
         };
@@ -300,11 +300,7 @@ impl UcPathRun for UcPathFileTransfer {
             // Receive the streams from the receiver.
             // In this app this can only be transport metrics, so we store it in
             // the file directly.
-            'stream_recv: for stream_id in self.0.conn.readable() {
-                if !self.0.conn.stream_fully_readable(stream_id) {
-                    continue 'stream_recv;
-                }
-
+            for stream_id in self.0.conn.readable() {
                 while let Ok((read, _)) =
                     self.0.conn.stream_recv(stream_id, &mut buf[..])
                 {
