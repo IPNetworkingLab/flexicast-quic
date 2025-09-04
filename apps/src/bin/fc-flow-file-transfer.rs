@@ -418,7 +418,7 @@ async fn main() {
             .map(|d| std::time::Duration::from_millis(d)),
     );
 
-    let nb_ctl_leaves = 2;
+    let nb_ctl_leaves = 1;
     let mut ctl_leaves_struct = (0..nb_ctl_leaves)
         .map(|id| ControllerLeaf::new(id, tx_fc_ctl.clone()))
         .collect::<Vec<_>>();

@@ -27,6 +27,7 @@ impl FromStr for StreamTransferKind {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let mut tab = s.split(":");
+        let _ = tab.next();
 
         match tab.next().ok_or("No video transfer kind")? {
             "hls" => {

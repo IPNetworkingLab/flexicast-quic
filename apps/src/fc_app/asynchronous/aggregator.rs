@@ -85,7 +85,8 @@ impl FcAggregator {
             match self.max_datas.iter().map(|(k, v)| (v, k)).min() {
                 Some((new_max, new_id)) => {
                     let max_data_updated =
-                        self.min_max_data.is_some_and(|(_, v)| v < *new_max);
+                        self.min_max_data.is_some_and(|(_, v)| v < *new_max) ||
+                            self.min_max_data.is_none();
                     self.min_max_data = Some((*new_id, *new_max));
                     max_data_updated
                 },
