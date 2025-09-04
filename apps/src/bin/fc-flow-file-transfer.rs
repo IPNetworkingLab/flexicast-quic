@@ -26,9 +26,9 @@ use quiche_apps::fc_app::asynchronous::scheduler::FcFlowAliveScheduler;
 use quiche_apps::fc_app::asynchronous::uc::UcPathRun;
 use quiche_apps::fc_app::cca::FcFlowCwnd;
 use quiche_apps::fc_app::file_transfer::fc_flow::FcFlowfileTransfer;
-use quiche_apps::fc_app::file_transfer::sender::FileTransferKind;
 use quiche_apps::fc_app::file_transfer::uc_path::UcPathFileTransfer;
 use quiche_apps::fc_app::video::fc_flow::FcFlowVideo;
+use quiche_apps::fc_app::TransferKind;
 use tokio::sync::mpsc;
 
 use clap::Parser;
@@ -128,10 +128,12 @@ struct Args {
     #[clap(long = "sendmmsg", value_parser)]
     sendmmsg: Option<u64>,
 
-    /// File transfer application.
-    /// The path to the file to transfer.
+    /// Application kind.
+    /// Can be a file transfer (bytes, file, unix datagram) or a video stream
+    /// (hls, rtp). The second value is specific on the application being
+    /// used.
     #[clap(long = "transfer-kind", default_value = "bytes:1000")]
-    transfer_kind: FileTransferKind,
+    transfer_kind: TransferKind,
 
     /// Sets the delay (in ms) before sending aggregated acknowledgments to the
     /// flexicast flow for the controller. Used to avoid saturating with
@@ -142,11 +144,6 @@ struct Args {
     /// Sets the initial flow control for the flexicast flow.
     #[clap(long = "initial-fc-flow")]
     initial_fc_flow: Option<u64>,
-
-    /// Uses video streaming application instead of file transfer.
-    /// TODO: this is very ugly but I want to prototype quickly.
-    #[clap(long = "video")]
-    video_stream_dir: Option<String>,
 
     /// Path to the directory where we store per-receiver transport metrics
     /// feedback. Does not store per-receiver transport feedback if the
@@ -331,7 +328,6 @@ async fn main() {
             allow_unicast: args.allow_unicast,
             do_flexicast: args.flexicast,
             sendmmsg_txs: sendmmsg_txs.clone(),
-            transfer_kind: args.transfer_kind.clone(),
             pending_data: None,
             pending_data_sent_uc: false,
             pending_sent_pkt: Vec::new(),
@@ -355,44 +351,50 @@ async fn main() {
             }
         }
 
-        if let Some(dir_path_video) = args.video_stream_dir.as_ref() {
-            let mut fc_video_stream = FcFlowVideo {
-                fc: fc_struct,
-                dir_path: dir_path_video.to_string(),
-            };
+        match args.transfer_kind.clone() {
+            TransferKind::File(file_transfer_kind) => {
+                let mut fc_file_transfer = FcFlowfileTransfer {
+                    fc: fc_struct,
+                    file_transfer_kind,
+                };
 
-            #[cfg(feature = "tokio-tracing")]
-            {
-                let monitor_flow = monitor_flow.clone();
+                #[cfg(feature = "tokio-tracing")]
+                {
+                    let monitor_flow = monitor_flow.clone();
+                    tokio::spawn(async move {
+                        monitor_flow
+                            .instrument(fc_file_transfer.run())
+                            .await
+                            .unwrap();
+                    });
+                }
+                #[cfg(not(feature = "tokio-tracing"))]
                 tokio::spawn(async move {
-                    monitor_flow
-                        .instrument(fc_video_stream.run())
-                        .await
-                        .unwrap();
+                    fc_file_transfer.run().await.unwrap();
                 });
-            }
-            #[cfg(not(feature = "tokio-tracing"))]
-            tokio::spawn(async move {
-                fc_video_stream.run().await.unwrap();
-            });
-        } else {
-            // Create the file transfer structure.
-            let mut fc_file_transfer = FcFlowfileTransfer { 0: fc_struct };
+            },
 
-            #[cfg(feature = "tokio-tracing")]
-            {
-                let monitor_flow = monitor_flow.clone();
+            TransferKind::Stream(stream_transfer_kind) => {
+                let mut fc_video_stream = FcFlowVideo {
+                    fc: fc_struct,
+                    stream_transfer_kind,
+                };
+
+                #[cfg(feature = "tokio-tracing")]
+                {
+                    let monitor_flow = monitor_flow.clone();
+                    tokio::spawn(async move {
+                        monitor_flow
+                            .instrument(fc_video_stream.run())
+                            .await
+                            .unwrap();
+                    });
+                }
+                #[cfg(not(feature = "tokio-tracing"))]
                 tokio::spawn(async move {
-                    monitor_flow
-                        .instrument(fc_file_transfer.run())
-                        .await
-                        .unwrap();
+                    fc_video_stream.run().await.unwrap();
                 });
-            }
-            #[cfg(not(feature = "tokio-tracing"))]
-            tokio::spawn(async move {
-                fc_file_transfer.run().await.unwrap();
-            });
+            },
         }
 
         id_fc_chan += 1;

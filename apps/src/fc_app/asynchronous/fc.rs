@@ -13,7 +13,6 @@ use tokio::sync::mpsc::Receiver;
 use super::messages::*;
 
 use crate::fc_app::cca::FcFlowCwnd;
-use crate::fc_app::file_transfer::sender::FileTransferKind;
 use crate::fc_app::file_transfer::sender::FileTransferSrcMsg;
 use std::sync::Arc;
 use std::time;
@@ -66,9 +65,6 @@ pub struct FcChannelAsync {
     /// relying on a multicast network to send the packets on the flexicast
     /// flow.
     pub sendmmsg_txs: Option<Vec<mpsc::Sender<MsgSmsg>>>,
-
-    /// Transfer kind.
-    pub transfer_kind: FileTransferKind,
 
     /// Data received from the application and not yet delivered to QUIC.
     /// If some, we avoid listening again on the data channel to avoid having

@@ -10,7 +10,7 @@ use std::time;
 use tokio::sync::mpsc;
 
 use crate::fc_app::asynchronous;
-use crate::fc_app::video::rtp_source::VideoSourceMsg;
+use crate::fc_app::video::rtp::VideoSourceMsg;
 
 const MANIFEST_NAME: &str = "playlist.m3u8";
 const SEGMENT_PREFIX: &str = "segment_";

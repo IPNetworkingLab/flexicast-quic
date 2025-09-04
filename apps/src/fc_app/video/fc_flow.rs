@@ -12,12 +12,14 @@ use crate::fc_app::asynchronous::fc::FcFlowRun;
 use crate::fc_app::asynchronous::messages::MsgFcCtl;
 use crate::fc_app::cca::FcFlowCwnd;
 use crate::fc_app::video::hls::HlsSource;
-use crate::fc_app::video::rtp_source::VideoSourceMsg;
+use crate::fc_app::video::rtp::RtpSource;
+use crate::fc_app::video::rtp::VideoSourceMsg;
+use crate::fc_app::video::StreamTransferKind;
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 pub struct FcFlowVideo {
     pub fc: FcChannelAsync,
-    pub dir_path: String,
+    pub stream_transfer_kind: StreamTransferKind,
 }
 
 const CHANNEL_BUFFER_SIZE: usize = 10;
@@ -30,18 +32,22 @@ impl FcFlowRun for FcFlowVideo {
         // flow.
         let (tx_app, mut rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
 
-        // Start the application in its task.
-        // let timeout_opt = None;
-        // let video_feed_sockaddr = "127.0.0.1:5555".parse().unwrap();
-        // tokio::spawn(async move {
-        //     RtpSource::new(video_feed_sockaddr, tx_app, timeout_opt)
-        //         .await
-        //         .unwrap();
-        // });
-        let dir_path = self.dir_path.clone();
-        tokio::spawn(async move {
-            HlsSource::new(&dir_path, tx_app).run().await.unwrap();
-        });
+        match &self.stream_transfer_kind {
+            StreamTransferKind::Hls(input_dir) => {
+                let mut hls_source = HlsSource::new(&input_dir, tx_app);
+                tokio::spawn(async move {
+                    hls_source.run().await.unwrap();
+                });
+            },
+
+            StreamTransferKind::Rtp(in_sockaddr) => {
+                let mut rtp_source =
+                    RtpSource::new(*in_sockaddr, tx_app, None).await?;
+                tokio::spawn(async move {
+                    rtp_source.run().await.unwrap();
+                });
+            },
+        }
 
         loop {
             let timeout = self.fc.fc_chan.channel.timeout();

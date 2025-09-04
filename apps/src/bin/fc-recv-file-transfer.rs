@@ -12,8 +12,12 @@ use quiche::ConnectionId;
 use quiche_apps::common::make_qlog_writer;
 use quiche_apps::fc_app::file_transfer::receiver::FileTransferRecv;
 use quiche_apps::fc_app::file_transfer::receiver::FileTransferRecvMsg;
+use quiche_apps::fc_app::file_transfer::sender::FileTransferKind;
 use quiche_apps::fc_app::video::hls::HlsSink;
-use quiche_apps::fc_app::video::rtp_source::VideoSourceMsg;
+use quiche_apps::fc_app::video::rtp::RtpSink;
+use quiche_apps::fc_app::video::rtp::VideoSourceMsg;
+use quiche_apps::fc_app::video::StreamTransferKind;
+use quiche_apps::fc_app::TransferKind;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
 use std::net;
@@ -42,13 +46,13 @@ struct Args {
     #[clap(short = 'l', long = "local", default_value = "0.0.0.0", value_parser)]
     local_ip: Ipv4Addr,
 
-    #[clap(long = "proxy")]
     /// Multicast packets are proxied using packet replication for this client.
     /// This argument is a trick to avoid out-of-band computation by the source
     /// of the proxies to the clients. If this value is true, instead of
     /// binding to the flexicast address given in the MC_ANNOUNCE frame, the
     /// client will listen to its own address and the port advertised by the
     /// source.
+    #[clap(long = "proxy")]
     proxy_uc: bool,
 
     /// Sets the initial flow control limits on the receiver.
@@ -56,22 +60,15 @@ struct Args {
     #[clap(long = "flow-control")]
     initial_flow_control: Option<u64>,
 
-    /// Output path prefix.
-    /// This argument is used to save the output file in a specific location on
-    /// the disk.
-    #[clap(long = "output-prefix", default_value = ".")]
-    output_prefix: String,
+    /// Receiving-side transfer kind.
+    #[clap(long = "transfer-kind", default_value = "file:.")]
+    transfer_kind: TransferKind,
 
     /// Whether the receiver does not expect the connection to close after
     /// receiving a finished stream. E.g., used for application with updated
     /// content.
     #[clap(long = "stay-open")]
     stay_open_on_fin: bool,
-
-    /// Uses video streaming application instead of file transfer.
-    /// TODO: this is very ugly but I want to prototype quickly.
-    #[clap(long = "video")]
-    video_stream_dir: Option<String>,
 
     /// Whether the client sends transport feedback data to the server.
     #[clap(long = "transport-feedback")]
@@ -164,38 +161,64 @@ async fn main() {
         }
     }
 
-    let (mut tx_app, mut tx_app2) =
-        if let Some(dir_path) = args.video_stream_dir.as_ref() {
-            let (tx_app, rx_app) = mpsc::channel(100);
-            let mut fc_app = HlsSink::new(dir_path, rx_app);
-            tokio::spawn(async move {
-                fc_app.run().await.unwrap();
-            });
-            (None, Some(tx_app))
-        } else {
-            let (tx_app, rx_app) = mpsc::channel(100);
-            // Create the application handler at the client.
-            let out_filename =
-                Path::new(url.path_segments().unwrap().last().unwrap());
-            let output_prefix = Path::new(&args.output_prefix);
+    // Create the receiver application.
+    let tx_app = match args.transfer_kind {
+        TransferKind::File(file_transfer_kind) => {
+            match file_transfer_kind {
+                FileTransferKind::File(output_prefix) => {
+                    let (tx_app, rx_app) = mpsc::channel(100);
+                    // Create the application handler at the client.
+                    let out_filename =
+                        Path::new(url.path_segments().unwrap().last().unwrap());
+                    let output_prefix = Path::new(&output_prefix);
 
-            let tmp_filename = if args.stay_open_on_fin {
-                Path::new("/shared/tmp_filename.txt").into()
-            } else {
-                Path::new("/dev/shm").join(out_filename)
-            };
-            let mut fc_app = FileTransferRecv::new(
-                &output_prefix.join(out_filename),
-                rx_app,
-                &tmp_filename,
-            )
-            .unwrap();
+                    let tmp_filename = if args.stay_open_on_fin {
+                        Path::new("/shared/tmp_filename.txt").into()
+                    } else {
+                        Path::new("/dev/shm").join(out_filename)
+                    };
+                    let mut fc_app = FileTransferRecv::new(
+                        &output_prefix.join(out_filename),
+                        rx_app,
+                        &tmp_filename,
+                    )
+                    .unwrap();
 
-            tokio::spawn(async move {
-                fc_app.run().await.unwrap();
-            });
-            (Some(tx_app), None)
-        };
+                    tokio::spawn(async move {
+                        fc_app.run().await.unwrap();
+                    });
+
+                    TxApp::File(tx_app)
+                },
+
+                _ => panic!(
+                    "Receiver cannot have another file transfer kind than a file"
+                ),
+            }
+        },
+
+        TransferKind::Stream(stream_transfer_kind) => {
+            let (tx_app, rx_app) = mpsc::channel(100);
+            match stream_transfer_kind {
+                StreamTransferKind::Hls(output_dir) => {
+                    let mut fc_app = HlsSink::new(&output_dir, rx_app);
+                    tokio::spawn(async move {
+                        fc_app.run().await.unwrap();
+                    });
+                },
+
+                StreamTransferKind::Rtp(sockaddr) => {
+                    let mut fc_app =
+                        RtpSink::new(rx_app, sockaddr).await.unwrap();
+                    tokio::spawn(async move {
+                        fc_app.run().await.unwrap();
+                    });
+                },
+            }
+
+            TxApp::Stream(tx_app)
+        },
+    };
 
     info!(
         "connecting to {:} from {:} with scid {}",
@@ -466,26 +489,30 @@ async fn main() {
                     "TOTAL READ: {total_read} because now incremented by {read}"
                 );
 
-                if let Some(ref mut tx_app) = tx_app {
-                    let msg = FileTransferRecvMsg::Data((
-                        buf[..read].to_vec(),
-                        fin,
-                        stream_id,
-                    ));
-                    tx_app.send(msg).await.unwrap();
+                match &tx_app {
+                    TxApp::File(tx) => {
+                        let msg = FileTransferRecvMsg::Data((
+                            buf[..read].to_vec(),
+                            fin,
+                            stream_id,
+                        ));
+                        tx.send(msg).await.unwrap();
 
-                    if fin & !args.stay_open_on_fin {
-                        let _ = conn.close(true, 0, &[0]);
-                        nb_recv += 1;
-                    }
-                } else if let Some(ref mut tx) = tx_app2 {
-                    let msg = VideoSourceMsg::Data((
-                        stream_id,
-                        std::sync::Arc::new(buf[..read].to_vec()),
-                        fin,
-                    ));
+                        if fin & !args.stay_open_on_fin {
+                            let _ = conn.close(true, 0, &[0]);
+                            nb_recv += 1;
+                        }
+                    },
 
-                    tx.send(msg).await.unwrap();
+                    TxApp::Stream(tx) => {
+                        let msg = VideoSourceMsg::Data((
+                            stream_id,
+                            std::sync::Arc::new(buf[..read].to_vec()),
+                            fin,
+                        ));
+
+                        tx.send(msg).await.unwrap();
+                    },
                 }
             }
         }
@@ -569,9 +596,9 @@ async fn main() {
         }
     }
 
-    if let Some(ref mut tx_app) = tx_app {
+    if let TxApp::File(tx) = &tx_app {
         let msg = FileTransferRecvMsg::Close;
-        tx_app.send(msg).await.unwrap();
+        tx.send(msg).await.unwrap();
     }
 
     println!("RESULT-NB-STREAM-RECV {nb_recv}");
@@ -629,4 +656,10 @@ pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
             (name, value)
         })
         .collect()
+}
+
+enum TxApp {
+    File(mpsc::Sender<FileTransferRecvMsg>),
+
+    Stream(mpsc::Sender<VideoSourceMsg>),
 }
