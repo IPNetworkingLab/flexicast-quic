@@ -147,6 +147,12 @@ struct Args {
     /// TODO: this is very ugly but I want to prototype quickly.
     #[clap(long = "video")]
     video_stream_dir: Option<String>,
+
+    /// Path to the directory where we store per-receiver transport metrics
+    /// feedback. Does not store per-receiver transport feedback if the
+    /// value is not set.
+    #[clap(long = "transport-feedback")]
+    transport_feedback_dir: Option<String>,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -394,7 +400,8 @@ async fn main() {
 
     // Create the controller structures that will manage the communication between
     // the flexicast source and the unicast server instances.
-    // We create two levels of controllers to improve scalability: leaves and root.
+    // We create two levels of controllers to improve scalability: leaves and
+    // root.
     let mut ctl_root_struct = ControllerRoot::new();
     tx_fc_source
         .iter()
@@ -590,8 +597,8 @@ async fn main() {
         // is no connection matching, create a new one.
         // We should not enter in the else case because the UDP socket should be
         // connected.
-        let mut client = if !clients_ids.contains_key(&hdr.dcid)
-            && !clients_ids.contains_key(&hdr.dcid)
+        let mut client = if !clients_ids.contains_key(&hdr.dcid) &&
+            !clients_ids.contains_key(&hdr.dcid)
         {
             if hdr.ty != quiche::Type::Initial {
                 error!("Packet is not Initial");
@@ -690,7 +697,8 @@ async fn main() {
             let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
             clients_tx.push(tx.clone());
 
-            // We round-robin the receivers on the different instances of ctl leaves.
+            // We round-robin the receivers on the different instances of ctl
+            // leaves.
             let tx_ctl =
                 ctl_leaf_txs[(client_id % nb_ctl_leaves) as usize].clone();
 
@@ -724,6 +732,7 @@ async fn main() {
                 },
                 pending_ack: OpenRangeSet::default(),
                 pending_stream_ack: HashMap::new(),
+                transport_feedback_dir: args.transport_feedback_dir.clone(),
             };
 
             // Notify the controller with a new receiver.

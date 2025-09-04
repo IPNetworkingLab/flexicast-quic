@@ -63,6 +63,9 @@ pub struct UcPath {
     /// Pending aggregated stream acknowledgments from the receivers to the
     /// flexicast flow.
     pub pending_stream_ack: HashMap<u64, OpenRangeSet>,
+
+    /// Path to the directory where we store per-receiver transport feedback.
+    pub transport_feedback_dir: Option<String>,
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the

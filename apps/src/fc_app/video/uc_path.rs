@@ -2,6 +2,8 @@ use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McClientStatus;
 use quiche::flexicast::McRole;
 use std::convert::TryInto;
+use std::fs;
+use std::io::Write;
 use std::time;
 
 use crate::fc_app::asynchronous::messages::MsgFcCtl;
@@ -34,6 +36,19 @@ impl UcPathRun for UcPathVideo {
 
         // Whether it already notified the controller that it is ready.
         let mut sent_ready = false;
+
+        // Store the receiver transport metrics if required.
+        let mut fd = if let Some(dir) = self.0.transport_feedback_dir.as_ref() {
+            let path = std::path::Path::new(dir)
+                .join(format!("tf_recv_{:?}", self.0.client_id));
+            fs::OpenOptions::new()
+                .create(true)
+                .append(false)
+                .open(path)
+                .ok()
+        } else {
+            None
+        };
 
         let mut buf = [0u8; 1500];
         loop {
@@ -176,16 +191,19 @@ impl UcPathRun for UcPathVideo {
                                 stream_id, off, buf_off, self.0.client_id
                             );
 
-                            let (data, stripped_nb) = if off + (data.len() as u64)
-                                < buf_off
+                            let (data, stripped_nb) = if off + (data.len() as u64) <
+                                buf_off
                             {
                                 info!(
                                     "Giving empty data for {}.",
                                     self.0.client_id
                                 );
-                                (&data[0..0], data.len()) // Empty data. Everything
-                                                          // that we could delegate
-                                                          // is already received.
+                                (&data[0..0], data.len()) // Empty data.
+                                                          // Everything
+                                                          // that we could
+                                                          // delegate
+                                                          // is already
+                                                          // received.
                             } else {
                                 info!(
                                     "Giving data after {}. So remaining
@@ -220,7 +238,8 @@ impl UcPathRun for UcPathVideo {
                                 );
                                 self.0.pending_data_off = 0;
                                 // info!(
-                                //     "Draining element and reset pending data for {}",
+                                //     "Draining element and reset pending data
+                                // for {}",
                                 //     self.0.client_id
                                 // );
                             } else {
@@ -234,6 +253,23 @@ impl UcPathRun for UcPathVideo {
                             );
                             }
                         }
+                    }
+                }
+            }
+
+            // Receive the streams from the receiver.
+            // In this app this can only be transport metrics, so we store it in
+            // the file directly.
+            'stream_recv: for stream_id in self.0.conn.readable() {
+                if !self.0.conn.stream_fully_readable(stream_id) {
+                    continue 'stream_recv;
+                }
+
+                while let Ok((read, _)) =
+                    self.0.conn.stream_recv(stream_id, &mut buf[..])
+                {
+                    if let Some(file) = fd.as_mut() {
+                        let _ = file.write_all(&mut buf[..read]);
                     }
                 }
             }

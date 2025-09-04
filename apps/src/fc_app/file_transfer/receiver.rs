@@ -90,8 +90,8 @@ impl FileTransferRecv {
             // actual true name.
             if fin {
                 debug!("File download is done. Change the filename from {:?} to {:?}", self.tmp_filename, self.true_filename);
-                // std::fs::rename(&self.tmp_filename, &self.true_filename)?;
-                // self.file = Some(std::fs::File::create(&self.tmp_filename)?)
+                std::fs::rename(&self.tmp_filename, &self.true_filename)?;
+                self.file = Some(std::fs::File::create(&self.tmp_filename)?)
             }
         }
 

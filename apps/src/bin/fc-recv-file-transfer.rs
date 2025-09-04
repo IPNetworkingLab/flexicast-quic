@@ -72,6 +72,10 @@ struct Args {
     /// TODO: this is very ugly but I want to prototype quickly.
     #[clap(long = "video")]
     video_stream_dir: Option<String>,
+
+    /// Whether the client sends transport feedback data to the server.
+    #[clap(long = "transport-feedback")]
+    transport_feedback: bool,
 }
 
 #[tokio::main]
@@ -83,16 +87,18 @@ async fn main() {
 
     let args = Args::parse();
 
-    // Whether the flexicast client leaves the channel and joins another after
-    // some time. Time of start of reception of data.
-    let mut start_recv: Option<time::Instant> = None;
     let current_fc_idx = 0;
-
     let mut nb_recv = 0;
     let mut uc_recv = 0;
     let mut mc_recv = 0;
     let mut uc_send = 0;
     let mut total_read = 0;
+
+    // Transport metrics for feedback.
+    let start_connection = time::Instant::now();
+    let mut time_first_byte: Option<time::Instant> = None;
+    let mut sent_time_to_first_byte = false;
+    let mut send_stream_id = 2;
 
     // Creation of the flexicast path.
     let mut added_mc_cid = false;
@@ -158,38 +164,38 @@ async fn main() {
         }
     }
 
-    let (mut tx_app, mut tx_app2) = if let Some(dir_path) = args.video_stream_dir.as_ref()
-    {
-        let (tx_app, rx_app) = mpsc::channel(100);
-        let mut fc_app = HlsSink::new(dir_path, rx_app);
-        tokio::spawn(async move {
-            fc_app.run().await.unwrap();
-        });
-        (None, Some(tx_app))
-    } else {
-        let (tx_app, rx_app) = mpsc::channel(100);
-        // Create the application handler at the client.
-        let out_filename =
-            Path::new(url.path_segments().unwrap().last().unwrap());
-        let output_prefix = Path::new(&args.output_prefix);
-
-        let tmp_filename = if args.stay_open_on_fin {
-            Path::new("/shared").join(out_filename)
+    let (mut tx_app, mut tx_app2) =
+        if let Some(dir_path) = args.video_stream_dir.as_ref() {
+            let (tx_app, rx_app) = mpsc::channel(100);
+            let mut fc_app = HlsSink::new(dir_path, rx_app);
+            tokio::spawn(async move {
+                fc_app.run().await.unwrap();
+            });
+            (None, Some(tx_app))
         } else {
-            Path::new("/dev/shm").join(out_filename)
-        };
-        let mut fc_app = FileTransferRecv::new(
-            &output_prefix.join(out_filename),
-            rx_app,
-            &tmp_filename,
-        )
-        .unwrap();
+            let (tx_app, rx_app) = mpsc::channel(100);
+            // Create the application handler at the client.
+            let out_filename =
+                Path::new(url.path_segments().unwrap().last().unwrap());
+            let output_prefix = Path::new(&args.output_prefix);
 
-        tokio::spawn(async move {
-            fc_app.run().await.unwrap();
-        });
-        (Some(tx_app), None)
-    };
+            let tmp_filename = if args.stay_open_on_fin {
+                Path::new("/shared/tmp_filename.txt").into()
+            } else {
+                Path::new("/dev/shm").join(out_filename)
+            };
+            let mut fc_app = FileTransferRecv::new(
+                &output_prefix.join(out_filename),
+                rx_app,
+                &tmp_filename,
+            )
+            .unwrap();
+
+            tokio::spawn(async move {
+                fc_app.run().await.unwrap();
+            });
+            (Some(tx_app), None)
+        };
 
     info!(
         "connecting to {:} from {:} with scid {}",
@@ -451,8 +457,8 @@ async fn main() {
             // We should be able to read the stream until its end.
             while let Ok((read, fin)) = conn.stream_recv(stream_id, &mut buf[..])
             {
-                if start_recv.is_none() {
-                    start_recv = Some(now);
+                if time_first_byte.is_none() {
+                    time_first_byte = Some(now);
                 }
 
                 total_read += read;
@@ -481,6 +487,30 @@ async fn main() {
 
                     tx.send(msg).await.unwrap();
                 }
+            }
+        }
+
+        // Stream data to send.
+        // In this application we only send data for transport feedback metrics.
+        if args.transport_feedback &&
+            time_first_byte.is_some() &&
+            !sent_time_to_first_byte
+        {
+            let data = format!(
+                ":time-to-first-byte:{}",
+                time_first_byte
+                    .unwrap()
+                    .duration_since(start_connection)
+                    .as_millis()
+            );
+            match conn.stream_send(send_stream_id, data.as_str().as_bytes(), true)
+            {
+                Ok(v) if v == data.len() => {
+                    send_stream_id += 4;
+                    sent_time_to_first_byte = true;
+                },
+
+                _ => (),
             }
         }
 
