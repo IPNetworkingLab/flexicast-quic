@@ -113,16 +113,13 @@ pub struct FcController {
 
     /// Remember the stream data sent by the flexicast flow, in case of unicast
     /// fall-back.
-    app_data: Vec<u8>,
+    app_data: HashMap<u64, Vec<u8>>,
 
     /// Minimum offset of buffered data.
-    app_data_min_off: u64,
+    app_data_min_off: HashMap<u64, u64>,
 
     /// Whether the buffered data is fin.
-    app_data_fin: bool,
-
-    /// Remember the app data stream ID.
-    app_data_stream_id: u64,
+    app_data_fin: HashMap<u64, bool>,
 
     /// Whether new acknowledgment could be sent to the flexicast flow.
     /// This is done to prevent infinite polling.
@@ -160,10 +157,9 @@ impl FcController {
             ack_delay,
             fc_aggregator: FcAggregator::new(),
             delegated_streams: HashMap::new(),
-            app_data: Vec::new(),
-            app_data_min_off: 0,
-            app_data_fin: false,
-            app_data_stream_id: 0,
+            app_data: HashMap::new(),
+            app_data_min_off: HashMap::new(),
+            app_data_fin: HashMap::new(),
             possible_send_ack: false,
         }
     }
@@ -269,24 +265,33 @@ impl FcController {
             },
 
             MsgFcCtl::StreamData((data, stream_id, fin, min_off)) => {
-                let original_off = self.app_data_min_off;
-                let original_len = self.app_data.len();
                 // Buffer the data, up to the flow control limits.
-                self.app_data.extend_from_slice(&data);
+                let app_data = match self.app_data.entry(stream_id) {
+                    Vacant(entry) => entry.insert(Vec::new()),
+                    Occupied(entry) => entry.into_mut(),
+                };
+                let original_len = app_data.len();
+                app_data.extend_from_slice(&data);
 
-                let index = min_off.saturating_sub(self.app_data_min_off);
+                let app_data_min_off =
+                    match self.app_data_min_off.entry(stream_id) {
+                        Vacant(entry) => entry.insert(0),
+                        Occupied(entry) => entry.into_mut(),
+                    };
+                let original_off = *app_data_min_off;
+
+                let index = min_off.saturating_sub(*app_data_min_off);
                 // info!("WE GET INFO FROM FC FLOW: stream_id={stream_id},
                 // fin={fin}, min_off={min_off} while app_data_min_off={:?}",
                 // self.app_data_min_off);
                 if index > 0 {
-                    self.app_data = self.app_data.split_off(index as usize);
-                    self.app_data_min_off = min_off;
+                    *app_data = app_data.split_off(index as usize);
+                    *app_data_min_off = min_off;
                 }
 
-                self.app_data_fin = fin;
-                self.app_data_stream_id = stream_id;
+                let _ = self.app_data_fin.insert(stream_id, fin);
 
-                info!("{:?} StreamData. Before updating: off={original_off} and len={original_len}. Given by msg len={}, off={min_off}. Cut at {index} after extend from slice. So total min_off={} and len={}", self.controller_role.name(), data.len(), self.app_data_min_off, self.app_data.len());
+                info!("{:?} StreamData. Before updating: off={original_off} and len={original_len}. Given by msg len={}, off={min_off}. Cut at {index} after extend from slice. So total min_off={} and len={}", self.controller_role.name(), data.len(), app_data_min_off, app_data.len());
 
                 // info!("Send to UC path: stream_id={stream_id}, fin={fin},
                 // len={}, off={min_off}", data.len());
@@ -296,8 +301,8 @@ impl FcController {
                         // The offset of the new given piece of data.
                         // It is important to give the exact offset to the
                         // receiver to let them know where to put this data.
-                        let new_data_off = self.app_data_min_off +
-                            self.app_data.len() as u64 -
+                        let new_data_off = *app_data_min_off +
+                            app_data.len() as u64 -
                             data.len() as u64;
                         for recv_id in self.unicast_recv.iter() {
                             let msg = MsgRecv::StreamData((
@@ -389,17 +394,17 @@ impl FcController {
 
                 // Instead of asking for a retransmission, we give the stream data
                 // directly.
-                if !self.app_data.is_empty() {
+                for (stream_id, app_data) in self.app_data.iter() {
                     let msg = MsgRecv::StreamData((
-                        Arc::new(self.app_data.clone()),
-                        self.app_data_stream_id,
-                        self.app_data_min_off,
-                        self.app_data_fin,
+                        Arc::new(app_data.clone()),
+                        *stream_id,
+                        *self.app_data_min_off.get(stream_id).unwrap_or(&0),
+                        *self.app_data_fin.get(stream_id).unwrap_or(&false),
                     ));
                     info!(
                         "Send StreamData len={} with off={}",
                         self.app_data.len(),
-                        self.app_data_min_off
+                        *self.app_data_min_off.get(stream_id).unwrap_or(&0)
                     );
                     send_uc_path!(self, id, msg);
                 }
