@@ -73,6 +73,10 @@ struct Args {
     /// Whether the client sends transport feedback data to the server.
     #[clap(long = "transport-feedback")]
     transport_feedback: bool,
+
+    /// JSON output of received packets.
+    #[clap(long = "json-output")]
+    json_output: Option<String>,
 }
 
 #[tokio::main]
@@ -89,6 +93,15 @@ async fn main() {
     let mut uc_recv = 0;
     let mut mc_recv = 0;
     let mut uc_send = 0;
+
+    // Same but for bytes.
+    let mut uc_recv_bytes = 0;
+    let mut mc_recv_bytes = 0;
+    let mut uc_send_bytes = 0;
+
+    // Last time we displayed the stats.
+    let mut last_stat_print = time::Instant::now();
+
     let mut total_read = 0;
 
     // Transport metrics for feedback.
@@ -271,6 +284,7 @@ async fn main() {
 
             trace!("Recv from socket unicast");
             uc_recv += 1;
+            uc_recv_bytes += len;
 
             let recv_info = quiche::RecvInfo {
                 to: socket.local_addr().unwrap(),
@@ -307,6 +321,7 @@ async fn main() {
                     },
                 };
                 mc_recv += 1;
+                mc_recv_bytes += len;
                 trace!("Recv from socket multicast");
 
                 let recv_info = quiche::RecvInfo {
@@ -586,11 +601,21 @@ async fn main() {
             }
 
             uc_send += 1;
+            uc_send_bytes += write;
         }
 
         if conn.is_closed() {
             info!("connection closed, {:?}", conn.stats());
             break;
+        }
+
+        // Print the statistics.
+        if time::Instant::now().duration_since(last_stat_print) >
+            time::Duration::from_secs(1)
+        {
+            last_stat_print = time::Instant::now();
+
+            println!("STATS: Bytes received:\n\tFlexicast flow: {} ({} packets)\n\tUnicast path: {} ({} packets)\nBytes sent: {} ({} packets)\n", mc_recv_bytes, mc_recv, uc_recv_bytes, uc_recv, uc_send_bytes, uc_send);
         }
     }
 

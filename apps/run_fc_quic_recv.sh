@@ -14,7 +14,7 @@ check_app() {
         
         ssim )
             echo "SSIM application"
-            APP_ARGS="--transfer-kind stream,rtp,127.0.0.1:22222"
+            APP_ARGS="--transfer-kind stream,rtp,${RTPSINK}"
             ;;
 
         *)
@@ -26,4 +26,4 @@ check_app() {
 
 check_app $APP_KIND
 
-RUST_LOG=trace fc-recv-file-transfer -l 0.0.0.0 https://$FC_SRC_IP:$FC_SRC_PORT/data.txt --flow-control $FC_FLOWCONTROL $FLEXICAST $APP_ARGS
+RUST_LOG=$RUST_LOG_LEVEL fc-recv-file-transfer -l 0.0.0.0 https://$FC_SRC_IP:$FC_SRC_PORT/data.txt --flow-control $FC_FLOWCONTROL $FLEXICAST $APP_ARGS --transport-feedback

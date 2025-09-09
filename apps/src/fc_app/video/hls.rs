@@ -191,7 +191,7 @@ impl HlsSink {
                     // This is a segment.
                     let filename = path::Path::new(&self.dir_path).join(format!(
                         "{}{:0>3}.ts",
-                        SEGMENT_PREFIX, self.next_segment_id
+                        SEGMENT_PREFIX, (stream_id - 7) / 8,
                     ));
 
                     let mut fd = fs::OpenOptions::new()
