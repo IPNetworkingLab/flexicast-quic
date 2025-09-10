@@ -26,4 +26,4 @@ check_app() {
 
 check_app $APP_KIND
 
-RUST_LOG=$RUST_LOG_LEVEL fc-recv-file-transfer -l 0.0.0.0 https://$FC_SRC_IP:$FC_SRC_PORT/data.txt --flow-control $FC_FLOWCONTROL $FLEXICAST $APP_ARGS --transport-feedback
+RUST_LOG=$RUST_LOG_LEVEL fc-recv-file-transfer -l 0.0.0.0 https://$FC_SRC_IP:$FC_SRC_PORT/data.txt --flow-control $FC_FLOWCONTROL $FLEXICAST $APP_ARGS --transport-feedback --json-output $SHARED/state.json --file-stop $SHARED/fcquic_stop

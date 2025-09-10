@@ -20,13 +20,13 @@ use quiche_apps::fc_app::video::StreamTransferKind;
 use quiche_apps::fc_app::TransferKind;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
+use std::io::Read;
 use std::io::Write;
 use std::net;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time;
-use tokio::net::UnixDatagram;
 use tokio::sync::mpsc;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -79,6 +79,10 @@ struct Args {
     /// JSON output of received packets.
     #[clap(long = "json-output")]
     json_output: Option<String>,
+
+    /// Socket stop path.
+    #[clap(long = "file-stop", default_value = "/tmp/fcquic_stop")]
+    stop_file_path: String,
 }
 
 #[tokio::main]
@@ -113,7 +117,9 @@ async fn main() {
 
     // Whether we have to stop process multicast packets.
     let mut stop_mc = false;
-    let socket_stop = UnixDatagram::bind("/tmp/fcquic_stop").unwrap();
+    let mut last_value = 0;
+    let mut last_poll_stop = time::Instant::now();
+    let poll_stop_duration = time::Duration::from_millis(300);
 
     let mut total_read = 0;
 
@@ -269,11 +275,27 @@ async fn main() {
         poll.poll(&mut events, timeout).unwrap();
 
         // Let's see if we have to stop multicast.
-        if let Ok(v) = socket_stop.try_recv(&mut buf[..]) {
-            if buf[v] == 0 {
-                stop_mc = true;
-            } else {
-                stop_mc = false;
+        let now = time::Instant::now();
+        if now.duration_since(last_poll_stop) >= poll_stop_duration {
+            // Get new data.
+            if let Ok(mut file) = std::fs::File::open(&args.stop_file_path) {
+                if let Ok(n) = file.read(&mut buf[..]) {
+                    if let Ok(string) = String::from_utf8(buf[..n].to_vec()) {
+                        let mut tab = string.split(",");
+                        let t: u64 = tab.next().unwrap().parse().unwrap();
+                        if t > last_value {
+                            last_value = t;
+                            let v = tab.next().unwrap();
+                            if v == "0" {
+                                stop_mc = true;
+                            } else {
+                                stop_mc = false;
+                            }
+
+                            last_poll_stop = now;
+                        }
+                    }
+                }
             }
         }
 
