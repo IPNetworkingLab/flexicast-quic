@@ -20,11 +20,13 @@ use quiche_apps::fc_app::video::StreamTransferKind;
 use quiche_apps::fc_app::TransferKind;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
+use std::io::Write;
 use std::net;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time;
+use tokio::net::UnixDatagram;
 use tokio::sync::mpsc;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -101,6 +103,17 @@ async fn main() {
 
     // Last time we displayed the stats.
     let mut last_stat_print = time::Instant::now();
+
+    // Socket to send information about received packets.
+    let mut fd_json = args
+        .json_output
+        .as_ref()
+        .and_then(|name| std::fs::File::create(name).ok());
+    let mut last_data_received_was_mc = false;
+
+    // Whether we have to stop process multicast packets.
+    let mut stop_mc = false;
+    let socket_stop = UnixDatagram::bind("/tmp/fcquic_stop").unwrap();
 
     let mut total_read = 0;
 
@@ -255,6 +268,15 @@ async fn main() {
 
         poll.poll(&mut events, timeout).unwrap();
 
+        // Let's see if we have to stop multicast.
+        if let Ok(v) = socket_stop.try_recv(&mut buf[..]) {
+            if buf[v] == 0 {
+                stop_mc = true;
+            } else {
+                stop_mc = false;
+            }
+        }
+
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
         'uc_read: loop {
@@ -301,6 +323,22 @@ async fn main() {
                     continue 'uc_read;
                 },
             };
+
+            // Only if we receive data (heuristic: more than 1000 bytes).
+            if _read > 1000 && last_data_received_was_mc {
+                if let Some(file) = fd_json.as_mut() {
+                    let msg = format!(
+                        "{{\"ts\": {},\"mode\": \"unicast\"}}\n",
+                        time::SystemTime::now()
+                            .duration_since(time::SystemTime::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis()
+                    );
+
+                    let _ = file.write(msg.as_bytes());
+                    last_data_received_was_mc = false;
+                }
+            }
         }
 
         // Read incomming UDP packets from the flexicast socket and feed them to
@@ -320,6 +358,12 @@ async fn main() {
                         panic!("recv() failed: {:?}", e);
                     },
                 };
+
+                // Do not process the packet if we say so.
+                if stop_mc {
+                    continue 'mc_read;
+                }
+
                 mc_recv += 1;
                 mc_recv_bytes += len;
                 trace!("Recv from socket multicast");
@@ -348,6 +392,21 @@ async fn main() {
                         continue 'mc_read;
                     },
                 };
+
+                if !last_data_received_was_mc {
+                    if let Some(file) = fd_json.as_mut() {
+                        let msg = format!(
+                            "{{\"ts\": {},\"mode\": \"multicast\"}}\n",
+                            time::SystemTime::now()
+                                .duration_since(time::SystemTime::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis()
+                        );
+
+                        let _ = file.write(msg.as_bytes());
+                    }
+                    last_data_received_was_mc = true;
+                }
             }
         }
 
@@ -615,7 +674,7 @@ async fn main() {
         {
             last_stat_print = time::Instant::now();
 
-            println!("STATS: Bytes received:\n\tFlexicast flow: {} ({} packets)\n\tUnicast path: {} ({} packets)\nBytes sent: {} ({} packets)\n", mc_recv_bytes, mc_recv, uc_recv_bytes, uc_recv, uc_send_bytes, uc_send);
+            println!("STATS: Bytes received:\n\tFlexicast flow: {} B ({} packets)\n\tUnicast path: {} B ({} packets)\nBytes sent: {} B ({} packets)\n", mc_recv_bytes, mc_recv, uc_recv_bytes, uc_recv, uc_send_bytes, uc_send);
         }
     }
 
