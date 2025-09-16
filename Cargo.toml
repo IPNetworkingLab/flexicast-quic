@@ -9,6 +9,7 @@ members = [
   "quiche",
   "task-killswitch",
   "tokio-quiche",
+  "tokio-fcquiche",
 ]
 exclude = ["fuzz", "tools/http3_test"]
 resolver = "2"
@@ -61,6 +62,7 @@ smallvec = { version = "1.10", default-features = false }
 task-killswitch = { version = "0.1.0", path = "./task-killswitch" }
 thiserror = { version = "1" }
 tokio = { version = "1.29", default-features = false }
+tokio-fcquiche = { version = "0.1.0", path = "./tokio-fcquiche" }
 tokio-stream = { version = "0.1" }
 tokio-util = { version = "0.7.13" }
 triomphe = { version = "0.1" }

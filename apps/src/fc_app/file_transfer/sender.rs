@@ -1,84 +1,15 @@
 //! Sending-side of the file transfer module.
 
+use crate::fc_app::file_transfer::{FileTransferKind, FileTransferKindInner};
+
 use super::Result;
 use std::fs;
 use std::io::Read;
-use std::str::FromStr;
 use tokio::net::UnixDatagram;
 use tokio::sync::mpsc::Sender;
+use tokio_fcquiche::FcQuicMsg;
 
 const BUFF_SIZE: usize = 100_000;
-
-#[derive(Debug)]
-/// File transfer sending-side specific messages.
-pub enum FileTransferSrcMsg {
-    /// Data, whether it is the last piece of data (i.e., is fin after), and the stream ID.
-    Data((Vec<u8>, bool, u64)),
-
-    /// No more data will be sent.
-    Close,
-}
-
-#[derive(Debug, Clone)]
-/// File transfer kind.
-pub enum FileTransferKind {
-    /// File transfer using a real file.
-    File(String),
-
-    /// Raw bytes generates by the source.
-    Bytes(u64),
-
-    /// The filename is given by the UnixDatagram socket whose path is the inner value.
-    UnixDatagram(String),
-}
-
-impl FromStr for FileTransferKind {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        let mut tab = value.split(",");
-        let _ = tab.next();
-
-        match tab.next().ok_or("No transfer kind")? {
-            "bytes" => {
-                let nb_str = tab.next().ok_or("No number of bytes given")?;
-                let nb: u64 = nb_str
-                    .parse()
-                    .map_err(|_| "Impossible to parse the number of bytes")?;
-                Ok(FileTransferKind::Bytes(nb))
-            },
-
-            "file" => {
-                let filename = tab.next().ok_or("No filename provided")?;
-                Ok(FileTransferKind::File(filename.to_string()))
-            },
-
-            "socket" => {
-                let unix_path = tab.next().ok_or("No socket path provided")?;
-                Ok(FileTransferKind::UnixDatagram(unix_path.to_string()))
-            },
-
-            _ => {
-                return Err(format!(
-                    "Wrong transfer kind. Available: bytes, file"
-                )
-                .to_string())
-            },
-        }
-    }
-}
-
-#[derive(Debug)]
-/// Inner representation of the file transfer kind.
-enum FileTransferKindInner {
-    /// Pointer to the file structure to transfer.
-    File(fs::File),
-
-    Bytes,
-
-    /// Unix socket to receive the file content.
-    Socket((UnixDatagram, Option<fs::File>)),
-}
 
 #[derive(Debug)]
 /// Sender structure to handle the emission of file transfer.
@@ -94,7 +25,7 @@ pub struct FileTransferSrc {
     nb_bytes_sent: u64,
 
     /// Tokio channel to send the data.
-    tx_chan: Sender<FileTransferSrcMsg>,
+    tx_chan: Sender<FcQuicMsg>,
 
     /// Stream ID to use.
     stream_id: u64,
@@ -103,7 +34,7 @@ pub struct FileTransferSrc {
 impl FileTransferSrc {
     /// New structure to handle the file transfer delivery on the sending-side.
     pub fn new(
-        kind: &FileTransferKind, tx_chan: Sender<FileTransferSrcMsg>,
+        kind: &FileTransferKind, tx_chan: Sender<FcQuicMsg>,
     ) -> Result<Self> {
         let (state, len) = match kind {
             FileTransferKind::File(filepath) => {
@@ -203,7 +134,7 @@ impl FileTransferSrc {
                     self.state, fin
                 );
 
-                let msg = FileTransferSrcMsg::Data((
+                let msg = FcQuicMsg::Stream((
                     buffer[..nb_read].to_vec(),
                     fin,
                     self.stream_id,
@@ -233,7 +164,7 @@ impl FileTransferSrc {
     /// No verification is performed to know if the file is really entirely
     /// read.
     pub async fn on_finish(&mut self) -> Result<()> {
-        let msg = FileTransferSrcMsg::Close;
+        let msg = FcQuicMsg::Close;
         self.tx_chan.send(msg).await?;
         Ok(())
     }

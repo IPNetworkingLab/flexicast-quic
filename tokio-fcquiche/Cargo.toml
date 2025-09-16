@@ -1,31 +1,27 @@
 [package]
-name = "quiche_apps"
+name = "tokio-fcquiche"
 version = "0.1.0"
-authors = ["Lucas Pardue <lucaspardue.24.7@gmail.com>"]
-edition = { workspace = true }
 repository = { workspace = true }
 license = { workspace = true }
-keywords = { workspace = true }
+description = "Asynchronous wrapper around the Flexicast extension of quiche"
+keywords = ["quic", "flexicast", "tokio"]
 categories = { workspace = true }
-publish = false
+rust-version = "1.83"
+edition = { workspace = true }
+readme = "README.md"
 
 [features]
-# Enable quiche's fuzzing mode.
-fuzzing = ["quiche/fuzzing"]
-
-# Enable qlog support.
-qlog = ["quiche/qlog"]
-
-# Use BoringSSL provided by the boring crate.
-boringssl-boring-crate = ["quiche/boringssl-boring-crate"]
-
-# Enable sfv support.
-sfv = ["quiche/sfv"]
-
-default = ["qlog", "sfv"]
+# Forwarded quiche features for re-exports
+quiche_internal = ["quiche/internal"]
 
 # Enable tokio tracing
 tokio-tracing = ["tokio/tracing"]
+
+# Enable SSLKEYLOGFILE capturing for QUIC connections.
+capture_keylogs = []
+
+# Enable qlog support.
+qlog = ["quiche/qlog"]
 
 [dependencies]
 docopt = "1"
@@ -45,7 +41,7 @@ tokio = { version = "1.40.0", features = ["full", "tracing"] }
 tokio-metrics = { version = "0.4.3" }
 console-subscriber = "0.4.1"
 chrono = "0.4.41"
-tokio-fcquiche = { workspace = true }
 
-[lib]
-crate-type = ["lib"]
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["time", "test-util"] }

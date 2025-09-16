@@ -1,14 +1,13 @@
 use std::str::FromStr;
 
-use crate::fc_app::file_transfer::sender::FileTransferKind;
 use crate::fc_app::video::StreamTransferKind;
+use crate::fc_app::file_transfer::FileTransferKind;
 
-pub mod asynchronous;
-pub mod cca;
-pub mod file_transfer;
+use tokio_fcquiche::*;
 pub mod http3;
 pub mod rtp;
 pub mod video;
+pub mod file_transfer;
 
 /// Application being run on top of Flexicast QUIC.
 #[derive(Debug, Clone)]
@@ -23,7 +22,7 @@ pub enum TransferKind {
 impl FromStr for TransferKind {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<TransferKind, String> {
         let mut tab = s.split(",");
 
         match tab.next().ok_or("No transfer kink")? {

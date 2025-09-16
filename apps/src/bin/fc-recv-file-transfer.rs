@@ -12,14 +12,14 @@ use quiche::ConnectionId;
 use quiche_apps::common::make_qlog_writer;
 use quiche_apps::fc_app::file_transfer::receiver::FileTransferRecv;
 use quiche_apps::fc_app::file_transfer::receiver::FileTransferRecvMsg;
-use quiche_apps::fc_app::file_transfer::sender::FileTransferKind;
+use quiche_apps::fc_app::file_transfer::FileTransferKind;
 use quiche_apps::fc_app::video::hls::HlsSink;
 use quiche_apps::fc_app::video::rtp::RtpSink;
-use quiche_apps::fc_app::video::rtp::VideoSourceMsg;
 use quiche_apps::fc_app::video::StreamTransferKind;
 use quiche_apps::fc_app::TransferKind;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
+use tokio_fcquiche::FcQuicMsg;
 use std::io::Read;
 use std::io::Write;
 use std::net;
@@ -599,10 +599,10 @@ async fn main() {
                     },
 
                     TxApp::Stream(tx) => {
-                        let msg = VideoSourceMsg::Data((
-                            stream_id,
-                            std::sync::Arc::new(buf[..read].to_vec()),
+                        let msg = FcQuicMsg::Stream((
+                            buf[..read].to_vec(),
                             fin,
+                            stream_id,
                         ));
 
                         tx.send(msg).await.unwrap();
@@ -765,5 +765,5 @@ pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
 enum TxApp {
     File(mpsc::Sender<FileTransferRecvMsg>),
 
-    Stream(mpsc::Sender<VideoSourceMsg>),
+    Stream(mpsc::Sender<FcQuicMsg>),
 }

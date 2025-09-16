@@ -5,10 +5,8 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-pub mod fc_flow;
 pub mod hls;
 pub mod rtp;
-pub mod uc_path;
 
 /// Video stream application being run on top of Flexicast QUIC.
 #[derive(Debug, Clone)]

@@ -1,20 +1,13 @@
 //! Asynchronous control loop between flexicast source and unicast server with
 //! tokio.
 
-use std::collections::hash_map::Entry::Occupied;
-use std::collections::hash_map::Entry::Vacant;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time;
-
-use crate::common::ClientIdMap;
-use crate::send_uc_path;
-
 use super::aggregator::FcAggregatedMsg;
 use super::aggregator::FcAggregator;
 use super::messages::*;
-use super::Result;
+use crate::Result;
+use crate::send_uc_path;
+use log::*;
+use quiche::ConnectionId;
 use quiche::flexicast::ack::FcDelegatedStream;
 use quiche::flexicast::ack::McAck;
 use quiche::flexicast::ack::McStreamOff;
@@ -22,8 +15,13 @@ use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
 use quiche::flexicast::McAnnounceData;
 use quiche::flexicast::MissingRangeSet;
+use std::collections::hash_map::Entry::Occupied;
+use std::collections::hash_map::Entry::Vacant;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time;
 use tokio;
-use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
 /// Controller structure using tokio to handle messages between the flexicast
@@ -1054,32 +1052,7 @@ macro_rules! send_uc_path {
     };
 }
 
-pub async fn handle_msg(
-    msg: MsgMain, clients_ids: &mut ClientIdMap, socket: &UdpSocket,
-    stopped_flows: &mut HashSet<u64>,
-) -> Result<()> {
-    match msg {
-        MsgMain::NewCID((client_id, cid)) => {
-            debug!("Receiver {client_id} adds a new CID!");
-            clients_ids.insert(cid.into(), client_id);
-        },
-
-        MsgMain::SendPkt((pkt_buf, send_info)) => {
-            debug!(
-                "Will send the packet to the wire with send_info={:?}",
-                send_info
-            );
-            socket.send_to(&pkt_buf, send_info.to).await?;
-        },
-
-        MsgMain::FcFlowStop(id) => {
-            debug!("New flexicast flow stopped: {}", id);
-            stopped_flows.insert(id);
-        },
-    }
-
-    Ok(())
-}
+pub type ClientIdMap = HashMap<ConnectionId<'static>, u64>;
 
 impl FcController {
     /// Inserts a new receiver in the state.

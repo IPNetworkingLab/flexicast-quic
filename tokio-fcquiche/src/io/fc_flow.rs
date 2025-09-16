@@ -1,28 +1,27 @@
-use crate::fc_app::asynchronous;
-use crate::fc_app::asynchronous::fc::conditional_wait_on_app;
-use crate::fc_app::asynchronous::fc::FcChannelAsync;
-use crate::fc_app::asynchronous::fc::FcFlowRun;
-use crate::fc_app::asynchronous::messages::MsgFcCtl;
-use crate::fc_app::asynchronous::sendmmsg::MsgSmsg;
-use crate::fc_app::cca::FcFlowCwnd;
-use crate::fc_app::file_transfer::sender::FileTransferKind;
-use crate::fc_app::file_transfer::sender::FileTransferSrc;
+use quiche::flexicast::cca::FcFlowCwnd;
+use crate::MAX_DATAGRAM_SIZE;
+use crate::fcquic::fc::conditional_wait_on_app;
+use crate::fcquic::fc::FcChannelAsync;
+use crate::fcquic::fc::FcFlowRun;
+use crate::FcQuicMsg;
+use crate::fcquic::messages::MsgFcCtl;
+use crate::fcquic::sendmmsg::MsgSmsg;
+use log::*;
 use quiche::flexicast::reliable::FcUnicastRetransmission;
 use std::cmp;
 use std::io;
 use std::sync::Arc;
-use std::time;
 use tokio::sync::mpsc;
-const CHANNEL_BUFFER_SIZE: usize = 10;
-const MAX_DATAGRAM_SIZE: usize = 1350;
+use crate::Result;
+use std::time;
 
 pub struct FcFlowfileTransfer {
     pub fc: FcChannelAsync,
-    pub file_transfer_kind: FileTransferKind,
+    pub(crate) rx: mpsc::Receiver<FcQuicMsg>,
 }
 
 impl FcFlowRun for FcFlowfileTransfer {
-    async fn run(&mut self) -> asynchronous::Result<()> {
+    async fn run(&mut self) -> Result<()> {
         let mut buf = [0u8; 1500];
 
         // Timer to stop the RTP transmission.
@@ -45,11 +44,11 @@ impl FcFlowRun for FcFlowfileTransfer {
         let mut sendmmsg_idx = 0;
 
         // Execute the file transfer application on the source.
-        let (tx_app, mut rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-        let mut fc_app = FileTransferSrc::new(&self.file_transfer_kind, tx_app)?;
-        tokio::spawn(async move {
-            let _ = fc_app.run().await;
-        });
+        // let (tx_app, mut rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        // let mut fc_app = FileTransferSrc::new(&self.file_transfer_kind,
+        // tx_app)?; tokio::spawn(async move {
+        //     let _ = fc_app.run().await;
+        // });
 
         loop {
             let now = time::Instant::now();
@@ -57,7 +56,7 @@ impl FcFlowRun for FcFlowfileTransfer {
             info!("timeout of the flexicast flow: {timeout:?}");
             let app_close_timeout = rtp_stopped.map(|timer| {
                 self.fc
-                    .rtp_stop_timer
+                    .fc_flow_stop_timer
                     .saturating_sub(now.duration_since(timer))
             });
 
@@ -79,7 +78,7 @@ impl FcFlowRun for FcFlowfileTransfer {
                 // Application timeout.
                 Some(_) = optional_timeout(app_close_timeout) => (),
 
-                Some(msg) = conditional_wait_on_app(&mut rx_app, self.fc.pending_data.is_none()) => self.fc.handle_app_data(msg, &mut rtp_stopped).await?,
+                Some(msg) = conditional_wait_on_app(&mut self.rx, self.fc.pending_data.is_none()) => self.fc.handle_app_data(msg, &mut rtp_stopped).await?,
 
                 // Data on the control channel.
                 Some(msg) = self.fc.rx_ctl.recv() => self.fc.handle_ctl_msg(msg).await?,
@@ -136,13 +135,13 @@ impl FcFlowRun for FcFlowfileTransfer {
                     trace!(
                         "SET APP STOPPED TO SOME IN {:?}",
                         self.fc
-                            .rtp_stop_timer
+                            .fc_flow_stop_timer
                             .saturating_sub(now.duration_since(timer))
                     );
                 }
                 if self
                     .fc
-                    .rtp_stop_timer
+                    .fc_flow_stop_timer
                     .saturating_sub(now.duration_since(timer)) ==
                     time::Duration::ZERO
                 {

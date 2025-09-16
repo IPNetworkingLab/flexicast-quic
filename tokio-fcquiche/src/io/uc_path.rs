@@ -1,21 +1,19 @@
+use log::*;
 use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McClientStatus;
 use quiche::flexicast::McRole;
 use std::convert::TryInto;
-use std::fs;
-use std::io::Write;
 use std::time;
 
-use crate::fc_app::asynchronous::messages::MsgFcCtl;
-use crate::fc_app::asynchronous::uc::UcPath;
-use crate::fc_app::asynchronous::uc::UcPathRun;
+use crate::fcquic::messages::MsgFcCtl;
+use crate::fcquic::uc::UcPath;
+use crate::fcquic::uc::UcPathRun;
+use crate::Result;
 
-use crate::fc_app::asynchronous;
+pub struct UcPathFileTransfer(pub UcPath);
 
-pub struct UcPathVideo(pub UcPath);
-
-impl UcPathRun for UcPathVideo {
-    async fn run(&mut self) -> asynchronous::Result<()> {
+impl UcPathRun for UcPathFileTransfer {
+    async fn run(&mut self) -> Result<()> {
         // Before entering the loop, set the McAnnounceData to the client.
         for (i, mc_announce_data) in self.0.mc_announce_data.iter().enumerate() {
             self.0.conn.fc_set_announce_data(mc_announce_data).unwrap();
@@ -36,19 +34,6 @@ impl UcPathRun for UcPathVideo {
 
         // Whether it already notified the controller that it is ready.
         let mut sent_ready = false;
-
-        // Store the receiver transport metrics if required.
-        let mut fd = if let Some(dir) = self.0.transport_feedback_dir.as_ref() {
-            let path = std::path::Path::new(dir)
-                .join(format!("tf_recv_{:?}", self.0.client_id));
-            fs::OpenOptions::new()
-                .create(true)
-                .append(false)
-                .open(path)
-                .ok()
-        } else {
-            None
-        };
 
         let mut buf = [0u8; 1500];
         loop {
@@ -145,9 +130,32 @@ impl UcPathRun for UcPathVideo {
             }
 
             // Sends to QUIC RTP frames that must be sent through unicast.
+            // if !self.0.pending_data.is_empty() {
+            //     info!(
+            //         "Before stream data loop: {:?} for {}",
+            //         self.0
+            //             .pending_data
+            //             .iter()
+            //             .map(|(d, fin, off, sid)| (d.len(), fin, off, sid))
+            //             .collect::<Vec<_>>(),
+            //         self.0.client_id
+            //     );
+            // }
             'stream_data: loop {
                 let stream_ids: Vec<_> =
                     self.0.pending_data.keys().map(|id| *id).collect();
+                if stream_ids.is_empty() {
+                    break 'stream_data;
+                }
+                debug!(
+                    "Enter stream_data loop for receiver {}. state: {:?}",
+                    self.0.client_id,
+                    self.0
+                        .pending_data
+                        .iter()
+                        .map(|(_k, v)| v.keys())
+                        .collect::<Vec<_>>()
+                );
                 for stream_id in stream_ids.iter() {
                     loop {
                         if let Some((&first_off, (data_arc, fin))) = self
@@ -186,17 +194,17 @@ impl UcPathRun for UcPathVideo {
                                     e
                                 })?;
                             info!(
-                                "RESET THE FC SEND OFF stream_id={:?} off={:?}.
-                        Off given by quiche: {:?} for {}",
-                                stream_id, off, buf_off, self.0.client_id
+                                "Recv {}: RESET THE FC SEND OFF stream_id={:?} off={:?}.
+                        Off given by quiche: {:?} for {}. Pending_data_off={}",
+                                self.0.client_id, stream_id, off, buf_off, self.0.client_id, self.0.pending_data_off
                             );
 
                             let (data, stripped_nb) = if off + (data.len() as u64) <
                                 buf_off
                             {
                                 info!(
-                                    "Giving empty data for {}.",
-                                    self.0.client_id
+                                    "Recv {}: Giving empty data for {}.",
+                                    self.0.client_id, self.0.client_id,
                                 );
                                 (&data[0..0], data.len()) // Empty data.
                                                           // Everything
@@ -206,8 +214,9 @@ impl UcPathRun for UcPathVideo {
                                                           // received.
                             } else {
                                 info!(
-                                    "Giving data after {}. So remaining
+                                    "Recv {}: Giving data after {}. So remaining
                             length={:?}. Offset={:?} for {}",
+                                    self.0.client_id,
                                     buf_off.saturating_sub(off),
                                     data[buf_off.saturating_sub(off) as usize..]
                                         .len(),
@@ -220,17 +229,31 @@ impl UcPathRun for UcPathVideo {
                                 )
                             };
 
-                            let written = match self
-                                .0
-                                .conn
-                                .stream_send(*stream_id, &data, *fin)
-                            {
-                                Ok(v) => v,
-                                Err(quiche::Error::Done) => break 'stream_data,
-                                Err(e) => panic!("Other error: {:?}", e),
+                            let written = if !data.is_empty() {
+                                match self
+                                    .0
+                                    .conn
+                                    .stream_send(*stream_id, &data, *fin)
+                                {
+                                    Ok(v) => v,
+                                    Err(quiche::Error::Done) => {
+                                        debug!("Recv {}: breaks stream send because done", self.0.client_id);
+                                        break 'stream_data;
+                                    },
+                                    Err(e) => panic!("Other error: {:?}", e),
+                                }
+                            } else {
+                                debug!(
+                                    "Recv {}: stream send with empty data",
+                                    self.0.client_id
+                                );
+                                0
                             };
 
-                            if self.0.pending_data_off + written >= data.len() {
+                            if self.0.pending_data_off + written >= data_arc.len() ||
+                                data.is_empty()
+                            {
+                                debug!("Recv {}: Drain pending data because pending off={} + written={} >= data.len={}, first_off={}", self.0.client_id, self.0.pending_data_off, written, data.len(), first_off);
                                 self.0.pending_data.get_mut(stream_id).and_then(
                                     |btree_map| {
                                         btree_map.remove_entry(&first_off)
@@ -245,31 +268,17 @@ impl UcPathRun for UcPathVideo {
                             } else {
                                 self.0.pending_data_off += written + stripped_nb;
                                 info!(
-                                "Increasing pending data off by {}. Now={} for
+                                "Recv {}: Increasing pending data off by {}. Now={} for
                             {}",
+                                self.0.client_id,
                                 written + stripped_nb,
                                 self.0.pending_data_off,
                                 self.0.client_id
                             );
                             }
+                        } else {
+                            break 'stream_data;
                         }
-                    }
-                }
-            }
-
-            // Receive the streams from the receiver.
-            // In this app this can only be transport metrics, so we store it in
-            // the file directly.
-            'stream_recv: for stream_id in self.0.conn.readable() {
-                if !self.0.conn.stream_fully_readable(stream_id) {
-                    continue 'stream_recv;
-                }
-
-                while let Ok((read, _)) =
-                    self.0.conn.stream_recv(stream_id, &mut buf[..])
-                {
-                    if let Some(file) = fd.as_mut() {
-                        let _ = file.write_all(&mut buf[..read]);
                     }
                 }
             }
@@ -297,7 +306,7 @@ impl UcPathRun for UcPathVideo {
                 // Send the packet directly to the wire without going by the main
                 // thread.
                 self.0.uc_sock.send_to(&buf[..write], send_info.to).await?;
-                info!("UC path sent packet of len {write}");
+                trace!("UC path sent packet of len {write}");
             }
 
             // Exit the stap if the connection is closed.
@@ -307,17 +316,31 @@ impl UcPathRun for UcPathVideo {
                     self.0.conn.trace_id(),
                     self.0.conn.stats(),
                 );
+
+                if let Some(fc_id) = fc_chan_id {
+                    let msg = MsgFcCtl::CollectRecv((self.0.client_id, fc_id));
+                    self.0.tx_tcl.send(msg).await?;
+                }
+
                 break;
             }
 
             // Send control information to the controller.
-            self.0.send_ctl_info().await?;
+            if let Err(e) = self.0.send_ctl_info().await {
+                debug!(
+                    "Error when sending control info for {}: {:?}",
+                    self.0.client_id, e
+                );
+                return Err(e);
+            }
 
             // Force an unlimited window if asked.
             if self.0.unlimited_cwnd {
                 self.0.conn.fc_set_cwnd_from_path_id(0, usize::MAX - 1000);
             }
         }
+
+        info!("STOP CONNECTION: {:?}", self.0.client_id);
 
         Ok(())
     }

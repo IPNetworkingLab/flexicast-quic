@@ -1,12 +1,16 @@
 //! Module for the sendmmsg extension allowing to replicate packet bytes to
 //! multiple receivers instead of relying on a real multicast network.
 
-use super::Result;
+use crate::Result;
+#[cfg(target_os = "linux")]
 use libc::*;
 use std::io;
+#[cfg(target_os = "linux")]
 use std::mem;
 use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
 use std::os::fd::AsFd;
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use tokio::net::UdpSocket;

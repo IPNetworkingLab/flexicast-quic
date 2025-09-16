@@ -11,6 +11,7 @@ use crate::fc_nack_recv;
 use crate::fc_nack_recv_mut;
 use crate::fec::decoder::FecDecoder;
 use crate::fec::schedulers::FecSchedulerAlgorithm;
+use crate::flexicast::cca::FcFlowCwnd;
 use crate::packet::Epoch;
 use crate::path;
 use crate::path::NetworkPathId;
@@ -1804,6 +1805,14 @@ pub struct FcConfig {
     pub fec: bool,
 
     pub fec_scheduler: FecSchedulerAlgorithm,
+
+    pub src_addr: SocketAddr,
+
+    pub mc_addr: SocketAddr,
+
+    pub crt_path: String,
+
+    pub fc_cca: FcFlowCwnd,
 }
 
 impl Default for FcConfig {
@@ -1818,6 +1827,10 @@ impl Default for FcConfig {
             fc_timer: 0,
             fec: false,
             fec_scheduler: FecSchedulerAlgorithm::NoRedundancy,
+            src_addr: "127.0.0.1:4433".parse().unwrap(),
+            mc_addr: "239.239.239.35:4434".parse().unwrap(),
+            crt_path: ".".to_string(),
+            fc_cca: FcFlowCwnd::CCA(CongestionControlAlgorithm::CUBIC),
         };
         fc_config.mc_announce_data[0].probe_path = fc_config.probe_mc_path;
         fc_config.mc_announce_data[0].fc_timer = fc_config.fc_timer;
@@ -1949,7 +1962,7 @@ pub mod testing {
                 HashSet::new()
             };
             let idx_client_receive = (0..self.unicast_pipes.len())
-                .filter(|&idx| !client_loss.contains(&(idx as u64)));
+                .filter(|&idx| !client_loss.contains(&(u64::try_from(idx).unwrap())));
 
             for client_idx in idx_client_receive {
                 let mut recv_buf = mc_buf.to_owned();
@@ -2573,3 +2586,4 @@ pub(crate) mod fec;
 pub mod flowcontrol;
 pub mod nack;
 pub mod reliable;
+pub mod cca;

@@ -3,9 +3,9 @@
 
 use std::str::FromStr;
 
-use quiche::CongestionControlAlgorithm;
+use crate::CongestionControlAlgorithm;
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Copy)]
 /// Enumeration for the flexicast flow congestion window.
 pub enum FcFlowCwnd {
     /// Use the specified congestion control algorithm.
@@ -19,7 +19,7 @@ pub enum FcFlowCwnd {
 }
 
 impl FromStr for FcFlowCwnd {
-    type Err = quiche::Error;
+    type Err = crate::Error;
 
     /// Converts a string to `FcFlowCwnd`.
     ///
@@ -33,7 +33,7 @@ impl FromStr for FcFlowCwnd {
             "disabled" => Ok(FcFlowCwnd::Unlimited),
             s => match s.parse::<u64>() {
                 Ok(v) => Ok(FcFlowCwnd::Limited(v)),
-                Err(_) => Err(quiche::Error::CongestionControl),
+                Err(_) => Err(crate::Error::CongestionControl),
             },
         }
     }

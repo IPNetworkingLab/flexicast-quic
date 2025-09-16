@@ -1,10 +1,9 @@
 //! Module for the asynchronous communication with the flexicast source.
 
 use super::sendmmsg::MsgSmsg;
-use super::Result;
+use crate::Result;
 use quiche::flexicast::ack::FcDelegatedStream;
 use quiche::flexicast::control::OpenSent;
-use quiche::flexicast::reliable::FcUnicastRetransmission;
 use quiche::flexicast::FlexicastChannelSource;
 use quiche::flexicast::McAnnounceData;
 use tokio::net::UdpSocket;
@@ -12,12 +11,13 @@ use tokio::sync::mpsc::Receiver;
 
 use super::messages::*;
 
-use crate::fc_app::cca::FcFlowCwnd;
-use crate::fc_app::file_transfer::sender::FileTransferSrcMsg;
+use quiche::flexicast::cca::FcFlowCwnd;
+use crate::FcQuicMsg;
 use std::sync::Arc;
 use std::time;
 use std::time::Instant;
 use tokio::sync::mpsc;
+use log::*;
 
 pub struct FcChannelInfo {
     pub socket: UdpSocket,
@@ -33,7 +33,7 @@ pub struct FcChannelAsync {
     /// Stop timer.
     /// Once the source sends a STOP RTP message, the source waits for 5 *
     /// flexicast timer before closing the connection.
-    pub rtp_stop_timer: time::Duration,
+    pub fc_flow_stop_timer: time::Duration,
 
     /// Communication between entities, using tokio mpsc.
     pub sync_tx: mpsc::Sender<MsgFcCtl>,
@@ -132,19 +132,6 @@ impl FcChannelAsync {
                 self.must_wait = false;
             },
 
-            MsgFcSource::AskStreamPieces => {
-                let delegated_streams =
-                    self.fc_chan.channel.fc_get_delegated_stream(
-                        FcUnicastRetransmission::FullRetransmit,
-                    )?;
-                let del_streams_msg = MsgFcCtl::DelegateStreams((
-                    self.id,
-                    Arc::new(delegated_streams),
-                    true,
-                ));
-                self.sync_tx.send(del_streams_msg).await?;
-            },
-
             MsgFcSource::AggregatedInfo(aggr_info) => {
                 info!("New AggregatedInfo message: {:?}", aggr_info);
                 // Get the updated MAX_DATA and MAX_STREAM_DATA for existing
@@ -188,7 +175,7 @@ impl FcChannelAsync {
     }
 
     pub async fn handle_app_data(
-        &mut self, msg: FileTransferSrcMsg, app_stopped: &mut Option<Instant>,
+        &mut self, msg: FcQuicMsg, app_stopped: &mut Option<Instant>,
     ) -> Result<()> {
         if self.pending_data.is_some() {
             return Err("Pending data is not None and attempting to read!"
@@ -196,11 +183,11 @@ impl FcChannelAsync {
                 .into());
         }
         match msg {
-            FileTransferSrcMsg::Close => {
+            FcQuicMsg::Close => {
                 *app_stopped = Some(Instant::now());
                 info!("Modify app stopped to now!");
             },
-            FileTransferSrcMsg::Data(v) => {
+            FcQuicMsg::Stream(v) => {
                 self.pending_data = Some(v);
             },
         }
@@ -210,8 +197,8 @@ impl FcChannelAsync {
 }
 
 pub async fn conditional_wait_on_app(
-    rx_app: &mut Receiver<FileTransferSrcMsg>, v: bool,
-) -> Option<FileTransferSrcMsg> {
+    rx_app: &mut Receiver<FcQuicMsg>, v: bool,
+) -> Option<FcQuicMsg> {
     if v {
         rx_app.recv().await
     } else {

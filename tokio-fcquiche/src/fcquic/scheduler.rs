@@ -2,6 +2,7 @@
 //! FC-TODO: define a common trait?
 
 use std::time;
+use log::*;
 
 use quiche::Connection;
 

@@ -5,7 +5,6 @@ use quiche::flexicast::ack::McStreamOff;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
 use quiche::RecvInfo;
-use quiche::SendInfo;
 use tokio::sync::mpsc;
 
 use super::aggregator::FcAggregatedMsg;
@@ -142,12 +141,6 @@ pub enum MsgFcSource {
     /// All intended receivers are ready to receive content.
     Ready,
 
-    /// Asks for a full retransmission.
-    ///
-    /// This call may be triggered if a receiver falls-back on unicast.
-    /// At the same time, will retransmit "lost" frames to all other receivers.
-    AskStreamPieces,
-
     /// The controller sends aggregated control information to the flexicast
     /// flow.
     AggregatedInfo(FcAggregatedMsg),
@@ -158,9 +151,6 @@ pub enum MsgMain {
     /// A receiver notifies that a new connection ID is mapped to its
     /// connection.
     NewCID((u64, Vec<u8>)),
-
-    /// A receiver notifies that a new packet must be sent on the wire.
-    SendPkt((Vec<u8>, SendInfo)),
 
     /// The flexicast flow stopped.
     FcFlowStop(u64),

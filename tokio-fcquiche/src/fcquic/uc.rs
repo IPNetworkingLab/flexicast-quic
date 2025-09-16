@@ -3,11 +3,12 @@
 use super::aggregator::FcAggregatedMsg;
 use super::messages::*;
 use super::scheduler::FcFlowAliveScheduler;
-use super::Result;
+use crate::Result;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McAnnounceData;
 
+use log::*;
 use quiche::flexicast::McRole;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
@@ -50,11 +51,6 @@ pub struct UcPath {
     /// Whether the unicast path has unlimited congestion window.
     pub unlimited_cwnd: bool,
 
-    /// Previously sent congestion window update.
-    /// Only send new congestion window updates if it changed.
-    /// `None` means that we should never forward the cwnd.
-    pub previous_cwnd: Option<usize>,
-
     pub fcf_scheduler: Option<FcFlowAliveScheduler>,
 
     /// Pending acknowledgments for the controller.
@@ -63,9 +59,6 @@ pub struct UcPath {
     /// Pending aggregated stream acknowledgments from the receivers to the
     /// flexicast flow.
     pub pending_stream_ack: HashMap<u64, OpenRangeSet>,
-
-    /// Path to the directory where we store per-receiver transport feedback.
-    pub transport_feedback_dir: Option<String>,
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the
@@ -105,7 +98,8 @@ impl UcPath {
                         continue;
                     }
 
-                    // Append data in the hashmap of pending data and don't directly delegate it.
+                    // Append data in the hashmap of pending data and don't
+                    // directly delegate it.
                     let stream_map =
                         match self.pending_data.entry(delegated_stream.stream_id)
                         {
@@ -291,8 +285,8 @@ impl UcPath {
                 .conn
                 .get_flexicast_attributes()
                 .map(|fc| {
-                    fc.get_mc_role()
-                        == McRole::ServerUnicast(
+                    fc.get_mc_role() ==
+                        McRole::ServerUnicast(
                             quiche::flexicast::McClientStatus::UcFallBack,
                         )
                 })
@@ -368,9 +362,8 @@ impl UcPath {
         &mut self, data: Arc<Vec<u8>>, stream_id: u64, off: u64, fin: bool,
     ) -> Result<()> {
         // Do not say it is an error, but it should not happen.
-        if self.listen_fc_channel
-            && self
-                .fcf_scheduler
+        if self.listen_fc_channel &&
+            self.fcf_scheduler
                 .as_ref()
                 .map(|fcs| fcs.fcf_alive())
                 .unwrap_or(true)
