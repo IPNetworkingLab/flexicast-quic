@@ -7,6 +7,7 @@ use crate::fcquic::controller::ControllerRole;
 use crate::fcquic::controller::ControllerRoot;
 use crate::fcquic::fc::FcChannelAsync;
 use crate::fcquic::fc::FcFlowRun;
+use crate::fcquic::sendmmsg::SendMMsg;
 use crate::io::fc_flow::FcFlowfileTransfer;
 use crate::Result;
 use quiche::flexicast;
@@ -27,9 +28,14 @@ use crate::io::handshake::Handshake;
 use crate::FcQuicMsg;
 use crate::CHANNEL_BUFFER_SIZE;
 
-mod fc_flow;
-mod handshake;
-mod uc_path;
+#[cfg(feature = "tokio-tracing")]
+use std::fs::OpenOptions;
+#[cfg(feature = "tokio-tracing")]
+use std::io::Write;
+#[cfg(feature = "tokio-tracing")]
+use std::time;
+#[cfg(feature = "tokio-tracing")]
+use tokio_metrics::TaskMonitor;
 
 pub struct TokioFcQuicConfig {
     /// Whether to do unicast delivery.
@@ -62,6 +68,10 @@ pub struct TokioFcQuic {
     /// [`TokioFcQuic`].
     tx: Vec<mpsc::Sender<FcQuicMsg>>,
 
+    /// Transmission channel for [`TokioFcQuic`] to receive content from the
+    /// application.
+    rx: Vec<mpsc::Receiver<FcQuicMsg>>,
+
     /// Tokio Flexicast QUIC configuration.
     config: TokioFcQuicConfig,
 
@@ -80,6 +90,7 @@ impl TokioFcQuic {
     pub fn new(config: TokioFcQuicConfig) -> Self {
         Self {
             tx: Vec::new(),
+            rx: Vec::new(),
             config,
             rng: SystemRandom::new(),
             fc_flows: Vec::new(),
@@ -157,6 +168,11 @@ impl TokioFcQuic {
             mc_announce_data,
         };
 
+        // Create the transmission channel with the application.
+        let (tx_app, rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        self.tx.push(tx_app);
+        self.rx.push(rx_app);
+
         self.fc_flows.push(fc_chan_info);
         self.fc_flow_configs.push(fc_config);
 
@@ -173,6 +189,38 @@ impl TokioFcQuic {
     /// Asynchronously runs Flexicast QUIC using tokio, creating tasks for new
     /// receivers, the flexicast flow, the controller(s).
     pub async fn run(&mut self, uc_path_config: Config) -> Result<()> {
+        // This will create a monitor for the *whole* application.
+        #[cfg(feature = "tokio-tracing")]
+        console_subscriber::init();
+        #[cfg(feature = "tokio-tracing")]
+        let start = time::Instant::now();
+        #[cfg(feature = "tokio-tracing")]
+        let frequency = std::time::Duration::from_millis(200);
+        #[cfg(feature = "tokio-tracing")]
+        {
+            let handle: tokio::runtime::Handle =
+                tokio::runtime::Handle::current();
+            let runtime_monitor = tokio_metrics::RuntimeMonitor::new(&handle);
+            tokio::spawn(async move {
+                for metrics in runtime_monitor.intervals() {
+                    let mut file = OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open("tokio_total.log")
+                        .unwrap();
+
+                    writeln!(
+                        file,
+                        "{:?} {:?}",
+                        time::Instant::now().duration_since(start).as_millis(),
+                        metrics
+                    )
+                    .unwrap();
+                    tokio::time::sleep(frequency).await;
+                }
+            });
+        }
+
         // Collect all flexicast flows information.
         let fc_announce_data = if self.config.flexicast {
             self.fc_flows
@@ -196,6 +244,34 @@ impl TokioFcQuic {
             .map(|fc| fc.fc_chan.algo.try_into().unwrap())
             .collect();
 
+        // Create the sendmmsg instances.
+        let sendmmsg_txs = if let (true, Some(nb_instances)) =
+            (self.config.flexicast, self.config.sendmmsg)
+        {
+            // Not using functionnal programming but it will be clearer.
+            let mut txs = Vec::new();
+
+            for i in 0..nb_instances {
+                let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+                txs.push(tx);
+
+                // Directly run the instance.
+                let mut src_addr = self.config.uc_src_addr;
+                src_addr.set_port(4534 + i as u16);
+                let new_socket =
+                    tokio::net::UdpSocket::bind(src_addr).await.unwrap();
+                let mut sendmmsg =
+                    SendMMsg::new(rx, std::sync::Arc::new(new_socket));
+                tokio::spawn(async move {
+                    sendmmsg.run().await.unwrap();
+                });
+            }
+
+            Some(txs)
+        } else {
+            None
+        };
+
         // Create the handshake task.
         let mut task_hs = Handshake::new(
             &self.config,
@@ -204,6 +280,7 @@ impl TokioFcQuic {
             fc_key_algo,
             &fc_announce_data,
             self.rng.clone(),
+            sendmmsg_txs.clone(),
         )
         .await?;
 
@@ -213,19 +290,12 @@ impl TokioFcQuic {
         let mut tx_fc_flows = Vec::new();
         let (tx_ctl_root, rx_ctl_root) = mpsc::channel(CHANNEL_BUFFER_SIZE);
 
-        // Create the sendmmsg instances.
-        // TODO.
-
         // Create the flexicast flows.
         let mut id_fc_chan = 0;
-        for fc_chan_info in self.fc_flows.drain(..) {
+        for (fc_chan_info, rx_app) in self.fc_flows.drain(..).zip(self.rx.drain(..)) {
             // Transmission channel between the controllers and the flexicast
             // flow.
             let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-
-            // Create the transmission channel with the application.
-            let (tx_app, rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-            self.tx.push(tx_app);
 
             let fc_struct = FcChannelAsync {
                 fc_chan: fc_chan_info.fc_chan,
@@ -239,7 +309,7 @@ impl TokioFcQuic {
                 cca: self.fc_flow_configs[id_fc_chan as usize].fc_cca.clone(),
                 allow_unicast: self.config.unicast,
                 do_flexicast: self.config.flexicast,
-                sendmmsg_txs: None,
+                sendmmsg_txs: sendmmsg_txs.clone(),
                 pending_data: None,
                 pending_data_sent_uc: false,
                 pending_sent_pkt: Vec::new(),
@@ -367,10 +437,12 @@ impl TokioFcQuic {
         }
 
         // Start the handshake task.
-        tokio::spawn(async move {
-            task_hs.run().await.unwrap();
-        });
+        task_hs.run().await.unwrap();
 
         Ok(())
     }
 }
+
+mod fc_flow;
+mod handshake;
+mod uc_path;

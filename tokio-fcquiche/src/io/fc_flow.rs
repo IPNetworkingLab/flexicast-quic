@@ -300,7 +300,6 @@ impl FcFlowRun for FcFlowfileTransfer {
 
                             while left > 0 {
                                 let pkt_len = cmp::min(left, MAX_DATAGRAM_SIZE);
-
                                 match self
                                     .fc
                                     .socket

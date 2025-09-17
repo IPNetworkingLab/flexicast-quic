@@ -86,6 +86,7 @@ impl Handshake {
         config: &TokioFcQuicConfig, uc_path_config: Config,
         fc_master_secret: Vec<Vec<u8>>, fc_key_algo: Vec<u8>,
         fc_announce_data: &[McAnnounceData], rng: SystemRandom,
+        txs_sendmmsg: Option<Vec<mpsc::Sender<MsgSmsg>>>,
     ) -> Result<Self> {
         let (tx_main, rx_main) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         Ok(Self {
@@ -106,7 +107,7 @@ impl Handshake {
             fc_key_algo,
             uc_unlimited_cwnd: config.unicast_unlimited_cwnd,
             fallback_delay: config.fallback_delay,
-            txs_sendmmsg: None,
+            txs_sendmmsg,
             rng,
         })
     }
@@ -464,8 +465,6 @@ impl Handshake {
                 });
             }
         }
-
-        println!("Finishing!");
 
         Ok(())
     }

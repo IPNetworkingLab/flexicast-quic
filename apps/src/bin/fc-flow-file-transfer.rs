@@ -15,15 +15,6 @@ use quiche_apps::fc_app::video::rtp::RtpSource;
 use quiche_apps::fc_app::video::StreamTransferKind;
 use tokio_fcquiche::io::TokioFcQuicConfig;
 
-#[cfg(feature = "tokio-tracing")]
-use std::fs::OpenOptions;
-#[cfg(feature = "tokio-tracing")]
-use std::io::Write;
-#[cfg(feature = "tokio-tracing")]
-use std::time;
-#[cfg(feature = "tokio-tracing")]
-use tokio_metrics::TaskMonitor;
-
 #[derive(Parser)]
 struct Args {
     /// Activate flexicast extension.
@@ -49,6 +40,11 @@ struct Args {
         default_value = "239.239.239.35:4434"
     )]
     mc_addr: net::SocketAddr,
+
+    /// Multicast source address.
+    /// Must be different from the source address.
+    #[clap(long = "mc-src-addr", value_parser, default_value = "127.0.0.1:4567")]
+    mc_src_addr: net::SocketAddr,
 
     /// Flexicast flow timer.
     #[clap(long, value_parser, default_value = "0")]
@@ -120,37 +116,6 @@ struct Args {
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
     env_logger::builder().format_timestamp_nanos().init();
-    // This will create a monitor for the *whole* application.
-    #[cfg(feature = "tokio-tracing")]
-    console_subscriber::init();
-    #[cfg(feature = "tokio-tracing")]
-    let start = time::Instant::now();
-    #[cfg(feature = "tokio-tracing")]
-    let frequency = std::time::Duration::from_millis(200);
-    #[cfg(feature = "tokio-tracing")]
-    {
-        let handle: tokio::runtime::Handle = tokio::runtime::Handle::current();
-        let runtime_monitor = tokio_metrics::RuntimeMonitor::new(&handle);
-        tokio::spawn(async move {
-            for metrics in runtime_monitor.intervals() {
-                let mut file = OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open("tokio_total.log")
-                    .unwrap();
-
-                writeln!(
-                    file,
-                    "{:?} {:?}",
-                    time::Instant::now().duration_since(start).as_millis(),
-                    metrics
-                )
-                .unwrap();
-                tokio::time::sleep(frequency).await;
-            }
-        });
-    }
-
     let args = Args::parse();
 
     // Create Flexicast Quiche tokio config.
@@ -177,7 +142,7 @@ async fn main() {
         max_stream_data: args.initial_fc_flow.unwrap_or(1_000_000),
         fc_timer: args.fc_timer,
         fec: false,
-        src_addr: args.src_addr,
+        src_addr: args.mc_src_addr,
         mc_addr: args.mc_addr,
         crt_path: args.cert_path.clone(),
         fc_cca: args.fc_cwnd,
@@ -194,12 +159,9 @@ async fn main() {
 
     // Start Tokio Flexicast Quiche.
     let uc_config = get_config(&args);
-    tokio::spawn(async move {
-        fcquiche.run(uc_config).await.unwrap();
-    });
 
     // Start the application.
-    match args.transfer_kind {
+    match &args.transfer_kind {
         TransferKind::File(file_transfer_kind) => {
             let mut file_transfer_src =
                 FileTransferSrc::new(&file_transfer_kind, tx_app).unwrap();
@@ -215,11 +177,13 @@ async fn main() {
 
                 StreamTransferKind::Rtp(addr) => {
                     let mut rtp_src =
-                        RtpSource::new(addr, tx_app, None).await.unwrap();
+                        RtpSource::new(*addr, tx_app, None).await.unwrap();
                     rtp_src.run().await.unwrap();
                 },
             },
     }
+
+    fcquiche.run(uc_config).await.unwrap();
 }
 
 fn get_config(args: &Args) -> quiche::Config {

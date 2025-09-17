@@ -24,9 +24,6 @@ sfv = ["quiche/sfv"]
 
 default = ["qlog", "sfv"]
 
-# Enable tokio tracing
-tokio-tracing = ["tokio/tracing"]
-
 [dependencies]
 docopt = "1"
 env_logger = { workspace = true }
