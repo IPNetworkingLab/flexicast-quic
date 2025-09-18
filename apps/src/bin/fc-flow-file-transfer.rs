@@ -23,7 +23,7 @@ struct Args {
 
     /// Keylog file for flexicast channel.
     #[clap(long = "keylog", value_parser, default_value = "/tmp/fc-server.txt")]
-    fc_keylog_file: Box<Path>,
+    fc_keylog_file: String,
 
     /// Source address of the server.
     #[clap(long = "src", default_value = "127.0.0.1:4433")]
@@ -150,7 +150,7 @@ async fn main() {
     };
 
     fcquiche
-        .add_fc_flow(flow_config, args.fc_keylog_file.as_ref().to_str().unwrap())
+        .add_fc_flow(flow_config, &args.fc_keylog_file)
         .await
         .unwrap();
 

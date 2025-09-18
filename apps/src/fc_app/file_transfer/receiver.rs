@@ -5,6 +5,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use tokio::sync::mpsc::Receiver;
+use tokio_fcquiche::FcQuicMsg;
 
 #[derive(Debug)]
 /// File transfer receiving-side specific messages.
@@ -29,7 +30,7 @@ pub struct FileTransferRecv {
     nb_bytes_recv: usize,
 
     /// Tokio channel to receive the data.
-    rx_chan: Receiver<FileTransferRecvMsg>,
+    rx_chan: Receiver<FcQuicMsg>,
 
     /// True filename.
     true_filename: String,
@@ -42,7 +43,7 @@ impl FileTransferRecv {
     /// New structure to handle the file transfer delivery on the
     /// receiving-side.
     pub fn new(
-        filepath: &Path, rx_chan: Receiver<FileTransferRecvMsg>,
+        filepath: &Path, rx_chan: Receiver<FcQuicMsg>,
         tmp_filename: &Path,
     ) -> Result<Self> {
         let true_filename = filepath
@@ -66,9 +67,9 @@ impl FileTransferRecv {
     pub async fn run(&mut self) -> Result<()> {
         loop {
             match self.rx_chan.recv().await {
-                Some(FileTransferRecvMsg::Data((v, fin, stream_id))) =>
+                Some(FcQuicMsg::Stream((v, fin, stream_id))) =>
                     self.handle_new_data(v, fin, stream_id).await?,
-                Some(FileTransferRecvMsg::Close) => {
+                Some(FcQuicMsg::Close) => {
                     self.rx_chan.close();
                     break;
                 },

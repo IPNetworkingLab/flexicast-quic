@@ -1,6 +1,5 @@
 //! Flexicast QUIC module.
 use std::net::SocketAddr;
-use std::path::Path;
 
 use crate::fcquic::controller::ControllerLeaf;
 use crate::fcquic::controller::ControllerRole;
@@ -54,7 +53,7 @@ pub struct TokioFcQuicConfig {
     pub flexicast: bool,
 
     /// Path to the flexicast flow keylog file.
-    pub fc_keylog_file: Box<Path>,
+    pub fc_keylog_file: String,
 
     /// The fallback delay of the unicast path.
     pub fallback_delay: Option<std::time::Duration>,
@@ -446,3 +445,4 @@ impl TokioFcQuic {
 mod fc_flow;
 mod handshake;
 mod uc_path;
+pub mod receiver;

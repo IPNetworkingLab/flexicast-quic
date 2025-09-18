@@ -5,7 +5,6 @@ use crate::fc_app::file_transfer::FileTransferKind;
 
 use tokio_fcquiche::*;
 pub mod http3;
-pub mod rtp;
 pub mod video;
 pub mod file_transfer;
 
