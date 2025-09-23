@@ -27,6 +27,8 @@ use crate::io::handshake::Handshake;
 use crate::FcQuicMsg;
 use crate::CHANNEL_BUFFER_SIZE;
 
+#[cfg(feature = "qlog")]
+use crate::make_qlog_writer;
 #[cfg(feature = "tokio-tracing")]
 use std::fs::OpenOptions;
 #[cfg(feature = "tokio-tracing")]
@@ -291,7 +293,9 @@ impl TokioFcQuic {
 
         // Create the flexicast flows.
         let mut id_fc_chan = 0;
-        for (fc_chan_info, rx_app) in self.fc_flows.drain(..).zip(self.rx.drain(..)) {
+        for (fc_chan_info, rx_app) in
+            self.fc_flows.drain(..).zip(self.rx.drain(..))
+        {
             // Transmission channel between the controllers and the flexicast
             // flow.
             let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
@@ -444,5 +448,5 @@ impl TokioFcQuic {
 
 mod fc_flow;
 mod handshake;
-mod uc_path;
 pub mod receiver;
+mod uc_path;

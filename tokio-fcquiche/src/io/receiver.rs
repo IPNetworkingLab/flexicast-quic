@@ -19,6 +19,9 @@ use crate::FcQuicMsg;
 use crate::CHANNEL_BUFFER_SIZE;
 use crate::MAX_DATAGRAM_SIZE;
 
+#[cfg(feature = "qlog")]
+use crate::make_qlog_writer;
+
 /// Creates a Flexicast QUIC receiver using tokio.
 pub struct TokioFcQuicRecv {
     /// QUIC configuration.
@@ -94,7 +97,7 @@ impl TokioFcQuicRecv {
         #[cfg(feature = "qlog")]
         {
             if let Some(dir) = std::env::var_os("QLOGDIR") {
-                let id = format!("Client-{}", args.local_ip.to_string());
+                let id = format!("Client-{}", self.local_ip.to_string());
                 let writer = make_qlog_writer(&dir, "client", &id);
 
                 conn.set_qlog(

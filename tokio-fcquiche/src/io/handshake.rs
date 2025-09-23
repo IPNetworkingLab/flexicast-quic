@@ -27,7 +27,7 @@ use quiche::flexicast::McAnnounceData;
 
 use crate::fcquic::sendmmsg::MsgSmsg;
 #[cfg(feature = "qlog")]
-use quiche_apps::common::make_qlog_writer;
+use crate::make_qlog_writer;
 
 use ring::rand::SystemRandom;
 

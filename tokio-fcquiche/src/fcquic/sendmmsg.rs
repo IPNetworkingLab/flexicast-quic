@@ -15,6 +15,7 @@ use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use log::*;
 
 /// Structure to manipulate the sendmmsg instance.
 pub struct SendMMsg {

@@ -19,3 +19,22 @@ pub enum FcQuicMsg {
     /// No more data will be sent.
     Close,
 }
+
+#[cfg(feature = "qlog")]
+/// Makes a buffered writer for a qlog.
+pub(crate) fn make_qlog_writer(
+    dir: &std::ffi::OsStr, role: &str, id: &str,
+) -> std::io::BufWriter<std::fs::File> {
+    let mut path = std::path::PathBuf::from(dir);
+    let filename = format!("{role}-{id}.sqlog");
+    path.push(filename);
+
+    match std::fs::File::create(&path) {
+        Ok(f) => std::io::BufWriter::new(f),
+
+        Err(e) => panic!(
+            "Error creating qlog file attempted path was {:?}: {}",
+            path, e
+        ),
+    }
+}
