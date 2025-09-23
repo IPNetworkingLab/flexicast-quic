@@ -300,7 +300,7 @@ impl TokioFcQuic {
             // flow.
             let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
 
-            let fc_struct = FcChannelAsync {
+            let mut fc_struct = FcChannelAsync {
                 fc_chan: fc_chan_info.fc_chan,
                 mc_announce_data: fc_chan_info.mc_announce_data,
                 socket: fc_chan_info.socket,
@@ -323,11 +323,6 @@ impl TokioFcQuic {
 
             tx_fc_flows.push(tx);
 
-            let mut fc_flow = FcFlowfileTransfer {
-                fc: fc_struct,
-                rx: rx_app,
-            };
-
             // Initialize QLOG for the flexicast flow.
             #[cfg(feature = "qlog")]
             {
@@ -342,6 +337,11 @@ impl TokioFcQuic {
                     );
                 }
             }
+
+            let mut fc_flow = FcFlowfileTransfer {
+                fc: fc_struct,
+                rx: rx_app,
+            };
 
             // Start Flexicast flow task.
             #[cfg(feature = "tokio-tracing")]
