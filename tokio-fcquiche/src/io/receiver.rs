@@ -12,6 +12,7 @@ use ring::rand::SystemRandom;
 use std::net;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::net::SocketAddrV4;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -173,9 +174,11 @@ impl TokioFcQuicRecv {
                     // Create a second path.
                     if !probe_mc_path && added_mc_cid {
                         debug!("Create the second path. Client addr={:?}. Server addr={:?}", mc_addr, self.peer_addr);
+                        let src_ip = Ipv4Addr::from(mc_announce_data.source_ip);
+                        let src_addr = SocketAddr::V4(SocketAddrV4::new(src_ip, 4443));
                         let fc_path_id = conn.create_mc_path(
                             mc_addr,
-                            self.peer_addr,
+                            src_addr,
                             mc_announce_data.probe_path,
                         );
                         println!("Out of create mc path:{:?}", fc_path_id);
