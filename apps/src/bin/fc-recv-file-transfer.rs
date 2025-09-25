@@ -92,7 +92,7 @@ async fn main() {
                         // Path::new("tmp_filename.txt").into()
                         Path::new("/shared/tmp_filename.txt").into()
                     } else {
-                        Path::new("/dev/shm").join(out_filename)
+                        Path::new("/tmp").join(out_filename)
                     };
                     let mut fc_app = FileTransferRecv::new(
                         &output_prefix.join(out_filename),
