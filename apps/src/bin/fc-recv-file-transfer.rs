@@ -66,7 +66,7 @@ struct Args {
     stop_file_path: String,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 3)]
 async fn main() {
     env_logger::builder().format_timestamp_nanos().init();
     let args = Args::parse();
