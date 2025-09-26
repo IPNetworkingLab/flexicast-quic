@@ -4,6 +4,7 @@ use super::Result;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::time;
 use tokio::sync::mpsc::Receiver;
 use tokio_fcquiche::FcQuicMsg;
 
@@ -43,8 +44,7 @@ impl FileTransferRecv {
     /// New structure to handle the file transfer delivery on the
     /// receiving-side.
     pub fn new(
-        filepath: &Path, rx_chan: Receiver<FcQuicMsg>,
-        tmp_filename: &Path,
+        filepath: &Path, rx_chan: Receiver<FcQuicMsg>, tmp_filename: &Path,
     ) -> Result<Self> {
         let true_filename = filepath
             .to_str()
@@ -65,10 +65,25 @@ impl FileTransferRecv {
     ///
     /// It will get data from the channel and write them on disk.
     pub async fn run(&mut self) -> Result<()> {
+        let start = time::Instant::now();
+        let mut since_first_byte = None;
         loop {
             match self.rx_chan.recv().await {
-                Some(FcQuicMsg::Stream((v, fin, stream_id))) =>
-                    self.handle_new_data(v, fin, stream_id).await?,
+                Some(FcQuicMsg::Stream((v, fin, stream_id))) => {
+                    if since_first_byte.is_none() {
+                        since_first_byte = Some(time::Instant::now());
+                    }
+                    self.handle_new_data(v, fin, stream_id).await?;
+                    if fin {
+                        println!(
+                            "End of transfer. Total duration in ms: {:?}. Since first byte: {:?}",
+                            time::Instant::now()
+                                .duration_since(start)
+                                .as_millis(),
+                            time::Instant::now().duration_since(since_first_byte.unwrap()).as_millis(),
+                        );
+                    }
+                },
                 Some(FcQuicMsg::Close) => {
                     self.rx_chan.close();
                     break;

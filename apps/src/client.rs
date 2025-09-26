@@ -34,6 +34,7 @@ use std::io::prelude::*;
 use std::rc::Rc;
 
 use std::cell::RefCell;
+use std::time;
 
 use ring::rand::*;
 
@@ -61,6 +62,8 @@ pub fn connect(
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
+
+    let start = std::time::Instant::now();
 
     // We'll only connect to the first server provided in URL list.
     let connect_url = &args.urls[0];
@@ -657,6 +660,11 @@ pub fn connect(
             break;
         }
     }
+
+    println!(
+        "End of transfer for unicast. Total duration in ms: {:?}",
+        time::Instant::now().duration_since(start).as_millis()
+    );
 
     Ok(())
 }
