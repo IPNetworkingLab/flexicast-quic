@@ -103,7 +103,15 @@ impl TokioFcQuic {
     pub async fn add_fc_flow(
         &mut self, fc_config: FcConfig, path_keylog: &str,
     ) -> Result<()> {
-        let socket = UdpSocket::bind(fc_config.src_addr).await?;
+        let new_socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            None,
+        )?;
+        new_socket.set_reuse_address(true)?;
+        new_socket.set_nonblocking(true)?;
+        new_socket.bind(&fc_config.src_addr.into())?;
+        let socket = UdpSocket::from_std(new_socket.into())?;
         socket.set_multicast_ttl_v4(64)?;
 
         let mut server_config = get_mc_config(true, &fc_config);

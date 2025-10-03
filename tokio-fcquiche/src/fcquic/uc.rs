@@ -46,7 +46,7 @@ pub struct UcPath {
     pub pending_data_off: usize,
 
     /// Give a socket to send data in the network using unicast.
-    pub uc_sock: Arc<tokio::net::UdpSocket>,
+    pub uc_sock: tokio::net::UdpSocket,
 
     /// Whether the unicast path has unlimited congestion window.
     pub unlimited_cwnd: bool,
@@ -112,13 +112,16 @@ impl UcPath {
                         delegated_stream.offset,
                         delegated_stream.payload.len()
                     );
-                    stream_map.insert(
+                    let v = stream_map.insert(
                         delegated_stream.offset,
                         (
                             Arc::new(delegated_stream.payload.clone()),
                             delegated_stream.fin,
                         ),
                     );
+                    if v.is_some() {
+                        println!("Old value for offset {}: {:?} and new length={:?}", delegated_stream.offset, v.unwrap().0.len(), delegated_stream.payload.len());
+                    }
                 }
 
                 self.conn.fc_delegated_streams(
@@ -127,10 +130,6 @@ impl UcPath {
                     do_delegate,
                     false,
                 )?;
-            },
-
-            MsgRecv::NewPkt((pkt_to_read, new_addr)) => {
-                self.handle_new_pkt(pkt_to_read, new_addr).await?;
             },
 
             MsgRecv::StreamData((data, stream_id, off, fin)) => {
@@ -352,9 +351,9 @@ impl UcPath {
     }
 
     pub async fn handle_new_pkt(
-        &mut self, mut pkt_to_read: Vec<u8>, recv_info: quiche::RecvInfo,
+        &mut self, pkt_to_read: &mut [u8], recv_info: quiche::RecvInfo,
     ) -> Result<()> {
-        self.recv(&mut pkt_to_read, recv_info).await?;
+        self.recv(pkt_to_read, recv_info).await?;
         Ok(())
     }
 

@@ -342,6 +342,16 @@ impl Handshake {
                 let tx_ctl =
                     self.tx_ctls[client_id as usize % self.tx_ctls.len()].clone();
 
+                let new_socket = socket2::Socket::new(
+                    socket2::Domain::IPV4,
+                    socket2::Type::DGRAM,
+                    None,
+                )?;
+                new_socket.set_reuse_address(true)?;
+                new_socket.set_nonblocking(true)?;
+                new_socket.bind(&self.socket.local_addr().unwrap().into())?;
+                let new_socket = UdpSocket::from_std(new_socket.into())?;
+
                 #[allow(unused_mut)]
                 let mut client = crate::fcquic::uc::UcPath {
                     conn,
@@ -360,7 +370,7 @@ impl Handshake {
                     tx_main: self.tx_main.clone(),
                     pending_data: HashMap::new(),
                     pending_data_off: 0,
-                    uc_sock: self.socket.clone(),
+                    uc_sock: new_socket,
                     unlimited_cwnd: self.uc_unlimited_cwnd,
                     fcf_scheduler: self
                         .fallback_delay
@@ -420,16 +430,11 @@ impl Handshake {
                     to: self.socket.local_addr().unwrap(),
                     from_mc: false,
                 };
-                let msg = MsgRecv::NewPkt((pkt_buf.to_vec(), recv_info));
                 debug!(
                     "Send message to {:?} because recv_info={:?}",
                     client_id, recv_info
                 );
-                let res = self.tx_recvs[*client_id as usize].send(msg).await;
-                if matches!(res, Err(_)) {
-                    error!("Error for this client: {:?}", res);
-                }
-                continue;
+                unreachable!();
             };
 
             let recv_info = quiche::RecvInfo {

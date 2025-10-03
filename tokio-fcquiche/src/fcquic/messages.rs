@@ -118,9 +118,6 @@ pub enum MsgRecv {
     /// This last value must be "zip"-iterated with the second.
     DelegateStreams((u64, Arc<Vec<FcDelegatedStream>>, Vec<bool>)),
 
-    /// New packet from this receiver for the unicast instance to handle.
-    NewPkt((Vec<u8>, RecvInfo)),
-
     /// The flexicast source is responsible to read application data.
     /// It sends the payload to the controller to allow receivers to fall-back
     /// on unicast / disable flexicast and still receive the content.

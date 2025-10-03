@@ -87,6 +87,16 @@ impl UcPathRun for UcPathFileTransfer {
 
                     // Data on the control channel.
                     Some(msg) = self.0.rx_ctl.recv() => self.0.handle_ctl_msg(msg).await?,
+
+                    // Packet on the socket.
+                    Ok(len) = self.0.uc_sock.recv(&mut buf[..]) => {
+                        let recv_info = quiche::RecvInfo {
+                            from: self.0.uc_sock.peer_addr().unwrap(),
+                            to: self.0.uc_sock.local_addr().unwrap(),
+                            from_mc: false,
+                        };
+                        self.0.handle_new_pkt(&mut buf[..len], recv_info).await?;
+                    },
                 }
             }
 
@@ -179,7 +189,9 @@ impl UcPathRun for UcPathFileTransfer {
                                 )
                                 },
                             }
-
+                            if self.0.pending_data_off > data_arc.len() {
+                                println!("WTF here? {:?}", first_off);
+                            }
                             let data = &data_arc[self.0.pending_data_off..];
                             let off = first_off + self.0.pending_data_off as u64;
                             let buf_off = self
