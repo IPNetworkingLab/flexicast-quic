@@ -89,13 +89,18 @@ impl Handshake {
         txs_sendmmsg: Option<Vec<mpsc::Sender<MsgSmsg>>>,
     ) -> Result<Self> {
         let (tx_main, rx_main) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let new_socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            None,
+        )?;
+        new_socket.set_reuse_address(true)?;
+        new_socket.set_nonblocking(true)?;
+        new_socket.bind(&config.uc_src_addr.into())?;
+        let new_socket = UdpSocket::from_std(new_socket.into())?;
         Ok(Self {
             client_ids: HashMap::new(),
-            socket: Arc::new(
-                tokio::net::UdpSocket::bind(config.uc_src_addr)
-                    .await
-                    .unwrap(),
-            ),
+            socket: Arc::new(new_socket),
             tx_recvs: Vec::new(),
             fc_flows_stopped: HashSet::new(),
             tx_main,
