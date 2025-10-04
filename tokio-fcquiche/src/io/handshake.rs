@@ -356,6 +356,7 @@ impl Handshake {
                 new_socket.set_nonblocking(true)?;
                 new_socket.bind(&self.socket.local_addr().unwrap().into())?;
                 let new_socket = UdpSocket::from_std(new_socket.into())?;
+                new_socket.connect(from).await?;
 
                 #[allow(unused_mut)]
                 let mut client = crate::fcquic::uc::UcPath {
@@ -374,7 +375,6 @@ impl Handshake {
                     tx_tcl: tx_ctl.clone(),
                     tx_main: self.tx_main.clone(),
                     pending_data: HashMap::new(),
-                    pending_data_off: 0,
                     uc_sock: new_socket,
                     unlimited_cwnd: self.uc_unlimited_cwnd,
                     fcf_scheduler: self

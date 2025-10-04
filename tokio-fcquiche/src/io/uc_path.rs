@@ -168,12 +168,16 @@ impl UcPathRun for UcPathFileTransfer {
                 );
                 for stream_id in stream_ids.iter() {
                     loop {
-                        if let Some((&first_off, (data_arc, fin))) = self
+                        if let Some((
+                            &first_off,
+                            (data_arc, fin, pending_data_off),
+                        )) = self
                             .0
                             .pending_data
                             .get(stream_id)
                             .and_then(|btree_map| btree_map.iter().next())
                         {
+                            let pending_data_off = *pending_data_off;
                             match self
                                 .0
                                 .conn
@@ -189,11 +193,11 @@ impl UcPathRun for UcPathFileTransfer {
                                 )
                                 },
                             }
-                            if self.0.pending_data_off > data_arc.len() {
+                            if pending_data_off > data_arc.len() {
                                 println!("WTF here? {:?}", first_off);
                             }
-                            let data = &data_arc[self.0.pending_data_off..];
-                            let off = first_off + self.0.pending_data_off as u64;
+                            let data = &data_arc[pending_data_off..];
+                            let off = first_off + pending_data_off as u64;
                             let buf_off = self
                                 .0
                                 .conn
@@ -208,7 +212,7 @@ impl UcPathRun for UcPathFileTransfer {
                             info!(
                                 "Recv {}: RESET THE FC SEND OFF stream_id={:?} off={:?}.
                         Off given by quiche: {:?} for {}. Pending_data_off={}",
-                                self.0.client_id, stream_id, off, buf_off, self.0.client_id, self.0.pending_data_off
+                                self.0.client_id, stream_id, off, buf_off, self.0.client_id, pending_data_off
                             );
 
                             let (data, stripped_nb) = if off + (data.len() as u64) <
@@ -262,29 +266,37 @@ impl UcPathRun for UcPathFileTransfer {
                                 0
                             };
 
-                            if self.0.pending_data_off + written >= data_arc.len() ||
+                            if pending_data_off + written >= data_arc.len() ||
                                 data.is_empty()
                             {
-                                debug!("Recv {}: Drain pending data because pending off={} + written={} >= data.len={}, first_off={}", self.0.client_id, self.0.pending_data_off, written, data.len(), first_off);
+                                debug!("Recv {}: Drain pending data because pending off={} + written={} >= data.len={}, first_off={}", self.0.client_id, pending_data_off, written, data.len(), first_off);
                                 self.0.pending_data.get_mut(stream_id).and_then(
                                     |btree_map| {
                                         btree_map.remove_entry(&first_off)
                                     },
                                 );
-                                self.0.pending_data_off = 0;
                                 // info!(
                                 //     "Draining element and reset pending data
                                 // for {}",
                                 //     self.0.client_id
                                 // );
                             } else {
-                                self.0.pending_data_off += written + stripped_nb;
+                                self.0
+                                    .pending_data
+                                    .get_mut(stream_id)
+                                    .unwrap()
+                                    .iter_mut()
+                                    .next()
+                                    .unwrap()
+                                    .1
+                                     .2 =
+                                    pending_data_off + written + stripped_nb;
                                 info!(
                                 "Recv {}: Increasing pending data off by {}. Now={} for
                             {}",
                                 self.0.client_id,
                                 written + stripped_nb,
-                                self.0.pending_data_off,
+                                pending_data_off,
                                 self.0.client_id
                             );
                             }
@@ -317,7 +329,9 @@ impl UcPathRun for UcPathFileTransfer {
 
                 // Send the packet directly to the wire without going by the main
                 // thread.
-                self.0.uc_sock.send_to(&buf[..write], send_info.to).await?;
+                println!("BEFORE I SEND: {:?}", self.0.uc_sock.peer_addr());
+                self.0.uc_sock.send(&buf[..write]).await?;
+                println!("AFTER I SEND: {:?}", self.0.uc_sock.peer_addr());
                 trace!("UC path sent packet of len {write}");
             }
 

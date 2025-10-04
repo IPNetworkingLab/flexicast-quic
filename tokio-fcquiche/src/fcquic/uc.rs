@@ -40,10 +40,7 @@ pub struct UcPath {
     /// The second value indicates whether this is the last piece of data, i.e.,
     /// 'fin'.
     /// The last value indicates the stream ID.
-    pub pending_data: HashMap<u64, BTreeMap<u64, (Arc<Vec<u8>>, bool)>>,
-
-    /// Number of bytes written in the first pending data.
-    pub pending_data_off: usize,
+    pub pending_data: HashMap<u64, BTreeMap<u64, (Arc<Vec<u8>>, bool, usize)>>,
 
     /// Give a socket to send data in the network using unicast.
     pub uc_sock: tokio::net::UdpSocket,
@@ -117,6 +114,7 @@ impl UcPath {
                         (
                             Arc::new(delegated_stream.payload.clone()),
                             delegated_stream.fin,
+                            0,
                         ),
                     );
                     if v.is_some() {
@@ -379,7 +377,7 @@ impl UcPath {
             Vacant(entry) => entry.insert(BTreeMap::new()),
             Occupied(entry) => entry.into_mut(),
         };
-        stream_map.insert(off, (data, fin));
+        stream_map.insert(off, (data, fin, 0));
 
         Ok(())
     }
