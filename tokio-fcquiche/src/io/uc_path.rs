@@ -65,6 +65,7 @@ impl UcPathRun for UcPathFileTransfer {
                 .unwrap_or(false);
 
             if !first_read {
+                println!("Before tokio UC path. Try with address: {:?}!", self.0.uc_sock.peer_addr());
                 tokio::select! {
                     // Timeout sleep.
                     Some(_) = optional_timeout(timeout) => self.0.conn.on_timeout(),
@@ -90,6 +91,7 @@ impl UcPathRun for UcPathFileTransfer {
 
                     // Packet on the socket.
                     Ok(len) = self.0.uc_sock.recv(&mut buf[..]) => {
+                        println!("UC PATH receives a packet!");
                         let recv_info = quiche::RecvInfo {
                             from: self.0.uc_sock.peer_addr().unwrap(),
                             to: self.0.uc_sock.local_addr().unwrap(),
