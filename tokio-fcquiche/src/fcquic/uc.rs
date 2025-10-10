@@ -140,7 +140,6 @@ impl UcPath {
     }
 
     pub async fn send_ctl_info(&mut self) -> Result<()> {
-        println!("Before send ctl info!");
         // Do nothing if flexicast is disabled.
         if self.conn.get_flexicast_attributes().is_none() {
             return Ok(());
@@ -158,7 +157,6 @@ impl UcPath {
         // This information will be propagated to the flexicast source to release
         // state.
         let (ack_pn, ack_stream) = self.conn.get_new_ack_pn_streams()?;
-        println!("ACK PN: {:?}", ack_pn);
 
         // Maybe some pending data.
         let mut pn = std::mem::take(&mut self.pending_ack);

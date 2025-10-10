@@ -22,7 +22,6 @@ async fn tfc_send_file() {
     let data = vec![42u8; 1000];
     let msg = FcQuicMsg::Stream((data.clone(), true, 3));
     tx.send(msg).await.unwrap();
-    println!("TEST");
 
     let recv_msg = rx.recv().await.unwrap();
     match recv_msg {

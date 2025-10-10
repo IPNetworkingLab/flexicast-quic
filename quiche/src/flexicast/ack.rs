@@ -177,6 +177,9 @@ impl McAck {
             );
         }
 
+        // Potential ranges that we must process because they interfering.
+        let mut new_rangeset = RangeSet::default();
+
         for init_range in ranges.clone().iter() {
             let mut range = init_range.clone();
             let mut process_range = true;
@@ -184,6 +187,7 @@ impl McAck {
             // Check the range of packets that have already been acknowledged.
             if let Some(recv_pkt_num) = self.recv_pkt_num.as_mut() {
                 for recv_range in recv_pkt_num.iter() {
+                    println!("Compare {:?} vs {:?}", recv_range, range);
                     if recv_range.end < range.start {
                         continue;
                     } else if recv_range.start > range.end {
@@ -200,7 +204,18 @@ impl McAck {
                         continue;
                     } else if recv_range.end >= range.end {
                         range.end = recv_range.start;
+                    } else if recv_range.start > range.start && recv_range.end < range.end {
+                        // We will have to split the two ranges... Do it the easy way lol.
+                        let end = range.end;
+                        range.end = recv_range.start;
+
+                        // And do a recursive call later.
+                        new_rangeset.insert(recv_range.end..end);
                     }
+                }
+
+                if process_range {
+                    println!("Say that we process range: {:?} while recv={:?}", range, recv_pkt_num);
                 }
 
                 if process_range {
@@ -246,6 +261,11 @@ impl McAck {
 
         if fully_range.len() > 0 {
             self.acked_full = Some(fully_range);
+        }
+
+        // And do the recursive call.
+        if new_rangeset.len() > 0 {
+            self.on_ack_received(&new_rangeset);
         }
     }
 
@@ -531,5 +551,30 @@ mod tests {
         let mut ranges = RangeSet::default();
         ranges.insert(500..600);
         assert_eq!(mc_ack.acked_stream_off(), Some(vec![(3, ranges)]));
+    }
+
+    #[test]
+    fn test_mc_ack_pn_2() {
+        let mut mc_ack = McAck::new(true);
+
+        let mut rs1 = RangeSet::default();
+        rs1.insert(0..100);
+        rs1.insert(150..151);
+        mc_ack.on_ack_received(&rs1);
+        
+        let full = mc_ack.full_ack();
+
+        assert_eq!(full, Some(rs1));
+
+        let mut rs2 = RangeSet::default();
+        println!("----------------------");
+        rs2.insert(100..200);
+        mc_ack.on_ack_received(&rs2);
+
+        let full = mc_ack.full_ack();
+        let mut expected = RangeSet::default();
+        expected.insert(100..150);
+        expected.insert(151..200);
+        assert_eq!(full, Some(expected));
     }
 }

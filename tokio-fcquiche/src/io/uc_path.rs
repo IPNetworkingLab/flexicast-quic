@@ -65,7 +65,6 @@ impl UcPathRun for UcPathFileTransfer {
                 .unwrap_or(false);
 
             if !first_read {
-                println!("Before tokio UC path. Try with address: {:?}!", self.0.uc_sock.peer_addr());
                 tokio::select! {
                     // Timeout sleep.
                     Some(_) = optional_timeout(timeout) => self.0.conn.on_timeout(),
@@ -91,7 +90,6 @@ impl UcPathRun for UcPathFileTransfer {
 
                     // Packet on the socket.
                     Ok(len) = self.0.uc_sock.recv(&mut buf[..]) => {
-                        println!("UC PATH receives a packet!");
                         let recv_info = quiche::RecvInfo {
                             from: self.0.uc_sock.peer_addr().unwrap(),
                             to: self.0.uc_sock.local_addr().unwrap(),
@@ -313,7 +311,7 @@ impl UcPathRun for UcPathFileTransfer {
             // them on the UDP socket, until quiche reports that there are no more
             // packets to be sent.
             'send: loop {
-                let (write, send_info) = match self.0.conn.send(&mut buf[..]) {
+                let (write, _send_info) = match self.0.conn.send(&mut buf[..]) {
                     Ok(v) => v,
 
                     Err(quiche::Error::Done) => {
@@ -331,9 +329,7 @@ impl UcPathRun for UcPathFileTransfer {
 
                 // Send the packet directly to the wire without going by the main
                 // thread.
-                println!("BEFORE I SEND: {:?}", self.0.uc_sock.peer_addr());
                 self.0.uc_sock.send(&buf[..write]).await?;
-                println!("AFTER I SEND: {:?}", self.0.uc_sock.peer_addr());
                 trace!("UC path sent packet of len {write}");
             }
 
