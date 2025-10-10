@@ -192,20 +192,23 @@ impl McAck {
                         continue;
                     } else if recv_range.start > range.end {
                         break;
-                    } else if recv_range.start <= range.start
-                        && recv_range.end >= range.end
+                    } else if recv_range.start <= range.start &&
+                        recv_range.end >= range.end
                     {
                         process_range = false;
                         break;
-                    } else if recv_range.start <= range.start
-                        && recv_range.end > range.start
+                    } else if recv_range.start <= range.start &&
+                        recv_range.end > range.start
                     {
                         range.start = recv_range.end;
                         continue;
                     } else if recv_range.end >= range.end {
                         range.end = recv_range.start;
-                    } else if recv_range.start > range.start && recv_range.end < range.end {
-                        // We will have to split the two ranges... Do it the easy way lol.
+                    } else if recv_range.start > range.start &&
+                        recv_range.end < range.end
+                    {
+                        // We will have to split the two ranges... Do it the easy
+                        // way lol.
                         let end = range.end;
                         range.end = recv_range.start;
 
@@ -215,7 +218,10 @@ impl McAck {
                 }
 
                 if process_range {
-                    println!("Say that we process range: {:?} while recv={:?}", range, recv_pkt_num);
+                    println!(
+                        "Say that we process range: {:?} while recv={:?}",
+                        range, recv_pkt_num
+                    );
                 }
 
                 if process_range {
@@ -249,7 +255,12 @@ impl McAck {
 
         if let Some(recv_pkt_num) = self.recv_pkt_num.as_mut() {
             // Remove too old packets.
-            if recv_pkt_num.last().unwrap() > MAX_RECV_BUFF_SIZE {
+            if recv_pkt_num
+                .last()
+                .unwrap()
+                .saturating_sub(recv_pkt_num.first().unwrap()) >
+                MAX_RECV_BUFF_SIZE
+            {
                 recv_pkt_num.remove_until(
                     recv_pkt_num
                         .last()
@@ -561,7 +572,7 @@ mod tests {
         rs1.insert(0..100);
         rs1.insert(150..151);
         mc_ack.on_ack_received(&rs1);
-        
+
         let full = mc_ack.full_ack();
 
         assert_eq!(full, Some(rs1));
