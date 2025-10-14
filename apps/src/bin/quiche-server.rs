@@ -181,6 +181,8 @@ fn main() {
 
     let local_addr = socket.local_addr().unwrap();
 
+    let mut start = None;
+
     loop {
         // Find the shorter timeout from all the active connections.
         //
@@ -499,6 +501,14 @@ fn main() {
                 let conn = &mut client.conn;
                 let http_conn = client.http_conn.as_mut().unwrap();
                 let partial_responses = &mut client.partial_responses;
+
+                if start.is_none() {
+                    start = Some(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap(),
+                    );
+                    println!("Start at {:?}", start.clone().unwrap().as_millis());
+                }
 
                 // Visit all writable response streams to send any remaining HTTP
                 // content.

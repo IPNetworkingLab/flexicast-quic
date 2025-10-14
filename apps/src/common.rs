@@ -1309,6 +1309,16 @@ impl HttpConn for Http3Conn {
                             );
                         }
 
+                        // Print the instant time at which we close the connection
+                        // for this client.
+                        println!(
+                            "Close at {:?}",
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis()
+                        );
+
                         match conn.close(true, 0x100, b"kthxbye") {
                             // Already closed.
                             Ok(_) | Err(quiche::Error::Done) => (),
