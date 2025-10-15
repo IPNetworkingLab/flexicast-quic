@@ -5458,6 +5458,17 @@ impl Connection {
                             Err(
                                 networkcoding::EncoderError::NoSymbolToGenerate,
                             ) => (),
+                            Err(networkcoding::EncoderError::InternalError(
+                                _,
+                            )) => {
+                                // FC-TODO: find a proper way to handle this. This
+                                // is just a way to get around it for now.
+                                let last =
+                                    fec_encoder.get_encoder().last_metadata();
+                                if let Some(last) = last {
+                                    fec_encoder.get_encoder().remove_up_to(last);
+                                }
+                            },
                             Err(err) => return Err(err.into()),
                         }
                     }
@@ -5476,7 +5487,18 @@ impl Connection {
                     .saturating_sub(b.off() - payload_offset),
             );
 
-            let metadata = fec_encoder.get_encoder().next_metadata()?;
+            let metadata = match fec_encoder.get_encoder().next_metadata() {
+                Ok(m) => m,
+                Err(_e) => {
+                    // FC-TODO: proper way needed! This is just to get around the
+                    // problem for now.
+                    let last = fec_encoder.get_encoder().last_metadata();
+                    if let Some(last) = last {
+                        fec_encoder.get_encoder().remove_up_to(last);
+                    }
+                    fec_encoder.get_encoder().next_metadata()?
+                },
+            };
 
             let frame = frame::Frame::SourceSymbolHeader {
                 metadata,
