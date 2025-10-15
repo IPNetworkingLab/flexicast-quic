@@ -5387,7 +5387,20 @@ impl Connection {
         let path_active = path.active(send_npid, network_path);
         let (mut fec_should_protect_pkt, fec_overhead) =
             if let Some(fec_encoder) = self.fec_encoder.as_mut() {
-                let fec_overhead = fec_encoder.fec_overhead()?;
+                let fec_overhead = match fec_encoder.fec_overhead() {
+                    Ok(o) => o,
+                    Err(_e) => {
+                        let last = fec_encoder.get_encoder().last_metadata();
+                        if let Some(last) = last {
+                            fec_encoder.get_encoder().remove_up_to(last);
+                        }
+                        
+                        let out = fec_encoder.fec_overhead()?;
+                        println!("FEC Overhead after cleaning: {out}");
+                        out
+                    },
+                };
+
                 let should_protect = !is_closing &&
                 path_active &&
                 pkt_type == packet::Type::Short &&
@@ -5467,6 +5480,7 @@ impl Connection {
                                     fec_encoder.get_encoder().last_metadata();
                                 if let Some(last) = last {
                                     fec_encoder.get_encoder().remove_up_to(last);
+                                    println!("Cleaning the FEC Encoder 2");
                                 }
                             },
                             Err(err) => return Err(err.into()),
@@ -5496,7 +5510,9 @@ impl Connection {
                     if let Some(last) = last {
                         fec_encoder.get_encoder().remove_up_to(last);
                     }
-                    fec_encoder.get_encoder().next_metadata()?
+                    let out = fec_encoder.get_encoder().next_metadata()?;
+                    println!("FEC next metadata after cleaning: {out}");
+                    out
                 },
             };
 
