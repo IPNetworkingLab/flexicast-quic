@@ -5840,71 +5840,80 @@ impl Connection {
         // FIXME: to avoid inserting FEC inside quiche's code too much,
         //        we simply rewrite the frames into the FEC buffer, although
         //        we could have copied it in push_frame_to_pkt!() directly.
-        if fec_protected && !sent_repair {
-            let fec_encoder = self.fec_encoder.as_mut().unwrap();
-            let symbol_size = fec_encoder.get_encoder().symbol_size();
-            // Zeroes at the beginning to add PADDING frames at the front of the
-            // symbol (they are not sent in the packet).
-            let mut source_symbol_data = vec![0; symbol_size];
-            let mut fec_buffer =
-                octets::OctetsMut::with_slice(&mut source_symbol_data);
+        'fec: for i in 0..1 {
+            if fec_protected && !sent_repair {
+                let fec_encoder = self.fec_encoder.as_mut().unwrap();
+                let symbol_size = fec_encoder.get_encoder().symbol_size();
+                // Zeroes at the beginning to add PADDING frames at the front of the
+                // symbol (they are not sent in the packet).
+                let mut source_symbol_data = vec![0; symbol_size];
+                let mut fec_buffer =
+                    octets::OctetsMut::with_slice(&mut source_symbol_data);
+    
+                // We here re-read the written payload to include it inside the source
+                // symbol We cannot browse through the frames vector as
+                // Stream frames are not completely stored in it but a
+                // StreamHeader is stored instead...
+    
+                // This is the best way I found to avoid modifying too much the
+                // packetization code of the stream frames.
+                let unprotected_frames_data_len =
+                    fec_source_symbol_offset - payload_offset;
+                let source_symbol_len = payload_len - unprotected_frames_data_len;
+                let protected_data_buf = &b.buf()[fec_source_symbol_offset..
+                    fec_source_symbol_offset + source_symbol_len];
+                let mut written_frames =
+                    octets::Octets::with_slice(protected_data_buf);
+    
+                let mut packet_fec_protected = false;
+    
+                while written_frames.cap() > 0 {
+                    let off_before_parsing = written_frames.off();
+                    let frame =
+                        frame::Frame::from_bytes(&mut written_frames, hdr_ty)?;
+                    let wire_len = written_frames.off() - off_before_parsing;
+                    packet_fec_protected = true;
+                    let written = frame.to_bytes(&mut fec_buffer)?;
+                    if written != wire_len {
+                        error!("FEC: did not write the correct amount of bytes");
+                        return Err(fec::FecError::SourceSymbolCreationError.into());
+                    }
+                }
+    
+                let offset = fec_buffer.off();
+                // Put the padding in front of the symbol to not mess with stream
+                // frames without len.
+                source_symbol_data.rotate_right(symbol_size - offset);
+                let mut source_symbol_metadata = source_symbol_metadata_from_u64(0);
+                match fec_encoder
+                    .get_encoder()
+                    .protect_data(source_symbol_data, &mut source_symbol_metadata)
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let last = fec_encoder.get_encoder().last_metadata();
+                        if let Some(last) = last {
+                            fec_encoder.get_encoder().remove_up_to(last);
+                        }
+    
+                        // We will return the error but next time it will work.
+                        println!("The FEC error came from here");
 
-            // We here re-read the written payload to include it inside the source
-            // symbol We cannot browse through the frames vector as
-            // Stream frames are not completely stored in it but a
-            // StreamHeader is stored instead...
-
-            // This is the best way I found to avoid modifying too much the
-            // packetization code of the stream frames.
-            let unprotected_frames_data_len =
-                fec_source_symbol_offset - payload_offset;
-            let source_symbol_len = payload_len - unprotected_frames_data_len;
-            let protected_data_buf = &b.buf()[fec_source_symbol_offset..
-                fec_source_symbol_offset + source_symbol_len];
-            let mut written_frames =
-                octets::Octets::with_slice(protected_data_buf);
-
-            let mut packet_fec_protected = false;
-
-            while written_frames.cap() > 0 {
-                let off_before_parsing = written_frames.off();
-                let frame =
-                    frame::Frame::from_bytes(&mut written_frames, hdr_ty)?;
-                let wire_len = written_frames.off() - off_before_parsing;
-                packet_fec_protected = true;
-                let written = frame.to_bytes(&mut fec_buffer)?;
-                if written != wire_len {
-                    error!("FEC: did not write the correct amount of bytes");
-                    return Err(fec::FecError::SourceSymbolCreationError.into());
+                        if i == 0 {
+                            continue 'fec;
+                        } else {
+                            return Err(e.into());
+                        }
+                    },
+                };
+    
+                if packet_fec_protected {
+                    fec_encoder.latest_metadata_protected =
+                        Some(source_symbol_metadata);
                 }
             }
 
-            let offset = fec_buffer.off();
-            // Put the padding in front of the symbol to not mess with stream
-            // frames without len.
-            source_symbol_data.rotate_right(symbol_size - offset);
-            let mut source_symbol_metadata = source_symbol_metadata_from_u64(0);
-            match fec_encoder
-                .get_encoder()
-                .protect_data(source_symbol_data, &mut source_symbol_metadata)
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    let last = fec_encoder.get_encoder().last_metadata();
-                    if let Some(last) = last {
-                        fec_encoder.get_encoder().remove_up_to(last);
-                    }
-
-                    // We will return the error but next time it will work.
-                    println!("The FEC error came from here");
-                    return Err(e.into());
-                },
-            };
-
-            if packet_fec_protected {
-                fec_encoder.latest_metadata_protected =
-                    Some(source_symbol_metadata);
-            }
+            break;
         }
 
         qlog_with_type!(QLOG_PACKET_TX, self.qlog, q, {
