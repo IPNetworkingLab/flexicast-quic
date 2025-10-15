@@ -4058,8 +4058,31 @@ impl Connection {
                 if matches!(flexicast.get_mc_role(), McRole::ServerUnicast(_)) &&
                     flexicast.get_fc_path_id() == Some(p.path_id())
                 {
-                    // Drain the lost frames to avoid retransmission.
-                    let _ = p.recovery.get_lost_frames(epoch);
+                    // We will still land the lost source symbol frames.
+                    for lost in p.recovery.get_lost_frames(epoch) {
+                        match lost {
+                            frame::Frame::SourceSymbolHeader {
+                                metadata, ..
+                            } =>
+                                if let Some(ref mut fec_encoder) =
+                                    self.fec_encoder
+                                {
+                                    fec_encoder
+                                        .get_encoder()
+                                        .symbol_landed(metadata);
+                                },
+
+                            frame::Frame::Repair { .. } => {
+                                if let Some(ref mut fec_encoder) =
+                                    self.fec_encoder
+                                {
+                                    fec_encoder.fec_on_lost_repair_symbol();
+                                }
+                            },
+
+                            _ => (),
+                        }
+                    }
                     continue;
                 }
             }
