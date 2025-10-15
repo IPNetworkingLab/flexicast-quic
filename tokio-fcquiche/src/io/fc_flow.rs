@@ -1,19 +1,20 @@
-use quiche::flexicast::cca::FcFlowCwnd;
-use crate::MAX_DATAGRAM_SIZE;
 use crate::fcquic::fc::conditional_wait_on_app;
 use crate::fcquic::fc::FcChannelAsync;
 use crate::fcquic::fc::FcFlowRun;
-use crate::FcQuicMsg;
 use crate::fcquic::messages::MsgFcCtl;
 use crate::fcquic::sendmmsg::MsgSmsg;
+use crate::FcQuicMsg;
+use crate::Result;
+use crate::MAX_DATAGRAM_SIZE;
 use log::*;
+use quiche::fec::FecError;
+use quiche::flexicast::cca::FcFlowCwnd;
 use quiche::flexicast::reliable::FcUnicastRetransmission;
 use std::cmp;
 use std::io;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use crate::Result;
 use std::time;
+use tokio::sync::mpsc;
 
 pub struct FcFlowfileTransfer {
     pub fc: FcChannelAsync,
@@ -266,6 +267,9 @@ impl FcFlowRun for FcFlowfileTransfer {
             // let nb_max_sent_pkt: u64 = 100;
             let mut nb_sent_pkt = 0;
             if self.fc.do_flexicast {
+                // Whether we already had an error due to FEC.
+                let mut fec_error = false;
+
                 // Generate outgoing QUIC packets to send on the Flexicast path.
                 'fc: loop {
                     // Ask quiche to generate the packets.
@@ -274,6 +278,13 @@ impl FcFlowRun for FcFlowfileTransfer {
                             Ok(v) => v,
 
                             Err(quiche::Error::Done) => break,
+
+                            Err(quiche::Error::Fec(
+                                FecError::FecEncoderError(_),
+                            )) if !fec_error => {
+                                fec_error = true;
+                                continue 'fc;
+                            },
 
                             Err(e) => {
                                 error!("Flexicast send() failed: {:?}", e);

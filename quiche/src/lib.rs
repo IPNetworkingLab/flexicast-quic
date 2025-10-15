@@ -5394,10 +5394,10 @@ impl Connection {
                         if let Some(last) = last {
                             fec_encoder.get_encoder().remove_up_to(last);
                         }
-                        
-                        let out = fec_encoder.fec_overhead()?;
-                        println!("FEC Overhead after cleaning: {out}");
-                        out
+
+                        let out = fec_encoder.fec_overhead();
+                        println!("FEC Overhead after cleaning: {out:?}");
+                        out?
                     },
                 };
 
@@ -5471,9 +5471,7 @@ impl Connection {
                             Err(
                                 networkcoding::EncoderError::NoSymbolToGenerate,
                             ) => (),
-                            Err(networkcoding::EncoderError::InternalError(
-                                _,
-                            )) => {
+                            Err(_) => {
                                 // FC-TODO: find a proper way to handle this. This
                                 // is just a way to get around it for now.
                                 let last =
@@ -5483,7 +5481,6 @@ impl Connection {
                                     println!("Cleaning the FEC Encoder 2");
                                 }
                             },
-                            Err(err) => return Err(err.into()),
                         }
                     }
                 }
@@ -5510,9 +5507,9 @@ impl Connection {
                     if let Some(last) = last {
                         fec_encoder.get_encoder().remove_up_to(last);
                     }
-                    let out = fec_encoder.get_encoder().next_metadata()?;
-                    println!("FEC next metadata after cleaning: {out}");
-                    out
+                    let out = fec_encoder.get_encoder().next_metadata();
+                    println!("FEC next metadata after cleaning: {out:?}");
+                    out?
                 },
             };
 
@@ -5887,9 +5884,22 @@ impl Connection {
             // frames without len.
             source_symbol_data.rotate_right(symbol_size - offset);
             let mut source_symbol_metadata = source_symbol_metadata_from_u64(0);
-            fec_encoder
+            match fec_encoder
                 .get_encoder()
-                .protect_data(source_symbol_data, &mut source_symbol_metadata)?;
+                .protect_data(source_symbol_data, &mut source_symbol_metadata)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    let last = fec_encoder.get_encoder().last_metadata();
+                    if let Some(last) = last {
+                        fec_encoder.get_encoder().remove_up_to(last);
+                    }
+
+                    // We will return the error but next time it will work.
+                    println!("The FEC error came from here");
+                    return Err(e.into());
+                },
+            };
 
             if packet_fec_protected {
                 fec_encoder.latest_metadata_protected =
