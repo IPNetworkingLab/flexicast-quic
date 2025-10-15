@@ -187,7 +187,6 @@ impl McAck {
             // Check the range of packets that have already been acknowledged.
             if let Some(recv_pkt_num) = self.recv_pkt_num.as_mut() {
                 for recv_range in recv_pkt_num.iter() {
-                    println!("Compare {:?} vs {:?}", recv_range, range);
                     if recv_range.end < range.start {
                         continue;
                     } else if recv_range.start > range.end {
@@ -215,13 +214,6 @@ impl McAck {
                         // And do a recursive call later.
                         new_rangeset.insert(recv_range.end..end);
                     }
-                }
-
-                if process_range {
-                    println!(
-                        "Say that we process range: {:?} while recv={:?}",
-                        range, recv_pkt_num
-                    );
                 }
 
                 if process_range {
@@ -578,7 +570,6 @@ mod tests {
         assert_eq!(full, Some(rs1));
 
         let mut rs2 = RangeSet::default();
-        println!("----------------------");
         rs2.insert(100..200);
         mc_ack.on_ack_received(&rs2);
 

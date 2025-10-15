@@ -3,13 +3,16 @@
 //! frames from the unicast path "to the" flexicast flow, because the unicast
 //! paths do not have any state for the Forward Erasure Correction.
 
-use crate::ranges;
+use crate::{fec::schedulers::FecScheduler, ranges};
 
 /// Flexicast extension of the Forward Erasure Correction extension.
 #[derive(Debug)]
 pub enum FcFec {
     /// FEC extension for the unicast path.
     UcPath(FcFecUcPath),
+
+    /// FEC Scheduler of the flexicast flow.
+    FcFlow(FecScheduler),
 
     /// Other nodes (Flexicast source, Flexicast receiver), currently not
     /// needing a flexicast FEC structure, or if FEC is not used.
@@ -33,6 +36,15 @@ impl FcFec {
     pub fn get_uc_path_mut(&mut self) -> Option<&mut FcFecUcPath> {
         if let FcFec::UcPath(ucp) = self {
             Some(ucp)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the Flexicast Flow FEC Scheduler.
+    pub fn get_fc_flow_scheduler(&self) -> Option<FecScheduler> {
+        if let FcFec::FcFlow(scheduler) = self {
+            Some(*scheduler)
         } else {
             None
         }

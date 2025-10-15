@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time;
 use std::u64;
 
+use quiche::fec::schedulers::FecSchedulerAlgorithm;
 use quiche::flexicast::cca::FcFlowCwnd;
 use quiche::flexicast::FcConfig;
 use quiche::flexicast::McConfig;
@@ -111,6 +112,11 @@ struct Args {
     /// value is not set.
     #[clap(long = "transport-feedback")]
     transport_feedback_dir: Option<String>,
+
+    /// Whether to use FEC for flexicast.
+    /// If set, defines the FEC scheduler to use.
+    #[clap(long = "fec-scheduler")]
+    fec_scheduler: Option<FecSchedulerAlgorithm>,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -133,15 +139,17 @@ async fn main() {
     };
 
     let mut fcquiche = tokio_fcquiche::io::TokioFcQuic::new(fc_quic_tokio_config);
-
     // Create a single flexicast flow.
     let flow_config = FcConfig {
         fc_tp: args.flexicast,
-        probe_mc_path: true,
+        probe_mc_path: false,
         max_data: args.initial_fc_flow.unwrap_or(1_000_000),
         max_stream_data: args.initial_fc_flow.unwrap_or(1_000_000),
         fc_timer: args.fc_timer,
-        fec: false,
+        fec: args.fec_scheduler.is_some(),
+        fec_scheduler: args
+            .fec_scheduler
+            .unwrap_or(FecSchedulerAlgorithm::NoRedundancy),
         src_addr: args.mc_src_addr,
         mc_addr: args.mc_addr,
         crt_path: args.cert_path.clone(),
@@ -227,6 +235,8 @@ fn get_config(args: &Args) -> quiche::Config {
     config.set_active_connection_id_limit(5);
     config.enable_early_data();
     config.enable_pacing(false);
+    config.set_send_fec(args.fec_scheduler.is_some());
+    config.set_recv_fec(args.fec_scheduler.is_some());
     config.set_enable_flexicast(args.flexicast);
     config.set_initial_max_path_id(10);
 

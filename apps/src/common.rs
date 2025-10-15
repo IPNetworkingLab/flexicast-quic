@@ -539,6 +539,14 @@ impl HttpConn for Http09Conn {
                             req_start.elapsed()
                         );
 
+                        println!(
+                            "Close at {:?}",
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis()
+                        );
+
                         match conn.close(true, 0x00, b"kthxbye") {
                             // Already closed.
                             Ok(_) | Err(quiche::Error::Done) => (),

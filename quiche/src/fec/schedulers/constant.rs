@@ -3,7 +3,7 @@
 
 use std::time;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FecConstantScheduler {
     /// The number of source symbols between two repair symbols.
     step: u64,

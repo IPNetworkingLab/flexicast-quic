@@ -31,13 +31,13 @@ pub(crate) struct FecEncoder {
 
 impl FecEncoder {
     /// New instance using the Vandermonde linear coding.
-    pub fn new() -> Self {
+    pub fn new(fec_scheduler: FecScheduler) -> Self {
         Self {
             fec_encoder: Encoder::VLC(VLCEncoder::new(
                 FEC_SYMBOL_SIZE_DEFAULT,
                 FEC_MAX_WINDOW_SIZE_DEFAULT,
             )),
-            fec_scheduler: FecScheduler::NoRedundancy,
+            fec_scheduler,
             latest_metadata_protected: None,
             nb_sent_repair: 0,
         }
@@ -117,12 +117,12 @@ impl FecEncoder {
 
 impl Connection {
     /// Initiate the FEC encoder if it is not done yet.
-    pub(crate) fn init_fec_encoder(&mut self) {
+    pub(crate) fn init_fec_encoder(&mut self, fec_scheduler: FecScheduler) {
         if self.local_transport_params.send_fec &&
             self.fec_encoder.is_none() &&
             self.peer_transport_params.recv_fec
         {
-            self.fec_encoder = Some(FecEncoder::new());
+            self.fec_encoder = Some(FecEncoder::new(fec_scheduler));
         }
     }
 

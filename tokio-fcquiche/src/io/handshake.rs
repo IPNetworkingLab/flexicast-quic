@@ -535,6 +535,8 @@ pub fn get_mc_config(enable_fc: bool, fc_config: &FcConfig) -> quiche::Config {
     config.verify_peer(false);
     config.set_initial_max_path_id(10);
     config.set_enable_flexicast(enable_fc);
+    config.set_send_fec(fc_config.fec);
+    config.set_recv_fec(fc_config.fec);
     config.enable_pacing(false);
     match fc_config.fc_cca {
         flexicast::cca::FcFlowCwnd::CCA(cca) => config.set_cc_algorithm(cca),

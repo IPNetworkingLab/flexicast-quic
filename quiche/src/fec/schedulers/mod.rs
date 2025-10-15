@@ -37,7 +37,7 @@ impl FromStr for FecSchedulerAlgorithm {
 }
 
 /// TODO.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 pub enum FecScheduler {
     /// Do not send FEC Repair packets.
     NoRedundancy,
@@ -50,7 +50,7 @@ impl From<FecSchedulerAlgorithm> for FecScheduler {
     fn from(value: FecSchedulerAlgorithm) -> Self {
         match value {
             FecSchedulerAlgorithm::NoRedundancy => FecScheduler::NoRedundancy,
-            FecSchedulerAlgorithm::Constant => FecScheduler::Constant(FecConstantScheduler::new(3)),
+            FecSchedulerAlgorithm::Constant => FecScheduler::Constant(FecConstantScheduler::new(10)),
         }
     }
 }

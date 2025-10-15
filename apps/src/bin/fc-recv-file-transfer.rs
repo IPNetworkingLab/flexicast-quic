@@ -162,10 +162,11 @@ fn get_config(args: &Args) -> quiche::Config {
     config.set_active_connection_id_limit(10);
     config.verify_peer(false);
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
-
+    
     if args.flexicast {
         config.set_initial_max_path_id(10);
         config.set_enable_flexicast(args.flexicast);
+        config.set_recv_fec(true);
     }
 
     config

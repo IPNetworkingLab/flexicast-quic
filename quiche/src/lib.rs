@@ -5341,7 +5341,12 @@ impl Connection {
 
         // FEC Extension.
         // Initiate the FEC encoder if it is not done yet.
-        self.init_fec_encoder();
+        let scheduler = self
+            .flexicast
+            .as_ref()
+            .and_then(|fc| fc.fc_fec.get_fc_flow_scheduler())
+            .unwrap_or(FecScheduler::NoRedundancy);
+        self.init_fec_encoder(scheduler);
 
         // Potentially remove landed symbols.
         if let Some(fec_encoder) = self.fec_encoder.as_mut() {
@@ -5357,7 +5362,7 @@ impl Connection {
         // Check whether we can add a SOURCE_SYMBOL_HEADER frame to protect the
         // STREAM/DATAGRAM following frame.
         let path_active = path.active(send_npid, network_path);
-        let (fec_should_protect_pkt, fec_overhead) =
+        let (mut fec_should_protect_pkt, fec_overhead) =
             if let Some(fec_encoder) = self.fec_encoder.as_mut() {
                 let fec_overhead = fec_encoder.fec_overhead()?;
                 let should_protect = !is_closing &&
@@ -5381,6 +5386,13 @@ impl Connection {
             } else {
                 (false, 0)
             };
+
+        // Cannot send FEC if this is the unicast path.
+        if self.flexicast.as_ref().is_some_and(|fc| {
+            matches!(fc.get_mc_role(), McRole::ServerUnicast(_))
+        }) {
+            fec_should_protect_pkt = false;
+        }
 
         if fec_should_protect_pkt {
             left -= std::cmp::min(fec_overhead, left);
@@ -5441,8 +5453,10 @@ impl Connection {
                     .saturating_sub(b.off() - payload_offset),
             );
 
+            let metadata = fec_encoder.get_encoder().next_metadata()?;
+
             let frame = frame::Frame::SourceSymbolHeader {
-                metadata: fec_encoder.get_encoder().next_metadata()?,
+                metadata,
                 recovered: false,
             };
 
@@ -21550,6 +21564,7 @@ mod tests {
     }
 }
 
+use crate::fec::schedulers::FecScheduler;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;
 pub use crate::packet::Type;

@@ -505,7 +505,8 @@ fn main() {
                 if start.is_none() {
                     start = Some(
                         std::time::SystemTime::now()
-                            .duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap(),
+                            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                            .unwrap(),
                     );
                     println!("Start at {:?}", start.clone().unwrap().as_millis());
                 }
@@ -664,6 +665,16 @@ fn main() {
             trace!("Collecting garbage");
 
             if c.conn.is_closed() {
+                // Print the instant time at which we close the connection
+                // for this client.
+                println!(
+                    "Close at {:?}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                );
+
                 info!(
                     "{} connection collected {:?} {:?}",
                     c.conn.trace_id(),

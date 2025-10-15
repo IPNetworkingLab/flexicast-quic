@@ -10,6 +10,7 @@ use std::time;
 use crate::fc_nack_recv;
 use crate::fc_nack_recv_mut;
 use crate::fec::decoder::FecDecoder;
+use crate::fec::encoder::FecEncoder;
 use crate::fec::schedulers::FecSchedulerAlgorithm;
 use crate::flexicast::cca::FcFlowCwnd;
 use crate::packet::Epoch;
@@ -1572,7 +1573,7 @@ impl FlexicastChannelSource {
     pub fn new_with_tls(
         mc_path_info: McPathInfo, config_server: &mut Config,
         config_client: &mut Config, peer: SocketAddr, keylog_filename: &str,
-        _fc_config: &FcConfig,
+        fc_config: &FcConfig,
     ) -> Result<Self> {
         let mut scid = [0; 16];
         rand::rand_bytes(&mut scid[..]);
@@ -1669,6 +1670,14 @@ impl FlexicastChannelSource {
 
         // Set state of the recovery receiver.
         conn_server.fc_set_recovery_state()?;
+
+        // Set the state for FEC.
+        conn_server.flexicast.as_mut().unwrap().fc_fec =
+            fec::FcFec::FcFlow(fc_config.fec_scheduler.into());
+        if fc_config.fec {
+            conn_server.fec_encoder =
+                Some(FecEncoder::new(fc_config.fec_scheduler.into()));
+        }
 
         let cid = channel_id.clone().into_owned();
         Ok(Self {
@@ -1961,8 +1970,10 @@ pub mod testing {
             } else {
                 HashSet::new()
             };
-            let idx_client_receive = (0..self.unicast_pipes.len())
-                .filter(|&idx| !client_loss.contains(&(u64::try_from(idx).unwrap())));
+            let idx_client_receive =
+                (0..self.unicast_pipes.len()).filter(|&idx| {
+                    !client_loss.contains(&(u64::try_from(idx).unwrap()))
+                });
 
             for client_idx in idx_client_receive {
                 let mut recv_buf = mc_buf.to_owned();
@@ -2581,9 +2592,9 @@ mod tests {
 }
 
 pub mod ack;
+pub mod cca;
 pub mod control;
 pub(crate) mod fec;
 pub mod flowcontrol;
 pub mod nack;
 pub mod reliable;
-pub mod cca;
