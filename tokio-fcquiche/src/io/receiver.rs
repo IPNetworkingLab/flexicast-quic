@@ -122,6 +122,8 @@ impl TokioFcQuicRecv {
 
         loop {
             let timeout = conn.timeout();
+            let mut read_uc = false;
+            let mut read_mc = false;
 
             tokio::select! {
                 Some(_) = optional_timeout(timeout) => {
@@ -135,6 +137,7 @@ impl TokioFcQuicRecv {
                         from_mc: false,
                     };
                     conn.recv(&mut buf[..len], recv_info)?;
+                    read_uc = true;
                 },
 
                 Ok((len, from)) = optional_recv_from(mc_socket_opt.as_ref(), &mut out) => {
@@ -144,6 +147,51 @@ impl TokioFcQuicRecv {
                         from_mc: true,
                     };
                     conn.recv(&mut out[..len], recv_info)?;
+                    read_mc = true;
+                }
+            }
+
+            // Going out of the tokio select. Process all incomming packets at
+            // once, avoiding costly sent of packets.
+            let mut i = 0;
+            let nb_read_max = 5;
+            if read_uc {
+                'uc_read: loop {
+                    if let Ok((len, from)) = socket.try_recv_from(&mut buf) {
+                        let recv_info = quiche::RecvInfo {
+                            to: socket.local_addr()?,
+                            from,
+                            from_mc: false,
+                        };
+                        conn.recv(&mut buf[..len], recv_info)?;
+                    } else {
+                        break 'uc_read;
+                    }
+                    i += 1;
+                    if i > nb_read_max {
+                        break;
+                    }
+                }
+            }
+            i = 0;
+            if read_mc {
+                if let Some(mc_socket) = mc_socket_opt.as_ref() {
+                    'mc_read: loop {
+                        if let Ok((len, from)) = mc_socket.try_recv_from(&mut buf) {
+                            let recv_info = quiche::RecvInfo {
+                                to: mc_addr,
+                                from,
+                                from_mc: true,
+                            };
+                            conn.recv(&mut buf[..len], recv_info)?;
+                        } else {
+                            break 'mc_read;
+                        }
+                        i += 1;
+                        if i > nb_read_max {
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -175,7 +223,8 @@ impl TokioFcQuicRecv {
                     if !probe_mc_path && added_mc_cid {
                         debug!("Create the second path. Client addr={:?}. Server addr={:?}", mc_addr, self.peer_addr);
                         let src_ip = Ipv4Addr::from(mc_announce_data.source_ip);
-                        let src_addr = SocketAddr::V4(SocketAddrV4::new(src_ip, 4443));
+                        let src_addr =
+                            SocketAddr::V4(SocketAddrV4::new(src_ip, 4443));
                         let fc_path_id = conn.create_mc_path(
                             mc_addr,
                             src_addr,
