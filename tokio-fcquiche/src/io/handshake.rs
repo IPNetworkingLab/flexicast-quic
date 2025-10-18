@@ -28,6 +28,12 @@ use quiche::flexicast::McAnnounceData;
 use crate::fcquic::sendmmsg::MsgSmsg;
 #[cfg(feature = "qlog")]
 use crate::make_qlog_writer;
+#[cfg(feature = "tokio-tracing")]
+use std::fs::OpenOptions;
+#[cfg(feature = "tokio-tracing")]
+use std::io::Write;
+#[cfg(feature = "tokio-tracing")]
+use tokio_metrics::TaskMonitor;
 
 use ring::rand::SystemRandom;
 
@@ -123,6 +129,13 @@ impl Handshake {
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        #[cfg(feature = "tokio-tracing")]
+        let start = time::Instant::now();
+        #[cfg(feature = "tokio-tracing")]
+        let frequency = std::time::Duration::from_millis(200);
+        #[cfg(feature = "tokio-tracing")]
+        console_subscriber::init();
+
         // Create receiver monitor.
         #[cfg(feature = "tokio-tracing")]
         let monitor_recv = TaskMonitor::new();

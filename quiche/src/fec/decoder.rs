@@ -71,6 +71,7 @@ impl Connection {
         now: time::Instant,
     ) -> Result<()> {
         let mdu64 = source_symbol_metadata_to_u64(decoded_symbol.metadata());
+        println!("Recover a lost source symbol! {:?}", mdu64);
 
         self.process_frames_of_source_symbol(
             decoded_symbol,

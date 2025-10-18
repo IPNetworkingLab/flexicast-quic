@@ -34,8 +34,6 @@ use std::fs::OpenOptions;
 #[cfg(feature = "tokio-tracing")]
 use std::io::Write;
 #[cfg(feature = "tokio-tracing")]
-use std::time;
-#[cfg(feature = "tokio-tracing")]
 use tokio_metrics::TaskMonitor;
 
 pub struct TokioFcQuicConfig {
@@ -352,6 +350,8 @@ impl TokioFcQuic {
             };
 
             // Start Flexicast flow task.
+            #[cfg(feature = "tokio-tracing")]
+            let monitor_flow = TaskMonitor::new();
             #[cfg(feature = "tokio-tracing")]
             {
                 let monitor_flow = monitor_flow.clone();
