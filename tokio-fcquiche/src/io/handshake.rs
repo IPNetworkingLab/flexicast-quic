@@ -133,8 +133,6 @@ impl Handshake {
         let start = time::Instant::now();
         #[cfg(feature = "tokio-tracing")]
         let frequency = std::time::Duration::from_millis(200);
-        #[cfg(feature = "tokio-tracing")]
-        console_subscriber::init();
 
         // Create receiver monitor.
         #[cfg(feature = "tokio-tracing")]
