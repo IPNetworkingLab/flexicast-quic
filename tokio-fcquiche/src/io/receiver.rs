@@ -39,13 +39,16 @@ pub struct TokioFcQuicRecv {
 
     /// Address of the server to contact.
     peer_addr: SocketAddr,
+
+    /// Whether we do unicast proxy.
+    proxy_uc: bool,
 }
 
 impl TokioFcQuicRecv {
     /// Creates a new instance.
     pub fn new(
         peer_addr: SocketAddr, config: Config, local_ip: Ipv4Addr,
-        flexicast: bool,
+        flexicast: bool, proxy_uc: bool,
     ) -> (Self, mpsc::Receiver<FcQuicMsg>) {
         let (tx_app, rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         (
@@ -55,6 +58,7 @@ impl TokioFcQuicRecv {
                 local_ip,
                 flexicast,
                 tx_app,
+                proxy_uc,
             },
             rx_app,
         )
@@ -251,7 +255,7 @@ impl TokioFcQuicRecv {
                                         mc_announce_data.udp_port,
                                     )
                                 } else {
-                                    let group_ip = if false {
+                                    let group_ip = if self.proxy_uc {
                                         "0.0.0.0".parse()?
                                     } else {
                                         net::Ipv4Addr::from(
@@ -286,7 +290,7 @@ impl TokioFcQuicRecv {
                 if let Some(flexicast) = conn.get_flexicast_attributes() {
                     if flexicast.get_mc_role() ==
                         McRole::Client(McClientStatus::ListenMcPath(true)) &&
-                        !joined_mc_ip
+                        !joined_mc_ip && !self.proxy_uc
                     {
                         info!("Join MULTICAST");
                         mc_socket_opt.as_mut().unwrap().join_multicast_v4(

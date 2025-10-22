@@ -75,7 +75,7 @@ async fn main() {
     let peer_addr = *args.url.socket_addrs(|| None).unwrap().first().unwrap();
     let config = get_config(&args);
     let (mut tfc_recv, rx_app) =
-        TokioFcQuicRecv::new(peer_addr, config, args.local_ip, args.flexicast);
+        TokioFcQuicRecv::new(peer_addr, config, args.local_ip, args.flexicast, args.proxy_uc);
 
     // Create the receiver application.
     match args.transfer_kind {
