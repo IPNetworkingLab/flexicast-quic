@@ -75,11 +75,11 @@ impl FileTransferRecv {
                     }
                     self.handle_new_data(v, fin, stream_id).await?;
                     if fin {
+                        let rct_time = time::Instant::now().duration_since(start).as_millis();
+                        println!("RESULT-RCT {:?}", rct_time);
                         println!(
                             "End of transfer. Total duration in ms: {:?}. Since first byte: {:?}",
-                            time::Instant::now()
-                                .duration_since(start)
-                                .as_millis(),
+                            rct_time,
                             time::Instant::now().duration_since(since_first_byte.unwrap()).as_millis(),
                         );
                         println!("EVENT finished-client");

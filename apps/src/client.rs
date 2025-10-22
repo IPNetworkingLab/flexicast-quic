@@ -660,10 +660,12 @@ pub fn connect(
             break;
         }
     }
-
+    
+    let rct_time = time::Instant::now().duration_since(start).as_millis();
+    println!("RESULT-RCT {:?}", rct_time);
     println!(
         "End of transfer for unicast. Total duration in ms: {:?}",
-        time::Instant::now().duration_since(start).as_millis()
+        rct_time
     );
 
     Ok(())
