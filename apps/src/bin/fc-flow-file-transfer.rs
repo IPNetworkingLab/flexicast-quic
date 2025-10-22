@@ -117,6 +117,10 @@ struct Args {
     /// If set, defines the FEC scheduler to use.
     #[clap(long = "fec-scheduler")]
     fec_scheduler: Option<FecSchedulerAlgorithm>,
+
+    /// Number of leaf controllers to use.
+    #[clap(long = "nb-controllers", default_value = "1")]
+    nb_controllers: u64,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -136,6 +140,7 @@ async fn main() {
             .fall_back_delay
             .map(|d| time::Duration::from_millis(d)),
         uc_src_addr: args.src_addr,
+        nb_leaf_controllers: args.nb_controllers,
     };
 
     let mut fcquiche = tokio_fcquiche::io::TokioFcQuic::new(fc_quic_tokio_config);

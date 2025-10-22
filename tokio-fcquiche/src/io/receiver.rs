@@ -154,7 +154,7 @@ impl TokioFcQuicRecv {
             // Going out of the tokio select. Process all incomming packets at
             // once, avoiding costly sent of packets.
             let mut i = 0;
-            let nb_read_max = 5;
+            let nb_read_max = 10;
             if read_uc {
                 'uc_read: loop {
                     if let Ok((len, from)) = socket.try_recv_from(&mut buf) {
@@ -169,6 +169,7 @@ impl TokioFcQuicRecv {
                     }
                     i += 1;
                     if i > nb_read_max {
+                        debug!("READ {i} packets through UC. Going out...");
                         break;
                     }
                 }
@@ -189,6 +190,7 @@ impl TokioFcQuicRecv {
                         }
                         i += 1;
                         if i > nb_read_max {
+                            debug!("READ {i} packets through MC. Going out...");
                             break;
                         }
                     }

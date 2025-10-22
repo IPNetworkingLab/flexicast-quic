@@ -681,6 +681,7 @@ impl FcController {
                         .fec_md
                         .is_some_and(|md| recv_rec_fec_md.contains(&md))
                     {
+                        debug!("DO NOT RETRANSMIT THIS STREAM BECAUSE RECOVERED: {:?} of len {:?}", delegated_piece.offset, delegated_piece.payload.len());
                         continue;
                     }
 

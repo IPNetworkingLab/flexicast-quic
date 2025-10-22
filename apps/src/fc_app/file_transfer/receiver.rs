@@ -82,6 +82,7 @@ impl FileTransferRecv {
                                 .as_millis(),
                             time::Instant::now().duration_since(since_first_byte.unwrap()).as_millis(),
                         );
+                        println!("EVENT finished-client");
                     }
                 },
                 Some(FcQuicMsg::Close) => {

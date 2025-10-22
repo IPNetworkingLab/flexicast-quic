@@ -60,6 +60,9 @@ pub struct TokioFcQuicConfig {
 
     /// Source address of the (unicast path) server.
     pub uc_src_addr: SocketAddr,
+
+    /// Numbere of leaf controllers to use.
+    pub nb_leaf_controllers: u64,
 }
 
 pub struct TokioFcQuic {
@@ -383,13 +386,12 @@ impl TokioFcQuic {
             Some(time::Duration::from_secs(0)),
         );
 
-        let nb_ctl_leaves = 1;
-        let mut ctl_leaves_struct = (0..nb_ctl_leaves)
+        let mut ctl_leaves_struct = (0..self.config.nb_leaf_controllers)
             .map(|id| ControllerLeaf::new(id, tx_ctl_root.clone()))
             .collect::<Vec<_>>();
 
         // Keep the leaf controller txs.
-        for ctl_leaf_struct in ctl_leaves_struct.drain(..) {
+        for (_i, ctl_leaf_struct) in ctl_leaves_struct.drain(..).enumerate() {
             let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
             controller.add_new_leaf_ctl(ctl_leaf_struct.leaf_id(), tx.clone());
             task_hs.add_leaf_ctl(tx);
@@ -399,14 +401,51 @@ impl TokioFcQuic {
                 fc_announce_data.clone(),
                 ControllerRole::Leaf(ctl_leaf_struct),
                 tx_main.clone(),
-                self.config.wait.map(|n| n / nb_ctl_leaves),
+                self.config
+                    .wait
+                    .map(|n| n / self.config.nb_leaf_controllers),
                 Some(time::Duration::from_secs(0)),
             );
 
-            // TODO: monitoring.
-            tokio::spawn(async move {
-                ctl_leaf.run().await.unwrap();
-            });
+            #[cfg(feature = "tokio-tracing")]
+            {
+                let monitor_controller_leaf = TaskMonitor::new();
+                let monitor_controller_leaf_clone =
+                    monitor_controller_leaf.clone();
+                tokio::spawn(async move {
+                    for metrics in monitor_controller_leaf_clone.intervals() {
+                        let mut file = OpenOptions::new()
+                            .append(true)
+                            .create(true)
+                            .open(format!("tokio_controller_leaf_{_i}.log"))
+                            .unwrap();
+
+                        writeln!(
+                            file,
+                            "{:?} {:?}",
+                            time::Instant::now()
+                                .duration_since(start)
+                                .as_millis(),
+                            metrics
+                        )
+                        .unwrap();
+                        tokio::time::sleep(frequency).await;
+                    }
+                });
+                tokio::spawn(async move {
+                    monitor_controller_leaf
+                        .instrument(ctl_leaf.run())
+                        .await
+                        .unwrap();
+                });
+            }
+
+            #[cfg(not(feature = "tokio-tracing"))]
+            {
+                tokio::spawn(async move {
+                    ctl_leaf.run().await.unwrap();
+                });
+            }
         }
 
         // Create controller monitor.

@@ -52,6 +52,7 @@ pub fn get_fcquiche_server_config(keylog_path: &str) -> TokioFcQuicConfig {
         fc_keylog_file: keylog_path.to_string(),
         fallback_delay: Some(time::Duration::from_millis(300)),
         uc_src_addr: "127.0.0.1:12345".parse().unwrap(),
+        nb_leaf_controllers: 1,
     }
 }
 
