@@ -3,10 +3,12 @@
 use super::aggregator::FcAggregatedMsg;
 use super::messages::*;
 use super::scheduler::FcFlowAliveScheduler;
+use crate::FcQuicMsg;
 use crate::Result;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McAnnounceData;
+use quiche::h3::Connection as H3Conn;
 
 use log::*;
 use quiche::flexicast::McRole;
@@ -56,6 +58,15 @@ pub struct UcPath {
     /// Pending aggregated stream acknowledgments from the receivers to the
     /// flexicast flow.
     pub pending_stream_ack: HashMap<u64, OpenRangeSet>,
+
+    /// Potential HTTP/3 connection with the client.
+    pub h3_conn: Option<H3Conn>,
+
+    /// Potential HTTP/3 config.
+    pub h3_config: Option<quiche::h3::Config>,
+
+    /// Transmission channel to the app.
+    pub tx_app: mpsc::Sender<FcQuicMsg>,
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the

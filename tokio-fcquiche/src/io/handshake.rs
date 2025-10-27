@@ -4,6 +4,7 @@ use crate::fcquic::scheduler::FcFlowAliveScheduler;
 use crate::fcquic::uc::UcPathRun;
 use crate::io::uc_path::UcPathFileTransfer;
 use crate::io::TokioFcQuicConfig;
+use crate::FcQuicMsg;
 use crate::Result;
 use crate::CHANNEL_BUFFER_SIZE;
 use crate::MAX_DATAGRAM_SIZE;
@@ -84,6 +85,12 @@ pub struct Handshake {
 
     /// Random number generator.
     rng: SystemRandom,
+
+    /// Potential HTTP/3 config.
+    h3_config: Option<quiche::h3::Config>,
+
+    /// Transmission channel to the applications.
+    tx_app: mpsc::Sender<FcQuicMsg>,
 }
 
 impl Handshake {
@@ -93,6 +100,7 @@ impl Handshake {
         fc_master_secret: Vec<Vec<u8>>, fc_key_algo: Vec<u8>,
         fc_announce_data: &[McAnnounceData], rng: SystemRandom,
         txs_sendmmsg: Option<Vec<mpsc::Sender<MsgSmsg>>>,
+        h3_config: Option<quiche::h3::Config>, tx_app: mpsc::Sender<FcQuicMsg>,
     ) -> Result<Self> {
         let (tx_main, rx_main) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         let new_socket = socket2::Socket::new(
@@ -120,6 +128,8 @@ impl Handshake {
             fallback_delay: config.fallback_delay,
             txs_sendmmsg,
             rng,
+            h3_config,
+            tx_app,
         })
     }
 
@@ -393,6 +403,9 @@ impl Handshake {
                         .map(|fb| FcFlowAliveScheduler::new(Some(fb), None)),
                     pending_ack: OpenRangeSet::default(),
                     pending_stream_ack: HashMap::new(),
+                    h3_conn: None,
+                    h3_config: self.h3_config.to_owned(),
+                    tx_app: self.tx_app.clone(),
                 };
 
                 // Notify the controller with a new receiver.

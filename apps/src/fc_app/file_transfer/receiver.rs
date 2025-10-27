@@ -9,19 +9,6 @@ use tokio::sync::mpsc::Receiver;
 use tokio_fcquiche::FcQuicMsg;
 
 #[derive(Debug)]
-/// File transfer receiving-side specific messages.
-pub enum FileTransferRecvMsg {
-    /// Data.
-    /// First value is the data.
-    /// The second indicates whether this is the end of this stream.
-    /// The third is the stream ID.
-    Data((Vec<u8>, bool, u64)),
-
-    /// No more data will be received.
-    Close,
-}
-
-#[derive(Debug)]
 /// Receiver structure to handle reception of file transfer.
 pub struct FileTransferRecv {
     /// File to write data in.
@@ -85,10 +72,14 @@ impl FileTransferRecv {
                         println!("EVENT finished-client");
                     }
                 },
+
                 Some(FcQuicMsg::Close) => {
                     self.rx_chan.close();
                     break;
                 },
+
+                Some(_) => (),
+
                 None => break,
             }
         }

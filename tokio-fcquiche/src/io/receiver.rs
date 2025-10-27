@@ -5,6 +5,8 @@ use log::*;
 use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McClientStatus;
 use quiche::flexicast::McRole;
+use quiche::h3::Connection as H3Conn;
+use quiche::h3::Header;
 use quiche::Config;
 use quiche::ConnectionId;
 use ring::rand::SecureRandom;
@@ -37,18 +39,30 @@ pub struct TokioFcQuicRecv {
     /// Transmission channel to send data from QUIC to the app.
     tx_app: mpsc::Sender<FcQuicMsg>,
 
+    /// Reception channel to receive data from the app to QUIC.
+    rx_app: mpsc::Receiver<FcQuicMsg>,
+
     /// Address of the server to contact.
     peer_addr: SocketAddr,
 
     /// Whether we do unicast proxy.
     proxy_uc: bool,
+
+    h3_config: Option<quiche::h3::Config>,
+
+    /// Potential HTTP/3 request state on the receiver.
+    h3_conn: Option<H3Conn>,
+
+    /// Potential HTTP/3 pending request.
+    h3_pending_request: Option<Vec<Header>>,
 }
 
 impl TokioFcQuicRecv {
     /// Creates a new instance.
     pub fn new(
         peer_addr: SocketAddr, config: Config, local_ip: Ipv4Addr,
-        flexicast: bool, proxy_uc: bool,
+        flexicast: bool, proxy_uc: bool, rx_from_app: mpsc::Receiver<FcQuicMsg>,
+        h3_config: Option<quiche::h3::Config>,
     ) -> (Self, mpsc::Receiver<FcQuicMsg>) {
         let (tx_app, rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         (
@@ -58,7 +72,11 @@ impl TokioFcQuicRecv {
                 local_ip,
                 flexicast,
                 tx_app,
+                rx_app: rx_from_app,
                 proxy_uc,
+                h3_config,
+                h3_conn: None,
+                h3_pending_request: None,
             },
             rx_app,
         )
@@ -97,6 +115,9 @@ impl TokioFcQuicRecv {
             self.peer_addr,
             &mut self.config,
         )?;
+
+        // Stream ID of the HTTP/3 request.
+        let mut _h3_stream_id: Option<u64> = None;
 
         // Only bother with qlog if the user specified it.
         #[cfg(feature = "qlog")]
@@ -152,6 +173,59 @@ impl TokioFcQuicRecv {
                     };
                     conn.recv(&mut out[..len], recv_info)?;
                     read_mc = true;
+                },
+
+                Some(msg) = self.rx_app.recv() => {
+                    self.recv_app_msg(msg)?;
+                }
+            }
+
+            // Sets the HTTP/3 connection if a configuration was provided.
+            if conn.is_established() && self.h3_conn.is_none() {
+                if let Some(h3_config) = self.h3_config.as_ref() {
+                    self.h3_conn =
+                        Some(H3Conn::with_transport(&mut conn, h3_config)?);
+                }
+            }
+
+            // Sends the HTTP/3 request.
+            if let Some(h3_conn) = self.h3_conn.as_mut() {
+                if let Some(headers) = self.h3_pending_request.take() {
+                    let _ = h3_conn.send_request(&mut conn, &headers, true);
+                }
+            }
+
+            // Processes HTTP/3 events.
+            loop {
+                if let Some(h3_conn) = self.h3_conn.as_mut() {
+                    match h3_conn.poll(&mut conn) {
+                        Ok((
+                            _stream_id,
+                            quiche::h3::Event::Headers { list, .. },
+                        )) => {
+                            let msg = FcQuicMsg::Http3RespHeader(list);
+                            self.tx_app.send(msg).await?;
+                        },
+
+                        Ok((stream_id, quiche::h3::Event::Data)) => {
+                            while let Ok(read) =
+                                h3_conn.recv_body(&mut conn, stream_id, &mut buf)
+                            {
+                                let msg = FcQuicMsg::Http3RespBody(
+                                    buf[..read].to_vec(),
+                                );
+                                self.tx_app.send(msg).await?;
+                            }
+                        },
+
+                        Err(quiche::h3::Error::Done) => break,
+
+                        Ok(_) => (),
+
+                        Err(e) => return Err(e.into()),
+                    }
+                } else {
+                    break;
                 }
             }
 
@@ -182,7 +256,8 @@ impl TokioFcQuicRecv {
             if read_mc {
                 if let Some(mc_socket) = mc_socket_opt.as_ref() {
                     'mc_read: loop {
-                        if let Ok((len, from)) = mc_socket.try_recv_from(&mut buf) {
+                        if let Ok((len, from)) = mc_socket.try_recv_from(&mut buf)
+                        {
                             let recv_info = quiche::RecvInfo {
                                 to: mc_addr,
                                 from,
@@ -290,7 +365,8 @@ impl TokioFcQuicRecv {
                 if let Some(flexicast) = conn.get_flexicast_attributes() {
                     if flexicast.get_mc_role() ==
                         McRole::Client(McClientStatus::ListenMcPath(true)) &&
-                        !joined_mc_ip && !self.proxy_uc
+                        !joined_mc_ip &&
+                        !self.proxy_uc
                     {
                         info!("Join MULTICAST");
                         mc_socket_opt.as_mut().unwrap().join_multicast_v4(
@@ -364,6 +440,19 @@ impl TokioFcQuicRecv {
                 info!("connection closed, {:?}", conn.stats());
                 break;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Receives a message from the application to send to QUIC.
+    pub fn recv_app_msg(&mut self, msg: FcQuicMsg) -> Result<()> {
+        match msg {
+            FcQuicMsg::Http3Request(headers) => {
+                self.h3_pending_request = Some(headers);
+            },
+
+            _ => panic!("Cannot send other message from the receiving-side"),
         }
 
         Ok(())

@@ -31,5 +31,6 @@ async fn tfc_send_file() {
             assert_eq!(s, 3);
             assert_eq!(d, data);
         },
+        _ => (),
     }
 }

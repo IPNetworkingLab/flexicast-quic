@@ -128,6 +128,12 @@ async fn main() {
     env_logger::builder().format_timestamp_nanos().init();
     let args = Args::parse();
 
+    let h3_config = if matches!(args.transfer_kind, TransferKind::HTTP3(_)) {
+        Some(quiche::h3::Config::new().unwrap())
+    } else {
+        None
+    };
+
     // Create Flexicast Quiche tokio config.
     let fc_quic_tokio_config = TokioFcQuicConfig {
         unicast: args.allow_unicast,
@@ -141,9 +147,15 @@ async fn main() {
             .map(|d| time::Duration::from_millis(d)),
         uc_src_addr: args.src_addr,
         nb_leaf_controllers: args.nb_controllers,
+        h3_config,
     };
 
-    let mut fcquiche = tokio_fcquiche::io::TokioFcQuic::new(fc_quic_tokio_config);
+    // Transmission channel towards the application, supposed to be unique because
+    // the receivers may send messages without knowing to which flexicast flow it
+    // belongs.
+    let (tx_app, rx_app) = tokio::sync::mpsc::channel(1000);
+
+    let mut fcquiche = tokio_fcquiche::io::TokioFcQuic::new(fc_quic_tokio_config, tx_app);
     // Create a single flexicast flow.
     let flow_config = FcConfig {
         fc_tp: args.flexicast,
@@ -194,6 +206,10 @@ async fn main() {
                     rtp_src.run().await.unwrap();
                 },
             },
+        
+        TransferKind::HTTP3(path) => {
+            
+        }
     }
 
     fcquiche.run(uc_config).await.unwrap();

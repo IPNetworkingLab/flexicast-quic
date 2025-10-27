@@ -63,6 +63,9 @@ pub struct TokioFcQuicConfig {
 
     /// Numbere of leaf controllers to use.
     pub nb_leaf_controllers: u64,
+
+    /// Potential HTTP/3 config.
+    pub h3_config: Option<quiche::h3::Config>,
 }
 
 pub struct TokioFcQuic {
@@ -73,6 +76,10 @@ pub struct TokioFcQuic {
     /// Transmission channel for [`TokioFcQuic`] to receive content from the
     /// application.
     rx: Vec<mpsc::Receiver<FcQuicMsg>>,
+
+    /// Transmission channel for [`TokioFcQuic`] to send content to the
+    /// application.
+    tx_app: mpsc::Sender<FcQuicMsg>,
 
     /// Tokio Flexicast QUIC configuration.
     config: TokioFcQuicConfig,
@@ -85,14 +92,16 @@ pub struct TokioFcQuic {
 
     /// All the flexicast flows configs.
     fc_flow_configs: Vec<FcConfig>,
+    
 }
 
 impl TokioFcQuic {
     /// Creates a new instance with configurations.
-    pub fn new(config: TokioFcQuicConfig) -> Self {
+    pub fn new(config: TokioFcQuicConfig, tx_app: mpsc::Sender<FcQuicMsg>) -> Self {
         Self {
             tx: Vec::new(),
             rx: Vec::new(),
+            tx_app,
             config,
             rng: SystemRandom::new(),
             fc_flows: Vec::new(),
@@ -291,6 +300,8 @@ impl TokioFcQuic {
             &fc_announce_data,
             self.rng.clone(),
             sendmmsg_txs.clone(),
+            self.config.h3_config.clone(),
+            self.tx_app.clone(),
         )
         .await?;
 

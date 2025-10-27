@@ -2,12 +2,14 @@ use log::*;
 use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McClientStatus;
 use quiche::flexicast::McRole;
+use quiche::h3::Header;
 use std::convert::TryInto;
 use std::time;
 
 use crate::fcquic::messages::MsgFcCtl;
 use crate::fcquic::uc::UcPath;
 use crate::fcquic::uc::UcPathRun;
+use crate::FcQuicMsg;
 use crate::Result;
 
 pub struct UcPathFileTransfer(pub UcPath);
@@ -139,18 +141,45 @@ impl UcPathRun for UcPathFileTransfer {
                 }
             }
 
-            // Sends to QUIC RTP frames that must be sent through unicast.
-            // if !self.0.pending_data.is_empty() {
-            //     info!(
-            //         "Before stream data loop: {:?} for {}",
-            //         self.0
-            //             .pending_data
-            //             .iter()
-            //             .map(|(d, fin, off, sid)| (d.len(), fin, off, sid))
-            //             .collect::<Vec<_>>(),
-            //         self.0.client_id
-            //     );
-            // }
+            // Create the potential HTTP/3 connection.
+            if self.0.conn.is_established() &&
+                self.0.h3_conn.is_none() &&
+                self.0.h3_config.is_some()
+            {
+                self.0.h3_conn = Some(quiche::h3::Connection::with_transport(
+                    &mut self.0.conn,
+                    self.0.h3_config.as_ref().unwrap(),
+                )?);
+            }
+
+            // Process HTTP/3 events.
+            loop {
+                if let Some(ref mut h3_conn) = self.0.h3_conn {
+                    match h3_conn.poll(&mut self.0.conn) {
+                        Ok((
+                            stream_id,
+                            quiche::h3::Event::Headers { list, .. },
+                        )) => {
+                            self.handle_h3_request(&list, stream_id).await?;
+                        },
+
+                        Ok(msg) => info!("Process H3 message: {:?}", msg),
+
+                        Err(quiche::h3::Error::Done) => {
+                            break;
+                        },
+
+                        Err(e) => {
+                            error!("{} HTTP/3 error: {:?}", self.0.client_id, e);
+                            break;
+                        },
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            // Sends stream data that must be sent through unicast.
             'stream_data: loop {
                 let stream_ids: Vec<_> =
                     self.0.pending_data.keys().map(|id| *id).collect();
@@ -365,6 +394,64 @@ impl UcPathRun for UcPathFileTransfer {
         }
 
         info!("STOP CONNECTION: {:?}", self.0.client_id);
+
+        Ok(())
+    }
+}
+
+impl UcPathFileTransfer {
+    /// Handle an HTTP/3 request event.
+    /// We send the request to the application, and generate a OneShot to get
+    /// the response that we will inject in QUIC for the receiver.
+    async fn handle_h3_request(
+        &mut self, headers: &[Header], stream_id: u64,
+    ) -> Result<()> {
+        // Create the OneShot channel.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let msg = FcQuicMsg::Http3RequestServer((headers.to_vec(), tx));
+
+        self.0.tx_app.send(msg).await?;
+
+        // We wait for the response.
+        // FC-TODO: this may take a long time, generate a connection timeout?
+        if let Ok((resp_header, resp_body)) = rx.await {
+            // FC-TODO: handle blocked partial responses!
+            match self.0.h3_conn.as_mut().unwrap().send_response(
+                &mut self.0.conn,
+                stream_id,
+                &resp_header,
+                false,
+            ) {
+                Ok(v) => v,
+
+                Err(quiche::h3::Error::StreamBlocked) => {
+                    panic!("I have to handle StreamBlocked in H3 errors!");
+                },
+
+                Err(e) => return Err(e.into()),
+            }
+
+            // Send body.
+            // FC-TODO: same here, need to handle partial responses.
+            let written = match self.0.h3_conn.as_mut().unwrap().send_body(
+                &mut self.0.conn,
+                stream_id,
+                &resp_body,
+                true,
+            ) {
+                Ok(v) => v,
+
+                Err(quiche::h3::Error::Done) => 0,
+
+                Err(e) => {
+                    return Err(e.into());
+                },
+            };
+
+            if written != resp_body.len() {
+                panic!("I have to handle partial responses in HTTP/3!");
+            }
+        }
 
         Ok(())
     }

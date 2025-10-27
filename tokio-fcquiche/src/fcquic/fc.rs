@@ -190,6 +190,7 @@ impl FcChannelAsync {
             FcQuicMsg::Stream(v) => {
                 self.pending_data = Some(v);
             },
+            _ => unreachable!("Cannot send an HTTP/3 request from the source-side"),
         }
 
         Ok(())

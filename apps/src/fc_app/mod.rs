@@ -1,12 +1,13 @@
 use std::str::FromStr;
 
-use crate::fc_app::video::StreamTransferKind;
 use crate::fc_app::file_transfer::FileTransferKind;
+use crate::fc_app::video::StreamTransferKind;
 
 use tokio_fcquiche::*;
+pub mod file_transfer;
+pub mod h3;
 pub mod http3;
 pub mod video;
-pub mod file_transfer;
 
 /// Application being run on top of Flexicast QUIC.
 #[derive(Debug, Clone)]
@@ -16,6 +17,10 @@ pub enum TransferKind {
 
     /// Video stream.
     Stream(StreamTransferKind),
+
+    /// HTTP/3.
+    /// The value is the requested URL.
+    HTTP3(String),
 }
 
 impl FromStr for TransferKind {
@@ -29,6 +34,10 @@ impl FromStr for TransferKind {
                 Ok(TransferKind::Stream(StreamTransferKind::from_str(s)?)),
 
             "file" => Ok(TransferKind::File(FileTransferKind::from_str(s)?)),
+
+            "http3" => Ok(TransferKind::HTTP3(
+                tab.next().ok_or("No path provided")?.to_string(),
+            )),
 
             _ => return Err("Wrong transfer type!".to_string()),
         }

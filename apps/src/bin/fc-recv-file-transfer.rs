@@ -2,13 +2,16 @@ use clap::Parser;
 use quiche::flexicast::McConfig;
 use quiche_apps::fc_app::file_transfer::receiver::FileTransferRecv;
 use quiche_apps::fc_app::file_transfer::FileTransferKind;
+use quiche_apps::fc_app::h3::receiver::Http3Receiver;
 use quiche_apps::fc_app::video::hls::HlsSink;
 use quiche_apps::fc_app::video::rtp::RtpSink;
 use quiche_apps::fc_app::video::StreamTransferKind;
 use quiche_apps::fc_app::TransferKind;
 use std::net::Ipv4Addr;
 use std::path::Path;
+use std::str::FromStr;
 use tokio_fcquiche::io::receiver::TokioFcQuicRecv;
+use url::Url;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -71,11 +74,26 @@ async fn main() {
     env_logger::builder().format_timestamp_nanos().init();
     let args = Args::parse();
 
+    let h3_config = if matches!(args.transfer_kind, TransferKind::HTTP3(_)) {
+        Some(quiche::h3::Config::new().unwrap())
+    } else {
+        None
+    };
+
+    let (tx_app, rx_app) = tokio::sync::mpsc::channel(1000);
+
     // Create the Flexicast Quiche tokio receiver.
     let peer_addr = *args.url.socket_addrs(|| None).unwrap().first().unwrap();
     let config = get_config(&args);
-    let (mut tfc_recv, rx_app) =
-        TokioFcQuicRecv::new(peer_addr, config, args.local_ip, args.flexicast, args.proxy_uc);
+    let (mut tfc_recv, rx_app) = TokioFcQuicRecv::new(
+        peer_addr,
+        config,
+        args.local_ip,
+        args.flexicast,
+        args.proxy_uc,
+        rx_app,
+        h3_config,
+    );
 
     // Create the receiver application.
     match args.transfer_kind {
@@ -129,6 +147,19 @@ async fn main() {
                     });
                 },
             },
+
+        TransferKind::HTTP3(url_str) => {
+            let mut fc_app = Http3Receiver::new(
+                rx_app,
+                tx_app,
+                Url::from_str(&url_str).unwrap(),
+                ".",
+            );
+
+            tokio::spawn(async move {
+                fc_app.run().await.unwrap();
+            });
+        },
     };
 
     // Start the Flexicast QUIC receiver.
@@ -162,7 +193,7 @@ fn get_config(args: &Args) -> quiche::Config {
     config.set_active_connection_id_limit(10);
     config.verify_peer(false);
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
-    
+
     if args.flexicast {
         config.set_initial_max_path_id(10);
         config.set_enable_flexicast(args.flexicast);

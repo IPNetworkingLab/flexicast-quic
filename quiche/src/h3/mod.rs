@@ -560,6 +560,7 @@ impl std::convert::From<octets::BufferTooShortError> for Error {
     }
 }
 
+#[derive(Clone)]
 /// An HTTP/3 configuration.
 pub struct Config {
     max_field_section_size: Option<u64>,

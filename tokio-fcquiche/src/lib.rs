@@ -2,8 +2,11 @@
 //! The objective is to enable applications to entirely rely on this module to
 //! write their own application, forwarding and receiving data through channels.
 
+use quiche::h3::Header;
+
 mod fcquic;
 pub mod io;
+use tokio::sync::oneshot;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -18,6 +21,18 @@ pub enum FcQuicMsg {
 
     /// No more data will be sent.
     Close,
+
+    /// HTTP/3 Request from the client.
+    Http3Request(Vec<Header>),
+
+    /// HTTP/3 Request received on the server.
+    Http3RequestServer((Vec<Header>, oneshot::Sender<(Vec<quiche::h3::Header>, Vec<u8>)>)),
+
+    /// HTTP/3 response headers.
+    Http3RespHeader(Vec<Header>),
+
+    /// HTTP/3 response body.
+    Http3RespBody(Vec<u8>),
 }
 
 #[cfg(feature = "qlog")]

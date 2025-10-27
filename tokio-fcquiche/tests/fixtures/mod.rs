@@ -12,7 +12,8 @@ use tokio_fcquiche::MAX_DATAGRAM_SIZE;
 pub async fn fcquiche_server(keylog_path: &str) -> TokioFcQuic {
     let config = get_fcquiche_server_config(keylog_path);
 
-    let mut fcquic = TokioFcQuic::new(config);
+    let (tx, _rx) = mpsc::channel(10);
+    let mut fcquic = TokioFcQuic::new(config, tx);
 
     let flow_config = FcConfig {
         fc_tp: true,
@@ -39,7 +40,8 @@ pub async fn fcquiche_client() -> (TokioFcQuicRecv, mpsc::Receiver<FcQuicMsg>) {
     let config = get_config(true);
     let peer_addr = "127.0.0.1:12345".parse().unwrap();
     let local_ip = "127.0.0.1".parse().unwrap();
-    TokioFcQuicRecv::new(peer_addr, config, local_ip, true, false)
+    let (_tx, rx) = mpsc::channel(10);
+    TokioFcQuicRecv::new(peer_addr, config, local_ip, true, false, rx, None)
 }
 
 pub fn get_fcquiche_server_config(keylog_path: &str) -> TokioFcQuicConfig {
@@ -53,6 +55,7 @@ pub fn get_fcquiche_server_config(keylog_path: &str) -> TokioFcQuicConfig {
         fallback_delay: Some(time::Duration::from_millis(300)),
         uc_src_addr: "127.0.0.1:12345".parse().unwrap(),
         nb_leaf_controllers: 1,
+        h3_config: None,
     }
 }
 
