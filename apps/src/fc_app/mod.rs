@@ -35,9 +35,11 @@ impl FromStr for TransferKind {
 
             "file" => Ok(TransferKind::File(FileTransferKind::from_str(s)?)),
 
-            "http3" => Ok(TransferKind::HTTP3(
-                tab.next().ok_or("No path provided")?.to_string(),
-            )),
+            "http3" => {
+                let file_path = tab.next().ok_or("No path to file provided")?.to_string();
+                let manifest_math = tab.next().ok_or("No path to manifest provided")?.to_string();
+                Ok(TransferKind::HTTP3(format!("{},{}", file_path, manifest_math).to_string()))
+            },
 
             _ => return Err("Wrong transfer type!".to_string()),
         }

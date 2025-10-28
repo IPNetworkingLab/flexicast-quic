@@ -176,7 +176,9 @@ impl TokioFcQuicRecv {
                 },
 
                 Some(msg) = self.rx_app.recv() => {
-                    self.recv_app_msg(msg)?;
+                    if self.recv_app_msg(msg)? {
+                        conn.close(true, 0x00, b"bye")?;
+                    }
                 }
             }
 
@@ -185,47 +187,6 @@ impl TokioFcQuicRecv {
                 if let Some(h3_config) = self.h3_config.as_ref() {
                     self.h3_conn =
                         Some(H3Conn::with_transport(&mut conn, h3_config)?);
-                }
-            }
-
-            // Sends the HTTP/3 request.
-            if let Some(h3_conn) = self.h3_conn.as_mut() {
-                if let Some(headers) = self.h3_pending_request.take() {
-                    let _ = h3_conn.send_request(&mut conn, &headers, true);
-                }
-            }
-
-            // Processes HTTP/3 events.
-            loop {
-                if let Some(h3_conn) = self.h3_conn.as_mut() {
-                    match h3_conn.poll(&mut conn) {
-                        Ok((
-                            _stream_id,
-                            quiche::h3::Event::Headers { list, .. },
-                        )) => {
-                            let msg = FcQuicMsg::Http3RespHeader(list);
-                            self.tx_app.send(msg).await?;
-                        },
-
-                        Ok((stream_id, quiche::h3::Event::Data)) => {
-                            while let Ok(read) =
-                                h3_conn.recv_body(&mut conn, stream_id, &mut buf)
-                            {
-                                let msg = FcQuicMsg::Http3RespBody(
-                                    buf[..read].to_vec(),
-                                );
-                                self.tx_app.send(msg).await?;
-                            }
-                        },
-
-                        Err(quiche::h3::Error::Done) => break,
-
-                        Ok(_) => (),
-
-                        Err(e) => return Err(e.into()),
-                    }
-                } else {
-                    break;
                 }
             }
 
@@ -385,16 +346,62 @@ impl TokioFcQuicRecv {
 
             // Process all readable streams.
             'streams: for stream_id in conn.readable() {
-                if !conn.stream_readable(stream_id) {
-                    continue 'streams;
-                }
+                if stream_id & 0b11 == 0b11 && stream_id > 30 {
+                    if !conn.stream_readable(stream_id) {
+                        continue 'streams;
+                    }
 
-                while let Ok((read, fin)) =
-                    conn.stream_recv(stream_id, &mut buf[..])
-                {
-                    let msg =
-                        FcQuicMsg::Stream((buf[..read].to_vec(), fin, stream_id));
-                    self.tx_app.send(msg).await?;
+                    while let Ok((read, fin)) =
+                        conn.stream_recv(stream_id, &mut buf[..])
+                    {
+                        let msg = FcQuicMsg::Stream((
+                            buf[..read].to_vec(),
+                            fin,
+                            stream_id,
+                        ));
+                        self.tx_app.send(msg).await?;
+                    }
+                }
+            }
+
+            // Sends the HTTP/3 request.
+            if let Some(h3_conn) = self.h3_conn.as_mut() {
+                if let Some(headers) = self.h3_pending_request.take() {
+                    let _ = h3_conn.send_request(&mut conn, &headers, true);
+                }
+            }
+
+            // Processes HTTP/3 events.
+            loop {
+                if let Some(h3_conn) = self.h3_conn.as_mut() {
+                    match h3_conn.poll(&mut conn) {
+                        Ok((
+                            _stream_id,
+                            quiche::h3::Event::Headers { list, .. },
+                        )) => {
+                            let msg = FcQuicMsg::Http3RespHeader(list);
+                            self.tx_app.send(msg).await?;
+                        },
+
+                        Ok((stream_id, quiche::h3::Event::Data)) => {
+                            while let Ok(read) =
+                                h3_conn.recv_body(&mut conn, stream_id, &mut buf)
+                            {
+                                let msg = FcQuicMsg::Http3RespBody(
+                                    buf[..read].to_vec(),
+                                );
+                                self.tx_app.send(msg).await?;
+                            }
+                        },
+
+                        Err(quiche::h3::Error::Done) => break,
+
+                        Ok(_) => (),
+
+                        Err(e) => return Err(e.into()),
+                    }
+                } else {
+                    break;
                 }
             }
 
@@ -446,16 +453,20 @@ impl TokioFcQuicRecv {
     }
 
     /// Receives a message from the application to send to QUIC.
-    pub fn recv_app_msg(&mut self, msg: FcQuicMsg) -> Result<()> {
+    pub fn recv_app_msg(&mut self, msg: FcQuicMsg) -> Result<bool> {
         match msg {
             FcQuicMsg::Http3Request(headers) => {
                 self.h3_pending_request = Some(headers);
             },
 
+            FcQuicMsg::Close => {
+                return Ok(true); // Close.
+            }
+
             _ => panic!("Cannot send other message from the receiving-side"),
         }
 
-        Ok(())
+        Ok(false)
     }
 }
 

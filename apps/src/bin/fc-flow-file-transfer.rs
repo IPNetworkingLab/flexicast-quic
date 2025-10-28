@@ -11,6 +11,7 @@ use quiche_apps::fc_app::TransferKind;
 
 use clap::Parser;
 use quiche_apps::fc_app::file_transfer::sender::FileTransferSrc;
+use quiche_apps::fc_app::h3::sender::Http3Source;
 use quiche_apps::fc_app::video::hls::HlsSource;
 use quiche_apps::fc_app::video::rtp::RtpSource;
 use quiche_apps::fc_app::video::StreamTransferKind;
@@ -153,7 +154,7 @@ async fn main() {
     // Transmission channel towards the application, supposed to be unique because
     // the receivers may send messages without knowing to which flexicast flow it
     // belongs.
-    let (tx_app, rx_app) = tokio::sync::mpsc::channel(1000);
+    let (tx_app, rx_app) = tokio::sync::mpsc::channel(10);
 
     let mut fcquiche = tokio_fcquiche::io::TokioFcQuic::new(fc_quic_tokio_config, tx_app);
     // Create a single flexicast flow.
@@ -208,7 +209,13 @@ async fn main() {
             },
         
         TransferKind::HTTP3(path) => {
-            
+            let mut tab = path.split(",");
+            let file_path = tab.next().unwrap().to_string();
+            let manifest_path = tab.next().unwrap().to_string();
+            let mut fc_app = Http3Source::new(rx_app, tx_app, &file_path, &manifest_path).unwrap();
+            tokio::spawn(async move {
+                fc_app.run().await.unwrap();
+            });
         }
     }
 

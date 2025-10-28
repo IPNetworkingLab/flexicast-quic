@@ -17,18 +17,8 @@ pub struct UcPathFileTransfer(pub UcPath);
 impl UcPathRun for UcPathFileTransfer {
     async fn run(&mut self) -> Result<()> {
         // Before entering the loop, set the McAnnounceData to the client.
-        for (i, mc_announce_data) in self.0.mc_announce_data.iter().enumerate() {
-            self.0.conn.fc_set_announce_data(mc_announce_data).unwrap();
-            // FC-TODO: now we set to 1 the space ID but it is not ideal...
-            self.0
-                .conn
-                .mc_set_flexicast_receiver(
-                    &self.0.mc_master_secret[i],
-                    1,
-                    self.0.mc_key_algo[i].try_into().unwrap(),
-                    Some(i),
-                )
-                .unwrap();
+        if self.0.h3_config.is_none() {
+            self.add_fc_announce_data();
         }
 
         // The first read was already performed. Directly go to the write.
@@ -38,7 +28,7 @@ impl UcPathRun for UcPathFileTransfer {
         let mut sent_ready = false;
 
         let mut buf = [0u8; 1500];
-        loop {
+        'main: loop {
             let timeout = self.0.conn.timeout();
             let now = std::time::Instant::now();
             let fcf_timeout = self
@@ -358,7 +348,18 @@ impl UcPathRun for UcPathFileTransfer {
 
                 // Send the packet directly to the wire without going by the main
                 // thread.
-                self.0.uc_sock.send(&buf[..write]).await?;
+                match self.0.uc_sock.send(&buf[..write]).await {
+                    Ok(_v) => (),
+                    Err(_e) => {
+                        if let Some(fc_id) = fc_chan_id {
+                            let msg =
+                                MsgFcCtl::CollectRecv((self.0.client_id, fc_id));
+                            self.0.tx_tcl.send(msg).await?;
+                        };
+                        info!("Closing the connection because connection refused");
+                        break 'main;
+                    }
+                }
                 trace!("UC path sent packet of len {write}");
             }
 
@@ -451,9 +452,29 @@ impl UcPathFileTransfer {
             if written != resp_body.len() {
                 panic!("I have to handle partial responses in HTTP/3!");
             }
+
+            // Finally, send the FC_ANNOUNCE_DATA to the client.
+            self.add_fc_announce_data();
         }
 
         Ok(())
+    }
+
+    /// Sends to the receiver the MC_ANNOUNCE_DATA.
+    fn add_fc_announce_data(&mut self) {
+        for (i, mc_announce_data) in self.0.mc_announce_data.iter().enumerate() {
+            self.0.conn.fc_set_announce_data(mc_announce_data).unwrap();
+            // FC-TODO: now we set to 1 the space ID but it is not ideal...
+            self.0
+                .conn
+                .mc_set_flexicast_receiver(
+                    &self.0.mc_master_secret[i],
+                    1,
+                    self.0.mc_key_algo[i].try_into().unwrap(),
+                    Some(i),
+                )
+                .unwrap();
+        }
     }
 }
 

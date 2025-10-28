@@ -79,6 +79,14 @@ pub trait UcPathRun {
 
 impl UcPath {
     pub async fn handle_ctl_msg(&mut self, msg: MsgRecv) -> Result<()> {
+        // Avoid processing some messages if flexicast is not enabled yet
+        // (HTTP/3).
+        if self.conn.get_flexicast_attributes().is_none() &&
+            !matches!(msg, MsgRecv::DelegateStreams(_) | MsgRecv::Sent(_))
+        {
+            return Ok(());
+        }
+
         match msg {
             MsgRecv::CloseRtp => {
                 debug!("Server {} close RTP", self.client_id);
@@ -129,7 +137,12 @@ impl UcPath {
                         ),
                     );
                     if v.is_some() {
-                        println!("Old value for offset {}: {:?} and new length={:?}", delegated_stream.offset, v.unwrap().0.len(), delegated_stream.payload.len());
+                        println!(
+                            "Old value for offset {}: {:?} and new length={:?}",
+                            delegated_stream.offset,
+                            v.unwrap().0.len(),
+                            delegated_stream.payload.len()
+                        );
                     }
                 }
 

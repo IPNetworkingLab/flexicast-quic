@@ -9,9 +9,7 @@ use quiche_apps::fc_app::video::StreamTransferKind;
 use quiche_apps::fc_app::TransferKind;
 use std::net::Ipv4Addr;
 use std::path::Path;
-use std::str::FromStr;
 use tokio_fcquiche::io::receiver::TokioFcQuicRecv;
-use url::Url;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -148,12 +146,12 @@ async fn main() {
                 },
             },
 
-        TransferKind::HTTP3(url_str) => {
+        TransferKind::HTTP3(path_to_store) => {
             let mut fc_app = Http3Receiver::new(
                 rx_app,
                 tx_app,
-                Url::from_str(&url_str).unwrap(),
-                ".",
+                args.url,
+                &path_to_store.split(",").next().unwrap(),
             );
 
             tokio::spawn(async move {

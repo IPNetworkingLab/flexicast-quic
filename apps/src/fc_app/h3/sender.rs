@@ -1,15 +1,16 @@
 //! Sending-side of the HTTP/3 file transfer module.
 
+use std::io::BufReader;
 use std::io::Read;
 
 use quiche::h3::NameValue;
 use tokio::sync::mpsc;
 
+use crate::fc_app::h3::Manifest;
 use crate::fc_app::Result;
 use tokio_fcquiche::FcQuicMsg;
 
 const BUFF_SIZE: usize = 10_000;
-const STREAM_SIZE: usize = 100_000_000;
 
 #[derive(Debug)]
 pub struct Http3Source {
@@ -48,25 +49,31 @@ impl Http3Source {
     pub async fn run(&mut self) -> Result<()> {
         let mut buffer = vec![0u8; BUFF_SIZE];
 
-        // TODO: read the manifest to get the information of the file.
+        // Read the manifest to get the information about the file to serve.
+        let file = std::fs::File::open(&self.manifest_path)?;
+        let reader = BufReader::new(file);
+        let manifest: Manifest = serde_json::from_reader(reader)?;
+
+        let mut stream_id = manifest.blocks[0].1;
+        let mut id_manifest = 0;
 
         // Whether we can read new data from the file.
         let mut read_new = false;
         let mut written = 0;
-
-        let mut stream_id = 3;
         let mut total_written_stream = 0;
 
         loop {
             if read_new {
-                let max_write = buffer
-                    .len()
-                    .min(STREAM_SIZE.saturating_sub(total_written_stream));
+                let max_write = buffer.len().min(
+                    (manifest.blocks[id_manifest].0 as usize)
+                        .saturating_sub(total_written_stream),
+                );
                 if max_write == 0 {
                     // TODO: maybe we will do +8 instead of +4 if we read empty
                     // data!
                     stream_id += 4;
                     total_written_stream = 0;
+                    id_manifest = (id_manifest + 1) % manifest.blocks.len();
                 }
                 written = self.file.read(&mut buffer)?;
 
@@ -74,7 +81,7 @@ impl Http3Source {
                 // reading from the start and a fresh stream id.
                 if written == 0 {
                     self.file = std::fs::File::open(&self.file_path)?;
-                    
+
                     // We restart the loop to avoid setting read_new to false.
                     continue;
                 }
@@ -82,8 +89,10 @@ impl Http3Source {
                 // Set that we have to send the data before reading it.
                 read_new = false;
             }
+            let fin = total_written_stream + written ==
+                manifest.blocks[id_manifest].0 as usize;
             let msg =
-                FcQuicMsg::Stream((buffer[..written].to_vec(), false, stream_id));
+                FcQuicMsg::Stream((buffer[..written].to_vec(), fin, stream_id));
             tokio::select! {
                 Ok(_) = self.tx.send(msg) => {
                     read_new = true;
@@ -142,9 +151,12 @@ impl Http3Source {
                         file_path.push(v)
                     }
                 }
-
+                println!(
+                    "REQUEST {:?} and I have {:?}",
+                    file_path, self.file_path
+                );
                 // Check if the requested file matches the one we can serve.
-                if file_path == std::path::Path::new(&self.manifest_path) {
+                if file_path == std::path::Path::new(&self.file_path) {
                     // Then we return the content of the manifest.
                     let manifest_data = std::fs::read(&self.manifest_path)?;
                     (200, manifest_data)
@@ -160,7 +172,7 @@ impl Http3Source {
             quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
             quiche::h3::Header::new(b"server", b"quiche"),
             quiche::h3::Header::new(
-                b"content-length",
+                b":content-length",
                 body.len().to_string().as_bytes(),
             ),
         ];
