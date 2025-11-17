@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use log::*;
 use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McClientStatus;
@@ -172,7 +173,7 @@ impl UcPathRun for UcPathFileTransfer {
             // Sends stream data that must be sent through unicast.
             'stream_data: loop {
                 let stream_ids: Vec<_> =
-                    self.0.pending_data.keys().map(|id| *id).collect();
+                    self.0.pending_data.keys().map(|id| *id).sorted().collect();
                 if stream_ids.is_empty() {
                     break 'stream_data;
                 }
@@ -270,18 +271,16 @@ impl UcPathRun for UcPathFileTransfer {
                                     .conn
                                     .stream_send(*stream_id, &data, *fin)
                                 {
-                                    Ok(v) => v,
+                                    Ok(v) => {
+                                        v
+                                    },
                                     Err(quiche::Error::Done) => {
-                                        debug!("Recv {}: breaks stream send because done", self.0.client_id);
+                                        println!("Recv {}: breaks stream send because done on id={stream_id}", self.0.client_id);
                                         break 'stream_data;
                                     },
                                     Err(e) => panic!("Other error: {:?}", e),
                                 }
                             } else {
-                                debug!(
-                                    "Recv {}: stream send with empty data",
-                                    self.0.client_id
-                                );
                                 0
                             };
 
@@ -320,7 +319,11 @@ impl UcPathRun for UcPathFileTransfer {
                             );
                             }
                         } else {
-                            break 'stream_data;
+                            // Remove the entry in the map.
+                            self.0.pending_data.remove(stream_id);
+
+                            // Maybe we can process another stream.
+                            continue 'stream_data;
                         }
                     }
                 }
@@ -356,9 +359,11 @@ impl UcPathRun for UcPathFileTransfer {
                                 MsgFcCtl::CollectRecv((self.0.client_id, fc_id));
                             self.0.tx_tcl.send(msg).await?;
                         };
-                        info!("Closing the connection because connection refused");
+                        info!(
+                            "Closing the connection because connection refused"
+                        );
                         break 'main;
-                    }
+                    },
                 }
                 trace!("UC path sent packet of len {write}");
             }

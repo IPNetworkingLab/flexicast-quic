@@ -5714,6 +5714,10 @@ impl Connection {
                     has_data = true;
                 }
 
+                if fin {
+                    println!("Sending STREAM frame with fin and id={stream_id} in pn={}. Is flexicast flow? {:?}", pn, self.flexicast.as_ref().map(|fc| fc.get_mc_role()));
+                }
+
                 let priority_key = Arc::clone(&stream.priority_key);
                 // If the stream is no longer flushable, remove it from the queue
                 if !stream.is_flushable() {
@@ -5844,17 +5848,18 @@ impl Connection {
             if fec_protected && !sent_repair {
                 let fec_encoder = self.fec_encoder.as_mut().unwrap();
                 let symbol_size = fec_encoder.get_encoder().symbol_size();
-                // Zeroes at the beginning to add PADDING frames at the front of the
-                // symbol (they are not sent in the packet).
+                // Zeroes at the beginning to add PADDING frames at the front of
+                // the symbol (they are not sent in the packet).
                 let mut source_symbol_data = vec![0; symbol_size];
                 let mut fec_buffer =
                     octets::OctetsMut::with_slice(&mut source_symbol_data);
-    
-                // We here re-read the written payload to include it inside the source
-                // symbol We cannot browse through the frames vector as
-                // Stream frames are not completely stored in it but a
-                // StreamHeader is stored instead...
-    
+
+                // We here re-read the written payload to include it inside the
+                // source symbol We cannot browse through the
+                // frames vector as Stream frames are not
+                // completely stored in it but a StreamHeader is
+                // stored instead...
+
                 // This is the best way I found to avoid modifying too much the
                 // packetization code of the stream frames.
                 let unprotected_frames_data_len =
@@ -5864,9 +5869,9 @@ impl Connection {
                     fec_source_symbol_offset + source_symbol_len];
                 let mut written_frames =
                     octets::Octets::with_slice(protected_data_buf);
-    
+
                 let mut packet_fec_protected = false;
-    
+
                 while written_frames.cap() > 0 {
                     let off_before_parsing = written_frames.off();
                     let frame =
@@ -5876,15 +5881,18 @@ impl Connection {
                     let written = frame.to_bytes(&mut fec_buffer)?;
                     if written != wire_len {
                         error!("FEC: did not write the correct amount of bytes");
-                        return Err(fec::FecError::SourceSymbolCreationError.into());
+                        return Err(
+                            fec::FecError::SourceSymbolCreationError.into()
+                        );
                     }
                 }
-    
+
                 let offset = fec_buffer.off();
                 // Put the padding in front of the symbol to not mess with stream
                 // frames without len.
                 source_symbol_data.rotate_right(symbol_size - offset);
-                let mut source_symbol_metadata = source_symbol_metadata_from_u64(0);
+                let mut source_symbol_metadata =
+                    source_symbol_metadata_from_u64(0);
                 match fec_encoder
                     .get_encoder()
                     .protect_data(source_symbol_data, &mut source_symbol_metadata)
@@ -5895,7 +5903,7 @@ impl Connection {
                         if let Some(last) = last {
                             fec_encoder.get_encoder().remove_up_to(last);
                         }
-    
+
                         // We will return the error but next time it will work.
                         println!("The FEC error came from here");
 
@@ -5906,7 +5914,7 @@ impl Connection {
                         }
                     },
                 };
-    
+
                 if packet_fec_protected {
                     fec_encoder.latest_metadata_protected =
                         Some(source_symbol_metadata);

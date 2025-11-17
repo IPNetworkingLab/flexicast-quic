@@ -296,7 +296,9 @@ impl Connection {
                     Err(Error::Done) if is_stream_collected => {
                         continue;
                     },
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        return Err(e);
+                    },
                 };
 
             let was_flushable = stream.is_flushable();

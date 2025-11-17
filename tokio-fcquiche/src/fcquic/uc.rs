@@ -122,12 +122,6 @@ impl UcPath {
                             Vacant(entry) => entry.insert(BTreeMap::new()),
                             Occupied(entry) => entry.into_mut(),
                         };
-                    debug!(
-                        "Recv {}: inserts {} of len {} by delegation",
-                        self.client_id,
-                        delegated_stream.offset,
-                        delegated_stream.payload.len()
-                    );
                     let v = stream_map.insert(
                         delegated_stream.offset,
                         (
@@ -215,7 +209,6 @@ impl UcPath {
                         .map(|fc_fec| fc_fec.fc_get_recovered_esi())
                 })
                 .flatten();
-            info!("Recv {} will send ack data {pn:?}", self.client_id);
             let msg = MsgFcCtl::AckData((
                 self.client_id,
                 fc_id.unwrap() as u64,
@@ -268,6 +261,8 @@ impl UcPath {
         // Process potentially coalesced packets.
         let _read = match self.conn.recv(pkt_buf, recv_info) {
             Ok(v) => v,
+
+            Err(quiche::Error::Done) => 0,
 
             Err(e) => {
                 error!("{} recv failed: {:?}", self.conn.trace_id(), e);
@@ -390,12 +385,7 @@ impl UcPath {
                 .unwrap_or(true)
         {
             info!("Recv {} says it's okay, don't need the data. It is still important to send data if there is an offset: {off:?}", self.client_id);
-            // if off.is_none() {
-            //     return Ok(());
-            // }
         }
-
-        info!("Recv {}: The UC Path pushes pending data stream_id={stream_id} off={:?} len={:?}", self.client_id, off, data.len());
 
         let stream_map = match self.pending_data.entry(stream_id) {
             Vacant(entry) => entry.insert(BTreeMap::new()),

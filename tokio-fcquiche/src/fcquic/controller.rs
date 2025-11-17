@@ -1099,7 +1099,6 @@ impl FcController {
                 .unwrap_or(0)
                 .saturating_sub(1);
             let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
-            info!("SEND NEW HIGHEST PN??");
             send_uc_path!(self, recv_id, msg);
 
             // Update flow control limits.

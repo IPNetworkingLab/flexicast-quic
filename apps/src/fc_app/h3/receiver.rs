@@ -184,10 +184,6 @@ impl Http3Receiver {
                     );
                     cumulated_off += *size;
                 }
-                println!(
-                    "State of the map: {:?} and min={}, max={}",
-                    written_streams, min_stream_id, stream_id_space
-                );
 
                 total_size = manifest.size;
                 processed_manifest = true;

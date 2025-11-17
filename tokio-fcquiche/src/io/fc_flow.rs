@@ -230,7 +230,9 @@ impl FcFlowRun for FcFlowfileTransfer {
                             .channel
                             .stream_send(*stream_id, &app_data, *fin)
                         {
-                            Ok(v) => v,
+                            Ok(v) => {
+                                v
+                            },
                             Err(quiche::Error::Done) => {
                                 break 'rtp;
                             },

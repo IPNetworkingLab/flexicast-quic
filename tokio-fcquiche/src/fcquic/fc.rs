@@ -118,11 +118,11 @@ impl FcChannelAsync {
             MsgFcSource::AckStreamPieces(mut stream_pieces) => {
                 for (stream_id, ranges) in stream_pieces.drain(..) {
                     for range in ranges.iter() {
-                        self.fc_chan.channel.fc_on_stream_ack_received(
+                        let _ = self.fc_chan.channel.fc_on_stream_ack_received(
                             stream_id,
                             range.start,
                             range.end - range.start,
-                        )?;
+                        );
                     }
                 }
             },
@@ -141,9 +141,9 @@ impl FcChannelAsync {
                     .fc_set_max_tx_data(aggr_info.max_data)?;
 
                 for (stream_id, max_stream_data) in aggr_info.max_stream_datas {
-                    self.fc_chan
+                    let _ = self.fc_chan
                         .channel
-                        .fc_set_max_tx_stream_data(max_stream_data, stream_id)?;
+                        .fc_set_max_tx_stream_data(max_stream_data, stream_id);
                 }
             },
         }
