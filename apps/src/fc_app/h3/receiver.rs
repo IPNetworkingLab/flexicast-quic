@@ -50,6 +50,9 @@ impl Http3Receiver {
 
     /// Runs the [`Http3Receiver`] file transfer.
     pub async fn run(&mut self) -> Result<()> {
+        // Start of the application.
+        let start = std::time::Instant::now();
+
         let mut req_sent = false;
 
         // Response containing the manifest file.
@@ -140,6 +143,12 @@ impl Http3Receiver {
                             println!("File download completed.");
                             let msg = FcQuicMsg::Close;
                             self.tx.send(msg).await?;
+
+                            // Print to NPF the duration.
+                            let now = std::time::Instant::now();
+                            let rct = now.duration_since(start).as_millis();
+                            println!("RESULT-RCT {:?}", rct);
+
                             return Ok(());
                         }
                     },
