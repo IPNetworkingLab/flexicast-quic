@@ -463,7 +463,7 @@ impl Handshake {
                     "Send message to {:?} because recv_info={:?}",
                     client_id, recv_info
                 );
-                unreachable!();
+                continue;
             };
 
             let recv_info = quiche::RecvInfo {

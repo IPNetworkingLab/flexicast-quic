@@ -79,7 +79,22 @@ impl UcPathRun for UcPathFileTransfer {
                     },
 
                     // Data on the control channel.
-                    Some(msg) = self.0.rx_ctl.recv() => self.0.handle_ctl_msg(msg).await?,
+                    Some(msg) = self.0.rx_ctl.recv() => {
+                        match self.0.handle_ctl_msg(msg).await {
+                            Ok(_) => (),
+                            Err(e) => {
+                                if let Some(e_quiche) = e.downcast_ref::<quiche::Error>() {
+                                    if *e_quiche == quiche::Error::Done {
+                                        ();
+                                    } else {
+                                        return Err(e);
+                                    }
+                                } else {
+                                    return Err(e);
+                                }
+                            },
+                        }
+                    },
 
                     // Packet on the socket.
                     Ok(len) = self.0.uc_sock.recv(&mut buf[..]) => {
@@ -88,7 +103,20 @@ impl UcPathRun for UcPathFileTransfer {
                             to: self.0.uc_sock.local_addr().unwrap(),
                             from_mc: false,
                         };
-                        self.0.handle_new_pkt(&mut buf[..len], recv_info).await?;
+                        match self.0.handle_new_pkt(&mut buf[..len], recv_info).await {
+                            Ok(_) => (),
+                            Err(e) => {
+                                if let Some(e_quiche) = e.downcast_ref::<quiche::Error>() {
+                                    if *e_quiche == quiche::Error::Done {
+                                        ();
+                                    } else {
+                                        return Err(e);
+                                    }
+                                } else {
+                                    return Err(e);
+                                }
+                            },
+                        }
                     },
                 }
             }
@@ -151,7 +179,22 @@ impl UcPathRun for UcPathFileTransfer {
                             stream_id,
                             quiche::h3::Event::Headers { list, .. },
                         )) => {
-                            self.handle_h3_request(&list, stream_id).await?;
+                            match self.handle_h3_request(&list, stream_id).await {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    if let Some(e_quiche) =
+                                        e.downcast_ref::<quiche::Error>()
+                                    {
+                                        if *e_quiche == quiche::Error::Done {
+                                            ();
+                                        } else {
+                                            return Err(e);
+                                        }
+                                    } else {
+                                        return Err(e);
+                                    }
+                                },
+                            }
                         },
 
                         Ok(msg) => info!("Process H3 message: {:?}", msg),
@@ -218,17 +261,21 @@ impl UcPathRun for UcPathFileTransfer {
                             }
                             let data = &data_arc[pending_data_off..];
                             let off = first_off + pending_data_off as u64;
-                            let buf_off = self
+                            let buf_off = match self
                                 .0
                                 .conn
                                 .fc_reset_send_off(*stream_id, off)
                                 .map_err(|e| {
-                                    debug!(
+                                    println!(
                                         "{} Error reset send off: {e:?}",
                                         self.0.client_id
                                     );
                                     e
-                                })?;
+                                }) {
+                                Ok(v) => v,
+                                Err(quiche::Error::Done) => continue,
+                                Err(e) => return Err(e.into()),
+                            };
                             info!(
                                 "Recv {}: RESET THE FC SEND OFF stream_id={:?} off={:?}.
                         Off given by quiche: {:?} for {}. Pending_data_off={}",
@@ -271,11 +318,8 @@ impl UcPathRun for UcPathFileTransfer {
                                     .conn
                                     .stream_send(*stream_id, &data, *fin)
                                 {
-                                    Ok(v) => {
-                                        v
-                                    },
+                                    Ok(v) => v,
                                     Err(quiche::Error::Done) => {
-                                        println!("Recv {}: breaks stream send because done on id={stream_id}", self.0.client_id);
                                         break 'stream_data;
                                     },
                                     Err(e) => panic!("Other error: {:?}", e),
