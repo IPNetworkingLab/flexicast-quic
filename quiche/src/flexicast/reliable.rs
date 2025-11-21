@@ -73,7 +73,7 @@ impl Default for RFcUcPath {
     fn default() -> Self {
         let mut mc_ack = McAck::new(true);
 
-        mc_ack.new_recv(0);
+        mc_ack.new_recv(0, false);
 
         Self {
             mc_ack,
@@ -225,12 +225,14 @@ impl Connection {
             self.lost_bytes += lost_bytes as u64;
             self.acked_bytes += acked_bytes as u64;
 
-            debug!(
-                "After fc_on_ack_received called with {:?}, the cwnd: {:?} {:?} {}",
+            println!(
+                "After fc_on_ack_received called with {:?}, the cwnd: {:?} {:?} {} {} {}",
                 ranges,
                 p.recovery.cwnd(),
                 p.recovery.cwnd_available(),
-                is_app_limited
+                is_app_limited,
+                self.lost_count,
+                self.lost_bytes,
             );
 
             // Process acked frames.

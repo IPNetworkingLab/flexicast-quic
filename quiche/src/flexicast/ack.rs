@@ -143,13 +143,24 @@ impl McAck {
     /// Adds a new receiver to the structure.
     /// This will "simulate" the fact that the new receiver ACKed all packets
     /// before `first_pn`.
-    pub fn new_recv(&mut self, first_pn: u64) {
-        for (&pn, _nb) in self.acked.iter_mut() {
+    pub fn new_recv(&mut self, first_pn: u64, emulate_ack: bool) {
+        for (&pn, nb) in self.acked.iter_mut() {
             if pn >= first_pn {
                 break;
             }
+            if emulate_ack {
+                *nb = (*nb).saturating_sub(1);
+            }
+        }
 
-            // *nb = (*nb).saturating_sub(1);
+        // Also for acknowledgment not yet received...
+        if let Some(largest) = self.largest_pn {
+            if largest < first_pn {
+                let mut ranges = RangeSet::default();
+                ranges.insert(largest + 1..first_pn + 1);
+                println!("Dummy ack for packets not yet received!");
+                self.on_ack_received(&ranges);
+            }
         }
 
         self.nb_recv += 1;
@@ -476,7 +487,7 @@ mod tests {
     #[test]
     fn test_mc_ack_pn() {
         let mut mc_ack = McAck::new(false);
-        mc_ack.new_recv(1);
+        mc_ack.new_recv(1, false);
 
         let mut ranges = RangeSet::default();
         ranges.insert(1..5);
@@ -488,7 +499,7 @@ mod tests {
         assert_eq!(mc_ack.full_ack(), Some(ranges));
         assert!(mc_ack.acked.is_empty());
 
-        mc_ack.new_recv(5);
+        mc_ack.new_recv(5, false);
 
         let mut ranges = RangeSet::default();
         ranges.insert(5..9);

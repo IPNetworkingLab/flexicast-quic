@@ -68,6 +68,8 @@ impl Http3Receiver {
         let mut total_written = 0;
         let mut total_size = 0;
 
+        let mut finished = false;
+
         // Map of written blocks.
         let mut full_block = HashSet::new();
 
@@ -94,6 +96,10 @@ impl Http3Receiver {
                     },
 
                     FcQuicMsg::Stream((v, fin, stream_id)) => {
+                        if finished {
+                            continue;
+                        }
+
                         let (v1, v2, v3) = written_streams[&get_init_stream_id(
                             stream_id,
                             min_stream_id,
@@ -141,15 +147,14 @@ impl Http3Receiver {
 
                         if total_written == total_size {
                             println!("File download completed.");
-                            let msg = FcQuicMsg::Close;
-                            self.tx.send(msg).await?;
+                            finished = true;
+                            // let msg = FcQuicMsg::Close;
+                            // self.tx.send(msg).await?;
 
                             // Print to NPF the duration.
                             let now = std::time::Instant::now();
                             let rct = now.duration_since(start).as_millis();
                             println!("RESULT-RCT {:?}", rct);
-
-                            return Ok(());
                         }
                     },
 

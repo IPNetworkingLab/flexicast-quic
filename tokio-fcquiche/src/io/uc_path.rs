@@ -28,6 +28,8 @@ impl UcPathRun for UcPathFileTransfer {
         // Whether it already notified the controller that it is ready.
         let mut sent_ready = false;
 
+        let mut sent_first_join = false;
+
         let mut buf = [0u8; 1500];
         'main: loop {
             let timeout = self.0.conn.timeout();
@@ -130,16 +132,24 @@ impl UcPathRun for UcPathFileTransfer {
                 self.0.conn.get_flexicast_attributes(),
             ) {
                 if let Some((_, fc_id)) = mc.get_fc_chan_id() {
-                    self.0.listen_fc_channel = true;
-                    self.0
-                        .tx_tcl
-                        .send(MsgFcCtl::Join((
-                            self.0.client_id,
-                            *fc_id as u64,
-                            None,
-                            None,
-                        )))
-                        .await?;
+                    let listen_mc_path = mc.get_mc_role() ==
+                        McRole::ServerUnicast(McClientStatus::ListenMcPath(
+                            true,
+                        ));
+                    self.0.listen_fc_channel = listen_mc_path;
+                    if listen_mc_path || !sent_first_join {
+                        self.0
+                            .tx_tcl
+                            .send(MsgFcCtl::Join((
+                                self.0.client_id,
+                                *fc_id as u64,
+                                None,
+                                None,
+                                !listen_mc_path,
+                            )))
+                            .await?;
+                    }
+                    sent_first_join = true;
                 }
             }
 
@@ -266,10 +276,6 @@ impl UcPathRun for UcPathFileTransfer {
                                 .conn
                                 .fc_reset_send_off(*stream_id, off)
                                 .map_err(|e| {
-                                    println!(
-                                        "{} Error reset send off: {e:?}",
-                                        self.0.client_id
-                                    );
                                     e
                                 }) {
                                 Ok(v) => v,

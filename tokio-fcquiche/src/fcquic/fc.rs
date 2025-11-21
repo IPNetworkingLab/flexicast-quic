@@ -112,6 +112,7 @@ impl FcChannelAsync {
 
         match msg {
             MsgFcSource::AckPn(ranges) => {
+                println!("Flexicast flow ack {:?}", ranges);
                 self.fc_chan.channel.fc_on_ack_received(&ranges, now)?;
             },
 

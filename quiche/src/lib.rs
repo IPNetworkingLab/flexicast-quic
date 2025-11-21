@@ -2846,6 +2846,7 @@ impl Connection {
             // We consume the value to avoid doing this multiple times.
             if flexicast.get_fc_path_id() == Some(space_id) {
                 if let Some(first_pn) = flexicast.fc_first_pn.take() {
+                    println!("Setting the largest received packet number to {first_pn}");
                     let _ = self
                         .pkt_num_spaces
                         .spaces
@@ -2995,7 +2996,7 @@ impl Connection {
             hdr.ty != Type::ZeroRTT &&
             hdr.key_phase != self.key_phase
         {
-            error!("Going into key  update here");
+            error!("Going into key  update here but pn={pn} and space_id={space_id}. Largest received pn={largest_rx_pkt_num}. Flexicast first pn={:?} and role {:?}", self.flexicast.as_ref().map(|flexicast| flexicast.fc_first_pn), self.flexicast.as_ref().map(|fc| fc.get_mc_role()));
             // Check if this packet arrived before key update.
             if let Some(key_update) = self
                 .pkt_num_spaces
@@ -9691,6 +9692,8 @@ impl Connection {
                         flexicast::FcClientAction::DecryptionKey,
                         None,
                     )?;
+
+                    println!("MCKEY: first_pn={:?}", first_pn);
 
                     // Record the first packet number to listen to because we
                     // don't have a FC path id yet.

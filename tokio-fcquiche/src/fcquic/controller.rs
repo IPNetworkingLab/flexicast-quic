@@ -4,10 +4,10 @@
 use super::aggregator::FcAggregatedMsg;
 use super::aggregator::FcAggregator;
 use super::messages::*;
-use crate::Result;
 use crate::send_uc_path;
+use crate::Result;
 use log::*;
-use quiche::ConnectionId;
+use quiche::flexicast::ack;
 use quiche::flexicast::ack::FcDelegatedStream;
 use quiche::flexicast::ack::McAck;
 use quiche::flexicast::ack::McStreamOff;
@@ -15,6 +15,7 @@ use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
 use quiche::flexicast::McAnnounceData;
 use quiche::flexicast::MissingRangeSet;
+use quiche::ConnectionId;
 use std::collections::hash_map::Entry::Occupied;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::HashMap;
@@ -205,8 +206,9 @@ impl FcController {
                 self.new_recv(id, tx);
             },
 
-            MsgFcCtl::Join((recv_id, fc_id, aggr_msg, max_pn)) => {
-                self.on_join(recv_id, fc_id, aggr_msg, max_pn).await?;
+            MsgFcCtl::Join((recv_id, fc_id, aggr_msg, first_join, max_pn)) => {
+                self.on_join(recv_id, fc_id, aggr_msg, max_pn, first_join)
+                    .await?;
             },
 
             MsgFcCtl::Change(_) => {
@@ -564,30 +566,30 @@ impl FcController {
                 // ack one every two packets directly.
                 // This is ugly, I know, but it is the simplest way to keep
                 // advancing.
-                if let Some(dummy_ack_pn) = leaf.get_dummy_ack() {
-                    // Only keep even packets.
-                    let mut rs = OpenRangeSet::default();
-                    sent.iter()
-                        .skip_while(|s| s.pkt_num < dummy_ack_pn)
-                        .filter(|s| s.pkt_num % 2 == 0)
-                        .for_each(|s| rs.insert(s.pkt_num..s.pkt_num + 1));
+                // if let Some(dummy_ack_pn) = leaf.get_dummy_ack() {
+                //     // Only keep even packets.
+                //     let mut rs = OpenRangeSet::default();
+                //     sent.iter()
+                //         .skip_while(|s| s.pkt_num < dummy_ack_pn)
+                //         .filter(|s| s.pkt_num % 2 == 0)
+                //         .for_each(|s| rs.insert(s.pkt_num..s.pkt_num + 1));
 
-                    // Send the dummy ACK to the root controller.
-                    let msg = MsgFcCtl::AckData((
-                        leaf.leaf_id,
-                        fc_id,
-                        Some(rs.clone()),
-                        None,
-                        None,
-                    ));
-                    info!("Before leaf{:?} send dummy ack", leaf.leaf_id);
-                    leaf.tx_up.send(msg).await?;
+                //     // Send the dummy ACK to the root controller.
+                //     let msg = MsgFcCtl::AckData((
+                //         leaf.leaf_id,
+                //         fc_id,
+                //         Some(rs.clone()),
+                //         None,
+                //         None,
+                //     ));
+                //     info!("Before leaf{:?} send dummy ack", leaf.leaf_id);
+                //     leaf.tx_up.send(msg).await?;
 
-                    // Update the largest pn dummy acked.
-                    if let Some(new_highest) = rs.last() {
-                        leaf.set_dummy_ack(true, Some(new_highest));
-                    }
-                }
+                //     // Update the largest pn dummy acked.
+                //     if let Some(new_highest) = rs.last() {
+                //         leaf.set_dummy_ack(true, Some(new_highest));
+                //     }
+                // }
 
                 for (&down_id, _) in self.active_clients[fc_id as usize].iter() {
                     let msg = MsgRecv::Sent((fc_id, sent.clone()));
@@ -1064,7 +1066,7 @@ impl FcController {
                 Some(self.nb_clients.unwrap_or(0).saturating_add(1));
             self.recv_ack.insert(id, OpenRangeSet::default());
             self.rec_fec_md.insert(id, OpenRangeSet::default());
-            self.unicast_recv.insert(id);
+            // self.unicast_recv.insert(id);
             leaf.tx_down.insert(id, tx);
         }
     }
@@ -1073,46 +1075,58 @@ impl FcController {
     /// This only has an effect on the Leaf controller.
     async fn on_join(
         &mut self, recv_id: u64, fc_id: u64, aggr_msg: Option<FcAggregatedMsg>,
-        max_pn: Option<u64>,
+        first_join: bool, max_pn: Option<u64>,
     ) -> Result<()> {
         let name = self.controller_role.name();
         info!(
             "{name} enters on_join for client {recv_id} and max_pn: {max_pn:?}"
         );
         if let ControllerRole::Leaf(_leaf) = &self.controller_role {
-            let pn_drain = max_pn
-                .unwrap_or(0)
-                .max(self.mc_acks[fc_id as usize].get_largest_pn().unwrap_or(0));
-            let new_insert =
-                self.active_clients[fc_id as usize].insert(recv_id, pn_drain + 1);
-            _ = self.unicast_recv.remove(&recv_id);
-            _ = self.delegated_recv[fc_id as usize].remove(&recv_id);
-            if new_insert.is_none() {
-                // info!("Insert received {recv_id} and indicate that up to
-                // {:?} was ok", pn_drain);
-                self.mc_acks[fc_id as usize].new_recv(pn_drain);
+            if first_join {
+                println!("Do not consider if first join.");
+                let pn =
+                    self.mc_acks[fc_id as usize].get_largest_pn().unwrap_or(0);
+                let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
+                send_uc_path!(self, recv_id, msg);
+                return Ok(());
             }
-
-            // Must notify this new client of the first packet number of
-            // interest.
-            let pn = self.last_drained_pn[fc_id as usize]
-                .unwrap_or(0)
-                .saturating_sub(1);
-            let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
-            send_uc_path!(self, recv_id, msg);
 
             // Update flow control limits.
             if let Some(aggr_msg) = aggr_msg {
                 self.on_new_aggr_msg(recv_id, fc_id, aggr_msg).await?;
             }
+        }
 
-            // If everyone fell back, the controller will ACK one every two
-            // packets to decrease the source's congestion window while keeping
-            // sending data.
-            if self.mc_acks[fc_id as usize].get_nb_recv() == 1 {
-                if let ControllerRole::Leaf(leaf) = &mut self.controller_role {
-                    leaf.set_dummy_ack(false, None);
-                }
+        Ok(())
+    }
+
+    /// Adds a new receiver in the state once it received the first packet on
+    /// the multicast flow.
+    async fn on_first_ack_from_recv(
+        &mut self, recv_id: u64, fc_id: u64, first_ack: u64,
+    ) -> Result<()> {
+        let new_insert =
+            self.active_clients[fc_id as usize].insert(recv_id, first_ack);
+        _ = self.unicast_recv.remove(&recv_id);
+        _ = self.delegated_recv[fc_id as usize].remove(&recv_id);
+        if new_insert.is_none() {
+            // info!("Insert received {recv_id} and indicate that up to
+            // {:?} was ok", pn_drain);
+            self.mc_acks[fc_id as usize].new_recv(first_ack, true);
+        }
+
+        // Must notify this new client of the first packet number of
+        // interest.
+        let pn = self.mc_acks[fc_id as usize].get_largest_pn().unwrap_or(0);
+        let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
+        send_uc_path!(self, recv_id, msg);
+
+        // If everyone fell back, the controller will ACK one every two
+        // packets to decrease the source's congestion window while keeping
+        // sending data.
+        if self.mc_acks[fc_id as usize].get_nb_recv() == 1 {
+            if let ControllerRole::Leaf(leaf) = &mut self.controller_role {
+                leaf.set_dummy_ack(false, None);
             }
         }
 
@@ -1166,6 +1180,21 @@ impl FcController {
         //     self.mc_acks[fc_id as usize]
         // );
 
+        if !self.active_clients[fc_id as usize].contains_key(&recv_id) &&
+            self.recv_ack.get(&recv_id).is_some_and(|rs| rs.len() == 0)
+        {
+            if let Some(first) = ack_pn.as_ref().and_then(|ack| ack.last()) {
+                println!(
+                    "Adds the new receiver {recv_id} with ranges: {ack_pn:?}. State of MCACK: {:?}", self.mc_acks[fc_id as usize]
+                );
+                self.on_first_ack_from_recv(recv_id, fc_id, first + 1)
+                    .await?;
+                return Ok(());
+            } else {
+                return Ok(());
+            }
+        }
+
         if let Some(pn) = self.active_clients[fc_id as usize].get(&recv_id) {
             debug!(
                 "{} Remove until {pn} for this range",
@@ -1208,7 +1237,7 @@ impl FcController {
                 if new_insert.is_none() {
                     // info!("Insert received {recv_id} and indicate that up to
                     // {:?} was ok", pn_drain);
-                    self.mc_acks[fc_id as usize].new_recv(pn_drain);
+                    self.mc_acks[fc_id as usize].new_recv(pn_drain, false);
                 }
             }
         }
