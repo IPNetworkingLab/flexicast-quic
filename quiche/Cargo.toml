@@ -77,7 +77,7 @@ qlog = { workspace = true, optional = true }
 sfv = { version = "0.9", optional = true }
 slab = "0.4"
 smallvec = { workspace = true, features = ["union"] }
-networkcoding = { git = "https://sigcomm-ccr:1H6Wq3BENAHz2BpMw1YZ@forge.uclouvain.be/inl/multicast-quic/fec/networkcoding.git" }
+networkcoding = { git = "https://cloudlab:pSP8bRz2FPW9zsxst31P@forge.uclouvain.be/inl/multicast-quic/fec/networkcoding.git" }
 env_logger = "0.6"
 ring = { workspace = true }
 
