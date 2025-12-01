@@ -97,6 +97,8 @@ pub enum MsgFcCtl {
     /// The first value is the ID of the receiver.
     /// The second value is the flexicast flow ID.
     CollectRecv((u64, u64)),
+
+    Timing(std::time::Instant),
 }
 
 /// Messages sent to the receiver.

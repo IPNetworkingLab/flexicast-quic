@@ -1,6 +1,7 @@
 //! Flexicast QUIC module.
 use std::net::SocketAddr;
 
+use crate::fcquic::controller::ControllerIntermediate;
 use crate::fcquic::controller::ControllerLeaf;
 use crate::fcquic::controller::ControllerRole;
 use crate::fcquic::controller::ControllerRoot;
@@ -92,12 +93,13 @@ pub struct TokioFcQuic {
 
     /// All the flexicast flows configs.
     fc_flow_configs: Vec<FcConfig>,
-    
 }
 
 impl TokioFcQuic {
     /// Creates a new instance with configurations.
-    pub fn new(config: TokioFcQuicConfig, tx_app: mpsc::Sender<FcQuicMsg>) -> Self {
+    pub fn new(
+        config: TokioFcQuicConfig, tx_app: mpsc::Sender<FcQuicMsg>,
+    ) -> Self {
         Self {
             tx: Vec::new(),
             rx: Vec::new(),
@@ -397,24 +399,57 @@ impl TokioFcQuic {
             Some(time::Duration::from_secs(0)),
         );
 
-        let mut ctl_leaves_struct = (0..self.config.nb_leaf_controllers)
-            .map(|id| ControllerLeaf::new(id, tx_ctl_root.clone()))
-            .collect::<Vec<_>>();
+        let nb_ctl_itm = self.config.nb_leaf_controllers - 1;
+        let nb_ctl_leaf = nb_ctl_itm as usize + 1;
 
-        // Keep the leaf controller txs.
-        for (_i, ctl_leaf_struct) in ctl_leaves_struct.drain(..).enumerate() {
+        let mut ctl_itd_tx = Vec::new();
+        let mut ctl_tasks: Vec<crate::fcquic::controller::FcController> = Vec::new();
+
+        let mut previous_tx = tx_ctl_root.clone();
+        for id in 0..nb_ctl_itm {
+            let ctl = ControllerIntermediate::new(id, previous_tx);
             let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-            controller.add_new_leaf_ctl(ctl_leaf_struct.leaf_id(), tx.clone());
-            task_hs.add_leaf_ctl(tx);
+            ctl_itd_tx.push(tx.clone());
+            previous_tx = tx.clone();
+
+            let ctl_itd = crate::fcquic::controller::FcController::new(
+                rx,
+                fc_announce_data.clone(),
+                ControllerRole::Intermediate(ctl),
+                tx_main.clone(),
+                Some(2),
+                Some(time::Duration::from_secs(0)),
+            );
+
+            if id == 0 {
+                // Notify the root of the first controller.
+                controller.add_new_leaf_ctl(id, tx.clone());
+            } else {
+                ctl_tasks.last_mut().unwrap().add_new_leaf_ctl(id, tx.clone());
+            }
+
+            ctl_tasks.push(ctl_itd);
+        }
+
+        for id in 0..nb_ctl_leaf {
+            let index = id.min(nb_ctl_leaf - 2);
+
+            let tx_itd = ctl_itd_tx[index].clone();
+            let ctl = ControllerLeaf::new(id as u64, tx_itd);
+
+            let ctl_itd = &mut ctl_tasks[index];
+
+            let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+            ctl_itd.add_new_leaf_ctl(id as u64, tx.clone());
+
+            task_hs.add_leaf_ctl(tx.clone());
 
             let mut ctl_leaf = crate::fcquic::controller::FcController::new(
                 rx,
                 fc_announce_data.clone(),
-                ControllerRole::Leaf(ctl_leaf_struct),
+                ControllerRole::Leaf(ctl),
                 tx_main.clone(),
-                self.config
-                    .wait
-                    .map(|n| n / self.config.nb_leaf_controllers),
+                Some(1),
                 Some(time::Duration::from_secs(0)),
             );
 
@@ -428,7 +463,7 @@ impl TokioFcQuic {
                         let mut file = OpenOptions::new()
                             .append(true)
                             .create(true)
-                            .open(format!("tokio_controller_leaf_{_i}.log"))
+                            .open(format!("tokio_controller_leaf_{id}.log"))
                             .unwrap();
 
                         writeln!(
@@ -455,6 +490,49 @@ impl TokioFcQuic {
             {
                 tokio::spawn(async move {
                     ctl_leaf.run().await.unwrap();
+                });
+            }
+        }
+
+        // Start the intermediate controllers.
+        for (id, mut ctl_itd) in ctl_tasks.drain(..).enumerate() {
+            #[cfg(feature = "tokio-tracing")]
+            {
+                let monitor_controller_leaf = TaskMonitor::new();
+                let monitor_controller_leaf_clone =
+                    monitor_controller_leaf.clone();
+                tokio::spawn(async move {
+                    for metrics in monitor_controller_leaf_clone.intervals() {
+                        let mut file = OpenOptions::new()
+                            .append(true)
+                            .create(true)
+                            .open(format!("tokio_controller_itd_{}.log", id))
+                            .unwrap();
+
+                        writeln!(
+                            file,
+                            "{:?} {:?}",
+                            time::Instant::now()
+                                .duration_since(start)
+                                .as_millis(),
+                            metrics
+                        )
+                        .unwrap();
+                        tokio::time::sleep(frequency).await;
+                    }
+                });
+                tokio::spawn(async move {
+                    monitor_controller_leaf
+                        .instrument(ctl_itd.run())
+                        .await
+                        .unwrap();
+                });
+            }
+
+            #[cfg(not(feature = "tokio-tracing"))]
+            {
+                tokio::spawn(async move {
+                    ctl_itd.run().await.unwrap();
                 });
             }
         }
