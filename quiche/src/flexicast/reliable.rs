@@ -225,7 +225,7 @@ impl Connection {
             self.lost_bytes += lost_bytes as u64;
             self.acked_bytes += acked_bytes as u64;
 
-            println!(
+            debug!(
                 "After fc_on_ack_received called with {:?}, the cwnd: {:?} {:?} {} {} {}",
                 ranges,
                 p.recovery.cwnd(),
