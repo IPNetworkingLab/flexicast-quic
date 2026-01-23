@@ -326,17 +326,17 @@ impl Connection {
                                 del_stream.payload.len() as u64,
                             );
                         }
-    
+
                         continue;
                     },
                     Err(e) => {
                         return Err(e);
                     },
                 };
-    
+
                 let after = stream.send.off_back();
                 debug!("Delegate piece for offset={} and length={}. Before back off={before}. Now={after}", del_stream.offset, del_stream.payload.len());
-    
+
                 // Mark the stream as flushable.
                 let priority_key = Arc::clone(&stream.priority_key);
                 if !was_flushable {
@@ -377,21 +377,28 @@ impl Connection {
     /// Returns `None` if this is not the unicast path source.
     pub fn fc_get_flow_cwnd(&self) -> Option<usize> {
         if let Some(flexicast) = self.flexicast.as_ref() {
-            if matches!(
-                flexicast.get_mc_role(),
-                McRole::ServerUnicast(McClientStatus::ListenMcPath(_))
-            ) {
-                if let Some(pid) = flexicast
-                    .get_fc_path_id()
-                    .and_then(|path_id| self.paths.pid_from_path_id(path_id))
-                {
-                    if let Ok(uc_path) = self.paths.get(pid) {
-                        if uc_path.recovery.cwnd_available() == usize::MAX {
+            match flexicast.get_mc_role() {
+                McRole::ServerUnicast(McClientStatus::ListenMcPath(_)) =>
+                    if let Some(pid) = flexicast
+                        .get_fc_path_id()
+                        .and_then(|path_id| self.paths.pid_from_path_id(path_id))
+                    {
+                        if let Ok(uc_path) = self.paths.get(pid) {
+                            if uc_path.recovery.cwnd_available() == usize::MAX {
+                                return None;
+                            }
+                            return Some(uc_path.recovery.cwnd());
+                        }
+                    },
+                McRole::ServerFlexicast => {
+                    if let Ok(fc_flow) = self.paths.get(InternalPathId(1)) {
+                        if fc_flow.recovery.cwnd_available() == usize::MAX {
                             return None;
                         }
-                        return Some(uc_path.recovery.cwnd());
+                        return Some(fc_flow.recovery.cwnd());
                     }
-                }
+                },
+                _ => (),
             }
         }
         None

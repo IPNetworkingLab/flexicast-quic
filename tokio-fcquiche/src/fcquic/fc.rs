@@ -111,8 +111,20 @@ impl FcChannelAsync {
         let now = time::Instant::now();
 
         match msg {
-            MsgFcSource::AckPn(ranges) => {
+            MsgFcSource::AckPn((ranges, cwnd_opt)) => {
                 self.fc_chan.channel.fc_on_ack_received(&ranges, now)?;
+
+                // Potentially updates the congestion window if we use the
+                // unicast-path vision of the congestion state.
+                if self.cca == FcFlowCwnd::UcPath && cwnd_opt.is_some() {
+                    self.fc_chan
+                        .channel
+                        .fc_set_cwnd_from_path_id(1, cwnd_opt.unwrap() as usize);
+                }
+
+                if ranges.first().is_some_and(|v| v % 5000 == 0) {
+                    println!("RESULT-CWND {:?}", self.fc_chan.channel.fc_get_flow_cwnd().unwrap_or(0));
+                }
             },
 
             MsgFcSource::AckStreamPieces(mut stream_pieces) => {

@@ -225,6 +225,16 @@ impl Connection {
             self.lost_bytes += lost_bytes as u64;
             self.acked_bytes += acked_bytes as u64;
 
+            debug!(
+                "After fc_on_ack_received called with {:?}, the cwnd: {:?} {:?} {} {} {}",
+                ranges,
+                p.recovery.cwnd(),
+                p.recovery.cwnd_available(),
+                is_app_limited,
+                self.lost_count,
+                self.lost_bytes,
+            );
+
             // Process acked frames.
             // For simplicity, only consider the STREAM frames.
             // Forward Erasure Correction extension: also consider

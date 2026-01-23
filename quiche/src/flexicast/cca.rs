@@ -16,6 +16,11 @@ pub enum FcFlowCwnd {
 
     /// Congestion window limited to the specified value.
     Limited(u64),
+
+    /// Use the per-receiver congestion control algorithm instead of the unique
+    /// multicast flow. The unicast path gives the congestion window from
+    /// its point of view. Per default this will be CUBIC.
+    UcPath,
 }
 
 impl FromStr for FcFlowCwnd {
@@ -30,6 +35,7 @@ impl FromStr for FcFlowCwnd {
             "cubic" => Ok(FcFlowCwnd::CCA(CongestionControlAlgorithm::CUBIC)),
             "bbr" => Ok(FcFlowCwnd::CCA(CongestionControlAlgorithm::BBR)),
             "bbr2" => Ok(FcFlowCwnd::CCA(CongestionControlAlgorithm::BBR2)),
+            "ucpath" => Ok(FcFlowCwnd::UcPath),
             "disabled" => Ok(FcFlowCwnd::Unlimited),
             s => match s.parse::<u64>() {
                 Ok(v) => Ok(FcFlowCwnd::Limited(v)),

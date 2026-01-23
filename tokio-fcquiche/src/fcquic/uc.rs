@@ -209,12 +209,17 @@ impl UcPath {
                         .map(|fc_fec| fc_fec.fc_get_recovered_esi())
                 })
                 .flatten();
+
+            // Give the congestion window for this receiver.
+            let cwnd_fc_flow = self.conn.fc_get_flow_cwnd();
+
             let msg = MsgFcCtl::AckData((
                 self.client_id,
                 fc_id.unwrap() as u64,
                 Some(pn.clone()),
                 Some(stream.iter().map(|(s, r)| (*s, r.clone())).collect()),
                 fec_rec_md.cloned(),
+                cwnd_fc_flow,
             ));
 
             if let Err(_e) = self.tx_tcl.try_send(msg) {

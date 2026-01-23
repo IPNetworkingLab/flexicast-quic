@@ -25,6 +25,8 @@ impl FcFlowRun for FcFlowfileTransfer {
     async fn run(&mut self) -> Result<()> {
         let mut buf = [0u8; 1500];
 
+        let mut start = time::Instant::now();
+
         // Timer to stop the RTP transmission.
         let mut rtp_stopped = None;
         let mut can_close_conn_after_rtp = false;
@@ -367,6 +369,14 @@ impl FcFlowRun for FcFlowfileTransfer {
                     FcFlowCwnd::Limited(v) =>
                         self.fc.fc_chan.channel.fc_set_flow_cwnd(v as usize),
                     _ => (),
+                }
+
+                // Fall back on unicast if the performance is too low.
+                if let Some(cwnd) = self.fc.fc_chan.channel.fc_get_flow_cwnd() {
+                    if time::Instant::now().duration_since(start).as_secs() > 30 && cwnd < 12_000 {
+                        println!("FALL BACK ON UNICAST BECAUSE: {:?}", cwnd);
+                        self.fc.do_flexicast = false;
+                    }
                 }
             }
         }
