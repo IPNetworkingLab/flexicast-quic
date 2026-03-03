@@ -123,11 +123,6 @@ impl FcChannelAsync {
                 self.fc_chan.channel.fc_on_ack_received(&ranges, now)?;
                 self.nb_active_receivers = nb_active_recv;
 
-                // Potentially update the ack delay.
-                self.fc_chan
-                    .channel
-                    .fc_update_ack_delay(nb_active_recv, self.max_ack_rate)?;
-
                 // Potentially updates the congestion window if we use the
                 // unicast-path vision of the congestion state.
                 if self.cca == FcFlowCwnd::UcPath && cwnd_opt.is_some() {

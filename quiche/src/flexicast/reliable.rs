@@ -535,8 +535,11 @@ impl Connection {
         }
 
         // Get the rate of the flexicast flow.
-        let rate_flow =
-            self.paths.get(InternalPathId(1))?.recovery.delivery_rate();
+        let rate_flow = self
+            .path_stats()
+            .map(|p| p.delivery_rate)
+            .max()
+            .ok_or(Error::Flexicast(FcError::McDisabled))? * 8;
 
         // The ack rate is +/- 1/12 the sending rate without ack delay.
         let real_ack_rate = rate_flow / 12 * nb_active_recv;

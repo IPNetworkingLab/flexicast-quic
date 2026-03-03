@@ -408,6 +408,12 @@ impl FcFlowRun for FcFlowfileTransfer {
                         self.fc.do_flexicast = false;
                     }
                 }
+
+                // Potentially update the ack delay.
+                self.fc.fc_chan.channel.fc_update_ack_delay(
+                    self.fc.nb_active_receivers,
+                    self.fc.max_ack_rate,
+                )?;
             }
         }
 
