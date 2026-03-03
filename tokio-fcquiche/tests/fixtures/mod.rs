@@ -20,7 +20,7 @@ pub async fn fcquiche_server(keylog_path: &str) -> TokioFcQuic {
         probe_mc_path: false,
         max_data: 1_000_000,
         max_stream_data: 1_000_000,
-        fc_timer: 0,
+        fc_ack_delay: 0.into(),
         fec: false,
         src_addr: "127.0.0.1:12346".parse().unwrap(),
         mc_addr: "239.239.239.35:12346".parse().unwrap(),

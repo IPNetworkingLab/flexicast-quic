@@ -11,13 +11,13 @@ use tokio::sync::mpsc::Receiver;
 
 use super::messages::*;
 
-use quiche::flexicast::cca::FcFlowCwnd;
 use crate::FcQuicMsg;
+use log::*;
+use quiche::flexicast::cca::FcFlowCwnd;
 use std::sync::Arc;
 use std::time;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use log::*;
 
 pub struct FcChannelInfo {
     pub socket: UdpSocket,
@@ -81,8 +81,16 @@ pub struct FcChannelAsync {
     /// Pending rangeset to send to the controller.
     pub pending_sent_pkt: Vec<OpenSent>,
 
-    /// Pending delegated stream pieces in case the controller is full of messages.
+    /// Pending delegated stream pieces in case the controller is full of
+    /// messages.
     pub pending_stream_pieces: Vec<FcDelegatedStream>,
+
+    /// Number of active receivers for this flexicast flow, used to compute the
+    /// ack delay.
+    pub nb_active_receivers: u64,
+
+    /// Maximum expected acknowledgment rate, in bps.
+    pub max_ack_rate: u64,
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the
@@ -111,8 +119,14 @@ impl FcChannelAsync {
         let now = time::Instant::now();
 
         match msg {
-            MsgFcSource::AckPn((ranges, cwnd_opt)) => {
+            MsgFcSource::AckPn((ranges, cwnd_opt, nb_active_recv)) => {
                 self.fc_chan.channel.fc_on_ack_received(&ranges, now)?;
+                self.nb_active_receivers = nb_active_recv;
+
+                // Potentially update the ack delay.
+                self.fc_chan
+                    .channel
+                    .fc_update_ack_delay(nb_active_recv, self.max_ack_rate)?;
 
                 // Potentially updates the congestion window if we use the
                 // unicast-path vision of the congestion state.
@@ -123,7 +137,10 @@ impl FcChannelAsync {
                 }
 
                 if ranges.first().is_some_and(|v| v % 5000 == 0) {
-                    println!("RESULT-CWND {:?}", self.fc_chan.channel.fc_get_flow_cwnd().unwrap_or(0));
+                    println!(
+                        "RESULT-CWND {:?}",
+                        self.fc_chan.channel.fc_get_flow_cwnd().unwrap_or(0)
+                    );
                 }
             },
 
@@ -153,7 +170,8 @@ impl FcChannelAsync {
                     .fc_set_max_tx_data(aggr_info.max_data)?;
 
                 for (stream_id, max_stream_data) in aggr_info.max_stream_datas {
-                    let _ = self.fc_chan
+                    let _ = self
+                        .fc_chan
                         .channel
                         .fc_set_max_tx_stream_data(max_stream_data, stream_id);
                 }
@@ -175,7 +193,10 @@ impl FcChannelAsync {
 
         let sent_arc = Arc::new(self.pending_sent_pkt.clone());
 
-        info!("Fc Flow has new sent packets: {:?}", sent_arc.iter().map(|sent| sent.pkt_num).collect::<Vec<_>>());
+        info!(
+            "Fc Flow has new sent packets: {:?}",
+            sent_arc.iter().map(|sent| sent.pkt_num).collect::<Vec<_>>()
+        );
         let msg = MsgFcCtl::Sent((self.id, sent_arc.clone()));
         if let Err(_e) = self.sync_tx.try_send(msg) {
             debug!("This is a timeout on the fc flow. send later");
@@ -202,7 +223,8 @@ impl FcChannelAsync {
             FcQuicMsg::Stream(v) => {
                 self.pending_data = Some(v);
             },
-            _ => unreachable!("Cannot send an HTTP/3 request from the source-side"),
+            _ =>
+                unreachable!("Cannot send an HTTP/3 request from the source-side"),
         }
 
         Ok(())

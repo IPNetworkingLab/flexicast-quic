@@ -4650,7 +4650,7 @@ impl Connection {
                             if let Some(nack) = flexicast
                                 .fc_reliable
                                 .client_mut()
-                                .and_then(|fc| fc.nack_mut())
+                                .map(|fc| fc.nack_mut())
                             {
                                 nack.fc_on_path_ack_sent(now);
                             }
@@ -5101,7 +5101,7 @@ impl Connection {
                     source_ip: mc_announce_data.source_ip,
                     group_ip: mc_announce_data.group_ip,
                     udp_port: mc_announce_data.udp_port,
-                    fc_timer: mc_announce_data.fc_timer,
+                    fc_ack_delay: mc_announce_data.fc_ack_delay,
                     public_key: if let Some(key) =
                         mc_announce_data.public_key.as_ref()
                     {
@@ -5218,6 +5218,27 @@ impl Connection {
 
                         ack_eliciting = true;
                         in_flight = true;
+                    }
+                }
+            }
+
+            // Create FC_ACK_DELAY frame.
+            if let Some(flexicast) = self.flexicast.as_mut() {
+                if let Some(rfc_source) = flexicast.fc_reliable.source_mut() {
+                    if let Some((ack_delay_seqnum, ack_delay)) =
+                        rfc_source.fc_should_send_ack_delay(now)
+                    {
+                        let frame = frame::Frame::FcAckDelay {
+                            seqnum: ack_delay_seqnum,
+                            ack_delay,
+                        };
+
+                        if push_frame_to_pkt!(b, frames, frame, left) {
+                            in_flight = true;
+                            
+                            // Update the time the last frame was sent.
+                            rfc_source.fc_on_new_ack_delay_sent(now);
+                        }
                     }
                 }
             }
@@ -5397,7 +5418,6 @@ impl Connection {
                         }
 
                         let out = fec_encoder.fec_overhead();
-                        println!("FEC Overhead after cleaning: {out:?}");
                         out?
                     },
                 };
@@ -5479,7 +5499,6 @@ impl Connection {
                                     fec_encoder.get_encoder().last_metadata();
                                 if let Some(last) = last {
                                     fec_encoder.get_encoder().remove_up_to(last);
-                                    println!("Cleaning the FEC Encoder 2");
                                 }
                             },
                         }
@@ -5509,7 +5528,6 @@ impl Connection {
                         fec_encoder.get_encoder().remove_up_to(last);
                     }
                     let out = fec_encoder.get_encoder().next_metadata();
-                    println!("FEC next metadata after cleaning: {out:?}");
                     out?
                 },
             };
@@ -5715,10 +5733,6 @@ impl Connection {
                     has_data = true;
                 }
 
-                if fin {
-                    println!("Sending STREAM frame with fin and id={stream_id} in pn={}. Is flexicast flow? {:?}", pn, self.flexicast.as_ref().map(|fc| fc.get_mc_role()));
-                }
-
                 let priority_key = Arc::clone(&stream.priority_key);
                 // If the stream is no longer flushable, remove it from the queue
                 if !stream.is_flushable() {
@@ -5904,9 +5918,6 @@ impl Connection {
                         if let Some(last) = last {
                             fec_encoder.get_encoder().remove_up_to(last);
                         }
-
-                        // We will return the error but next time it will work.
-                        println!("The FEC error came from here");
 
                         if i == 0 {
                             continue 'fec;
@@ -7266,10 +7277,10 @@ impl Connection {
 
             // Flexicast extension.
             // Potential flexicast timers, e.g., for reliability.
-            let fc_timer = self.fc_timeout_instant();
+            let fc_ack_delay = self.fc_timeout_instant();
 
             let timers =
-                [self.idle_timer, path_timer, key_update_timer, fc_timer];
+                [self.idle_timer, path_timer, key_update_timer, fc_ack_delay];
 
             timers.iter().filter_map(|&x| x).min()
         }
@@ -9546,11 +9557,11 @@ impl Connection {
                 source_ip,
                 group_ip,
                 udp_port,
-                fc_timer,
+                fc_ack_delay,
                 public_key,
                 bitrate,
             } => {
-                debug!("Received an FC_ANNOUNCE frame! FC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={}, reset_stream_on_joih={}, source_ip={:?}, group_ip={:?}, udp_port={}, fc_timer={}, bitrate={:?}", channel_id, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, fc_timer, bitrate);
+                debug!("Received an FC_ANNOUNCE frame! FC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={}, reset_stream_on_joih={}, source_ip={:?}, group_ip={:?}, udp_port={}, fc_ack_delay={}, bitrate={:?}", channel_id, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, fc_ack_delay, bitrate);
                 if self.is_server {
                     error!("The server should not receive an FC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -9569,7 +9580,7 @@ impl Connection {
                     } else {
                         Some(public_key)
                     },
-                    fc_timer,
+                    fc_ack_delay,
                     is_processed: true,
                     bitrate,
                     fc_channel_algo: None,
@@ -9715,6 +9726,25 @@ impl Connection {
                     return Err(Error::Flexicast(
                         flexicast::FcError::McInvalidSymKey,
                     ));
+                }
+            },
+
+            frame::Frame::FcAckDelay { seqnum, ack_delay } => {
+                if self.is_server {
+                    return Err(Error::Flexicast(
+                        flexicast::FcError::McInvalidRole(
+                            flexicast::McRole::ServerUnicast(
+                                flexicast::McClientStatus::Unspecified,
+                            ),
+                        ),
+                    ));
+                }
+
+                if let Some(flexicast) = self.flexicast.as_mut() {
+                    // Store the new ack delay.
+                    flexicast.fc_update_ack_delay(ack_delay, seqnum);
+                } else {
+                    return Err(Error::Flexicast(flexicast::FcError::McDisabled));
                 }
             },
 

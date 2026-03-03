@@ -7,6 +7,7 @@ use quiche::fec::schedulers::FecSchedulerAlgorithm;
 use quiche::flexicast::cca::FcFlowCwnd;
 use quiche::flexicast::FcConfig;
 use quiche::flexicast::McConfig;
+use quiche::flexicast::nack::FcAckDelayStrategy;
 use quiche_apps::fc_app::TransferKind;
 
 use clap::Parser;
@@ -50,7 +51,7 @@ struct Args {
 
     /// Flexicast flow timer.
     #[clap(long, value_parser, default_value = "0")]
-    fc_timer: u64,
+    fc_ack_delay: FcAckDelayStrategy,
 
     /// Specify the congestion window for the flexicast flow.
     /// The possible values are:
@@ -154,7 +155,7 @@ async fn main() {
     // Transmission channel towards the application, supposed to be unique because
     // the receivers may send messages without knowing to which flexicast flow it
     // belongs.
-    let (tx_app, rx_app) = tokio::sync::mpsc::channel(10);
+    let (tx_app, rx_app) = tokio::sync::mpsc::channel(100);
 
     let mut fcquiche = tokio_fcquiche::io::TokioFcQuic::new(fc_quic_tokio_config, tx_app);
     // Create a single flexicast flow.
@@ -163,7 +164,7 @@ async fn main() {
         probe_mc_path: false,
         max_data: args.initial_fc_flow.unwrap_or(1_000_000),
         max_stream_data: args.initial_fc_flow.unwrap_or(1_000_000),
-        fc_timer: args.fc_timer,
+        fc_ack_delay: args.fc_ack_delay,
         fec: args.fec_scheduler.is_some(),
         fec_scheduler: args
             .fec_scheduler
@@ -267,6 +268,7 @@ fn get_config(args: &Args) -> quiche::Config {
     config.set_recv_fec(args.fec_scheduler.is_some());
     config.set_enable_flexicast(args.flexicast);
     config.set_initial_max_path_id(10);
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
 
     config
 }

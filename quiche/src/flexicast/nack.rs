@@ -1,22 +1,21 @@
 //! This module further extends the Flexicast extension of QUIC to provide
-//! negative acknowledgment (NACK) based reliability. That is, to avoid
+//! paced acknowledgment based reliability. That is, to avoid
 //! ACK-implosion, the flexicast receiver will only send PATH_ACK frames when:
 //! 1) it sees gaps in the packet number sequence or
-//! 2) it does not receive packets on the flexicast flow for 3 * `fc_timer`. The
-//!    flexicast flow source commits to regularly send packets (possibly PING
-//!    frames) to ensure that this timer only expires whenever packets are lost
-//!    in the network, i.e., there is a transmission problem between the source
-//!    and the receiver.
+//! 2) it does not receive packets on the flexicast flow for 3 * `fc_ack_delay`.
+//!    The flexicast flow source commits to regularly send packets (possibly
+//!    PING frames) to ensure that this timer only expires whenever packets are
+//!    lost in the network, i.e., there is a transmission problem between the
+//!    source and the receiver.
+//! 3) If the standard QUIC reliability mechanism is used.
 //!
 //! Concretely, this module does the following:
 //! 1) Avoid sending positive PATH_ACK by default
 //! 2) Send PATH_ACK frames when there is a gap in the packet number sequence
 //!    for packets received on the flexicast flow
-//! 3) Add a timer expiring after 3 * `fc_timer` if no packet is received on the
-//!    flexicast flow
+//! 3) Add a timer expiring after 3 * `fc_ack_delay` if no packet is received on
+//!    the flexicast flow
 //! 4) Trigger a PATH_ACK frame when the aforementionned timer expired
-//! 5) Only release resources on the flexicast flow for packets that are known
-//!    to be expired
 
 use crate::flexicast::FcError;
 use crate::packet::Epoch;
@@ -26,20 +25,21 @@ use crate::Connection;
 use crate::Error;
 use crate::Result;
 use std::cmp;
+use std::str::FromStr;
 use std::time;
 
 use super::FlexicastAttributes;
 use super::McRole;
 
 /// Shortcut to get access to the Flexicast receiver [`FcNackState`] from the
-/// [`crate::Connection`]. Returns an `Option<FcNackState>` or `None`.
+/// [`crate::Connection`].
 #[macro_export]
 macro_rules! fc_nack_recv {
     ( $conn:expr ) => {
         $conn
             .flexicast
             .as_ref()
-            .map(|fc| fc.fc_reliable.receiver()?.nack())
+            .map(|fc| fc.fc_reliable.receiver().map(|n| n.nack()))
             .flatten()
     };
 }
@@ -52,7 +52,7 @@ macro_rules! fc_nack_recv_mut {
         $conn
             .flexicast
             .as_mut()
-            .map(|fc| fc.fc_reliable.client_mut()?.nack_mut())
+            .map(|fc| fc.fc_reliable.client_mut().map(|n| n.nack_mut()))
             .flatten()
     };
 }
@@ -70,6 +70,9 @@ enum FcNackState {
     /// Send a PATH_ACK because there is a gap in the received packet number
     /// sequence.
     SendGap         = 2,
+
+    /// Send a PATH_ACK because we use the standard reliability mechanism.
+    SendRfc9000     = 3,
 }
 
 #[derive(Debug)]
@@ -97,18 +100,40 @@ pub struct FcNackRecv {
     max_gap_pn: Option<u64>,
 
     /// The maximum time between two PATH_ACK, in ms.
+    /// If the value is 0, it means that there is no ack delay, and classical
+    /// ACK mechanism from QUIC is used.
     fc_max_time_ack: u64,
+
+    /// Sequence number of the update of the ack delay.
+    update_seqnum: u64,
 }
 
 impl FcNackRecv {
-    /// New structure instance given the `fc_timer`.
-    pub fn new(fc_timer: u64) -> Self {
+    /// New structure instance given the `fc_ack_delay`.
+    pub fn new(fc_ack_delay: u64) -> Self {
         Self {
             last_path_ack_sent: time::Instant::now(),
-            fc_next_positive_ack_time: Self::fc_get_next_timeout(fc_timer),
+            fc_next_positive_ack_time: Self::fc_get_next_timeout(fc_ack_delay),
             send_path_ack_on_fc: FcNackState::NoSend,
             max_gap_pn: None,
-            fc_max_time_ack: fc_timer,
+            fc_max_time_ack: fc_ack_delay,
+            update_seqnum: 0,
+        }
+    }
+
+    /// Updates the flexicast max ack timer.
+    pub fn update_fc_ack_delay(&mut self, timer: u64, seqnum: u64) {
+        if seqnum <= self.update_seqnum {
+            return;
+        }
+
+        self.fc_max_time_ack = timer;
+        self.update_seqnum = seqnum;
+
+        if timer == 0 {
+            self.send_path_ack_on_fc = FcNackState::SendRfc9000;
+        } else {
+            self.send_path_ack_on_fc = FcNackState::NoSend;
         }
     }
 
@@ -122,6 +147,9 @@ impl FcNackRecv {
     /// TODO: what do we do if we have a gap that is now filled, i.e., the
     /// packet was jitted?
     pub fn fc_on_pkt_recv(&mut self, recv_pkt_need_ack: &RangeSet) {
+        if self.send_path_ack_on_fc == FcNackState::SendRfc9000 {
+            return;
+        }
         if recv_pkt_need_ack.len() == 1 {
             // There is no gap in the packet number sequence that needs to be
             // acked. If the previous state was
@@ -141,32 +169,42 @@ impl FcNackRecv {
     }
 
     /// Next flexicast flow idle timeout.
-    pub fn fc_next_timeout(&self) -> time::Instant {
-        self.last_path_ack_sent + self.fc_next_positive_ack_time
+    pub fn fc_next_timeout(&self) -> Option<time::Instant> {
+        if self.send_path_ack_on_fc == FcNackState::SendRfc9000 {
+            None
+        } else {
+            Some(self.last_path_ack_sent + self.fc_next_positive_ack_time)
+        }
     }
 
     /// Upon timeout, trigger the fact that the receiver must sent a PATH_ACK
     /// frame. There is a preceding rule: always prioritize a PATH_ACK
     /// because of a gap.
     pub fn fc_on_timeout(&mut self, now: time::Instant) {
-        if now >= self.fc_next_timeout() {
+        if Some(now) >= self.fc_next_timeout() {
             self.send_path_ack_on_fc =
                 cmp::max(self.send_path_ack_on_fc, FcNackState::SendPositiveAck);
         }
     }
 
-    /// Whether the receiver must send a PATH_ACK in NACK-based reliability.
+    /// Whether the receiver must send a PATH_ACK.
     pub fn fc_should_send_ack(&mut self, now: time::Instant) -> bool {
-        self.fc_on_timeout(now);
-        self.send_path_ack_on_fc > FcNackState::NoSend
+        if self.send_path_ack_on_fc == FcNackState::SendRfc9000 {
+            true
+        } else {
+            self.fc_on_timeout(now);
+            self.send_path_ack_on_fc > FcNackState::NoSend
+        }
     }
 
     /// This function is called when a PATH_ACK is sent for the flexicast flow.
     pub fn fc_on_path_ack_sent(&mut self, now: time::Instant) {
-        self.send_path_ack_on_fc = FcNackState::NoSend;
-        self.last_path_ack_sent = now;
-        self.fc_next_positive_ack_time =
-            Self::fc_get_next_timeout(self.fc_max_time_ack)
+        if self.send_path_ack_on_fc != FcNackState::SendRfc9000 {
+            self.send_path_ack_on_fc = FcNackState::NoSend;
+            self.last_path_ack_sent = now;
+            self.fc_next_positive_ack_time =
+                Self::fc_get_next_timeout(self.fc_max_time_ack)
+        }
     }
 
     /// Returns a value between 0 and `v` using the provided `random`.
@@ -175,17 +213,21 @@ impl FcNackRecv {
         rand::rand_bytes(&mut buffer[..]);
 
         let value = u64::from_be_bytes(buffer);
-        time::Duration::from_millis(value % v)
+        time::Duration::from_micros(value % v)
     }
 
     /// Returns whether the receiver must send a positive ACK.
     fn fc_should_send_ack_ref(&self, now: time::Instant) -> bool {
-        let mut send_path_ack_on_fc = self.send_path_ack_on_fc;
-        if now >= self.fc_next_timeout() {
-            send_path_ack_on_fc =
-                cmp::max(send_path_ack_on_fc, FcNackState::SendPositiveAck);
+        if self.send_path_ack_on_fc == FcNackState::SendRfc9000 {
+            true
+        } else {
+            let mut send_path_ack_on_fc = self.send_path_ack_on_fc;
+            if Some(now) >= self.fc_next_timeout() {
+                send_path_ack_on_fc =
+                    cmp::max(send_path_ack_on_fc, FcNackState::SendPositiveAck);
+            }
+            send_path_ack_on_fc > FcNackState::NoSend
         }
-        send_path_ack_on_fc > FcNackState::NoSend
     }
 }
 
@@ -226,24 +268,6 @@ impl Connection {
 
         Ok(())
     }
-
-    /// Returns whether the active flexicast flow uses the negative
-    /// acknowledgment extension of Flexicast.
-    pub fn fc_uses_nack(&self) -> bool {
-        let Some(flexicast) = self.flexicast.as_ref() else {
-            return false;
-        };
-
-        let Ok(fc_idx) = fc_chan_idx!(flexicast) else {
-            return false;
-        };
-
-        flexicast
-            .mc_announce_data
-            .get(fc_idx)
-            .map(|data| data.fc_timer > 0)
-            .unwrap_or(false)
-    }
 }
 
 impl FlexicastAttributes {
@@ -258,9 +282,11 @@ impl FlexicastAttributes {
     pub(crate) fn fc_on_path_nack_lost(&mut self, path_id: u64) {
         if self.fc_path_id == Some(path_id) {
             if let Some(nack) =
-                self.fc_reliable.client_mut().and_then(|r| r.nack_mut())
+                self.fc_reliable.client_mut().map(|r| r.nack_mut())
             {
-                nack.send_path_ack_on_fc = FcNackState::SendGap;
+                if nack.send_path_ack_on_fc != FcNackState::SendRfc9000 {
+                    nack.send_path_ack_on_fc = FcNackState::SendGap;
+                }
             }
         }
     }
@@ -270,9 +296,72 @@ impl FlexicastAttributes {
     pub(crate) fn fc_use_nack_and_should_send_positive(&self) -> bool {
         self.fc_reliable
             .receiver()
-            .and_then(|r| r.nack())
+            .map(|r| r.nack())
             .map(|n| n.fc_should_send_ack_ref(time::Instant::now()))
             .unwrap_or(false)
+    }
+
+    /// Update the flexicast flow timer for delayed acknowledgment.
+    pub(crate) fn fc_update_ack_delay(&mut self, ack_delay: u64, seqnum: u64) {
+        self.fc_reliable
+            .client_mut()
+            .map(|r| r.nack_mut())
+            .map(|n| n.update_fc_ack_delay(ack_delay, seqnum));
+    }
+}
+
+/// Enumeration of the ack delay strategy.
+#[derive(Clone, PartialEq, Eq, Debug, Copy)]
+pub enum FcAckDelayStrategy {
+    /// Similar strategy to RFC9000: immediate ack.
+    Immediate,
+
+    /// Constant ACK delay, value in micro seconds.
+    Constant(u64),
+
+    /// Adaptive strategy, based on the number of receivers and the maximum ack
+    /// rate. The value is the current acknowledgment delay, with 0 meaning
+    /// immediate.
+    Adaptive(u64),
+}
+
+impl FromStr for FcAckDelayStrategy {
+    type Err = std::num::ParseIntError;
+
+    /// Converts a string to `FcAckDelayStrategy`.
+    ///
+    /// `name` is only valid if `immediate`, `adaptive`, or any integer is
+    /// provided. A value of 0 also means `immediate` for legacy.
+    fn from_str(name: &str) -> std::result::Result<Self, Self::Err> {
+        match name {
+            "immediate" | "0" => Ok(FcAckDelayStrategy::Immediate),
+            "adaptive" => Ok(FcAckDelayStrategy::Adaptive(0)), // Start at 0
+            v => {
+                let value: u64 = v.parse()?;
+                Ok(FcAckDelayStrategy::Constant(value))
+            },
+        }
+    }
+}
+
+impl From<FcAckDelayStrategy> for u64 {
+    fn from(value: FcAckDelayStrategy) -> Self {
+        match value {
+            FcAckDelayStrategy::Adaptive(v) => v,
+            FcAckDelayStrategy::Constant(v) => v,
+            FcAckDelayStrategy::Immediate => 0,
+        }
+    }
+}
+
+impl From<u64> for FcAckDelayStrategy {
+    // Does not support adaptive in this way.
+    fn from(value: u64) -> Self {
+        if value == 0 {
+            FcAckDelayStrategy::Immediate
+        } else {
+            FcAckDelayStrategy::Constant(value)
+        }
     }
 }
 
@@ -296,10 +385,11 @@ mod tests {
     fn test_fc_nack_no_loss() {
         let mut fc_config = FcConfig {
             probe_mc_path: true,
-            fc_timer: 30, // MUST use negative acknowledgment.
+            fc_ack_delay: 30.into(), // MUST use negative acknowledgment.
             ..Default::default()
         };
-        fc_config.mc_announce_data[0].fc_timer = fc_config.fc_timer;
+        fc_config.mc_announce_data[0].fc_ack_delay =
+            fc_config.fc_ack_delay.into();
 
         let mut fc_pipe =
             FlexicastPipe::new(1, "/tmp/test_fc_nack_no_loss", &mut fc_config)
@@ -311,7 +401,6 @@ mod tests {
             .flexicast
             .as_ref()
             .map(|fc| fc.fc_reliable.receiver().map(|c| c.nack()))
-            .flatten()
             .flatten();
         assert!(nack.is_some());
 
@@ -344,7 +433,12 @@ mod tests {
         assert_eq!(client.send(&mut buf), Err(Error::Done));
 
         // Assert that the source has some packets in the sending queue.
-        let p = fc_pipe.mc_channel.channel.paths.get(InternalPathId(1)).unwrap();
+        let p = fc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(InternalPathId(1))
+            .unwrap();
         let sent = p.recovery.get_sent_pkts();
         assert!(sent.len() > 3);
 
@@ -357,7 +451,8 @@ mod tests {
             .unwrap();
 
         // The source releases data upon PATH_ACK from the receivers.
-        let sleep_duration = time::Duration::from_millis(fc_config.fc_timer * 2);
+        let ack_delay: u64 = fc_config.fc_ack_delay.into();
+        let sleep_duration = time::Duration::from_micros(ack_delay * 2);
         for _ in 0..20 {
             fc_pipe.mc_channel.channel.on_timeout();
             fc_pipe
@@ -374,7 +469,12 @@ mod tests {
         }
 
         // Verify that the flexicast flow released resources on flexicast timeout.
-        let p = fc_pipe.mc_channel.channel.paths.get(InternalPathId(1)).unwrap();
+        let p = fc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(InternalPathId(1))
+            .unwrap();
         let sent = p.recovery.get_sent_pkts();
         assert_eq!(sent.len(), 0);
 
@@ -397,10 +497,11 @@ mod tests {
     fn test_fc_nack_loss() {
         let mut fc_config = FcConfig {
             probe_mc_path: true,
-            fc_timer: 200, // MUST use negative acknowledgment.
+            fc_ack_delay: 200.into(), // MUST use negative acknowledgment.
             ..Default::default()
         };
-        fc_config.mc_announce_data[0].fc_timer = fc_config.fc_timer;
+        fc_config.mc_announce_data[0].fc_ack_delay =
+            fc_config.fc_ack_delay.into();
 
         let mut client_loss = RangeSet::default();
         client_loss.insert(0..1);
@@ -470,7 +571,9 @@ mod tests {
         assert_eq!(readables, vec![3, 7, 15]);
 
         // Unicast retransmissions.
-        let sleep_duration = time::Duration::from_millis(fc_config.fc_timer * 3);
+        let ack_delay: u64 = fc_config.fc_ack_delay.into();
+        let sleep_duration = time::Duration::from_micros(ack_delay * 3,
+        );
         std::thread::sleep(sleep_duration);
         fc_pipe.unicast_pipes[0].0.server.on_timeout();
         fc_pipe.server_control_to_mc_source(now).unwrap();
@@ -499,7 +602,9 @@ mod tests {
         assert_eq!(readables, vec![3, 7, 11, 15]);
 
         // New timeout to release all data on the flexicast flow source.
-        let sleep_duration = time::Duration::from_millis(fc_config.fc_timer * 2);
+        let ack_delay: u64 = fc_config.fc_ack_delay.into();
+        let sleep_duration = time::Duration::from_micros(ack_delay * 2,
+        );
         for _ in 0..10 {
             fc_pipe.mc_channel.channel.on_timeout();
             fc_pipe
@@ -514,7 +619,12 @@ mod tests {
             let now = time::Instant::now();
             fc_pipe.server_control_to_mc_source(now).unwrap();
         }
-        let p = fc_pipe.mc_channel.channel.paths.get(InternalPathId(1)).unwrap();
+        let p = fc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(InternalPathId(1))
+            .unwrap();
         let sent = p.recovery.get_sent_pkts();
         assert_eq!(sent.len(), 0);
 
@@ -536,10 +646,11 @@ mod tests {
     fn test_fc_nack_tail_loss() {
         let mut fc_config = FcConfig {
             probe_mc_path: true,
-            fc_timer: 100, // MUST use negative acknowledgment.
+            fc_ack_delay: 100.into(), // MUST use negative acknowledgment.
             ..Default::default()
         };
-        fc_config.mc_announce_data[0].fc_timer = fc_config.fc_timer;
+        fc_config.mc_announce_data[0].fc_ack_delay =
+            fc_config.fc_ack_delay.into();
 
         let mut client_loss = RangeSet::default();
         client_loss.insert(0..1);
@@ -581,7 +692,9 @@ mod tests {
 
         // The flexicast flow remains idle for too long, thus triggering a
         // PATH_ACK on the receiver.
-        let sleep_duration = time::Duration::from_millis(fc_config.fc_timer * 2);
+        let ack_delay: u64 = fc_config.fc_ack_delay.into();
+        let sleep_duration = time::Duration::from_micros(ack_delay * 2,
+        );
         std::thread::sleep(sleep_duration);
         fc_pipe.unicast_pipes[0].0.client.on_timeout();
         let nack = fc_nack_recv!(fc_pipe.unicast_pipes[0].0.client).unwrap();
@@ -615,7 +728,8 @@ mod tests {
 
         // Wait to trigger timeout and retransmission.
         for _ in 0..5 {
-            let sleep_duration = time::Duration::from_millis(fc_config.fc_timer);
+            let sleep_duration =
+                time::Duration::from_micros(fc_config.fc_ack_delay.into());
             std::thread::sleep(sleep_duration);
             fc_pipe.mc_channel.channel.on_timeout();
             fc_pipe
@@ -646,12 +760,17 @@ mod tests {
         assert_eq!(readables, vec![3, 7, 11]);
 
         // New timeout to release all data on the flexicast flow source.
-        // let sleep_duration = time::Duration::from_millis(fc_config.fc_timer *
-        // 10); std::thread::sleep(sleep_duration);
+        // let sleep_duration = time::Duration::from_micros(fc_config.fc_ack_delay
+        // * 10); std::thread::sleep(sleep_duration);
         // fc_pipe.mc_channel.channel.on_timeout();
         fc_pipe.clients_send().unwrap();
         fc_pipe.server_control_to_mc_source(now).unwrap();
-        let p = fc_pipe.mc_channel.channel.paths.get(InternalPathId(1)).unwrap();
+        let p = fc_pipe
+            .mc_channel
+            .channel
+            .paths
+            .get(InternalPathId(1))
+            .unwrap();
         let sent = p.recovery.get_sent_pkts();
         assert_eq!(sent.len(), 0);
 

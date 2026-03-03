@@ -123,6 +123,69 @@ impl UcPathRun for UcPathFileTransfer {
                 }
             }
 
+            // Read as many packets as possible.
+            loop {
+                if let Ok(len) = self.0.uc_sock.try_recv(&mut buf[..]) {
+                    let recv_info = quiche::RecvInfo {
+                        from: self.0.uc_sock.peer_addr().unwrap(),
+                        to: self.0.uc_sock.local_addr().unwrap(),
+                        from_mc: false,
+                    };
+                    match self.0.handle_new_pkt(&mut buf[..len], recv_info).await
+                    {
+                        Ok(_) => (),
+                        Err(e) => {
+                            if let Some(e_quiche) =
+                                e.downcast_ref::<quiche::Error>()
+                            {
+                                if *e_quiche == quiche::Error::Done {
+                                    ();
+                                } else {
+                                    return Err(e);
+                                }
+                            } else {
+                                return Err(e);
+                            }
+                        },
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            // Read as many controller messages as possible.
+            loop {
+                if let Ok(msg) = self.0.rx_ctl.try_recv() {
+                    match self.0.handle_ctl_msg(msg).await {
+                        Ok(_) => (),
+                        Err(e) => {
+                            if let Some(e_quiche) =
+                                e.downcast_ref::<quiche::Error>()
+                            {
+                                if *e_quiche == quiche::Error::Done {
+                                    ();
+                                } else {
+                                    return Err(e);
+                                }
+                            } else {
+                                return Err(e);
+                            }
+                        },
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            // Send control information to the controller.
+            if let Err(e) = self.0.send_ctl_info().await {
+                debug!(
+                    "Error when sending control info for {}: {:?}",
+                    self.0.client_id, e
+                );
+                return Err(e);
+            }
+
             first_read = false;
 
             // Informs the controller whether the client listens to a flexicast
@@ -275,9 +338,8 @@ impl UcPathRun for UcPathFileTransfer {
                                 .0
                                 .conn
                                 .fc_reset_send_off(*stream_id, off)
-                                .map_err(|e| {
-                                    e
-                                }) {
+                                .map_err(|e| e)
+                            {
                                 Ok(v) => v,
                                 Err(quiche::Error::Done) => continue,
                                 Err(e) => return Err(e.into()),

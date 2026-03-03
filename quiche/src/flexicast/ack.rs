@@ -89,6 +89,14 @@ pub struct McAck {
     /// This set is emptied based on the largest received packet number.
     /// Only not null if this is the unicast path.
     pub(crate) recv_pkt_num: Option<RangeSet>,
+
+    /// First packet number of each late-joining receiver (one that joined
+    /// with `emulate_ack=true`).  When a pn is seen for the first time in
+    /// `on_ack_received`, the number of thresholds *strictly greater than*
+    /// that pn gives the count of receivers that can never ACK it.  The
+    /// initial counter is reduced by that count so the entry reaches 0 as
+    /// soon as the remaining eligible receivers ACK it.
+    late_joiner_thresholds: Vec<u64>,
 }
 
 impl McAck {
@@ -103,6 +111,7 @@ impl McAck {
             lowest_pn: None,
             largest_pn: None,
             recv_pkt_num: is_uc_path.then(RangeSet::default),
+            late_joiner_thresholds: Vec::new(),
         }
     }
 
@@ -153,6 +162,13 @@ impl McAck {
             }
         }
 
+        // Track the late-joiner threshold so that in-flight pns < first_pn
+        // that are not yet in `acked` get a corrected initial counter when
+        // they are first ACKed (see `on_ack_received`).
+        if emulate_ack {
+            self.late_joiner_thresholds.push(first_pn);
+        }
+
         // Also for acknowledgment not yet received...
         if let Some(largest) = self.largest_pn {
             if largest < first_pn {
@@ -167,10 +183,23 @@ impl McAck {
     }
 
     /// Removes a receiver from the structure.
-    /// FC-TODO: this may break things...
-    pub fn remove_recv(&mut self) {
+    /// If the receiver was a late joiner (joined via `new_recv` with
+    /// `emulate_ack=true`), pass `Some(first_pn)` to also remove its
+    /// threshold from `late_joiner_thresholds`.
+    pub fn remove_recv(&mut self, late_joiner_first_pn: Option<u64>) {
         warn!("Removing a receiver from the MC ACK. May break things.");
         self.nb_recv = self.nb_recv.saturating_sub(1);
+        if let Some(fp) = late_joiner_first_pn {
+            // Remove the most-recent matching threshold (rposition handles
+            // multiple late joiners with the same first_pn gracefully).
+            if let Some(pos) = self
+                .late_joiner_thresholds
+                .iter()
+                .rposition(|&t| t == fp)
+            {
+                self.late_joiner_thresholds.remove(pos);
+            }
+        }
     }
 
     /// Adds a new ACK from a client. Assumes that this is the first time the
@@ -243,8 +272,20 @@ impl McAck {
                     *nb_recv
                 } else {
                     // The first receiver to ACK this packet.
-                    self.acked.insert(recv_pn, self.nb_recv.saturating_sub(1));
-                    self.nb_recv.saturating_sub(1)
+                    // Subtract late joiners who joined after this pn was sent
+                    // and therefore can never ACK it.  Without this adjustment,
+                    // the counter would be set to nb_recv-1 but only
+                    // (nb_recv - late_count - 1) more ACKs will ever arrive,
+                    // causing the entry to be permanently stuck at 1.
+                    let late_count = self
+                        .late_joiner_thresholds
+                        .iter()
+                        .filter(|&&fp| fp > recv_pn)
+                        .count() as u64;
+                    let initial_count =
+                        self.nb_recv.saturating_sub(1 + late_count);
+                    self.acked.insert(recv_pn, initial_count);
+                    initial_count
                 };
 
                 if new_nb == 0 {

@@ -100,7 +100,7 @@ mod tests {
         };
 
         // No delayed acknowledgment.
-        fc_config.mc_announce_data[0].fc_timer = 0;
+        fc_config.mc_announce_data[0].fc_ack_delay = 0;
 
         let mut fc_pipe = FlexicastPipe::new(
             2,
@@ -253,7 +253,7 @@ mod tests {
         };
 
         // No delayed acknowledgment.
-        fc_config.mc_announce_data[0].fc_timer = 0;
+        fc_config.mc_announce_data[0].fc_ack_delay = 0;
 
         let mut fc_pipe = FlexicastPipe::new(
             2,

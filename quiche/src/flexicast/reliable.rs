@@ -1,11 +1,13 @@
 //! Reliability management for Flexicast QUIC.
 //! Depending on the role, the attributes are different.
 
+use crate::flexicast::nack::FcAckDelayStrategy;
 use crate::frame;
 use crate::packet::Epoch;
 use crate::ranges::RangeSet;
 use crate::Connection;
 use crate::Error;
+use crate::InternalPathId;
 use crate::Result;
 use std::collections::HashSet;
 use std::time;
@@ -20,29 +22,25 @@ use super::McRole;
 /// Reliable flexicast attributes for the receiver.
 pub struct RFcRecv {
     /// Negative acknowledgment state for the receiver.
-    nack: Option<FcNackRecv>,
+    nack: FcNackRecv,
 }
 
 impl RFcRecv {
     /// Creates a new structure from the flexicast flow timer.
-    pub fn new(fc_timer: u64) -> Self {
-        let nack = if fc_timer > 0 {
-            Some(FcNackRecv::new(fc_timer))
-        } else {
-            None
-        };
-
-        Self { nack }
+    pub fn new(fc_ack_delay: u64) -> Self {
+        Self {
+            nack: FcNackRecv::new(fc_ack_delay),
+        }
     }
 
     /// Returns a reference to the inner [`FcNackRecv`] state.
-    pub fn nack(&self) -> Option<&FcNackRecv> {
-        self.nack.as_ref()
+    pub fn nack(&self) -> &FcNackRecv {
+        &self.nack
     }
 
     /// Returns a mutable reference to the inner [`FcNackRecv`] state.
-    pub fn nack_mut(&mut self) -> Option<&mut FcNackRecv> {
-        self.nack.as_mut()
+    pub fn nack_mut(&mut self) -> &mut FcNackRecv {
+        &mut self.nack
     }
 }
 
@@ -93,6 +91,26 @@ pub struct RFcSource {
     /// Highest packet number sent on the flexicast flow that was notified to
     /// the unicast path instances.
     pub(crate) last_notified_pn: Option<u64>,
+
+    /// The last time we sent an ack delay update.
+    pub(crate) last_time_ack_delay_update: Option<time::Instant>,
+
+    /// The period between two ack delay updates.
+    pub(crate) ack_delay_update_delay: time::Duration,
+
+    /// Last sent ack delay value.
+    pub(crate) last_sent_ack_delay: u64,
+
+    /// The computed ack delay.
+    pub(crate) ack_delay: u64,
+
+    /// Sequence number of the ack delay frame.
+    pub(crate) ack_delay_seqnum: u64,
+
+    /// Ack delay strategy to use.
+    /// The update of the ack delay is only performed if
+    /// [`FcAckDelayStrategy::Adaptive`].
+    pub(crate) ack_delay_strategy: FcAckDelayStrategy,
 }
 
 impl RFcSource {
@@ -101,6 +119,12 @@ impl RFcSource {
         Self {
             mc_ack: McAck::new(false),
             last_notified_pn: None,
+            last_time_ack_delay_update: None,
+            ack_delay_update_delay: time::Duration::from_millis(100),
+            ack_delay: 0,
+            last_sent_ack_delay: 0,
+            ack_delay_seqnum: 0,
+            ack_delay_strategy: FcAckDelayStrategy::Immediate,
         }
     }
 
@@ -110,6 +134,27 @@ impl RFcSource {
         if self.last_notified_pn < Some(pn) {
             self.last_notified_pn = Some(pn);
         }
+    }
+
+    /// Whether a new FC_ACK_DELAY should be sent.
+    /// If an FC_ACK_DELAY must be sent, this function returns the sequence
+    /// number and the ack delay to use. Otherwise, it returns `None`.
+    pub fn fc_should_send_ack_delay(
+        &self, now: time::Instant,
+    ) -> Option<(u64, u64)> {
+        (matches!(self.ack_delay_strategy, FcAckDelayStrategy::Adaptive(_)) &&
+            self.ack_delay != self.last_sent_ack_delay &&
+            self.last_time_ack_delay_update.is_none_or(|last| {
+                now.duration_since(last) > self.ack_delay_update_delay
+            }))
+        .then(|| (self.ack_delay_seqnum, self.ack_delay))
+    }
+
+    /// Call this function when a new ack delay is sent.
+    pub fn fc_on_new_ack_delay_sent(&mut self, now: time::Instant) {
+        self.last_time_ack_delay_update = Some(now);
+        self.last_sent_ack_delay = self.ack_delay;
+        self.ack_delay_seqnum += 1;
     }
 }
 
@@ -465,6 +510,63 @@ impl Connection {
     /// Returns the sending min offset for a given stream.
     pub fn fc_get_stream_off_front(&self, stream_id: u64) -> Option<u64> {
         self.streams.get(stream_id).map(|s| s.send.ack_off())
+    }
+
+    /// Update the ack delay on the flexicast flow.
+    pub fn fc_update_ack_delay(
+        &mut self, nb_active_recv: u64, max_ack_rate: u64,
+    ) -> Result<()> {
+        if !self
+            .flexicast
+            .as_ref()
+            .is_some_and(|fc| fc.get_mc_role() == McRole::ServerFlexicast)
+        {
+            return Ok(());
+        }
+
+        // Get the rate of the flexicast flow.
+        let rate_flow =
+            self.paths.get(InternalPathId(1))?.recovery.delivery_rate();
+
+        // The ack rate is +/- 1/12 the sending rate without ack delay.
+        let real_ack_rate = rate_flow / 12 * nb_active_recv;
+
+        // If the real ack rate is below the maximum, do not add any ack delay.
+        // Otherwise, we set the ack delay expecting ~100 byte ack packets.
+        let ack_delay = if real_ack_rate < max_ack_rate {
+            0
+        } else {
+            ((2 * 1600 * nb_active_recv) as f64 / (max_ack_rate as f64) *
+                1_000_000f64) as u64 // micro s
+        };
+
+        if let Some(source) = self
+            .flexicast
+            .as_mut()
+            .and_then(|fc| fc.fc_reliable.source_mut())
+        {
+            if let FcAckDelayStrategy::Adaptive(v) =
+                &mut source.ack_delay_strategy
+            {
+                source.ack_delay = ack_delay;
+                *v = ack_delay;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update the acknowledgment strategy on the flexicast flow.
+    pub fn fc_update_ack_delay_strategy(
+        &mut self, new_strat: FcAckDelayStrategy,
+    ) {
+        if let Some(source) = self
+            .flexicast
+            .as_mut()
+            .and_then(|fc| fc.fc_reliable.source_mut())
+        {
+            source.ack_delay_strategy = new_strat;
+        }
     }
 }
 
@@ -1193,7 +1295,7 @@ mod tests {
             // The first receiver leaves for now listening to the flexicast
             // content.
             let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
-            mc_ack.remove_recv();
+            mc_ack.remove_recv(None);
 
             std::thread::sleep(sleep_duration);
             let now = time::Instant::now();
@@ -1290,7 +1392,7 @@ mod tests {
             };
 
             // No expiration timer = no delayed acknowledgment.
-            fc_config.mc_announce_data[0].fc_timer = 0;
+            fc_config.mc_announce_data[0].fc_ack_delay = 0;
 
             let mut fc_pipe = FlexicastPipe::new(
                 2,

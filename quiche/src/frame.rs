@@ -32,6 +32,7 @@ use crate::flexicast::MC_ANNOUNCE_BW_CODE;
 use crate::flexicast::MC_ANNOUNCE_CODE;
 use crate::flexicast::MC_KEY_CODE;
 use crate::flexicast::MC_STATE_CODE;
+use crate::flexicast::FC_ACK_DELAY_CODE;
 use crate::Error;
 use crate::Result;
 
@@ -246,7 +247,7 @@ pub enum Frame {
         source_ip: [u8; 4],
         group_ip: [u8; 4],
         udp_port: u16,
-        fc_timer: u64, // In ms
+        fc_ack_delay: u64, // In ms
         public_key: Vec<u8>,
         bitrate: Option<u64>,
     },
@@ -264,6 +265,11 @@ pub enum Frame {
         key: Vec<u8>,
         algo: Algorithm,
         first_pn: u64,
+    },
+
+    FcAckDelay {
+        seqnum: u64,
+        ack_delay: u64, // In micro seconds.
     },
 
     SourceSymbolHeader {
@@ -503,7 +509,7 @@ impl Frame {
                     .try_into()
                     .map_err(|_| Error::BufferTooShort)?;
                 let udp_port = b.get_u16()?;
-                let fc_timer = b.get_u64()?;
+                let fc_ack_delay = b.get_u64()?;
                 let key_len = b.get_varint()? as usize;
                 let public_key = b
                     .get_bytes(key_len)?
@@ -525,7 +531,7 @@ impl Frame {
                     source_ip,
                     group_ip,
                     udp_port,
-                    fc_timer,
+                    fc_ack_delay,
                     public_key,
                     bitrate,
                 }
@@ -926,7 +932,7 @@ impl Frame {
                 source_ip,
                 group_ip,
                 udp_port,
-                fc_timer,
+                fc_ack_delay,
                 public_key,
                 bitrate,
             } => {
@@ -944,7 +950,7 @@ impl Frame {
                 b.put_bytes(source_ip)?;
                 b.put_bytes(group_ip)?;
                 b.put_u16(*udp_port)?;
-                b.put_u64(*fc_timer)?;
+                b.put_u64(*fc_ack_delay)?;
                 b.put_varint(public_key.len() as u64)?;
                 b.put_bytes(public_key)?;
                 if let Some(bw) = bitrate {
@@ -979,6 +985,13 @@ impl Frame {
                 b.put_bytes(key)?;
                 b.put_u8(algo.to_owned().try_into().unwrap())?;
                 b.put_varint(*first_pn)?;
+            },
+
+            Frame::FcAckDelay { seqnum, ack_delay } => {
+                debug!("Going to encode the FC_ACK_DELAY frame");
+                b.put_varint(FC_ACK_DELAY_CODE)?;
+                b.put_varint(*seqnum)?;
+                b.put_varint(*ack_delay)?;
             },
 
             Frame::SourceSymbolHeader {
@@ -1282,7 +1295,7 @@ impl Frame {
                 source_ip: _,
                 group_ip: _,
                 udp_port: _,
-                fc_timer: _,
+                fc_ack_delay: _,
                 public_key,
                 bitrate,
             } => {
@@ -1302,7 +1315,7 @@ impl Frame {
                 4 + // source_ip
                 4 + // group_ip
                 2 + // udp_port
-                8 + // fc_timer
+                8 + // fc_ack_delay
                 public_key_len_size +
                 public_key.len()
             },
@@ -1338,6 +1351,15 @@ impl Frame {
                 key.len() +
                 1 + // algo len
                 first_pn_size
+            },
+
+            Frame::FcAckDelay { seqnum, ack_delay } => {
+                let seqnum_len = octets::varint_len(*seqnum);
+                let ack_delay_len = octets::varint_len(*ack_delay);
+                let frame_type_size = octets::varint_len(FC_ACK_DELAY_CODE);
+                frame_type_size + // frame type
+                ack_delay_len +
+                seqnum_len
             },
 
             Frame::SourceSymbolHeader {
@@ -1693,6 +1715,8 @@ impl Frame {
                 raw: None,
             },
 
+            Frame::FcAckDelay { .. } => QuicFrame::Unknown { raw_frame_type: FC_ACK_DELAY_CODE, frame_type_value: None, raw: None },
+
             Frame::SourceSymbolHeader {
                 metadata: _,
                 recovered: _,
@@ -1957,11 +1981,11 @@ impl std::fmt::Debug for Frame {
                 source_ip,
                 group_ip,
                 udp_port,
-                fc_timer,
+                fc_ack_delay,
                 public_key: _,
                 bitrate,
             } => {
-                write!(f, "MC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={} reset_stream_on_join={} source_ip={:?}, group_ip={:?}, udp_port={}, fc_timer={}, bitrate={:?}", channel_id, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, fc_timer, bitrate)?;
+                write!(f, "MC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={} reset_stream_on_join={} source_ip={:?}, group_ip={:?}, udp_port={}, fc_ack_delay={}, bitrate={:?}", channel_id, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, fc_ack_delay, bitrate)?;
             },
 
             Frame::McState {
@@ -1987,6 +2011,10 @@ impl std::fmt::Debug for Frame {
                     "MC_KEY channel ID={:?} key={:?} algo={:?} first pn={:?}",
                     channel_id, key, algo, first_pn,
                 )?;
+            },
+
+            Frame::FcAckDelay { seqnum, ack_delay } => {
+                write!(f, "FC_ACK_DELAY seqnum={:?}, ack_delay={:?}", seqnum, ack_delay)?;
             },
 
             Frame::SourceSymbolHeader {
@@ -3353,7 +3381,7 @@ mod tests {
             source_ip: [127, 0, 0, 1],
             group_ip: [239, 239, 239, 35],
             udp_port: 8889,
-            fc_timer: 350,
+            fc_ack_delay: 350,
             public_key: vec![64, 33, 53, 127],
             bitrate: None,
         };
@@ -3397,7 +3425,7 @@ mod tests {
             source_ip: [127, 0, 0, 1],
             group_ip: [239, 239, 239, 35],
             udp_port: 8889,
-            fc_timer: 350,
+            fc_ack_delay: 350,
             public_key: vec![64, 33, 53, 127],
             bitrate: Some(10_000_000),
         };

@@ -249,7 +249,7 @@ impl UcPath {
                 fc_id.unwrap() as u64,
                 aggr_info,
             ));
-            self.tx_tcl.send(msg).await?;
+            _ = self.tx_tcl.try_send(msg);
         }
 
         Ok(())
@@ -265,12 +265,15 @@ impl UcPath {
 
         // Process potentially coalesced packets.
         let _read = match self.conn.recv(pkt_buf, recv_info) {
-            Ok(v) => v,
+            Ok(v) => {
+                v
+            },
 
-            Err(quiche::Error::Done) => 0,
+            Err(quiche::Error::Done) => {
+                0
+            },
 
             Err(e) => {
-                error!("{} recv failed: {:?}", self.conn.trace_id(), e);
                 return Err(e.into());
             },
         };

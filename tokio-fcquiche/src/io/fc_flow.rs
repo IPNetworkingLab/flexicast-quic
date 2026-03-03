@@ -94,6 +94,13 @@ impl FcFlowRun for FcFlowfileTransfer {
                 self.fc.on_timeout().await?;
             }
 
+            // Check again if we can receive some data.
+            if self.fc.pending_data.is_none() {
+                if let Ok(msg) = self.rx.try_recv() {
+                    self.fc.handle_app_data(msg, &mut rtp_stopped).await?
+                }
+            }
+
             // Delegate lost STREAM frames to the controller,
             // that will dispatch them to all unicast paths for retransmission.
             let mut delegated_streams =
@@ -203,6 +210,7 @@ impl FcFlowRun for FcFlowfileTransfer {
                                 // Avoid sending data if we cannot forward it to
                                 // unicast.
                                 // FC-TODO: not sure this will work.
+                                println!("HERE WE ARE BLOCKING SENDING DATA...");
                                 break 'rtp;
                             },
                         }
@@ -232,10 +240,21 @@ impl FcFlowRun for FcFlowfileTransfer {
                             .channel
                             .stream_send(*stream_id, &app_data, *fin)
                         {
-                            Ok(v) => {
-                                v
-                            },
+                            Ok(v) => v,
                             Err(quiche::Error::Done) => {
+                                print!(
+                                    "Stat: {:?}",
+                                    self.fc.fc_chan.channel.stats()
+                                );
+                                for path_stat in
+                                    self.fc.fc_chan.channel.path_stats()
+                                {
+                                    print!(" {:?}", path_stat);
+                                }
+                                println!();
+                                if self.fc.fc_chan.channel.is_closed() {
+                                    println!("MC FLOW CLOSED");
+                                }
                                 break 'rtp;
                             },
                             Err(e) => panic!("Other error: {:?}", e),
@@ -245,6 +264,15 @@ impl FcFlowRun for FcFlowfileTransfer {
                     if written == app_data.len() {
                         self.fc.pending_data = None;
                         self.fc.pending_data_sent_uc = false;
+                        // Immediately try to get the next chunk and keep it in
+                        // pending_data so the 'rtp loop continues. This batches
+                        // multiple chunks into quiche's send buffer before
+                        // mc_send is called, avoiding send-buffer starvation.
+                        if let Ok(msg) = self.rx.try_recv() {
+                            self.fc
+                                .handle_app_data(msg, &mut rtp_stopped)
+                                .await?;
+                        }
                     } else {
                         self.fc.pending_data = self.fc.pending_data.as_mut().map(
                             |(d, f, stream_id)| {
@@ -266,6 +294,15 @@ impl FcFlowRun for FcFlowfileTransfer {
                 }
             }
 
+            // Potentially unlimit the congestion window.
+            match self.fc.cca {
+                FcFlowCwnd::Unlimited =>
+                    self.fc.fc_chan.channel.fc_set_flow_cwnd(usize::MAX - 1000),
+                FcFlowCwnd::Limited(v) =>
+                    self.fc.fc_chan.channel.fc_set_flow_cwnd(v as usize),
+                _ => (),
+            }
+
             // Do nothing if flexicast is disabled.
             // Ensure that we regularly notify the controller of the sent packets.
             // let nb_max_sent_pkt: u64 = 100;
@@ -281,7 +318,10 @@ impl FcFlowRun for FcFlowfileTransfer {
                         match self.fc.fc_chan.mc_send(&mut buf[..]) {
                             Ok(v) => v,
 
-                            Err(quiche::Error::Done) => break,
+                            Err(quiche::Error::Done) => {
+                                println!("Err done");
+                                break;
+                            },
 
                             Err(quiche::Error::Fec(
                                 FecError::FecEncoderError(_),
@@ -359,21 +399,11 @@ impl FcFlowRun for FcFlowfileTransfer {
                     self.fc.sent_pkt_to_controller().await?;
                 }
 
-                // Potentially unlimit the congestion window.
-                match self.fc.cca {
-                    FcFlowCwnd::Unlimited => self
-                        .fc
-                        .fc_chan
-                        .channel
-                        .fc_set_flow_cwnd(usize::MAX - 1000),
-                    FcFlowCwnd::Limited(v) =>
-                        self.fc.fc_chan.channel.fc_set_flow_cwnd(v as usize),
-                    _ => (),
-                }
-
                 // Fall back on unicast if the performance is too low.
                 if let Some(cwnd) = self.fc.fc_chan.channel.fc_get_flow_cwnd() {
-                    if time::Instant::now().duration_since(start).as_secs() > 30 && cwnd < 12_000 {
+                    if time::Instant::now().duration_since(start).as_secs() > 30 &&
+                        cwnd < 12_000
+                    {
                         println!("FALL BACK ON UNICAST BECAUSE: {:?}", cwnd);
                         self.fc.do_flexicast = false;
                     }

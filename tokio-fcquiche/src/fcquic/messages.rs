@@ -132,7 +132,8 @@ pub enum MsgFcSource {
     /// Packet numbers acknowledged by all clients listening to the flexicast
     /// flow.
     /// The second value is the potential congestion window aggregated on all unicast paths.
-    AckPn((OpenRangeSet, Option<usize>)),
+    /// The third value is the number of active receivers for this flexicast flow at the time the message is sent.
+    AckPn((OpenRangeSet, Option<usize>, u64)),
 
     /// Stream pieces that were delegated and now received by all clients that
     /// should receive it.

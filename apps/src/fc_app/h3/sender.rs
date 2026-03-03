@@ -10,7 +10,7 @@ use crate::fc_app::h3::Manifest;
 use crate::fc_app::Result;
 use tokio_fcquiche::FcQuicMsg;
 
-const BUFF_SIZE: usize = 10_000;
+const BUFF_SIZE: usize = 100_000;
 
 #[derive(Debug)]
 pub struct Http3Source {
@@ -63,6 +63,15 @@ impl Http3Source {
         let mut total_written_stream = 0;
 
         loop {
+            // Drain all pending H3 requests (e.g. manifest GET from late
+            // receivers) before entering the blocking select!. Without this,
+            // self.tx.send is always immediately ready (large fc_flow buffer)
+            // and starves self.rx, causing the rx channel (capacity 10) to
+            // fill up and blocking the handshake task.
+            while let Ok(msg) = self.rx.try_recv() {
+                self.handle_msg(msg)?;
+            }
+
             if read_new {
                 let max_write = buffer.len().min(
                     (manifest.blocks[id_manifest].0 as usize)
@@ -126,6 +135,7 @@ impl Http3Source {
     fn build_response(
         &self, request: &[quiche::h3::Header],
     ) -> Result<(Vec<quiche::h3::Header>, Vec<u8>)> {
+        println!("GET A NEW HERE: {:?}", request);
         let mut file_path = std::path::PathBuf::from(".");
         let mut path = std::path::Path::new("");
         let mut method = None;

@@ -399,7 +399,10 @@ impl FcController {
                     }
                 }
 
-                self.mc_acks[fc_chan_id as usize].remove_recv();
+                // pn_drain is the first_pn stored in active_clients for this
+                // receiver; pass it so that the late-joiner threshold is
+                // cleaned up from the McAck structure.
+                self.mc_acks[fc_chan_id as usize].remove_recv(pn_drain);
 
                 // Instead of asking for a retransmission, we give the stream data
                 // directly.
@@ -883,8 +886,9 @@ impl FcController {
                             lowest_cwnd,
                         ));
                         match leaf.tx_up.try_send(msg) {
-                            Ok(_) =>
-                                self.pending_ack[i] = OpenRangeSet::default(),
+                            Ok(_) => {
+                                self.pending_ack[i] = OpenRangeSet::default();
+                            },
                             Err(_e) => info!(
                                 "Leaf {} cannot send ACK to the root.",
                                 leaf.leaf_id
@@ -893,10 +897,15 @@ impl FcController {
                     },
 
                     ControllerRole::Root(root) => {
-                        let msg = MsgFcSource::AckPn((self.pending_ack[i].clone(), lowest_cwnd));
+                        let msg = MsgFcSource::AckPn((
+                            self.pending_ack[i].clone(),
+                            lowest_cwnd,
+                            self.active_clients[i].len() as u64,
+                        ));
                         match root.tx_up[i].try_send(msg) {
-                            Ok(_) =>
-                                self.pending_ack[i] = OpenRangeSet::default(),
+                            Ok(_) => {
+                                self.pending_ack[i] = OpenRangeSet::default()
+                            },
                             Err(_e) =>
                                 info!("Root cannot send ACK to the source"),
                         }
@@ -1009,7 +1018,9 @@ impl FcController {
         );
         let value = self.active_clients[fc_id as usize].remove(&recv_id);
         if value.is_some() {
-            self.mc_acks[fc_id as usize].remove_recv();
+            // value is the first_pn stored for this receiver; pass it so
+            // that any late-joiner threshold is cleaned up.
+            self.mc_acks[fc_id as usize].remove_recv(value);
         }
 
         // And potentially "ack" stream pieces delegated to this receiver
@@ -1055,8 +1066,7 @@ macro_rules! send_uc_path {
     ($ctl:expr, $recv_id:expr, $msg:expr) => {
         if let ControllerRole::Leaf(leaf) = &mut $ctl.controller_role {
             if let Some(tx_client) = leaf.tx_down.get(&$recv_id) {
-                if let Err(_send_error) = tx_client.send($msg).await {
-                    info!("Error for this client: {:?}. Remove it from the structure", $recv_id);
+                if let Err(_send_error) = tx_client.try_send($msg) {
                     // Remove this unicast path from the structure.
                     let _ = $ctl.recv_ack.remove(&$recv_id);
                     let _ = $ctl.rec_fec_md.remove(&$recv_id);
@@ -1119,13 +1129,18 @@ impl FcController {
     async fn on_first_ack_from_recv(
         &mut self, recv_id: u64, fc_id: u64, first_ack: u64,
     ) -> Result<()> {
+        // first_ack is the SMALLEST pn the receiver actually received on the
+        // FC path. We register it so that remove_until(first_ack - 1) only
+        // filters pn strictly below first_ack, allowing the receiver's own
+        // ACKs for [first_ack..] to be processed normally.
         let new_insert =
             self.active_clients[fc_id as usize].insert(recv_id, first_ack);
         _ = self.unicast_recv.remove(&recv_id);
         _ = self.delegated_recv[fc_id as usize].remove(&recv_id);
         if new_insert.is_none() {
-            // info!("Insert received {recv_id} and indicate that up to
-            // {:?} was ok", pn_drain);
+            // Emulate ACK for all pn < first_ack (packets this receiver
+            // never received because it joined late). This decrements their
+            // counters in McAck so they are not blocked on this receiver.
             self.mc_acks[fc_id as usize].new_recv(first_ack, true);
         }
 
@@ -1180,7 +1195,7 @@ impl FcController {
     async fn on_new_ack_data(
         &mut self, recv_id: u64, fc_id: u64, mut ack_pn: Option<OpenRangeSet>,
         ack_stream_pieces: Option<Vec<(u64, OpenRangeSet)>>,
-        rec_md: Option<OpenRangeSet>, cwnd_opt: Option<usize>
+        rec_md: Option<OpenRangeSet>, cwnd_opt: Option<usize>,
     ) -> Result<()> {
         // let name = self.controller_role.name();
         // info!(
@@ -1196,13 +1211,23 @@ impl FcController {
         if !self.active_clients[fc_id as usize].contains_key(&recv_id) &&
             self.recv_ack.get(&recv_id).is_some_and(|rs| rs.len() == 0)
         {
-            if let Some(first) = ack_pn.as_ref().and_then(|ack| ack.last()) {
+            // Use the FIRST (smallest) pn the receiver actually received, not
+            // last+1. Using last+1 was causing a stall: active_clients would
+            // be set to last+1, so remove_until(last) filtered all future ACKs
+            // for [first..last], yet those packets might not yet be in `acked`
+            // when new_recv is called. A's later ACK for [first..last] inserts
+            // them with counter=1, but the new receiver's ACKs are filtered →
+            // counter never reaches 0 → source stalls.
+            if let Some(first) = ack_pn.as_ref().and_then(|ack| ack.first()) {
                 println!(
-                    "Adds the new receiver {recv_id} with ranges: {ack_pn:?}. State of MCACK: {:?}", self.mc_acks[fc_id as usize]
+                    "Controller {:?} Adds the new receiver {recv_id} with ranges: {ack_pn:?}. State of MCACK: {:?}", self.controller_role.name(), self.mc_acks[fc_id as usize]
                 );
-                self.on_first_ack_from_recv(recv_id, fc_id, first + 1)
+                self.on_first_ack_from_recv(recv_id, fc_id, first)
                     .await?;
-                return Ok(());
+                // Fall through to process the actual ACK data from this first
+                // message — do NOT return early. The remove_until below (using
+                // active_clients[recv_id] = first) will correctly allow ACKs
+                // for pn >= first to be processed.
             } else {
                 return Ok(());
             }
@@ -1228,7 +1253,7 @@ impl FcController {
             // Updates the lowest congestion window.
             // Filters our the potential unactive receivers.
             if let Some(cwnd) = cwnd_opt {
-                let entry = match self.fc_flow_cwnd.entry(recv_id) {
+                let entry = match self.fc_flow_cwnd.entry(fc_id) {
                     Vacant(entry) => entry.insert((recv_id, cwnd)),
                     Occupied(entry) => entry.into_mut(),
                 };

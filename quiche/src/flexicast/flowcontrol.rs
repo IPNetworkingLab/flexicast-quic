@@ -16,7 +16,7 @@
 //!
 //! 2) Negative acknowledgment extension.
 //! The flow control requirements are advertised by the source (i.e, bitrate *
-//! fc_timer). A receiver can reject to join a flexicast flow if it sees that
+//! fc_ack_delay). A receiver can reject to join a flexicast flow if it sees that
 //! joining it would violate its flow control limits. Upon NACK timeout, the
 //! flow control limits are updated on the flexicast flow source. Similarly to
 //! case 1), the unicast path can decide to remove a receiver if sending a

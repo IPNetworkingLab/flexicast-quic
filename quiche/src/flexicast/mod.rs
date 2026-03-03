@@ -13,6 +13,7 @@ use crate::fec::decoder::FecDecoder;
 use crate::fec::encoder::FecEncoder;
 use crate::fec::schedulers::FecSchedulerAlgorithm;
 use crate::flexicast::cca::FcFlowCwnd;
+use crate::flexicast::nack::FcAckDelayStrategy;
 use crate::packet::Epoch;
 use crate::path;
 use crate::path::NetworkPathId;
@@ -175,6 +176,8 @@ pub const MC_STATE_CODE: u64 = 0xf4;
 pub const MC_KEY_CODE: u64 = 0xf5;
 /// MC_ASYM frame type.
 pub const MC_ASYM_CODE: u64 = 0xf8;
+/// FC_ACK_DELAY frame type.
+pub const FC_ACK_DELAY_CODE: u64 = 0xf9;
 
 /// The leaving action is requested by the client.
 pub const LEAVE_FROM_CLIENT: u64 = 0x0;
@@ -760,10 +763,10 @@ pub struct McAnnounceData {
     /// The main purpose of this timer is to use negative acknowledgments only
     /// for the receivers. If the timer is set to a value different than 0,
     /// it means that the receivers MUST expect to receive at least a packet
-    /// every `fc_timer` ms on the flexicast flow. Otherwise, there may be a
+    /// every `fc_ack_delay` ms on the flexicast flow. Otherwise, there may be a
     /// flexicast flow and the receiver SHOULD send a PATH_ACK frame to trigger
     /// retransmission.
-    pub fc_timer: u64,
+    pub fc_ack_delay: u64,
 
     /// True if this flexicast announce data is processed.
     /// For a server, it means that the data is sent to the client.
@@ -993,7 +996,7 @@ impl FlexicastConnection for Connection {
             let fc_reliable = if self.is_server {
                 ReliableFc::UcPath(RFcUcPath::default())
             } else {
-                ReliableFc::Receiver(RFcRecv::new(mc_data_cloned.fc_timer))
+                ReliableFc::Receiver(RFcRecv::new(mc_data_cloned.fc_ack_delay))
             };
 
             // Add Flexicast Forward Erasure Correction state for the unicast path
@@ -1059,7 +1062,7 @@ impl FlexicastConnection for Connection {
 
         // Create the reliability structure on the receiver.
         flexicast.fc_reliable = ReliableFc::Receiver(RFcRecv::new(
-            flexicast.get_mc_announce_data_active().unwrap().fc_timer,
+            flexicast.get_mc_announce_data_active().unwrap().fc_ack_delay,
         ));
 
         let new_status =
@@ -1407,7 +1410,7 @@ impl Connection {
         match flexicast.mc_role {
             McRole::Client(_) => {
                 let nack = fc_nack_recv!(self)?;
-                Some(nack.fc_next_timeout())
+                nack.fc_next_timeout()
             },
 
             _ => None,
@@ -1451,7 +1454,7 @@ impl Connection {
             ) && fc
                 .fc_reliable
                 .client_mut()
-                .and_then(|c| c.nack_mut())
+                .map(|c| c.nack_mut())
                 .map(|nack| nack.fc_should_send_ack(now))
                 .unwrap_or(true)
         })
@@ -1809,7 +1812,7 @@ pub struct FcConfig {
 
     pub max_stream_data: u64,
 
-    pub fc_timer: u64,
+    pub fc_ack_delay: FcAckDelayStrategy,
 
     pub fec: bool,
 
@@ -1833,7 +1836,7 @@ impl Default for FcConfig {
             fc_tp: true,
             max_data: 5_000_000_000,
             max_stream_data: 1_000_000_000,
-            fc_timer: 0,
+            fc_ack_delay: FcAckDelayStrategy::Immediate,
             fec: false,
             fec_scheduler: FecSchedulerAlgorithm::NoRedundancy,
             src_addr: "127.0.0.1:4433".parse().unwrap(),
@@ -1842,7 +1845,7 @@ impl Default for FcConfig {
             fc_cca: FcFlowCwnd::CCA(CongestionControlAlgorithm::CUBIC),
         };
         fc_config.mc_announce_data[0].probe_path = fc_config.probe_mc_path;
-        fc_config.mc_announce_data[0].fc_timer = fc_config.fc_timer;
+        fc_config.mc_announce_data[0].fc_ack_delay = 0;
 
         fc_config
     }
@@ -2205,7 +2208,7 @@ pub mod testing {
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
             udp_port: 7676,
             public_key: None,
-            fc_timer: 0,
+            fc_ack_delay: 0,
             reset_stream_on_join: false,
             is_processed: false,
             bitrate: None,

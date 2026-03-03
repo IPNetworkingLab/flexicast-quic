@@ -118,8 +118,9 @@ impl Http3Receiver {
                         if let Some(file) = self.file.as_mut() {
                             let current_offset = *cum_off + *offset;
                             // TODO: find the correct offest.
-                            let written =
-                                file.write_at(&v, current_offset)? as u64;
+                            // let written =
+                            //     file.write_at(&v, current_offset)? as u64;
+                                let written = v.len() as u64;
 
                             if fin &&
                                 !full_block.contains(&get_init_stream_id(

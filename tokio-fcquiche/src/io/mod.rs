@@ -92,12 +92,13 @@ pub struct TokioFcQuic {
 
     /// All the flexicast flows configs.
     fc_flow_configs: Vec<FcConfig>,
-    
 }
 
 impl TokioFcQuic {
     /// Creates a new instance with configurations.
-    pub fn new(config: TokioFcQuicConfig, tx_app: mpsc::Sender<FcQuicMsg>) -> Self {
+    pub fn new(
+        config: TokioFcQuicConfig, tx_app: mpsc::Sender<FcQuicMsg>,
+    ) -> Self {
         Self {
             tx: Vec::new(),
             rx: Vec::new(),
@@ -169,7 +170,7 @@ impl TokioFcQuic {
             group_ip: mc_addr_bytes,
             udp_port: fc_config.mc_addr.port(),
             public_key: None,
-            fc_timer: fc_config.fc_timer,
+            fc_ack_delay: fc_config.fc_ack_delay.into(),
             is_processed: false,
             bitrate: None,
             fc_channel_algo: None,
@@ -181,6 +182,11 @@ impl TokioFcQuic {
             .fc_set_announce_data(&mc_announce_data)
             .unwrap();
 
+        // Set the ack delay strategy.
+        fc_chan
+            .channel
+            .fc_update_ack_delay_strategy(fc_config.fc_ack_delay);
+
         let fc_chan_info = FcChannelInfo {
             socket,
             fc_chan,
@@ -188,7 +194,7 @@ impl TokioFcQuic {
         };
 
         // Create the transmission channel with the application.
-        let (tx_app, rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (tx_app, rx_app) = mpsc::channel(10);
         self.tx.push(tx_app);
         self.rx.push(rx_app);
 
@@ -337,6 +343,8 @@ impl TokioFcQuic {
                 pending_data_sent_uc: false,
                 pending_sent_pkt: Vec::new(),
                 pending_stream_pieces: Vec::new(),
+                nb_active_receivers: 0,
+                max_ack_rate: 200_000_000, // 200 Mbps
             };
 
             id_fc_chan += 1;

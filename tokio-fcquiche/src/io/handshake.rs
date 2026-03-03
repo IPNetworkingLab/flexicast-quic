@@ -240,8 +240,6 @@ impl Handshake {
                 },
             };
 
-            debug!("Receive a packet from the global socket!");
-
             let pkt_buf = &mut buf[..len];
 
             // Parse the QUIC packet's header.
