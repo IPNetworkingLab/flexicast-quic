@@ -354,12 +354,12 @@ impl TokioFcQuicRecv {
                     while let Ok((read, fin)) =
                         conn.stream_recv(stream_id, &mut buf[..])
                     {
-                        // let msg = FcQuicMsg::Stream((
-                        //     buf[..read].to_vec(),
-                        //     fin,
-                        //     stream_id,
-                        // ));
-                        // self.tx_app.send(msg).await?;
+                        let msg = FcQuicMsg::Stream((
+                            buf[..read].to_vec(),
+                            fin,
+                            stream_id,
+                        ));
+                        self.tx_app.send(msg).await?;
                     }
                 }
             }
