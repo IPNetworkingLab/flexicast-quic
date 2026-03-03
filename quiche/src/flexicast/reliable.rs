@@ -155,6 +155,16 @@ impl RFcSource {
         self.last_time_ack_delay_update = Some(now);
         self.last_sent_ack_delay = self.ack_delay;
         self.ack_delay_seqnum += 1;
+        if self.ack_delay_seqnum % 5 == 0 {
+            println!(
+                "{}-RESULT-ACKDELAY {}",
+                time::SystemTime::now()
+                    .duration_since(time::SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_micros(),
+                self.ack_delay
+            );
+        }
     }
 }
 

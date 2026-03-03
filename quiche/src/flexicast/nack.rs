@@ -86,7 +86,7 @@ pub struct FcNackRecv {
     /// flexicast flow.
     /// This value is chosen randomly within the flexicast timer to ensure that
     /// the receivers do not send positive acknowledgment at the same time.
-    fc_next_positive_ack_time: time::Duration,
+    fc_next_positive_ack_time: Option<time::Duration>,
 
     /// Whether the receiver must send a PATH_ACK on the flexicast flow.
     /// This can be true for two reasons:
@@ -173,7 +173,8 @@ impl FcNackRecv {
         if self.send_path_ack_on_fc == FcNackState::SendRfc9000 {
             None
         } else {
-            Some(self.last_path_ack_sent + self.fc_next_positive_ack_time)
+            self.fc_next_positive_ack_time
+                .map(|next| self.last_path_ack_sent + next)
         }
     }
 
@@ -208,12 +209,15 @@ impl FcNackRecv {
     }
 
     /// Returns a value between 0 and `v` using the provided `random`.
-    fn fc_get_next_timeout(v: u64) -> time::Duration {
+    fn fc_get_next_timeout(v: u64) -> Option<time::Duration> {
+        if v == 0 {
+            return None;
+        }
         let mut buffer = [0u8; 8];
         rand::rand_bytes(&mut buffer[..]);
 
         let value = u64::from_be_bytes(buffer);
-        time::Duration::from_micros(value % v)
+        Some(time::Duration::from_micros(value % v))
     }
 
     /// Returns whether the receiver must send a positive ACK.
@@ -572,8 +576,7 @@ mod tests {
 
         // Unicast retransmissions.
         let ack_delay: u64 = fc_config.fc_ack_delay.into();
-        let sleep_duration = time::Duration::from_micros(ack_delay * 3,
-        );
+        let sleep_duration = time::Duration::from_micros(ack_delay * 3);
         std::thread::sleep(sleep_duration);
         fc_pipe.unicast_pipes[0].0.server.on_timeout();
         fc_pipe.server_control_to_mc_source(now).unwrap();
@@ -603,8 +606,7 @@ mod tests {
 
         // New timeout to release all data on the flexicast flow source.
         let ack_delay: u64 = fc_config.fc_ack_delay.into();
-        let sleep_duration = time::Duration::from_micros(ack_delay * 2,
-        );
+        let sleep_duration = time::Duration::from_micros(ack_delay * 2);
         for _ in 0..10 {
             fc_pipe.mc_channel.channel.on_timeout();
             fc_pipe
@@ -693,8 +695,7 @@ mod tests {
         // The flexicast flow remains idle for too long, thus triggering a
         // PATH_ACK on the receiver.
         let ack_delay: u64 = fc_config.fc_ack_delay.into();
-        let sleep_duration = time::Duration::from_micros(ack_delay * 2,
-        );
+        let sleep_duration = time::Duration::from_micros(ack_delay * 2);
         std::thread::sleep(sleep_duration);
         fc_pipe.unicast_pipes[0].0.client.on_timeout();
         let nack = fc_nack_recv!(fc_pipe.unicast_pipes[0].0.client).unwrap();
