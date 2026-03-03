@@ -561,6 +561,15 @@ impl Frame {
                 }
             },
 
+            FC_ACK_DELAY_CODE => {
+                let seqnum= b.get_varint()?;
+                let ack_delay = b.get_varint()?;
+                Frame::FcAckDelay {
+                    seqnum,
+                    ack_delay
+                }
+            },
+
             0xf6 => {
                 // Assume it is always 64 bits (8 bytes).
                 let metadata = b.get_u64()?.to_be_bytes();
