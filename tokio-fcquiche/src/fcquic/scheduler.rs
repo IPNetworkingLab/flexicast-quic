@@ -252,13 +252,14 @@ mod tests {
 
     #[test]
     fn test_fc_scheduler_alive() {
-        let delay = time::Duration::from_millis(10);
+        let delay = FcFallBackDelay::Static(300);
         let now = time::Instant::now();
         let mut c = Box::new(Dummy::default());
 
-        let mut scheduler = FcFlowAliveScheduler::new(Some(delay), Some(now));
+        let mut scheduler = FcFlowAliveScheduler::new(Some(delay.clone()), Some(now));
         assert!(scheduler.fcf_alive());
         assert!(!scheduler.should_uc_fall_back(now));
+        let delay = delay.to_duration().unwrap();
 
         // Wait long enough.
         let now = now + delay * 2;

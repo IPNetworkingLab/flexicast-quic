@@ -19,7 +19,6 @@ use std::collections::HashSet;
 use std::net;
 use std::path::Path;
 use std::sync::Arc;
-use std::time;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -126,7 +125,7 @@ impl Handshake {
             fc_master_secret,
             fc_key_algo,
             uc_unlimited_cwnd: config.unicast_unlimited_cwnd,
-            fallback_delay: config.fallback_delay,
+            fallback_delay: config.fallback_delay.clone(),
             txs_sendmmsg,
             rng,
             h3_config,
