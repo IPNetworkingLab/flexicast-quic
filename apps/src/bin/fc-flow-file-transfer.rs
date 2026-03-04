@@ -51,7 +51,7 @@ struct Args {
     mc_src_addr: net::SocketAddr,
 
     /// Flexicast flow timer.
-    #[clap(long, value_parser, default_value = "0")]
+    #[clap(long = "fc-timer", value_parser, default_value = "0")]
     fc_ack_delay: FcAckDelayStrategy,
 
     /// Specify the congestion window for the flexicast flow.
@@ -150,10 +150,7 @@ async fn main() {
         wait: args.wait,
         flexicast: args.flexicast,
         fc_keylog_file: args.fc_keylog_file.clone(),
-        fallback_delay: args
-            .fall_back_delay
-            .as_ref()
-            .and_then(|d| d.to_duration()),
+        fallback_delay: args.fall_back_delay.clone(),
         uc_src_addr: args.src_addr,
         nb_leaf_controllers: args.nb_controllers,
         h3_config,

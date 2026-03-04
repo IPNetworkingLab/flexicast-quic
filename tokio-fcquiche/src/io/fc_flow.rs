@@ -242,19 +242,6 @@ impl FcFlowRun for FcFlowfileTransfer {
                         {
                             Ok(v) => v,
                             Err(quiche::Error::Done) => {
-                                print!(
-                                    "Stat: {:?}",
-                                    self.fc.fc_chan.channel.stats()
-                                );
-                                for path_stat in
-                                    self.fc.fc_chan.channel.path_stats()
-                                {
-                                    print!(" {:?}", path_stat);
-                                }
-                                println!();
-                                if self.fc.fc_chan.channel.is_closed() {
-                                    println!("MC FLOW CLOSED");
-                                }
                                 break 'rtp;
                             },
                             Err(e) => panic!("Other error: {:?}", e),
@@ -319,7 +306,6 @@ impl FcFlowRun for FcFlowfileTransfer {
                             Ok(v) => v,
 
                             Err(quiche::Error::Done) => {
-                                println!("Err done");
                                 break;
                             },
 

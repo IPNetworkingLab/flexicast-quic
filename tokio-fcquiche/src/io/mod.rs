@@ -5,6 +5,7 @@ use crate::fcquic::controller::ControllerLeaf;
 use crate::fcquic::controller::ControllerRole;
 use crate::fcquic::controller::ControllerRoot;
 use crate::fcquic::fc::FcChannelAsync;
+use crate::fcquic::scheduler::FcFallBackDelay;
 use crate::fcquic::fc::FcFlowRun;
 use crate::fcquic::sendmmsg::SendMMsg;
 use crate::io::fc_flow::FcFlowfileTransfer;
@@ -56,7 +57,7 @@ pub struct TokioFcQuicConfig {
     pub fc_keylog_file: String,
 
     /// The fallback delay of the unicast path.
-    pub fallback_delay: Option<std::time::Duration>,
+    pub fallback_delay: Option<FcFallBackDelay>,
 
     /// Source address of the (unicast path) server.
     pub uc_src_addr: SocketAddr,

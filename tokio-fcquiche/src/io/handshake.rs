@@ -1,5 +1,6 @@
 use crate::fcquic::controller::ClientIdMap;
 use crate::fcquic::messages::*;
+use crate::fcquic::scheduler::FcFallBackDelay;
 use crate::fcquic::scheduler::FcFlowAliveScheduler;
 use crate::fcquic::uc::UcPathRun;
 use crate::io::uc_path::UcPathFileTransfer;
@@ -78,7 +79,7 @@ pub struct Handshake {
     uc_unlimited_cwnd: bool,
 
     /// The fallback delay of the unicast path.
-    fallback_delay: Option<time::Duration>,
+    fallback_delay: Option<FcFallBackDelay>,
 
     /// The transmission channels towards the sendmmsg.
     txs_sendmmsg: Option<Vec<mpsc::Sender<MsgSmsg>>>,
@@ -398,6 +399,7 @@ impl Handshake {
                     unlimited_cwnd: self.uc_unlimited_cwnd,
                     fcf_scheduler: self
                         .fallback_delay
+                        .clone()
                         .map(|fb| FcFlowAliveScheduler::new(Some(fb), None)),
                     pending_ack: OpenRangeSet::default(),
                     pending_stream_ack: HashMap::new(),

@@ -87,7 +87,7 @@ pub struct FcFlowAliveScheduler {
     fcf_alive: bool,
 
     /// The delay before fall-backing the receiver on the unicast path.
-    fall_back_delay: Option<time::Duration>,
+    fall_back_delay: Option<FcFallBackDelay>,
 
     /// Whether some data have been retransmitted through the unicast path.
     /// This will trigger flexicast flow timeout.
@@ -105,7 +105,7 @@ impl FcFlowAliveScheduler {
     /// The `now` argument is used whether we want to start listening to the
     /// flexicast flow.
     pub fn new(
-        fall_back_delay: Option<time::Duration>, now: Option<time::Instant>,
+        fall_back_delay: Option<FcFallBackDelay>, now: Option<time::Instant>,
     ) -> Self {
         Self {
             fcf_last_recv: None,
@@ -143,10 +143,11 @@ impl FcFlowAliveScheduler {
             self.did_uc_retransmit = false;
 
             // Set the next timeout.
-            let idle_timeout = if let (true, Some(d)) =
-                (conn.bytes_in_flight(), self.fall_back_delay)
-            {
-                Some(now + d)
+            let idle_timeout = if conn.bytes_in_flight() {
+                self.fall_back_delay
+                    .as_ref()
+                    .and_then(|d| d.to_duration())
+                    .map(|d| now + d)
             } else {
                 None
             };
@@ -211,7 +212,11 @@ impl FcFlowAliveScheduler {
         }
         // As we sent a new packet, start the timeout.
         if self.fcf_next_timeout.is_none() {
-            self.fcf_next_timeout = self.fall_back_delay.map(|d| now + d);
+            self.fcf_next_timeout = self
+                .fall_back_delay
+                .as_ref()
+                .and_then(|d| d.to_duration())
+                .map(|d| now + d);
         }
     }
 

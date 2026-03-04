@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tokio_fcquiche::io::receiver::TokioFcQuicRecv;
 use tokio_fcquiche::io::TokioFcQuic;
 use tokio_fcquiche::io::TokioFcQuicConfig;
+use tokio_fcquiche::FcFallBackDelay;
 use tokio_fcquiche::FcQuicMsg;
 use tokio_fcquiche::MAX_DATAGRAM_SIZE;
 
@@ -52,10 +53,11 @@ pub fn get_fcquiche_server_config(keylog_path: &str) -> TokioFcQuicConfig {
         wait: Some(1),
         flexicast: true,
         fc_keylog_file: keylog_path.to_string(),
-        fallback_delay: Some(time::Duration::from_millis(300)),
+        fallback_delay: Some(FcFallBackDelay::Static(300)),
         uc_src_addr: "127.0.0.1:12345".parse().unwrap(),
         nb_leaf_controllers: 1,
         h3_config: None,
+        max_ack_rate: u64::MAX / 10,
     }
 }
 
