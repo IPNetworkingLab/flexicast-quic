@@ -7,7 +7,6 @@ use crate::packet::Epoch;
 use crate::ranges::RangeSet;
 use crate::Connection;
 use crate::Error;
-use crate::InternalPathId;
 use crate::Result;
 use std::collections::HashSet;
 use std::time;

@@ -900,7 +900,7 @@ impl FcController {
                         let msg = MsgFcSource::AckPn((
                             self.pending_ack[i].clone(),
                             lowest_cwnd,
-                            self.active_clients[i].len() as u64,
+                            self.nb_ready,
                         ));
                         match root.tx_up[i].try_send(msg) {
                             Ok(_) => {

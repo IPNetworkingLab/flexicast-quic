@@ -66,6 +66,9 @@ pub struct TokioFcQuicConfig {
 
     /// Potential HTTP/3 config.
     pub h3_config: Option<quiche::h3::Config>,
+
+    /// Maximum expected acknowledgment rate, in bps.
+    pub max_ack_rate: u64,
 }
 
 pub struct TokioFcQuic {
@@ -344,7 +347,7 @@ impl TokioFcQuic {
                 pending_sent_pkt: Vec::new(),
                 pending_stream_pieces: Vec::new(),
                 nb_active_receivers: 0,
-                max_ack_rate: 200_000_000, // 200 Mbps
+                max_ack_rate: self.config.max_ack_rate,
             };
 
             id_fc_chan += 1;

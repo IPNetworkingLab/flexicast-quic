@@ -6,6 +6,7 @@ use quiche::h3::Header;
 
 mod fcquic;
 pub mod io;
+pub use fcquic::scheduler::FcFallBackDelay;
 use tokio::sync::oneshot;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

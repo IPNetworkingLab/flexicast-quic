@@ -52,7 +52,8 @@ impl Http3Source {
         // Read the manifest to get the information about the file to serve.
         let file = std::fs::File::open(&self.manifest_path)?;
         let reader = BufReader::new(file);
-        let manifest: Manifest = serde_json::from_reader(reader)?;
+        let mut manifest: Manifest = serde_json::from_reader(reader)?;
+        super::expand_implicit_blocks(&mut manifest);
 
         let mut stream_id = manifest.blocks[0].1;
         let mut id_manifest = 0;

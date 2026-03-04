@@ -171,7 +171,8 @@ impl Http3Receiver {
             // Process the manifest data once we receive all data.
             if manifest_size == received_size as u64 && !processed_manifest {
                 // Parse the manifest.
-                let manifest: Manifest = serde_json::from_slice(&manifest_data)?;
+                let mut manifest: Manifest = serde_json::from_slice(&manifest_data)?;
+                super::expand_implicit_blocks(&mut manifest);
 
                 // Create the file of the correct size.
                 let file = std::fs::File::create(&self.path)?;

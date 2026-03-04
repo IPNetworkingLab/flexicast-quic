@@ -17,6 +17,7 @@ use quiche_apps::fc_app::video::hls::HlsSource;
 use quiche_apps::fc_app::video::rtp::RtpSource;
 use quiche_apps::fc_app::video::StreamTransferKind;
 use tokio_fcquiche::io::TokioFcQuicConfig;
+use tokio_fcquiche::FcFallBackDelay;
 
 #[derive(Parser)]
 struct Args {
@@ -81,9 +82,10 @@ struct Args {
     #[clap(long = "probe-path")]
     probe_path: bool,
 
-    /// Unicast fall-back delay for the scheduler, in ms.
+    /// Unicast fall-back delay for the scheduler.
+    /// Either a static value in ms (e.g. 500) or 'adaptive'.
     #[clap(long = "fall-back-delay", value_parser)]
-    fall_back_delay: Option<u64>,
+    fall_back_delay: Option<FcFallBackDelay>,
 
     /// Whether to use `sendmmsg` instead of relying on real flexicast
     /// to distribute data on the flexicast flow.
@@ -123,6 +125,10 @@ struct Args {
     /// Number of leaf controllers to use.
     #[clap(long = "nb-controllers", default_value = "1")]
     nb_controllers: u64,
+
+    /// Maximum expected acknowledgment rate, in bps.
+    #[clap(long = "max-ack-rate", default_value = "100000000")]
+    max_ack_rate: u64,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -146,10 +152,12 @@ async fn main() {
         fc_keylog_file: args.fc_keylog_file.clone(),
         fallback_delay: args
             .fall_back_delay
-            .map(|d| time::Duration::from_millis(d)),
+            .as_ref()
+            .and_then(|d| d.to_duration()),
         uc_src_addr: args.src_addr,
         nb_leaf_controllers: args.nb_controllers,
         h3_config,
+        max_ack_rate: args.max_ack_rate,
     };
 
     // Transmission channel towards the application, supposed to be unique because

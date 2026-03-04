@@ -4,6 +4,56 @@
 use std::time;
 use log::*;
 
+/// The fall-back delay configuration for the unicast scheduler.
+#[derive(Debug, Clone)]
+pub enum FcFallBackDelay {
+    /// A static delay in milliseconds.
+    Static(u64),
+    /// Adaptive delay (determined at runtime), carrying its current value in ms.
+    Adaptive(u64),
+}
+
+impl std::str::FromStr for FcFallBackDelay {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("adaptive") {
+            Ok(FcFallBackDelay::Adaptive(0))
+        } else {
+            s.parse::<u64>()
+                .map(FcFallBackDelay::Static)
+                .map_err(|_| {
+                    format!(
+                        "Expected a millisecond value or 'adaptive', got '{}'",
+                        s
+                    )
+                })
+        }
+    }
+}
+
+impl FcFallBackDelay {
+    /// Returns the current delay as a `Duration`.
+    /// For [`FcFallBackDelay::Static`] returns the configured value.
+    /// For [`FcFallBackDelay::Adaptive`] returns `None` if the value has not
+    /// been set yet (i.e. is 0), otherwise returns the current adaptive value.
+    pub fn to_duration(&self) -> Option<time::Duration> {
+        match self {
+            FcFallBackDelay::Static(ms) => Some(time::Duration::from_millis(*ms)),
+            FcFallBackDelay::Adaptive(0) => None,
+            FcFallBackDelay::Adaptive(ms) => Some(time::Duration::from_millis(*ms)),
+        }
+    }
+
+    /// Updates the inner value for [`FcFallBackDelay::Adaptive`].
+    /// Does nothing if the variant is [`FcFallBackDelay::Static`].
+    pub fn update_adaptive(&mut self, v: u64) {
+        if let FcFallBackDelay::Adaptive(ms) = self {
+            *ms = v;
+        }
+    }
+}
+
 use quiche::Connection;
 
 /// Trait defining a single function to determine if bytes are in flight.
