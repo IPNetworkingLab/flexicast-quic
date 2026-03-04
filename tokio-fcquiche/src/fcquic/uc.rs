@@ -222,6 +222,9 @@ impl UcPath {
                 cwnd_fc_flow,
             ));
 
+            // Also update the scheduler.
+            self.update_fec_scheduler(Some(pn.clone())).await?;
+
             if let Err(_e) = self.tx_tcl.try_send(msg) {
                 info!(
                     "Recv {} cannot send the ack because full..",
@@ -265,13 +268,9 @@ impl UcPath {
 
         // Process potentially coalesced packets.
         let _read = match self.conn.recv(pkt_buf, recv_info) {
-            Ok(v) => {
-                v
-            },
+            Ok(v) => v,
 
-            Err(quiche::Error::Done) => {
-                0
-            },
+            Err(quiche::Error::Done) => 0,
 
             Err(e) => {
                 return Err(e.into());
@@ -299,11 +298,18 @@ impl UcPath {
 
             // Notifies the main thread that this connection has a new source CID.
             self.notify_new_cid(scid.as_ref()).await?;
-        }
 
-        // Also update state of the scheduler.
-        // Maybe now we received acknowkledgment from the receiver that will
-        // update its state in the flexicast flow.
+            // Also update state of the scheduler.
+            // Maybe now we received acknowkledgment from the receiver that will
+            // update its state in the flexicast flow.
+            self.update_fec_scheduler(None).await?;
+        }
+        Ok(())
+    }
+
+    async fn update_fec_scheduler(
+        &mut self, ack_pn: Option<OpenRangeSet>,
+    ) -> Result<()> {
         if let Some(fc_scheduler) = self.fcf_scheduler.as_mut() {
             let was_fall_back = self
                 .conn
@@ -316,7 +322,10 @@ impl UcPath {
                 })
                 .unwrap_or(false);
             debug!("Recv {} was fallback: {}", self.client_id, was_fall_back);
-            if let Some(pn) = self.conn.fc_get_highest_ack_pn() {
+            if let Some(pn) = ack_pn
+                .and_then(|rng| rng.last())
+                .or(self.conn.fc_get_highest_ack_pn())
+            {
                 if let Some(fc_chan_id) = self
                     .conn
                     .get_flexicast_attributes()

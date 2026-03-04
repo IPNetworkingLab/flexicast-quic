@@ -162,8 +162,9 @@ impl FcFlowAliveScheduler {
 
     /// Returns whether the receiver should fall back on unicast.
     pub fn should_uc_fall_back(&self, now: time::Instant) -> bool {
-        self.fcf_timeout(now)
-            .is_some_and(|t| t == time::Duration::ZERO)
+        let out = self.fcf_timeout(now)
+            .is_some_and(|t| t == time::Duration::ZERO);
+        out
     }
 
     /// Returns the duration until the flexicast flow timeouts.
@@ -226,7 +227,7 @@ impl FcFlowAliveScheduler {
     /// Update the fallback delay based on the current RTT on the multicast flow
     /// with the receiver. Only does something if
     /// [`FcFallBackDelay::Adaptive`].
-    /// 
+    ///
     /// Returns the new ack delay if modified, used for logging.
     pub fn update_fallback_delay(&mut self, rtt: u64) -> Option<u64> {
         if let Some(FcFallBackDelay::Adaptive(fb_delay)) =
@@ -234,7 +235,13 @@ impl FcFlowAliveScheduler {
         {
             let old_fb_delay = *fb_delay;
             // The timer is set to `FALLBACK_DELAY_MULTIPLIER` times the RTT.
-            *fb_delay = rtt * FALLBACK_DELAY_MULTIPLIER;
+            *fb_delay = (rtt * FALLBACK_DELAY_MULTIPLIER).max(20);
+
+            let now = time::Instant::now();
+            if self.fcf_next_timeout.is_some() {
+                self.fcf_next_timeout =
+                    Some(now + time::Duration::from_millis(*fb_delay));
+            }
 
             if old_fb_delay != *fb_delay {
                 return Some(*fb_delay);
