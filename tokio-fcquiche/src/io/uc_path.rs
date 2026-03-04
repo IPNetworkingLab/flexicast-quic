@@ -547,6 +547,27 @@ impl UcPathRun for UcPathFileTransfer {
                     }
                 }
             }
+
+            // Potentially fall back on unicast when the congestion window is too
+            // low for this receiver.
+            if self.0.conn.fc_get_flow_cwnd().map(|v| v.0) < Some(10_000) {
+                self.0.fcf_scheduler.as_mut().map(|s| s.uc_fall_back());
+                self.0.conn.fc_fall_back_unicast(true);
+
+                let msg = MsgFcCtl::RecvUcFallBack((
+                    self.0.client_id,
+                    fc_chan_id.unwrap(),
+                ));
+                self.0.tx_tcl.send(msg).await?;
+                let now = time::SystemTime::now();
+                println!(
+                    "{}-RESULT-RECV{} 1",
+                    now.duration_since(time::SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_micros(),
+                    self.0.client_id
+                );
+            }
         }
 
         info!("STOP CONNECTION: {:?}", self.0.client_id);

@@ -223,7 +223,7 @@ impl UcPath {
             ));
 
             // Also update the scheduler.
-            self.update_fec_scheduler(Some(pn.clone())).await?;
+            self.update_fc_scheduler(Some(pn.clone())).await?;
 
             if let Err(_e) = self.tx_tcl.try_send(msg) {
                 info!(
@@ -302,12 +302,12 @@ impl UcPath {
             // Also update state of the scheduler.
             // Maybe now we received acknowkledgment from the receiver that will
             // update its state in the flexicast flow.
-            self.update_fec_scheduler(None).await?;
+            self.update_fc_scheduler(None).await?;
         }
         Ok(())
     }
 
-    async fn update_fec_scheduler(
+    async fn update_fc_scheduler(
         &mut self, ack_pn: Option<OpenRangeSet>,
     ) -> Result<()> {
         if let Some(fc_scheduler) = self.fcf_scheduler.as_mut() {
