@@ -1219,9 +1219,9 @@ impl FcController {
             // them with counter=1, but the new receiver's ACKs are filtered →
             // counter never reaches 0 → source stalls.
             if let Some(first) = ack_pn.as_ref().and_then(|ack| ack.first()) {
-                println!(
-                    "Controller {:?} Adds the new receiver {recv_id} with ranges: {ack_pn:?}. State of MCACK: {:?}", self.controller_role.name(), self.mc_acks[fc_id as usize]
-                );
+                // println!(
+                //     "Controller {:?} Adds the new receiver {recv_id} with ranges: {ack_pn:?}. State of MCACK: {:?}", self.controller_role.name(), self.mc_acks[fc_id as usize]
+                // );
                 self.on_first_ack_from_recv(recv_id, fc_id, first)
                     .await?;
                 // Fall through to process the actual ACK data from this first
