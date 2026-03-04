@@ -85,7 +85,7 @@ impl Http3Source {
                     total_written_stream = 0;
                     id_manifest = (id_manifest + 1) % manifest.blocks.len();
                 }
-                written = self.file.read(&mut buffer)?;
+                written = self.file.read(&mut buffer[..max_write])?;
 
                 // If written == 0, it means that the file is empty, so we restart
                 // reading from the start and a fresh stream id.
