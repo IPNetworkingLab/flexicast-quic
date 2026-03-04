@@ -134,7 +134,7 @@ impl FcChannelAsync {
                 if ranges.first().is_some_and(|v| v % 5000 == 0) {
                     println!(
                         "RESULT-CWND {:?}",
-                        self.fc_chan.channel.fc_get_flow_cwnd().unwrap_or(0)
+                        self.fc_chan.channel.fc_get_flow_cwnd().unwrap_or((0, 0)).0
                     );
                 }
             },

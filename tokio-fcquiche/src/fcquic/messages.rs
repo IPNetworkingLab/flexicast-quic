@@ -49,7 +49,8 @@ pub enum MsgFcCtl {
     /// The last value indicates the potentially recovered source symbols.
     /// This allows to avoid retransmission if the packet was recovered through
     /// Forward Erasure Correction.
-    /// The sixth value is the potential congestion window of this unicast path.
+    /// The sixth value is the potential congestion window of this unicast path
+    /// and the number of sent bytes as seen on the flow.
     AckData(
         (
             u64,
@@ -57,7 +58,7 @@ pub enum MsgFcCtl {
             Option<OpenRangeSet>,
             Option<McStreamOff>,
             Option<OpenRangeSet>,
-            Option<usize>,
+            Option<(usize, usize)>,
         ),
     ),
 
@@ -131,8 +132,9 @@ pub enum MsgRecv {
 pub enum MsgFcSource {
     /// Packet numbers acknowledged by all clients listening to the flexicast
     /// flow.
-    /// The second value is the potential congestion window aggregated on all unicast paths.
-    /// The third value is the number of active receivers for this flexicast flow at the time the message is sent.
+    /// The second value is the potential congestion window aggregated on all
+    /// unicast paths. The third value is the number of active receivers for
+    /// this flexicast flow at the time the message is sent.
     AckPn((OpenRangeSet, Option<usize>, u64)),
 
     /// Stream pieces that were delegated and now received by all clients that

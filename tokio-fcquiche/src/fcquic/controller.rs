@@ -129,8 +129,8 @@ pub struct FcController {
     /// The set of congestion windows for active receivers.
     /// TODO: need to consider fall back receivers.
     /// The first value is the congestion window.
-    /// The second value is the receiver id.
-    fc_flow_cwnd: HashMap<u64, (u64, usize)>,
+    /// The second value the number of seen bytes.
+    fc_flow_cwnd: HashMap<u64, (usize, usize)>,
 }
 
 impl FcController {
@@ -846,7 +846,7 @@ impl FcController {
             }
 
             // Retrieve the optional lowest congestion window for the path.
-            let lowest_cwnd = self.fc_flow_cwnd.get(&fc_id).map(|v| v.1);
+            let lowest_cwnd = self.fc_flow_cwnd.get(&fc_id).cloned();
 
             if pending_ack.len() > 0 {
                 // Also send to the unicast fall-back receivers the lowest sent
@@ -899,13 +899,12 @@ impl FcController {
                     ControllerRole::Root(root) => {
                         let msg = MsgFcSource::AckPn((
                             self.pending_ack[i].clone(),
-                            lowest_cwnd,
+                            lowest_cwnd.map(|v| v.0),
                             self.nb_ready,
                         ));
                         match root.tx_up[i].try_send(msg) {
-                            Ok(_) => {
-                                self.pending_ack[i] = OpenRangeSet::default()
-                            },
+                            Ok(_) =>
+                                self.pending_ack[i] = OpenRangeSet::default(),
                             Err(_e) =>
                                 info!("Root cannot send ACK to the source"),
                         }
@@ -1195,7 +1194,7 @@ impl FcController {
     async fn on_new_ack_data(
         &mut self, recv_id: u64, fc_id: u64, mut ack_pn: Option<OpenRangeSet>,
         ack_stream_pieces: Option<Vec<(u64, OpenRangeSet)>>,
-        rec_md: Option<OpenRangeSet>, cwnd_opt: Option<usize>,
+        rec_md: Option<OpenRangeSet>, cwnd_opt: Option<(usize, usize)>,
     ) -> Result<()> {
         // let name = self.controller_role.name();
         // info!(
@@ -1220,10 +1219,11 @@ impl FcController {
             // counter never reaches 0 → source stalls.
             if let Some(first) = ack_pn.as_ref().and_then(|ack| ack.first()) {
                 // println!(
-                //     "Controller {:?} Adds the new receiver {recv_id} with ranges: {ack_pn:?}. State of MCACK: {:?}", self.controller_role.name(), self.mc_acks[fc_id as usize]
+                //     "Controller {:?} Adds the new receiver {recv_id} with
+                // ranges: {ack_pn:?}. State of MCACK: {:?}",
+                // self.controller_role.name(), self.mc_acks[fc_id as usize]
                 // );
-                self.on_first_ack_from_recv(recv_id, fc_id, first)
-                    .await?;
+                self.on_first_ack_from_recv(recv_id, fc_id, first).await?;
                 // Fall through to process the actual ACK data from this first
                 // message — do NOT return early. The remove_until below (using
                 // active_clients[recv_id] = first) will correctly allow ACKs
@@ -1252,21 +1252,24 @@ impl FcController {
 
             // Updates the lowest congestion window.
             // Filters our the potential unactive receivers.
-            if let Some(cwnd) = cwnd_opt {
+            if let Some((cwnd, seen_bytes)) = cwnd_opt {
                 let entry = match self.fc_flow_cwnd.entry(fc_id) {
-                    Vacant(entry) => entry.insert((recv_id, cwnd)),
+                    Vacant(entry) => entry.insert((cwnd, seen_bytes)),
                     Occupied(entry) => entry.into_mut(),
                 };
 
                 // Update the value if:
-                // - The bottleneck receiver is not active anymore.
-                // - This is the bottleneck receiver.
-                // - There is a new bottleneck receiver.
-                if !self.active_clients[fc_id as usize].contains_key(&entry.0) ||
-                    entry.0 == recv_id ||
-                    entry.1 > cwnd
-                {
-                    *entry = (recv_id, cwnd);
+                // - The value if the new congestion window is lower and similar
+                //   seen bytes
+                // - The value is higher and significantly higher than previous
+                //   seen bytes.
+                if self.active_clients[fc_id as usize].contains_key(&recv_id) {
+                    if (cwnd < entry.0 &&
+                        seen_bytes >= entry.1.saturating_sub(50_000)) ||
+                        (seen_bytes >= entry.1 + 50_000)
+                    {
+                        *entry = (cwnd, seen_bytes);
+                    }
                 }
             }
         }

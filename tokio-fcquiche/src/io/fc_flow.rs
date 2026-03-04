@@ -388,10 +388,10 @@ impl FcFlowRun for FcFlowfileTransfer {
                 // Fall back on unicast if the performance is too low.
                 if let Some(cwnd) = self.fc.fc_chan.channel.fc_get_flow_cwnd() {
                     if time::Instant::now().duration_since(start).as_secs() > 30 &&
-                        cwnd < 12_000
+                        cwnd.0 < 12_000
                     {
-                        println!("FALL BACK ON UNICAST BECAUSE: {:?}", cwnd);
-                        self.fc.do_flexicast = false;
+                        // println!("FALL BACK ON UNICAST BECAUSE: {:?}", cwnd);
+                        // self.fc.do_flexicast = false;
                     }
                 }
 

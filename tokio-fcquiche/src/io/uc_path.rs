@@ -30,6 +30,8 @@ impl UcPathRun for UcPathFileTransfer {
 
         let mut sent_first_join = false;
 
+        let mut nb_fb_delay_update = 0;
+
         let mut buf = [0u8; 1500];
         'main: loop {
             let timeout = self.0.conn.timeout();
@@ -46,6 +48,12 @@ impl UcPathRun for UcPathFileTransfer {
                 .get_flexicast_attributes()
                 .map(|mc| mc.get_fc_chan_id().map(|(_, id)| *id as u64))
                 .flatten();
+
+            let fc_path_id = self
+                .0
+                .conn
+                .get_flexicast_attributes()
+                .and_then(|fc| fc.get_fc_path_id());
 
             let is_listening_to_fc = self
                 .0
@@ -508,6 +516,36 @@ impl UcPathRun for UcPathFileTransfer {
             // Force an unlimited window if asked.
             if self.0.unlimited_cwnd {
                 self.0.conn.fc_set_cwnd_from_path_id(0, usize::MAX - 1000);
+            }
+
+            // Potentially update the fallback delay.
+            if let Some(scheduler) = self.0.fcf_scheduler.as_mut() {
+                if let Some(rtt) = fc_path_id
+                    .and_then(|pid| {
+                        self.0
+                            .conn
+                            .path_stats()
+                            .filter(|path| path.path_id == pid)
+                            .next()
+                    })
+                    .map(|pstat| pstat.rtt)
+                {
+                    let new_fb_delay_opt =
+                        scheduler.update_fallback_delay(rtt.as_millis() as u64);
+                    if let Some(fb_delay) = new_fb_delay_opt {
+                        nb_fb_delay_update += 1;
+                        if nb_fb_delay_update % 10 == 0 {
+                            println!(
+                                "{}-RESULT-FALLBACK{} {fb_delay}",
+                                time::SystemTime::now()
+                                    .duration_since(time::SystemTime::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_micros(),
+                                self.0.client_id
+                            );
+                        }
+                    }
+                }
             }
         }
 

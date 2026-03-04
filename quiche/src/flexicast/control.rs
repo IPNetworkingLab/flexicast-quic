@@ -16,6 +16,7 @@ use super::McRole;
 use crate::flexicast::ack::FcDelegatedStream;
 use crate::flexicast::ack::McStreamOff;
 use crate::packet::Epoch;
+use crate::path::NetworkPathId;
 use crate::ranges::RangeSet;
 use crate::recovery::Sent;
 use crate::Connection;
@@ -375,7 +376,7 @@ impl Connection {
     /// the sent packets.
     ///
     /// Returns `None` if this is not the unicast path source.
-    pub fn fc_get_flow_cwnd(&self) -> Option<usize> {
+    pub fn fc_get_flow_cwnd(&self) -> Option<(usize, usize)> {
         if let Some(flexicast) = self.flexicast.as_ref() {
             match flexicast.get_mc_role() {
                 McRole::ServerUnicast(McClientStatus::ListenMcPath(_)) =>
@@ -387,7 +388,10 @@ impl Connection {
                             if uc_path.recovery.cwnd_available() == usize::MAX {
                                 return None;
                             }
-                            return Some(uc_path.recovery.cwnd());
+                            let nb_sent = uc_path.recovery.bytes_sent();
+                            let cwnd = uc_path.recovery.cwnd();
+
+                            return Some((cwnd, nb_sent));
                         }
                     },
                 McRole::ServerFlexicast => {
@@ -395,7 +399,7 @@ impl Connection {
                         if fc_flow.recovery.cwnd_available() == usize::MAX {
                             return None;
                         }
-                        return Some(fc_flow.recovery.cwnd());
+                        return Some((fc_flow.recovery.cwnd(), fc_flow.sent_count));
                     }
                 },
                 _ => (),

@@ -1,15 +1,18 @@
 //! Flexicast flow scheduler.
 //! FC-TODO: define a common trait?
 
-use std::time;
 use log::*;
+use std::time;
+
+const FALLBACK_DELAY_MULTIPLIER: u64 = 5;
 
 /// The fall-back delay configuration for the unicast scheduler.
 #[derive(Debug, Clone)]
 pub enum FcFallBackDelay {
     /// A static delay in milliseconds.
     Static(u64),
-    /// Adaptive delay (determined at runtime), carrying its current value in ms.
+    /// Adaptive delay (determined at runtime), carrying its current value in
+    /// ms.
     Adaptive(u64),
 }
 
@@ -20,14 +23,9 @@ impl std::str::FromStr for FcFallBackDelay {
         if s.eq_ignore_ascii_case("adaptive") {
             Ok(FcFallBackDelay::Adaptive(0))
         } else {
-            s.parse::<u64>()
-                .map(FcFallBackDelay::Static)
-                .map_err(|_| {
-                    format!(
-                        "Expected a millisecond value or 'adaptive', got '{}'",
-                        s
-                    )
-                })
+            s.parse::<u64>().map(FcFallBackDelay::Static).map_err(|_| {
+                format!("Expected a millisecond value or 'adaptive', got '{}'", s)
+            })
         }
     }
 }
@@ -41,7 +39,8 @@ impl FcFallBackDelay {
         match self {
             FcFallBackDelay::Static(ms) => Some(time::Duration::from_millis(*ms)),
             FcFallBackDelay::Adaptive(0) => None,
-            FcFallBackDelay::Adaptive(ms) => Some(time::Duration::from_millis(*ms)),
+            FcFallBackDelay::Adaptive(ms) =>
+                Some(time::Duration::from_millis(*ms)),
         }
     }
 
@@ -95,7 +94,8 @@ pub struct FcFlowAliveScheduler {
     /// sent.
     did_uc_retransmit: bool,
 
-    /// The highest packet number received on the flexicast flow while the receiver in the flexicast flow.
+    /// The highest packet number received on the flexicast flow while the
+    /// receiver in the flexicast flow.
     fcf_max_pn_recv_in_flow: Option<u64>,
 }
 
@@ -132,7 +132,10 @@ impl FcFlowAliveScheduler {
         }
 
         // The receiver received a new packet on the flexicast flow.
-        debug!("Chec, fc flow alive: {:?} vs {:?}", self.fcf_last_recv, last_pn);
+        debug!(
+            "Chec, fc flow alive: {:?} vs {:?}",
+            self.fcf_last_recv, last_pn
+        );
         let was_alive = self.fcf_alive;
         if self.fcf_last_recv.map(|pn| pn < last_pn).unwrap_or(true) {
             self.fcf_last_recv = Some(last_pn);
@@ -197,12 +200,6 @@ impl FcFlowAliveScheduler {
         self.fcf_next_timeout = None;
     }
 
-    /// Some data have been retransmitted through the unicast path.
-    /// This notifies the scheduler that the flexicast flow may be dead.
-    pub fn did_uc_retransmit(&mut self) {
-        self.did_uc_retransmit = true;
-    }
-
     /// Update the scheduler on new packets sent on the flexicast flow.
     /// This will trigger the start of a new timeout.
     pub fn on_packet_sent(&mut self, now: time::Instant) {
@@ -224,6 +221,27 @@ impl FcFlowAliveScheduler {
     #[inline]
     pub fn get_last_pn_recv_in_flow(&self) -> Option<u64> {
         self.fcf_max_pn_recv_in_flow
+    }
+
+    /// Update the fallback delay based on the current RTT on the multicast flow
+    /// with the receiver. Only does something if
+    /// [`FcFallBackDelay::Adaptive`].
+    /// 
+    /// Returns the new ack delay if modified, used for logging.
+    pub fn update_fallback_delay(&mut self, rtt: u64) -> Option<u64> {
+        if let Some(FcFallBackDelay::Adaptive(fb_delay)) =
+            self.fall_back_delay.as_mut()
+        {
+            let old_fb_delay = *fb_delay;
+            // The timer is set to `FALLBACK_DELAY_MULTIPLIER` times the RTT.
+            *fb_delay = rtt * FALLBACK_DELAY_MULTIPLIER;
+
+            if old_fb_delay != *fb_delay {
+                return Some(*fb_delay);
+            }
+        }
+
+        None
     }
 }
 
@@ -256,7 +274,8 @@ mod tests {
         let now = time::Instant::now();
         let mut c = Box::new(Dummy::default());
 
-        let mut scheduler = FcFlowAliveScheduler::new(Some(delay.clone()), Some(now));
+        let mut scheduler =
+            FcFlowAliveScheduler::new(Some(delay.clone()), Some(now));
         assert!(scheduler.fcf_alive());
         assert!(!scheduler.should_uc_fall_back(now));
         let delay = delay.to_duration().unwrap();
