@@ -279,7 +279,9 @@ pub fn connect(
 
         // Read incoming UDP packets from the socket and feed them to quiche,
         // until there are no more packets to read.
-        for event in &events {
+        let mut nb_recv_pkt_loop = 0;
+        let nb_max_pkt_loop = 10;
+        'event: for event in &events {
             let token = event.token().into();
             let socket = &sockets[token];
             let local_addr = socket.local_addr().unwrap();
@@ -331,6 +333,11 @@ pub fn connect(
                 };
 
                 trace!("{}: processed {} bytes", local_addr, read);
+
+                nb_recv_pkt_loop += 1;
+                if nb_recv_pkt_loop >= nb_max_pkt_loop {
+                    break 'event;
+                }
             }
         }
 
