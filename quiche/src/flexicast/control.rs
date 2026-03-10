@@ -16,7 +16,6 @@ use super::McRole;
 use crate::flexicast::ack::FcDelegatedStream;
 use crate::flexicast::ack::McStreamOff;
 use crate::packet::Epoch;
-use crate::path::NetworkPathId;
 use crate::ranges::RangeSet;
 use crate::recovery::Sent;
 use crate::Connection;

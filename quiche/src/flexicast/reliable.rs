@@ -803,7 +803,7 @@ mod tests {
             let mc_ack = fc_pipe.mc_channel.channel.get_mc_ack_mut().unwrap();
             let (pns, streams, _) = mc_ack.get_state();
             assert_eq!(pns.len(), 1);
-            assert_eq!(*pns.values().next().unwrap(), 1); // Only one client need to ack the packet.
+            assert_eq!(pns.values().next().unwrap().1, 1); // Only one client need to ack the packet.
             assert_eq!(streams.len(), 0);
 
             // The arrival of a new stream will trigger a loss for Stream 7.

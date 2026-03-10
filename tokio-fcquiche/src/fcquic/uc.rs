@@ -213,6 +213,30 @@ impl UcPath {
             // Give the congestion window for this receiver.
             let cwnd_fc_flow = self.conn.fc_get_flow_cwnd();
 
+            // Potentially fall back on unicast when the congestion window is too
+            // low for this receiver.
+            if cwnd_fc_flow.as_ref().is_some_and(|v| v.0 < 10_000) &&
+                self.fcf_scheduler.as_ref().is_some_and(|s| s.fcf_alive())
+            {
+                self.fcf_scheduler.as_mut().map(|s| s.uc_fall_back());
+                self.conn.fc_fall_back_unicast(true);
+
+                let msg = MsgFcCtl::RecvUcFallBack((
+                    self.client_id,
+                    fc_id.unwrap() as u64,
+                ));
+                self.tx_tcl.send(msg).await?;
+                let now = std::time::SystemTime::now();
+                println!(
+                    "{}-RESULT-RECV{} 1",
+                    now.duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_micros(),
+                    self.client_id
+                );
+                return Ok(());
+            }
+
             let msg = MsgFcCtl::AckData((
                 self.client_id,
                 fc_id.unwrap() as u64,
