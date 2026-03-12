@@ -18,6 +18,7 @@ use std::collections::hash_map::Entry::Occupied;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::mpsc;
@@ -67,6 +68,12 @@ pub struct UcPath {
 
     /// Transmission channel to the app.
     pub tx_app: mpsc::Sender<FcQuicMsg>,
+
+    /// Atomic update for the largest packet number sent on the multicast flow.
+    pub largest_pn_atomic: Arc<AtomicU64>,
+
+    /// Largest packet number sent on the multicast flow.
+    pub largest_pn: Option<u64>,
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the
@@ -215,7 +222,7 @@ impl UcPath {
 
             // Potentially fall back on unicast when the congestion window is too
             // low for this receiver.
-            if cwnd_fc_flow.as_ref().is_some_and(|v| v.0 < 10_000) &&
+            /*if cwnd_fc_flow.as_ref().is_some_and(|v| v.0 < 10_000) &&
                 self.fcf_scheduler.as_ref().is_some_and(|s| s.fcf_alive())
             {
                 self.fcf_scheduler.as_mut().map(|s| s.uc_fall_back());
@@ -235,7 +242,7 @@ impl UcPath {
                     self.client_id
                 );
                 return Ok(());
-            }
+            }*/
 
             let msg = MsgFcCtl::AckData((
                 self.client_id,
@@ -396,6 +403,22 @@ impl UcPath {
                         );
                     }
                 }
+            }
+
+            // Also update the largest packet number we sent on the multicast
+            // flow using the atomic fetch.
+            let largest_sent_pn = self
+                .largest_pn_atomic
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if largest_sent_pn < u64::MAX {
+                if self
+                    .largest_pn
+                    .is_none_or(|v| largest_sent_pn > v)
+                {
+                    self.largest_pn = Some(largest_sent_pn);
+                    fc_scheduler.on_packet_sent(std::time::Instant::now());
+                }
+
             }
         }
 

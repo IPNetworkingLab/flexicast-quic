@@ -15,6 +15,7 @@ use crate::FcQuicMsg;
 use log::*;
 use quiche::flexicast::cca::FcFlowCwnd;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -91,6 +92,9 @@ pub struct FcChannelAsync {
 
     /// Maximum expected acknowledgment rate, in bps.
     pub max_ack_rate: u64,
+
+    /// Atomic to update the largest sent packet number on the multicast flow.
+    pub largest_pn_atomic: Arc<AtomicU64>,
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the

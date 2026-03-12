@@ -114,6 +114,23 @@ impl Connection {
         }
     }
 
+    /// Returns the largest sent packet number on the multicast flow.
+    pub fn fc_get_largest_sent_pn(&self) -> Option<u64> {
+        if self.flexicast.is_none() {
+            return None;
+        }
+
+        let flexicast = self.flexicast.as_ref().unwrap();
+        if flexicast.get_mc_role() != McRole::ServerFlexicast {
+            return None;
+        }
+
+        self.ids
+            .get_next_pkt_num(flexicast.fc_path_id?)
+            .map(|v| v.saturating_sub(1))
+            .ok()
+    }
+
     /// Notifies the connection of new packets that have been sent on the
     /// flexicast flow. Only available for the unicast server instances if
     /// the flexicast index is the correct one.
@@ -398,7 +415,10 @@ impl Connection {
                         if fc_flow.recovery.cwnd_available() == usize::MAX {
                             return None;
                         }
-                        return Some((fc_flow.recovery.cwnd(), fc_flow.sent_count));
+                        return Some((
+                            fc_flow.recovery.cwnd(),
+                            fc_flow.sent_count,
+                        ));
                     }
                 },
                 _ => (),

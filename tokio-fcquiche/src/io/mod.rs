@@ -1,5 +1,7 @@
 //! Flexicast QUIC module.
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use crate::fcquic::controller::ControllerLeaf;
 use crate::fcquic::controller::ControllerRole;
@@ -250,6 +252,9 @@ impl TokioFcQuic {
             });
         }
 
+        // Create the atomic update.
+        let largest_pn_atomic = Arc::new(AtomicU64::new(u64::MAX));
+
         // Collect all flexicast flows information.
         let fc_announce_data = if self.config.flexicast {
             self.fc_flows
@@ -312,6 +317,7 @@ impl TokioFcQuic {
             sendmmsg_txs.clone(),
             self.config.h3_config.clone(),
             self.tx_app.clone(),
+            largest_pn_atomic.clone(),
         )
         .await?;
 
@@ -349,6 +355,7 @@ impl TokioFcQuic {
                 pending_stream_pieces: Vec::new(),
                 nb_active_receivers: 0,
                 max_ack_rate: self.config.max_ack_rate,
+                largest_pn_atomic: largest_pn_atomic.clone(),
             };
 
             id_fc_chan += 1;

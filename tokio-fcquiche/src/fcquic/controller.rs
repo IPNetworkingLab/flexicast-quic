@@ -247,7 +247,7 @@ impl FcController {
             },
 
             MsgFcCtl::Sent((fc_id, sent)) => {
-                self.handle_sent_pkt(fc_id, sent).await?;
+                // self.handle_sent_pkt(fc_id, sent).await?;
             },
 
             MsgFcCtl::DelegateStreams((

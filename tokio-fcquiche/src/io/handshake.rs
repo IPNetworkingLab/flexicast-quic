@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use std::net;
 use std::path::Path;
 use std::sync::Arc;
-use std::time;
+use std::sync::atomic::AtomicU64;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -92,6 +92,9 @@ pub struct Handshake {
 
     /// Transmission channel to the applications.
     tx_app: mpsc::Sender<FcQuicMsg>,
+
+    /// Atomic update for the largest packet number sent on the multicast flow.
+    largest_pn_atomic: Arc<AtomicU64>,
 }
 
 impl Handshake {
@@ -102,6 +105,7 @@ impl Handshake {
         fc_announce_data: &[McAnnounceData], rng: SystemRandom,
         txs_sendmmsg: Option<Vec<mpsc::Sender<MsgSmsg>>>,
         h3_config: Option<quiche::h3::Config>, tx_app: mpsc::Sender<FcQuicMsg>,
+        largest_pn_atomic: Arc<AtomicU64>,
     ) -> Result<Self> {
         let (tx_main, rx_main) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         let new_socket = socket2::Socket::new(
@@ -131,6 +135,7 @@ impl Handshake {
             rng,
             h3_config,
             tx_app,
+            largest_pn_atomic,
         })
     }
 
@@ -406,6 +411,8 @@ impl Handshake {
                     h3_conn: None,
                     h3_config: self.h3_config.to_owned(),
                     tx_app: self.tx_app.clone(),
+                    largest_pn_atomic: self.largest_pn_atomic.clone(),
+                    largest_pn: None,
                 };
 
                 // Notify the controller with a new receiver.
