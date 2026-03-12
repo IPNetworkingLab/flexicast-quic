@@ -1,13 +1,12 @@
 use std::net;
 use std::path::Path;
-use std::time;
 use std::u64;
 
 use quiche::fec::schedulers::FecSchedulerAlgorithm;
 use quiche::flexicast::cca::FcFlowCwnd;
+use quiche::flexicast::nack::FcAckDelayStrategy;
 use quiche::flexicast::FcConfig;
 use quiche::flexicast::McConfig;
-use quiche::flexicast::nack::FcAckDelayStrategy;
 use quiche_apps::fc_app::TransferKind;
 
 use clap::Parser;
@@ -129,6 +128,10 @@ struct Args {
     /// Maximum expected acknowledgment rate, in bps.
     #[clap(long = "max-ack-rate", default_value = "100000000")]
     max_ack_rate: u64,
+
+    /// Time between two ack delay updates.
+    #[clap(long = "ack-delay-frame", default_value = "100")]
+    ack_delay_latency: u64,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -162,7 +165,8 @@ async fn main() {
     // belongs.
     let (tx_app, rx_app) = tokio::sync::mpsc::channel(100);
 
-    let mut fcquiche = tokio_fcquiche::io::TokioFcQuic::new(fc_quic_tokio_config, tx_app);
+    let mut fcquiche =
+        tokio_fcquiche::io::TokioFcQuic::new(fc_quic_tokio_config, tx_app);
     // Create a single flexicast flow.
     let flow_config = FcConfig {
         fc_tp: args.flexicast,
@@ -178,6 +182,9 @@ async fn main() {
         mc_addr: args.mc_addr,
         crt_path: args.cert_path.clone(),
         fc_cca: args.fc_cwnd,
+        ack_delay_latency: std::time::Duration::from_millis(
+            args.ack_delay_latency,
+        ),
         ..Default::default()
     };
 
@@ -213,16 +220,18 @@ async fn main() {
                     rtp_src.run().await.unwrap();
                 },
             },
-        
+
         TransferKind::HTTP3(path) => {
             let mut tab = path.split(",");
             let file_path = tab.next().unwrap().to_string();
             let manifest_path = tab.next().unwrap().to_string();
-            let mut fc_app = Http3Source::new(rx_app, tx_app, &file_path, &manifest_path).unwrap();
+            let mut fc_app =
+                Http3Source::new(rx_app, tx_app, &file_path, &manifest_path)
+                    .unwrap();
             tokio::spawn(async move {
                 fc_app.run().await.unwrap();
             });
-        }
+        },
     }
 
     fcquiche.run(uc_config).await.unwrap();

@@ -1825,6 +1825,8 @@ pub struct FcConfig {
     pub crt_path: String,
 
     pub fc_cca: FcFlowCwnd,
+
+    pub ack_delay_latency: time::Duration,
 }
 
 impl Default for FcConfig {
@@ -1843,6 +1845,7 @@ impl Default for FcConfig {
             mc_addr: "239.239.239.35:4434".parse().unwrap(),
             crt_path: ".".to_string(),
             fc_cca: FcFlowCwnd::CCA(CongestionControlAlgorithm::CUBIC),
+            ack_delay_latency: time::Duration::from_millis(100),
         };
         fc_config.mc_announce_data[0].probe_path = fc_config.probe_mc_path;
         fc_config.mc_announce_data[0].fc_ack_delay = 0;

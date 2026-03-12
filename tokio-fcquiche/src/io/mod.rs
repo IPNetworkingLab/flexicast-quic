@@ -1,14 +1,14 @@
 //! Flexicast QUIC module.
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use crate::fcquic::controller::ControllerLeaf;
 use crate::fcquic::controller::ControllerRole;
 use crate::fcquic::controller::ControllerRoot;
 use crate::fcquic::fc::FcChannelAsync;
-use crate::fcquic::scheduler::FcFallBackDelay;
 use crate::fcquic::fc::FcFlowRun;
+use crate::fcquic::scheduler::FcFallBackDelay;
 use crate::fcquic::sendmmsg::SendMMsg;
 use crate::io::fc_flow::FcFlowfileTransfer;
 use crate::Result;
@@ -189,9 +189,10 @@ impl TokioFcQuic {
             .unwrap();
 
         // Set the ack delay strategy.
-        fc_chan
-            .channel
-            .fc_update_ack_delay_strategy(fc_config.fc_ack_delay);
+        fc_chan.channel.fc_update_ack_delay_strategy(
+            fc_config.fc_ack_delay,
+            fc_config.ack_delay_latency,
+        );
 
         let fc_chan_info = FcChannelInfo {
             socket,

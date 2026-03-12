@@ -538,7 +538,8 @@ impl Connection {
             .path_stats()
             .map(|p| p.delivery_rate)
             .max()
-            .ok_or(Error::Flexicast(FcError::McDisabled))? * 8;
+            .ok_or(Error::Flexicast(FcError::McDisabled))? *
+            8;
 
         // The ack rate is +/- 1/12 the sending rate without ack delay.
         let real_ack_rate = rate_flow / 12 * nb_active_recv;
@@ -571,6 +572,7 @@ impl Connection {
     /// Update the acknowledgment strategy on the flexicast flow.
     pub fn fc_update_ack_delay_strategy(
         &mut self, new_strat: FcAckDelayStrategy,
+        ack_delay_update: time::Duration,
     ) {
         if let Some(source) = self
             .flexicast
@@ -578,6 +580,7 @@ impl Connection {
             .and_then(|fc| fc.fc_reliable.source_mut())
         {
             source.ack_delay_strategy = new_strat;
+            source.ack_delay_update_delay = ack_delay_update;
         }
     }
 }
