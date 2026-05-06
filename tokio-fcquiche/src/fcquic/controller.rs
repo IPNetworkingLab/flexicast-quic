@@ -1250,6 +1250,8 @@ impl FcController {
             )
             .await?;
 
+            let cwnd_opt = Some((100_000, 100_000));
+
             // Updates the lowest congestion window.
             // Filters our the potential unactive receivers.
             if let Some((cwnd, seen_bytes)) = cwnd_opt {
@@ -1265,8 +1267,8 @@ impl FcController {
                 //   seen bytes.
                 if self.active_clients[fc_id as usize].contains_key(&recv_id) {
                     if (cwnd < entry.0 &&
-                        seen_bytes >= entry.1.saturating_sub(50_000)) ||
-                        (seen_bytes >= entry.1 + 50_000)
+                        seen_bytes >= entry.1.saturating_sub(10_000)) ||
+                        (seen_bytes >= entry.1)
                     {
                         *entry = (cwnd, seen_bytes);
                     }
