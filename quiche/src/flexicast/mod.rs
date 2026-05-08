@@ -16,6 +16,7 @@ use crate::fec::decoder::FecDecoder;
 use crate::fec::encoder::FecEncoder;
 use crate::fec::schedulers::FecSchedulerAlgorithm;
 use crate::flexicast::cca::FcFlowCwnd;
+use crate::flexicast::lkhlib::lkh::LKHPlus;
 use crate::flexicast::nack::FcAckDelayStrategy;
 use crate::packet::Epoch;
 use crate::path;
@@ -381,6 +382,10 @@ pub struct FlexicastAttributes {
 
     /// Dictionnary to store the LKH keys
     pub fc_key_dict: HashMap<u64,Vec<u8>>,
+
+    /// LKH tree to store and generate the tree, should only be on the server
+    pub fc_lkh: Option<LKHPlus>
+
 }
 
 impl FlexicastAttributes {
@@ -736,7 +741,8 @@ impl Default for FlexicastAttributes {
             fc_flow_control: FcFlowControl::default(),
             fc_fec: fec::FcFec::Undefined,
             fc_highest_ack_pn: None,
-            fc_key_dict: HashMap::new()
+            fc_key_dict: HashMap::new(),
+            fc_lkh : None,
         }
     }
 }

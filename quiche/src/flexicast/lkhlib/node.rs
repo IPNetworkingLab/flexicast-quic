@@ -1,12 +1,13 @@
-use std::rc::Rc;
+//use std::rc::Rc;
 use std::fmt::{self};
+use std::sync::Arc;
 use crate::flexicast::lkhlib::user::User;
 #[derive(Debug, PartialEq, Eq)]
 pub struct Node {
     pub id: usize,
     pub key: Vec<u8>,
     pub key_id: u64,
-    pub user: Option<Rc<User>>,
+    pub user: Option<Arc<User>>,
     pub depth: u64,
 }
 

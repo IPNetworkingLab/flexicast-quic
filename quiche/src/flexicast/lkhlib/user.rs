@@ -2,7 +2,7 @@ use crate::flexicast::lkhlib::packet::KeyUpdatePacket;
 
 pub struct User {
     pub user_id: String,
-    pub send: Box<dyn Fn(KeyUpdatePacket)>,
+    pub send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>,
 }
 
 impl std::fmt::Debug for User {
