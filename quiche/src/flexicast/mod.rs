@@ -1,5 +1,8 @@
 //! Flexicast extension for QUIC.
 
+mod lkhlib;
+
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::io::BufRead;
@@ -375,6 +378,9 @@ pub struct FlexicastAttributes {
 
     /// Highest packet number acknowledged on the flexicast flow.
     pub fc_highest_ack_pn: Option<u64>,
+
+    /// Dictionnary to store the LKH keys
+    pub fc_key_dict: HashMap<u64,Vec<u8>>,
 }
 
 impl FlexicastAttributes {
@@ -730,6 +736,7 @@ impl Default for FlexicastAttributes {
             fc_flow_control: FcFlowControl::default(),
             fc_fec: fec::FcFec::Undefined,
             fc_highest_ack_pn: None,
+            fc_key_dict: HashMap::new()
         }
     }
 }
