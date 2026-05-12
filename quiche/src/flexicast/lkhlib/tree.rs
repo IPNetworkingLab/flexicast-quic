@@ -27,7 +27,7 @@ pub trait BinaryTree {
     fn verify_integrity(&self) -> bool;
 }
 #[derive(Debug)]
-#[derive(Default)]
+#[derive(Default,Clone)]
 pub struct Tree {
     //root: Option<Node>,
     //nodes: HashMap<u64, &'a Node>, //Association between nodeID and node

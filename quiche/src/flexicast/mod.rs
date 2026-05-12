@@ -17,6 +17,7 @@ use crate::fec::encoder::FecEncoder;
 use crate::fec::schedulers::FecSchedulerAlgorithm;
 use crate::flexicast::cca::FcFlowCwnd;
 use crate::flexicast::lkhlib::lkh::LKHPlus;
+use crate::flexicast::lkhlib::lkh::LogicalTree;
 use crate::flexicast::nack::FcAckDelayStrategy;
 use crate::packet::Epoch;
 use crate::path;
@@ -380,12 +381,8 @@ pub struct FlexicastAttributes {
     /// Highest packet number acknowledged on the flexicast flow.
     pub fc_highest_ack_pn: Option<u64>,
 
-    /// Dictionnary to store the LKH keys
-    pub fc_key_dict: HashMap<u64,Vec<u8>>,
-
     /// LKH tree to store and generate the tree, should only be on the server
-    pub fc_lkh: Option<LKHPlus>
-
+    pub fc_lkh: Option<LKHPlus>,
 }
 
 impl FlexicastAttributes {
@@ -458,36 +455,50 @@ impl FlexicastAttributes {
         let (is_server, current_status) = match self.mc_role {
             McRole::Client(status) => (false, status),
             McRole::ServerUnicast(status) => (true, status),
-            _ =>
+            _ => {
                 return Err(Error::Flexicast(FcError::McInvalidRole(
                     self.mc_role,
-                ))),
+                )))
+            },
         };
 
         let new_status = match (current_status, action) {
-            (McClientStatus::Unaware, FcClientAction::Notify) =>
-                McClientStatus::AwareUnjoined,
+            (McClientStatus::Unaware, FcClientAction::Notify) => {
+                McClientStatus::AwareUnjoined
+            },
             (McClientStatus::AwareUnjoined, FcClientAction::Join)
                 if !is_server =>
-                McClientStatus::WaitingToJoin,
+            {
+                McClientStatus::WaitingToJoin
+            },
             (McClientStatus::AwareUnjoined, FcClientAction::Join)
                 if is_server =>
-                McClientStatus::JoinedNoKey,
+            {
+                McClientStatus::JoinedNoKey
+            },
             (McClientStatus::Unaware, FcClientAction::Join)
-                if is_server &&
-                    self.get_mc_announce_data(0).unwrap().is_processed =>
-                McClientStatus::JoinedNoKey,
-            (McClientStatus::WaitingToJoin, FcClientAction::Join) =>
-                McClientStatus::JoinedNoKey,
-            (McClientStatus::JoinedNoKey, FcClientAction::DecryptionKey) =>
-                McClientStatus::JoinedAndKey,
+                if is_server
+                    && self.get_mc_announce_data(0).unwrap().is_processed =>
+            {
+                McClientStatus::JoinedNoKey
+            },
+            (McClientStatus::WaitingToJoin, FcClientAction::Join) => {
+                McClientStatus::JoinedNoKey
+            },
+            (McClientStatus::JoinedNoKey, FcClientAction::DecryptionKey) => {
+                McClientStatus::JoinedAndKey
+            },
             (McClientStatus::WaitingToJoin, FcClientAction::DecryptionKey)
                 if is_server && self.mc_key_up_to_date =>
-                McClientStatus::JoinedAndKey,
+            {
+                McClientStatus::JoinedAndKey
+            },
             (McClientStatus::WaitingToJoin, FcClientAction::DecryptionKey)
                 if !is_server =>
-                McClientStatus::JoinedAndKey,
-            (McClientStatus::ListenMcPath(_), FcClientAction::Leave) =>
+            {
+                McClientStatus::JoinedAndKey
+            },
+            (McClientStatus::ListenMcPath(_), FcClientAction::Leave) => {
                 if let Some(leaving_from) = action_data {
                     if leaving_from == LEAVE_FROM_CLIENT {
                         if is_server {
@@ -510,11 +521,14 @@ impl FlexicastAttributes {
                 } else {
                     debug!("Invalid action 2");
                     return Err(Error::Flexicast(FcError::McInvalidAction));
-                },
-            (McClientStatus::Leaving(false), FcClientAction::Leave) =>
-                McClientStatus::AwareUnjoined,
-            (McClientStatus::Leaving(true), FcClientAction::Leave) =>
-                McClientStatus::AwareUnjoined,
+                }
+            },
+            (McClientStatus::Leaving(false), FcClientAction::Leave) => {
+                McClientStatus::AwareUnjoined
+            },
+            (McClientStatus::Leaving(true), FcClientAction::Leave) => {
+                McClientStatus::AwareUnjoined
+            },
             (
                 McClientStatus::JoinedAndKey | McClientStatus::JoinedNoKey,
                 FcClientAction::McPath,
@@ -535,13 +549,16 @@ impl FlexicastAttributes {
                 self.fc_path_id = Some(action_data.unwrap());
                 McClientStatus::Changing
             },
-            (McClientStatus::Changing, FcClientAction::DecryptionKey) =>
-                McClientStatus::ListenMcPath(true),
-            (McClientStatus::AwareUnjoined, FcClientAction::Leave) =>
-                McClientStatus::AwareUnjoined,
+            (McClientStatus::Changing, FcClientAction::DecryptionKey) => {
+                McClientStatus::ListenMcPath(true)
+            },
+            (McClientStatus::AwareUnjoined, FcClientAction::Leave) => {
+                McClientStatus::AwareUnjoined
+            },
             (McClientStatus::ListenMcPath(_), _) => current_status,
-            (McClientStatus::JoinedAndKey, FcClientAction::Join) =>
-                current_status,
+            (McClientStatus::JoinedAndKey, FcClientAction::Join) => {
+                current_status
+            },
             _ => {
                 debug!(
                     "Invalid action 3: current={:?} and action is {:?}",
@@ -558,8 +575,8 @@ impl FlexicastAttributes {
         }
 
         // If the client left the group, it no longer has a space id.
-        if new_status == McClientStatus::AwareUnjoined &&
-            matches!(current_status, McClientStatus::Leaving(_))
+        if new_status == McClientStatus::AwareUnjoined
+            && matches!(current_status, McClientStatus::Leaving(_))
         {
             self.fc_path_id = None;
         }
@@ -618,10 +635,10 @@ impl FlexicastAttributes {
         if let McRole::ServerUnicast(status) = self.mc_role {
             matches!(
                 status,
-                McClientStatus::JoinedAndKey |
-                    McClientStatus::ListenMcPath(_) |
-                    McClientStatus::Changing |
-                    McClientStatus::JoinedNoKey
+                McClientStatus::JoinedAndKey
+                    | McClientStatus::ListenMcPath(_)
+                    | McClientStatus::Changing
+                    | McClientStatus::JoinedNoKey
             )
         } else {
             false
@@ -637,12 +654,12 @@ impl FlexicastAttributes {
     pub fn mc_client_has_key(&self) -> bool {
         self.mc_key_up_to_date
     }
-
+    //FC-LKH-TODO: switch depending on the presence of a lkh tree
     /// Get the channel decryption key secret.
     pub fn get_decryption_key_secret(&self) -> Result<&[u8]> {
         match self.mc_role {
-            McRole::ServerUnicast(McClientStatus::JoinedNoKey) |
-            McRole::ServerUnicast(McClientStatus::Changing) => Ok(self
+            McRole::ServerUnicast(McClientStatus::JoinedNoKey)
+            | McRole::ServerUnicast(McClientStatus::Changing) => Ok(self
                 .mc_announce_data[fc_chan_idx!(self)?]
             .fc_channel_secret
             .as_ref()
@@ -658,15 +675,15 @@ impl FlexicastAttributes {
             .fc_channel_algo
             .unwrap_or(Algorithm::AES128_GCM)
     }
-
+    //FC-LKH-TODO: should be called when session key change
     /// Sets the channel decryption key secret.
     pub fn set_decryption_key_secret(
         &mut self, key: Vec<u8>, algo: Algorithm,
     ) -> Result<()> {
         match self.mc_role {
-            McRole::Client(McClientStatus::JoinedNoKey) |
-            McRole::Client(McClientStatus::WaitingToJoin) |
-            McRole::Client(McClientStatus::Changing) => {
+            McRole::Client(McClientStatus::JoinedNoKey)
+            | McRole::Client(McClientStatus::WaitingToJoin)
+            | McRole::Client(McClientStatus::Changing) => {
                 let aead_open = Open::from_secret(algo, &key)?;
                 self.mc_crypto_open = Some(aead_open);
                 let aead_seal = Seal::from_secret(algo, &key)?;
@@ -741,8 +758,7 @@ impl Default for FlexicastAttributes {
             fc_flow_control: FcFlowControl::default(),
             fc_fec: fec::FcFec::Undefined,
             fc_highest_ack_pn: None,
-            fc_key_dict: HashMap::new(),
-            fc_lkh : None,
+            fc_lkh: None
         }
     }
 }
@@ -792,6 +808,9 @@ pub struct McAnnounceData {
     /// Distributed in the MC_KEY frame.
     /// mc_channel_algo: Algorithm::AES128_GCM,
     pub fc_channel_algo: Option<Algorithm>,
+
+    /// Dictionnary to store the LKH keys
+    pub fc_key_dict: HashMap<u64, Vec<u8>>
 }
 
 impl McAnnounceData {
@@ -903,9 +922,9 @@ impl FlexicastConnection for Connection {
                 .mc_announce_data
                 .iter()
                 .position(|mc_data| !mc_data.is_processed);
-            if idx.is_some() &&
-                flexicast.mc_role ==
-                    McRole::ServerUnicast(McClientStatus::Unaware)
+            if idx.is_some()
+                && flexicast.mc_role
+                    == McRole::ServerUnicast(McClientStatus::Unaware)
             {
                 idx
             } else {
@@ -1001,14 +1020,15 @@ impl FlexicastConnection for Connection {
             // Add Flexicast Forward Erasure Correction state for the unicast path
             // if FEC is enabled on the receiver.
             let fc_fec =
-                if self.peer_transport_params().is_some_and(|tp| tp.recv_fec) &&
-                    matches!(mc_role, McRole::ServerUnicast(_))
+                if self.peer_transport_params().is_some_and(|tp| tp.recv_fec)
+                    && matches!(mc_role, McRole::ServerUnicast(_))
                 {
                     fec::FcFec::UcPath(fec::FcFecUcPath::default())
                 } else {
                     fec::FcFec::Undefined
                 };
 
+            
             self.flexicast = Some(FlexicastAttributes {
                 mc_role,
                 mc_announce_data: vec![mc_data_cloned],
@@ -1023,10 +1043,10 @@ impl FlexicastConnection for Connection {
 
     fn fc_has_control_data(&self, _send_pid: usize) -> bool {
         if let Some(flexicast) = self.flexicast.as_ref() {
-            return self.fc_should_send_fc_announce().is_some() ||
-                flexicast.should_send_fc_state() ||
-                flexicast.should_send_fc_key() ||
-                flexicast.fc_use_nack_and_should_send_positive();
+            return self.fc_should_send_fc_announce().is_some()
+                || flexicast.should_send_fc_state()
+                || flexicast.should_send_fc_key()
+                || flexicast.fc_use_nack_and_should_send_positive();
         }
         false
     }
@@ -1039,10 +1059,11 @@ impl FlexicastConnection for Connection {
             Some(flexicast) => match flexicast.mc_role {
                 McRole::Client(McClientStatus::AwareUnjoined) => flexicast,
                 McRole::Client(McClientStatus::Leaving(_)) => flexicast, /* Client attempting to change the channel. */
-                _ =>
+                _ => {
                     return Err(Error::Flexicast(FcError::McInvalidRole(
                         flexicast.mc_role,
-                    ))),
+                    )))
+                },
             },
         };
 
@@ -1061,7 +1082,10 @@ impl FlexicastConnection for Connection {
 
         // Create the reliability structure on the receiver.
         flexicast.fc_reliable = ReliableFc::Receiver(RFcRecv::new(
-            flexicast.get_mc_announce_data_active().unwrap().fc_ack_delay,
+            flexicast
+                .get_mc_announce_data_active()
+                .unwrap()
+                .fc_ack_delay,
         ));
 
         let new_status =
@@ -1080,12 +1104,14 @@ impl FlexicastConnection for Connection {
             None => return Err(Error::Flexicast(FcError::McDisabled)),
             Some(flexicast) => match flexicast.mc_role {
                 McRole::Client(McClientStatus::ListenMcPath(_)) => flexicast,
-                McRole::ServerUnicast(McClientStatus::ListenMcPath(_)) =>
-                    flexicast,
-                _ =>
+                McRole::ServerUnicast(McClientStatus::ListenMcPath(_)) => {
+                    flexicast
+                },
+                _ => {
                     return Err(Error::Flexicast(FcError::McInvalidRole(
                         flexicast.mc_role,
-                    ))),
+                    )))
+                },
             },
         };
         let leaving_action_from = if self.is_server {
@@ -2213,6 +2239,7 @@ pub mod testing {
             is_processed: false,
             fc_channel_algo: None,
             fc_channel_secret: None,
+            fc_key_dict:HashMap::new()
         }
     }
 

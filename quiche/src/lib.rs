@@ -9561,6 +9561,8 @@ impl Connection {
                     is_processed: true,
                     fc_channel_algo: None,
                     fc_channel_secret: None,
+                    fc_key_dict: std::collections::HashMap::new(),
+                    
                 };
 
                 self.fc_set_announce_data(&mc_announce_data)?;
@@ -9601,6 +9603,8 @@ impl Connection {
                             // create path
                             // state if the receiver joined a flexicast flow
                             // without path probing.
+
+                            //FC-LKH-TODO: Should add the user to the tree
                             if let Some(mc_announce) =
                                 flexicast.get_mc_announce_data(idx)
                             {

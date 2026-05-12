@@ -1,4 +1,5 @@
 //! Flexicast QUIC module.
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -178,6 +179,7 @@ impl TokioFcQuic {
             is_processed: false,
             fc_channel_algo: None,
             fc_channel_secret: None,
+            fc_key_dict: HashMap::new()
         };
 
         fc_chan
