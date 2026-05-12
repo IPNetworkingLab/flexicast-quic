@@ -11,10 +11,6 @@ use quiche::Config;
 use quiche::ConnectionId;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
-use socket2::Socket;
-use socket2::Domain;
-use socket2::Type;
-use socket2::Protocol;
 use std::net;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -308,15 +304,8 @@ impl TokioFcQuicRecv {
                                     ))
                                 };
 
-                            let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-
-                            socket.set_reuse_address(true)?;
-                            socket.bind_device(Some(b"wlan-sta0"))?;  // avant le bind
-                            socket.bind(&mc_group_sockaddr.into())?;
-
-                            // Conversion vers tokio
-                            socket.set_nonblocking(true)?;
-                            let mc_socket = tokio::net::UdpSocket::from_std(socket.into())?;
+			    let mc_socket =
+                                UdpSocket::bind(mc_group_sockaddr).await?;
 
                             info!(
                                 "Multicast client binds on address: {:?}",
