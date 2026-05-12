@@ -1,6 +1,6 @@
 //! Flexicast extension for QUIC.
 
-mod lkhlib;
+pub mod lkhlib;
 
 use std::collections::HashMap;
 use std::convert::TryFrom;

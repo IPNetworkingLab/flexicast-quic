@@ -1,27 +1,50 @@
-#[derive(Clone,Debug)]
+#[derive(Clone,Debug,PartialEq,Eq)]
 pub struct KeyUpdatePacket {
     pub new_key: Vec<u8>,
     pub new_key_id: u64,
     pub is_session_key: bool,
     pub delete_new_key: bool,
 }
-#[derive(Clone,Debug)]
+#[derive(Clone,Debug,PartialEq,Eq)]
 pub struct WrappedKeyUpdatePacket {
-    packet:KeyUpdatePacket,
-    ksk:Vec<u8>,
-    ksk_id : u64
+    pub packet:KeyUpdatePacket,
+    pub ksk:Vec<u8>,
+    pub ksk_id : u64
+}
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub struct KeylessWrappedKeyUpdatePacket {
+    pub cipher :Vec<u8>,
+    pub ksk_id : u64
 }
 
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub enum FCKeyUpdate {
+    /// Raw key 
+    RawKey(Vec<u8>),
+    /// Raw tree key update
+    KeyUpdatePacket(KeyUpdatePacket), 
+    /// Key update to be wrapped with ksk
+    WrappedKeyUpdatePacket(WrappedKeyUpdatePacket), 
+    /// key update that couldn't yet be deciphered
+    KeylessWrappedKeyUpdatePacket(KeylessWrappedKeyUpdatePacket)
+
+}
+
+
 impl KeyUpdatePacket {
-    fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Vec<u8> {
         let flags: u8 = (self.is_session_key as u8) | ((self.delete_new_key as u8) << 1);
         let mut out = vec![flags];
         out.extend_from_slice(self.new_key_id.to_be_bytes().as_ref());
+        let len = (self.new_key.len() as u32).to_be_bytes();
+        out.extend_from_slice(&len);
         out.extend_from_slice(&self.new_key.clone());
         out
     }
 
-    fn from_bytes(packet: Vec<u8>) -> Option<Self> {
+    pub fn from_bytes(packet: Vec<u8>) -> Option<Self> {
+
+
         if packet.len() < 10 {
             None
         } else {
@@ -32,7 +55,12 @@ impl KeyUpdatePacket {
             let key_id: [u8; 8] = packet[1..9].try_into().ok()?;
 
             let id = u64::from_be_bytes(key_id);
-            let key = packet[9..].to_vec();
+            let key_len = u32::from_be_bytes(packet[9..13].try_into().ok()?);
+            if packet.len()<(13+key_len as usize){
+                None
+            }
+            else {
+                let key = packet[13..(13+key_len as usize)].to_vec();
 
             Some(KeyUpdatePacket {
                 is_session_key,
@@ -40,8 +68,11 @@ impl KeyUpdatePacket {
                 delete_new_key,
                 new_key_id: id,
             })
+            }
+            
         }
     }
+
     pub fn wrap(&self,ksk:Vec<u8>,ksk_id:u64) -> WrappedKeyUpdatePacket {
         WrappedKeyUpdatePacket { packet: self.clone(), ksk , ksk_id }
     }
