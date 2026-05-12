@@ -375,6 +375,11 @@ pub struct FlexicastAttributes {
 
     /// Highest packet number acknowledged on the flexicast flow.
     pub fc_highest_ack_pn: Option<u64>,
+
+    /// Set by the server when it sends MC_STATE(Sync) to instruct the client
+    /// to leave the multicast group. The application polls this to trigger
+    /// leave_multicast_v4().
+    pub fc_uc_fallback: bool,
 }
 
 impl FlexicastAttributes {
@@ -730,6 +735,7 @@ impl Default for FlexicastAttributes {
             fc_flow_control: FcFlowControl::default(),
             fc_fec: fec::FcFec::Undefined,
             fc_highest_ack_pn: None,
+            fc_uc_fallback: false,
         }
     }
 }
@@ -2577,6 +2583,70 @@ mod tests {
         let written = fc_pipe.source_send_single_stream(true, None, 3);
         assert_eq!(written, Ok(65));
         fc_pipe.server_control_to_mc_source(now).unwrap();
+    }
+
+    #[test]
+    /// Tests that with 2 receivers, the server can force only one to fall back
+    /// to unicast. The falling-back receiver gets fc_uc_fallback set (so the
+    /// application can leave the multicast group); the other receiver is
+    /// unaffected. Both still receive data after the fallback.
+    fn test_server_forces_one_client_uc_fallback() {
+        let mut fc_config = FcConfig {
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_pipe = FlexicastPipe::new(
+            2,
+            "/tmp/test_server_forces_one_uc_fallback",
+            &mut fc_config,
+        )
+        .unwrap();
+
+        // Send data so fc_highest_pn is populated on both unicast server paths.
+        fc_pipe.source_send_single_stream(true, None, 3).unwrap();
+        let now = time::Instant::now();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+
+        // Server forces only receiver 0 to fall back.
+        fc_pipe.unicast_pipes[0].0.server.fc_do_uc_fallback().unwrap();
+
+        // Exchange packets for both pipes: pipe 0 gets MC_STATE(Sync),
+        // pipe 1 gets nothing special.
+        fc_pipe.unicast_pipes[0].0.advance().unwrap();
+        fc_pipe.unicast_pipes[1].0.advance().unwrap();
+
+        // Receiver 0 must signal leaving the multicast group.
+        assert!(fc_pipe.unicast_pipes[0].0.client.fc_should_leave_mc());
+        // Flag is consumed on second call.
+        assert!(!fc_pipe.unicast_pipes[0].0.client.fc_should_leave_mc());
+
+        // Receiver 1 must be unaffected.
+        assert!(!fc_pipe.unicast_pipes[1].0.client.fc_should_leave_mc());
+
+        // Receiver 0 still receives data via unicast.
+        fc_pipe.uc_server_send_single_stream(7, 0).unwrap();
+        let mut buf = [0u8; 300];
+        let (read, fin) =
+            fc_pipe.unicast_pipes[0].0.client.stream_recv(7, &mut buf).unwrap();
+        assert!(read > 0);
+        assert!(fin);
+
+        // Simulate IGMP leave: receiver 0 no longer gets FC packets.
+        let mut loss_recv_0 = RangeSet::default();
+        loss_recv_0.insert(0..1);
+        fc_pipe.source_send_single_stream(true, Some(&loss_recv_0), 11).unwrap();
+
+        // Receiver 0 must not get stream 11 via FC (stream was never opened).
+        assert_eq!(
+            fc_pipe.unicast_pipes[0].0.client.stream_recv(11, &mut buf),
+            Err(Error::InvalidStreamState(11))
+        );
+
+        // Receiver 1 still receives stream 11 via flexicast.
+        let (read, fin) =
+            fc_pipe.unicast_pipes[1].0.client.stream_recv(11, &mut buf).unwrap();
+        assert!(read > 0);
+        assert!(fin);
     }
 }
 

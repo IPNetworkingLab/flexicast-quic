@@ -507,7 +507,7 @@ impl HttpConn for Http09Conn {
 
                 match &mut req.response_writer {
                     Some(rw) => {
-                        rw.write_all(&buf[..read]).ok();
+                        // rw.write_all(&buf[..read]).ok();
                     },
 
                     None => {
@@ -1278,7 +1278,7 @@ impl HttpConn for Http3Conn {
 
                         match &mut req.response_writer {
                             Some(rw) => {
-                                rw.write_all(&buf[..read]).ok();
+                                // rw.write_all(&buf[..read]).ok();
                             },
 
                             None =>

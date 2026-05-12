@@ -159,6 +159,10 @@ impl UcPath {
                 self.handle_new_stream_data(data, stream_id, off, fin)
                     .await?;
             },
+
+            MsgRecv::FallBack => {
+                self.conn.fc_do_uc_fallback()?;
+            },
         }
 
         Ok(())

@@ -392,7 +392,7 @@ impl Connection {
     /// the sent packets.
     ///
     /// Returns `None` if this is not the unicast path source.
-    pub fn fc_get_flow_cwnd(&self) -> Option<(usize, usize)> {
+    pub fn fc_get_flow_cwnd(&self) -> Option<(usize, usize, u64)> {
         if let Some(flexicast) = self.flexicast.as_ref() {
             match flexicast.get_mc_role() {
                 McRole::ServerUnicast(McClientStatus::ListenMcPath(_)) =>
@@ -406,8 +406,9 @@ impl Connection {
                             }
                             let nb_sent = uc_path.recovery.bytes_sent();
                             let cwnd = uc_path.recovery.cwnd();
+                            let rate = uc_path.recovery.delivery_rate();
 
-                            return Some((cwnd, nb_sent));
+                            return Some((cwnd, nb_sent, rate));
                         }
                     },
                 McRole::ServerFlexicast => {
@@ -418,6 +419,7 @@ impl Connection {
                         return Some((
                             fc_flow.recovery.cwnd(),
                             fc_flow.sent_count,
+                            fc_flow.recovery.delivery_rate(),
                         ));
                     }
                 },
@@ -576,5 +578,40 @@ impl Connection {
         }
 
         Ok(output)
+    }
+
+    /// Performs unicast fallback.
+    pub fn fc_do_uc_fallback(&mut self) -> Result<()> {
+        if self.flexicast.as_ref().is_none() {
+            return Err(Error::Flexicast(FcError::McDisabled));
+        }
+
+        let fc = self.flexicast.as_mut().unwrap();
+
+        match fc.mc_role {
+            McRole::ServerFlexicast =>
+                return Err(Error::Flexicast(FcError::McInvalidRole(
+                    McRole::ServerFlexicast,
+                ))),
+            McRole::ServerUnicast(McClientStatus::ListenMcPath(true)) => {
+                // Transition to UcFallBack: triggers should_send_fc_state()
+                // to return true, causing MC_STATE(Sync) to be sent to the
+                // client on the next send() call.
+                fc.mc_role =
+                    McRole::ServerUnicast(McClientStatus::UcFallBack);
+            },
+            _ => (),
+        }
+
+        Ok(())
+    }
+
+    /// Returns true if the client-side connection has been instructed to leave
+    /// the multicast group by the server (via MC_STATE(Sync)). Resets the flag.
+    pub fn fc_should_leave_mc(&mut self) -> bool {
+        self.flexicast
+            .as_mut()
+            .map(|fc| std::mem::replace(&mut fc.fc_uc_fallback, false))
+            .unwrap_or(false)
     }
 }

@@ -308,10 +308,10 @@ pub fn connect(
                 if let Some(target_path) = conn_args.dump_packet_path.as_ref() {
                     let path = format!("{target_path}/{pkt_count}.pkt");
 
-                    if let Ok(f) = std::fs::File::create(path) {
-                        let mut f = std::io::BufWriter::new(f);
-                        f.write_all(&buf[..len]).ok();
-                    }
+                    // if let Ok(f) = std::fs::File::create(path) {
+                    //     let mut f = std::io::BufWriter::new(f);
+                    //     f.write_all(&buf[..len]).ok();
+                    // }
                 }
 
                 pkt_count += 1;

@@ -311,7 +311,6 @@ impl TokioFcQuicRecv {
                             let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
                             socket.set_reuse_address(true)?;
-                            socket.bind_device(Some(b"wlan-sta0"))?;  // avant le bind
                             socket.bind(&mc_group_sockaddr.into())?;
 
                             // Conversion vers tokio
@@ -352,6 +351,24 @@ impl TokioFcQuicRecv {
                             self.local_ip,
                         )?;
                         joined_mc_ip = true;
+                    }
+                }
+
+                // Leave the multicast group if the server instructed fallback.
+                if conn.fc_should_leave_mc() && joined_mc_ip && !self.proxy_uc {
+                    if let Some(socket) = mc_socket_opt.as_mut() {
+                        if let Some(flexicast) = conn.get_flexicast_attributes() {
+                            let group_ip = net::Ipv4Addr::from(
+                                flexicast
+                                    .get_mc_announce_data(0)
+                                    .ok_or("Impossible to fetch the FC_ANNOUNCE_DATA")?
+                                    .group_ip
+                                    .to_owned(),
+                            );
+                            info!("Leave MULTICAST group {:?}", group_ip);
+                            socket.leave_multicast_v4(group_ip, self.local_ip)?;
+                            joined_mc_ip = false;
+                        }
                     }
                 }
             }

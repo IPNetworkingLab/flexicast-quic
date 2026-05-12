@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::fcquic::controller::ControllerLeaf;
 use crate::fcquic::controller::ControllerRole;
 use crate::fcquic::controller::ControllerRoot;
+use crate::fcquic::messages::MsgFcCtl;
 use crate::fcquic::fc::FcChannelAsync;
 use crate::fcquic::fc::FcFlowRun;
 use crate::fcquic::scheduler::FcFallBackDelay;
@@ -72,6 +73,10 @@ pub struct TokioFcQuicConfig {
 
     /// Maximum expected acknowledgment rate, in bps.
     pub max_ack_rate: u64,
+
+    /// Minimum bandwidth gain ratio to trigger unicast fallback for the
+    /// slowest receiver (leaf controller bottleneck check).
+    pub fallback_gain_ratio: f64,
 }
 
 pub struct TokioFcQuic {
@@ -412,6 +417,7 @@ impl TokioFcQuic {
             tx_main.clone(),
             self.config.wait,
             Some(time::Duration::from_secs(0)),
+            self.config.fallback_gain_ratio,
         );
 
         let mut ctl_leaves_struct = (0..self.config.nb_leaf_controllers)
@@ -433,6 +439,7 @@ impl TokioFcQuic {
                     .wait
                     .map(|n| n / self.config.nb_leaf_controllers),
                 Some(time::Duration::from_secs(0)),
+                self.config.fallback_gain_ratio,
             );
 
             #[cfg(feature = "tokio-tracing")]

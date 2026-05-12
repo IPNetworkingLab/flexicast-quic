@@ -50,7 +50,7 @@ pub enum MsgFcCtl {
     /// This allows to avoid retransmission if the packet was recovered through
     /// Forward Erasure Correction.
     /// The sixth value is the potential congestion window of this unicast path
-    /// and the number of sent bytes as seen on the flow.
+    /// and the number of sent bytes as seen on the flow, and the delivery rate.
     AckData(
         (
             u64,
@@ -58,7 +58,7 @@ pub enum MsgFcCtl {
             Option<OpenRangeSet>,
             Option<McStreamOff>,
             Option<OpenRangeSet>,
-            Option<(usize, usize)>,
+            Option<(usize, usize, u64)>,
         ),
     ),
 
@@ -126,6 +126,10 @@ pub enum MsgRecv {
     /// on unicast / disable flexicast and still receive the content.
     /// The last value indicates whether the stream is finished.
     StreamData((Arc<Vec<u8>>, u64, u64, bool)),
+
+    /// The controller instructs this receiver to fall back to unicast because
+    /// it was identified as the bottleneck of the multicast group.
+    FallBack,
 }
 
 /// Messages sent to the flexicast source.

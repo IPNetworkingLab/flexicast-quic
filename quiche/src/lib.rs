@@ -9649,6 +9649,7 @@ impl Connection {
                                     action_data,
                                 );
                             }
+                            flexicast.fc_uc_fallback = true;
                         },
 
                         _ => (),

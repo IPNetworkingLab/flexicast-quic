@@ -3,7 +3,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::os::unix::fs::FileExt;
 
 use crate::fc_app::h3::Manifest;
 
@@ -176,7 +175,7 @@ impl Http3Receiver {
 
                 // Create the file of the correct size.
                 let file = std::fs::File::create(&self.path)?;
-                file.set_len(manifest.size)?;
+                file.set_len(100)?;
                 self.file = Some(file);
 
                 // Fill the hashmap with the stream current offset (0), cumulated
