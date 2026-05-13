@@ -18,6 +18,7 @@ use crate::fec::schedulers::FecSchedulerAlgorithm;
 use crate::flexicast::cca::FcFlowCwnd;
 use crate::flexicast::lkhlib::lkh::LKHPlus;
 use crate::flexicast::lkhlib::lkh::LogicalTree;
+use crate::flexicast::lkhlib::packet::KeyUpdatePacket;
 use crate::flexicast::nack::FcAckDelayStrategy;
 use crate::packet::Epoch;
 use crate::path;
@@ -169,6 +170,9 @@ pub enum FcError {
 
     /// Attempt to change channel ID in 1 RTT but path probing is used.
     FcChangeChan,
+
+    /// The receiver doesn't know the key that was used to encrypt the new key
+    FcLKHKeyUnknown
 }
 
 /// MC_ANNOUNCE frame type.
@@ -699,6 +703,49 @@ impl FlexicastAttributes {
             _ => Err(Error::Flexicast(FcError::McInvalidRole(self.mc_role))),
         }
     }
+    //Try to update the lkh keys using the provided packet
+    pub fn update_client_keys(&mut self,algo:Algorithm, packet : lkhlib::packet::FCKeyUpdate) -> Result<()> {
+        match packet {
+            lkhlib::packet::FCKeyUpdate::KeyUpdatePacket(packet) => {
+                //Unencrypted key update packet
+                let key_dict = &mut self.mc_announce_data[fc_chan_idx!(self)?].fc_key_dict;
+                if !packet.delete_new_key {
+                     key_dict.insert(packet.new_key_id, packet.new_key.clone());
+
+                    if packet.is_session_key {
+
+                        self.set_decryption_key_secret(packet.new_key, algo)
+                    }
+                    else {
+                        Ok(())
+                    }
+                }
+                else {
+                    key_dict.remove(&packet.new_key_id).map(|_| ()).ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))
+                }
+               
+                
+            }, 
+            lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdatePacket(packet) => {
+                //This packet is encrypted with the key that may be stored with the key ksk_id 
+                let key_dict = &mut self.mc_announce_data[fc_chan_idx!(self)?].fc_key_dict; 
+                let ksk = key_dict.get(&packet.ksk_id).ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))?;
+
+                
+
+
+
+            },
+            lkhlib::packet::FCKeyUpdate::RawKey(key) => {
+                // standard update 
+                self.set_decryption_key_secret(key, algo)
+            },
+            lkhlib::packet::FCKeyUpdate::WrappedKeyUpdatePacket(_) => Err(Error::Flexicast(FcError::McInvalidAsymKey) )
+
+        }
+        
+
+    }
 
     /// Gives the decryption context for the flexicast channel.
     pub fn get_mc_crypto_open(&self) -> Option<&Open> {
@@ -1078,8 +1125,8 @@ impl FlexicastConnection for Connection {
             (chan_id.to_owned(), id)
         } else {
             (flexicast.mc_announce_data[0].channel_id.clone(), 0)
-        });
 
+        });
         // Create the reliability structure on the receiver.
         flexicast.fc_reliable = ReliableFc::Receiver(RFcRecv::new(
             flexicast

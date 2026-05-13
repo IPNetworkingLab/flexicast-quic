@@ -22,11 +22,11 @@ pub enum FCKeyUpdate {
     /// Raw key 
     RawKey(Vec<u8>),
     /// Raw tree key update
-    KeyUpdatePacket(KeyUpdatePacket), 
+    KeyUpdate(KeyUpdatePacket), 
     /// Key update to be wrapped with ksk
-    WrappedKeyUpdatePacket(WrappedKeyUpdatePacket), 
+    //WrappedKeyUpdatePacket(WrappedKeyUpdatePacket), 
     /// key update that couldn't yet be deciphered
-    KeylessWrappedKeyUpdatePacket(KeylessWrappedKeyUpdatePacket)
+    KeylessWrappedKeyUpdate(KeylessWrappedKeyUpdatePacket)
 
 }
 

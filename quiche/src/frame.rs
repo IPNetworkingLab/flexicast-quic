@@ -26,6 +26,7 @@
 
 use std::convert::TryInto;
 
+use crate::flexicast::lkhlib::MC_KEY_LKH_CODE;
 use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 use crate::flexicast::lkhlib::packet::KeyUpdatePacket;
 use crate::flexicast::lkhlib::packet::KeylessWrappedKeyUpdatePacket;
@@ -267,12 +268,18 @@ pub enum Frame {
 
     McKey {
         channel_id: Vec<u8>,
-        //key: Vec<u8>,
+        key: Vec<u8>,
+        algo: Algorithm,
+        first_pn: u64,
+        //key_update : FCKeyUpdate,
+        
+        
+    },
+    McKeyLKH {
+        channel_id: Vec<u8>,
         algo: Algorithm,
         first_pn: u64,
         key_update : FCKeyUpdate,
-        
-        
     },
 
     FcAckDelay {
@@ -536,12 +543,29 @@ impl Frame {
             },
 
             MC_KEY_CODE => {
-                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
+                                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
                 let key_len = b.get_varint()?;
-                let key:Vec<u8> = b
+                let key = b
                     .get_bytes(key_len as usize)?
                     .buf()
                     .into();
+                let algo =
+                    b.get_u8()?.try_into().map_err(|_| Error::CryptoFail)?;
+                let first_pn = b.get_varint()?;
+                Frame::McKey {
+                    channel_id,
+                    key,
+                    algo,
+                    first_pn,
+                }
+
+
+
+                
+            },
+
+            MC_KEY_LKH_CODE => {
+                let channel_id = b.get_bytes_with_u8_length()?.to_vec();
                 let algo =b.get_u8()?.try_into().map_err(|_| Error::CryptoFail)?;
                 let first_pn = b.get_varint()?;
 
@@ -557,7 +581,7 @@ impl Frame {
                         
 
 
-                        Frame::McKey {
+                        Frame::McKeyLKH {
                     channel_id,
                     key_update: FCKeyUpdate::KeylessWrappedKeyUpdatePacket( KeylessWrappedKeyUpdatePacket{cipher, ksk_id}),
                     algo,
@@ -568,7 +592,7 @@ impl Frame {
                         let packet_len = b.get_varint()?;
                         let bpacket = b.get_bytes(packet_len as usize)?.to_vec();
                         let packet = KeyUpdatePacket::from_bytes(bpacket).ok_or(Error::InvalidFrame)?;
-                        Frame::McKey {
+                        Frame::McKeyLKH {
                     channel_id,
                     key_update : FCKeyUpdate::KeyUpdatePacket(packet),
                     algo,
@@ -581,7 +605,7 @@ impl Frame {
                     .get_bytes(key_len as usize)?
                     .buf()
                     .into();
-                    Frame::McKey {
+                    Frame::McKeyLKH {
                     channel_id,
                     key_update : FCKeyUpdate::RawKey(key),
                     algo,
@@ -591,12 +615,7 @@ impl Frame {
                     }
                     _ => {return Err(Error::InvalidPacket);}
                 }
-
-
-
-                
             },
-
             FC_ACK_DELAY_CODE => {
                 let seqnum= b.get_varint()?;
                 let ack_delay = b.get_varint()?;
@@ -1001,8 +1020,23 @@ impl Frame {
                 b.put_varint(*action)?;
                 b.put_varint(*action_data)?;
             },
+           Frame::McKey {
+                channel_id,
+                key,
+                algo,
+                first_pn,
+            } => {
+                debug!("Going to encode the MC_KEY frame");
+                b.put_varint(MC_KEY_CODE)?;
+                b.put_u8(channel_id.len() as u8)?;
+                b.put_bytes(channel_id.as_ref())?;
+                b.put_varint(key.len() as u64)?;
+                b.put_bytes(key)?;
+                b.put_u8(algo.to_owned().try_into().unwrap())?;
+                b.put_varint(*first_pn)?;
+            }
 
-            Frame::McKey {
+            Frame::McKeyLKH {
                 channel_id,
                 
                 algo,
@@ -1010,7 +1044,7 @@ impl Frame {
                 key_update
             } => {
                 debug!("Going to encode the MC_KEY frame");
-                b.put_varint(MC_KEY_CODE)?;
+                b.put_varint(MC_KEY_LKH_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
                 b.put_u8(algo.to_owned().try_into().unwrap())?;
@@ -1039,7 +1073,7 @@ impl Frame {
                         b.put_bytes(&bpacket);
 
                     },
-                    FCKeyUpdate::KeylessWrappedKeyUpdatePacket(packet)=> {
+                    FCKeyUpdate::KeylessWrappedKeyUpdatePacket(_packet)=> {
                         return Err(Error::InvalidFrame); //Shouldn't be sent
                     },
                     FCKeyUpdate::RawKey(key) => {
@@ -1389,8 +1423,24 @@ impl Frame {
                 action_size +
                 action_data_size
             },
-
             Frame::McKey {
+                channel_id,
+                key,
+                algo: _,
+                first_pn,
+            } => {
+                let key_len_size = octets::varint_len(key.len() as u64);
+                let first_pn_size = octets::varint_len(*first_pn);
+                let frame_type_size = octets::varint_len(MC_KEY_CODE);
+                frame_type_size + // frame type
+                1 + // channel_id len
+                channel_id.len() +
+                key_len_size +
+                key.len() +
+                1 + // algo len
+                first_pn_size
+            },
+            Frame::McKeyLKH {
                 channel_id,
                 key_update,
                 algo: _,
@@ -1790,6 +1840,11 @@ impl Frame {
                 frame_type_value: None,
                 raw: None,
             },
+             Frame::McKeyLKH { .. } => QuicFrame::Unknown {
+                raw_frame_type: MC_ANNOUNCE_CODE,
+                frame_type_value: None,
+                raw: None,
+            },
 
             Frame::FcAckDelay { .. } => QuicFrame::Unknown { raw_frame_type: FC_ACK_DELAY_CODE, frame_type_value: None, raw: None },
 
@@ -2072,10 +2127,9 @@ impl std::fmt::Debug for Frame {
                     channel_id, action, action_data,
                 )?;
             },
-
             Frame::McKey {
                 channel_id,
-                key_update,
+                key,
                 algo,
                 first_pn,
             } => {
@@ -2083,6 +2137,18 @@ impl std::fmt::Debug for Frame {
                     f,
                     "MC_KEY channel ID={:?} key={:?} algo={:?} first pn={:?}",
                     channel_id, key, algo, first_pn,
+                )?;
+            },
+            Frame::McKeyLKH {
+                channel_id,
+                key_update,
+                algo,
+                first_pn,
+            } => {
+                write!(
+                    f,
+                    "MC_KEY_LKH channel ID={:?} key={:?} algo={:?} first pn={:?}",
+                    channel_id, key_update, algo, first_pn,
                 )?;
             },
 
