@@ -128,8 +128,9 @@ struct Args {
     /// Minimum bandwidth gain ratio to trigger unicast fallback for the
     /// slowest receiver. The slowest receiver is ejected when removing it
     /// would multiply the group's bottleneck rate by at least this factor.
-    #[clap(long = "fallback-gain-ratio", default_value = "1.5")]
-    fallback_gain_ratio: f64,
+    /// If not set, the controller never auto-ejects slow receivers.
+    #[clap(long = "fallback-gain-ratio")]
+    fallback_gain_ratio: Option<f64>,
 
     /// Maximum expected acknowledgment rate, in bps.
     #[clap(long = "max-ack-rate", default_value = "100000000")]

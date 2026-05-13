@@ -76,7 +76,8 @@ pub struct TokioFcQuicConfig {
 
     /// Minimum bandwidth gain ratio to trigger unicast fallback for the
     /// slowest receiver (leaf controller bottleneck check).
-    pub fallback_gain_ratio: f64,
+    /// `None` disables the auto-ejection entirely.
+    pub fallback_gain_ratio: Option<f64>,
 }
 
 pub struct TokioFcQuic {

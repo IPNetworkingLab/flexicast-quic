@@ -311,6 +311,7 @@ impl TokioFcQuicRecv {
                             let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
                             socket.set_reuse_address(true)?;
+                            // socket.bind_device(Some(b"phy1-sta0"))?;
                             socket.bind(&mc_group_sockaddr.into())?;
 
                             // Conversion vers tokio

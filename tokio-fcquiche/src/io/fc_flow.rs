@@ -381,9 +381,9 @@ impl FcFlowRun for FcFlowfileTransfer {
                 }
 
                 // Notify the controller of the sent packets.
-                // if nb_sent_pkt > 0 {
-                //     self.fc.sent_pkt_to_controller().await?;
-                // }
+                if nb_sent_pkt > 0 {
+                    self.fc.sent_pkt_to_controller().await?;
+                }
 
                 // Update the maximum sent packet number for the multicast flow
                 // scheduler.

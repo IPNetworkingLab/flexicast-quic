@@ -25,6 +25,12 @@ use std::time;
 use tokio;
 use tokio::sync::mpsc;
 
+/// EMA smoothing factor for per-receiver delivery-rate estimates.
+const DELIVERY_RATE_EMA_ALPHA: f64 = 0.2;
+
+/// Minimum number of EMA samples before a receiver is eligible for fallback.
+const DELIVERY_RATE_MIN_SAMPLES: u64 = 100;
+
 /// Controller structure using tokio to handle messages between the flexicast
 /// source and the unicast server instances.
 pub struct FcController {
@@ -136,16 +142,16 @@ pub struct FcController {
     /// The third value is the delivery rate.
     fc_flow_cwnd: HashMap<u64, (usize, usize, u64)>,
 
-    /// Per-receiver delivery rates. Maps recv_id → latest delivery rate
-    /// (bytes/s). Updated on each ACK from an active FC receiver. Cleared when
-    /// a receiver falls back to unicast or disconnects. Used to identify the
-    /// slowest receiver and evaluate whether removing it would improve the
-    /// group's effective throughput.
-    recv_delivery_rates: HashMap<u64, u64>,
+    /// Per-receiver delivery rates. Maps recv_id → (smoothed_rate, n_samples).
+    /// `smoothed_rate` is an EMA (0.8·old + 0.2·new) of the delivery rate in
+    /// bytes/s. `n_samples` counts how many ACKs have contributed. Cleared when
+    /// a receiver falls back or disconnects.
+    recv_delivery_rates: HashMap<u64, (u64, u64)>,
 
     /// Minimum ratio new_bottleneck / slowest_rate to trigger unicast fallback
     /// for the slowest receiver (leaf bottleneck check).
-    fallback_gain_ratio: f64,
+    /// `None` disables the auto-ejection entirely.
+    fallback_gain_ratio: Option<f64>,
 }
 
 impl FcController {
@@ -154,7 +160,7 @@ impl FcController {
         rx_fc_ctl: mpsc::Receiver<MsgFcCtl>,
         mc_announce_data: Vec<McAnnounceData>, controller_role: ControllerRole,
         tx_main: mpsc::Sender<MsgMain>, wait: Option<u64>,
-        ack_delay: Option<time::Duration>, fallback_gain_ratio: f64,
+        ack_delay: Option<time::Duration>, fallback_gain_ratio: Option<f64>,
     ) -> Self {
         Self {
             controller_role,
@@ -991,11 +997,14 @@ impl FcController {
             });
             if should_check {
                 self.last_bottleneck_check = Some(now);
-                if let Some((slowest_id, slowest, Some(new_bottleneck))) =
-                    self.slowest_receiver()
-                {
-                    if new_bottleneck as f64 >= slowest as f64 * self.fallback_gain_ratio {
-                        self.do_recv_uc_fallback(slowest_id, 0).await?;
+                if let Some(ratio) = self.fallback_gain_ratio {
+                    if let Some((slowest_id, slowest, Some(new_bottleneck))) =
+                        self.slowest_receiver()
+                    {
+                        if new_bottleneck as f64 >= slowest as f64 * ratio {
+                            println!("Receiver {slowest_id} will fall back. From {:?} to {:?}", slowest, new_bottleneck);
+                            self.do_recv_uc_fallback(slowest_id, 0).await?;
+                        }
                     }
                 }
             }
@@ -1296,7 +1305,14 @@ impl FcController {
                     {
                         *entry = (cwnd, seen_bytes, rate);
                     }
-                    self.recv_delivery_rates.insert(recv_id, rate);
+                    let (smoothed, n) = self.recv_delivery_rates.get(&recv_id)
+                        .map(|&(old, n)| {
+                            let s = ((1.0 - DELIVERY_RATE_EMA_ALPHA) * old as f64
+                                + DELIVERY_RATE_EMA_ALPHA * rate as f64) as u64;
+                            (s, n + 1)
+                        })
+                        .unwrap_or((rate, 1));
+                    self.recv_delivery_rates.insert(recv_id, (smoothed, n));
                 }
             }
         }
@@ -1312,15 +1328,16 @@ impl FcController {
     /// If `new_bottleneck_rate` is `None`, there is only one receiver.
     /// The group's effective rate improves when `new_bottleneck_rate > slowest_rate`.
     pub fn slowest_receiver(&self) -> Option<(u64, u64, Option<u64>)> {
-        let (&slowest_id, &slowest_rate) = self
+        let (&slowest_id, &(slowest_rate, _)) = self
             .recv_delivery_rates
             .iter()
-            .min_by_key(|(_, &rate)| rate)?;
+            .filter(|(_, &(_, n))| n >= DELIVERY_RATE_MIN_SAMPLES)
+            .min_by_key(|(_, &(rate, _))| rate)?;
         let new_bottleneck = self
             .recv_delivery_rates
             .iter()
-            .filter(|(&id, _)| id != slowest_id)
-            .map(|(_, &rate)| rate)
+            .filter(|(&id, &(_, n))| id != slowest_id && n >= DELIVERY_RATE_MIN_SAMPLES)
+            .map(|(_, &(rate, _))| rate)
             .min();
         Some((slowest_id, slowest_rate, new_bottleneck))
     }
