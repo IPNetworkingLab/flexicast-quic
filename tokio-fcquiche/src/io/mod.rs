@@ -78,6 +78,10 @@ pub struct TokioFcQuicConfig {
     /// slowest receiver (leaf controller bottleneck check).
     /// `None` disables the auto-ejection entirely.
     pub fallback_gain_ratio: Option<f64>,
+
+    /// Minimum delivery-rate samples before a receiver is eligible for
+    /// auto fallback. `None` uses the compiled-in default.
+    pub fallback_min_samples: Option<u64>,
 }
 
 pub struct TokioFcQuic {
@@ -419,6 +423,7 @@ impl TokioFcQuic {
             self.config.wait,
             Some(time::Duration::from_secs(0)),
             self.config.fallback_gain_ratio,
+            self.config.fallback_min_samples,
         );
 
         let mut ctl_leaves_struct = (0..self.config.nb_leaf_controllers)
@@ -441,6 +446,7 @@ impl TokioFcQuic {
                     .map(|n| n / self.config.nb_leaf_controllers),
                 Some(time::Duration::from_secs(0)),
                 self.config.fallback_gain_ratio,
+                self.config.fallback_min_samples,
             );
 
             #[cfg(feature = "tokio-tracing")]

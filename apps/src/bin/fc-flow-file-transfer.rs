@@ -132,6 +132,11 @@ struct Args {
     #[clap(long = "fallback-gain-ratio")]
     fallback_gain_ratio: Option<f64>,
 
+    /// Minimum number of delivery-rate samples before a receiver is eligible
+    /// for auto fallback. If not set, defaults to the compiled-in constant.
+    #[clap(long = "fallback-min-samples")]
+    fallback_min_samples: Option<u64>,
+
     /// Maximum expected acknowledgment rate, in bps.
     #[clap(long = "max-ack-rate", default_value = "100000000")]
     max_ack_rate: u64,
@@ -166,6 +171,7 @@ async fn main() {
         h3_config,
         max_ack_rate: args.max_ack_rate,
         fallback_gain_ratio: args.fallback_gain_ratio,
+        fallback_min_samples: args.fallback_min_samples,
     };
 
     // Transmission channel towards the application, supposed to be unique because

@@ -152,6 +152,9 @@ pub struct FcController {
     /// for the slowest receiver (leaf bottleneck check).
     /// `None` disables the auto-ejection entirely.
     fallback_gain_ratio: Option<f64>,
+
+    /// Minimum number of EMA samples before a receiver is eligible for fallback.
+    fallback_min_samples: u64,
 }
 
 impl FcController {
@@ -161,6 +164,7 @@ impl FcController {
         mc_announce_data: Vec<McAnnounceData>, controller_role: ControllerRole,
         tx_main: mpsc::Sender<MsgMain>, wait: Option<u64>,
         ack_delay: Option<time::Duration>, fallback_gain_ratio: Option<f64>,
+        fallback_min_samples: Option<u64>,
     ) -> Self {
         Self {
             controller_role,
@@ -191,6 +195,8 @@ impl FcController {
             recv_delivery_rates: HashMap::new(),
             last_bottleneck_check: None,
             fallback_gain_ratio,
+            fallback_min_samples: fallback_min_samples
+                .unwrap_or(DELIVERY_RATE_MIN_SAMPLES),
         }
     }
 
@@ -1331,12 +1337,12 @@ impl FcController {
         let (&slowest_id, &(slowest_rate, _)) = self
             .recv_delivery_rates
             .iter()
-            .filter(|(_, &(_, n))| n >= DELIVERY_RATE_MIN_SAMPLES)
+            .filter(|(_, &(_, n))| n >= self.fallback_min_samples)
             .min_by_key(|(_, &(rate, _))| rate)?;
         let new_bottleneck = self
             .recv_delivery_rates
             .iter()
-            .filter(|(&id, &(_, n))| id != slowest_id && n >= DELIVERY_RATE_MIN_SAMPLES)
+            .filter(|(&id, &(_, n))| id != slowest_id && n >= self.fallback_min_samples)
             .map(|(_, &(rate, _))| rate)
             .min();
         Some((slowest_id, slowest_rate, new_bottleneck))
