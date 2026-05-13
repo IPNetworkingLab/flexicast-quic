@@ -366,7 +366,7 @@ impl TokioFcQuicRecv {
                                     .group_ip
                                     .to_owned(),
                             );
-                            info!("Leave MULTICAST group {:?}", group_ip);
+                            println!("Leave MULTICAST group {:?}", group_ip);
                             socket.leave_multicast_v4(group_ip, self.local_ip)?;
                             joined_mc_ip = false;
                         }

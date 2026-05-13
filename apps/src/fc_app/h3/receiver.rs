@@ -69,6 +69,8 @@ impl Http3Receiver {
 
         let mut finished = false;
 
+        let mut milestone = 0;
+
         // Map of written blocks.
         let mut full_block = HashSet::new();
 
@@ -130,6 +132,11 @@ impl Http3Receiver {
                             {
                                 // Write everything at once.
                                 total_written += *offset + written;
+
+                                if total_written > milestone * 1_000_000 {
+                                    milestone += 1;
+                                    println!("Milestone: {total_written}");
+                                }
 
                                 full_block.insert(get_init_stream_id(
                                     stream_id,
