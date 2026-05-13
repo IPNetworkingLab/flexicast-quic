@@ -211,6 +211,9 @@ impl UcPath {
 
         // Skip if nothing to send.
         if fc_id.is_some() && (pn.len() > 0 || !stream.is_empty()) {
+            // Give the congestion window for this receiver.
+            let cwnd_fc_flow = self.conn.fc_get_flow_cwnd();
+            
             let fec_rec_md = self
                 .conn
                 .get_flexicast_attributes()
@@ -220,9 +223,6 @@ impl UcPath {
                         .map(|fc_fec| fc_fec.fc_get_recovered_esi())
                 })
                 .flatten();
-
-            // Give the congestion window for this receiver.
-            let cwnd_fc_flow = self.conn.fc_get_flow_cwnd();
 
             // Potentially fall back on unicast when the congestion window is too
             // low for this receiver.

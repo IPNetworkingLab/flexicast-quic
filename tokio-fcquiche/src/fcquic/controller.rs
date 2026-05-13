@@ -25,11 +25,11 @@ use std::time;
 use tokio;
 use tokio::sync::mpsc;
 
-/// EMA smoothing factor for per-receiver delivery-rate estimates.
-const DELIVERY_RATE_EMA_ALPHA: f64 = 0.2;
+/// EMA smoothing factor for per-receiver RTT estimates.
+const RTT_EMA_ALPHA: f64 = 0.2;
 
 /// Minimum number of EMA samples before a receiver is eligible for fallback.
-const DELIVERY_RATE_MIN_SAMPLES: u64 = 100;
+const RTT_MIN_SAMPLES: u64 = 100;
 
 /// Controller structure using tokio to handle messages between the flexicast
 /// source and the unicast server instances.
@@ -142,11 +142,11 @@ pub struct FcController {
     /// The third value is the delivery rate.
     fc_flow_cwnd: HashMap<u64, (usize, usize, u64)>,
 
-    /// Per-receiver delivery rates. Maps recv_id → (smoothed_rate, n_samples).
-    /// `smoothed_rate` is an EMA (0.8·old + 0.2·new) of the delivery rate in
-    /// bytes/s. `n_samples` counts how many ACKs have contributed. Cleared when
+    /// Per-receiver RTT estimates. Maps recv_id → (smoothed_rtt_us, n_samples).
+    /// `smoothed_rtt_us` is an EMA of the FC-path RTT in microseconds.
+    /// `n_samples` counts how many ACKs have contributed. Cleared when
     /// a receiver falls back or disconnects.
-    recv_delivery_rates: HashMap<u64, (u64, u64)>,
+    recv_rtt_us: HashMap<u64, (u64, u64)>,
 
     /// Minimum ratio new_bottleneck / slowest_rate to trigger unicast fallback
     /// for the slowest receiver (leaf bottleneck check).
@@ -192,11 +192,11 @@ impl FcController {
             app_data_fin: HashMap::new(),
             possible_send_ack: false,
             fc_flow_cwnd: HashMap::new(),
-            recv_delivery_rates: HashMap::new(),
+            recv_rtt_us: HashMap::new(),
             last_bottleneck_check: None,
             fallback_gain_ratio,
             fallback_min_samples: fallback_min_samples
-                .unwrap_or(DELIVERY_RATE_MIN_SAMPLES),
+                .unwrap_or(RTT_MIN_SAMPLES),
         }
     }
 
@@ -803,7 +803,7 @@ impl FcController {
         }
 
         self.mc_acks[fc_chan_id as usize].remove_recv(pn_drain);
-        self.recv_delivery_rates.remove(&id);
+        self.recv_rtt_us.remove(&id);
 
         send_uc_path!(self, id, MsgRecv::FallBack);
 
@@ -1007,8 +1007,8 @@ impl FcController {
                     if let Some((slowest_id, slowest, Some(new_bottleneck))) =
                         self.slowest_receiver()
                     {
-                        if new_bottleneck as f64 >= slowest as f64 * ratio {
-                            println!("Receiver {slowest_id} will fall back. From {:?} to {:?}", slowest, new_bottleneck);
+                        if slowest as f64 >= new_bottleneck as f64 * ratio {
+                            println!("Receiver {slowest_id} will fall back. RTT {:?} us vs next {:?} us", slowest, new_bottleneck);
                             self.do_recv_uc_fallback(slowest_id, 0).await?;
                         }
                     }
@@ -1072,7 +1072,7 @@ impl FcController {
         _ = self.unicast_recv.remove(&recv_id);
         _ = self.recv_ack.remove(&recv_id);
         _ = self.rec_fec_md.remove(&recv_id);
-        _ = self.recv_delivery_rates.remove(&recv_id);
+        _ = self.recv_rtt_us.remove(&recv_id);
         self.nb_clients = self.nb_clients.map(|nb| nb.saturating_sub(1));
         match &mut self.controller_role {
             ControllerRole::Leaf(leaf) => _ = leaf.tx_down.remove(&recv_id),
@@ -1311,14 +1311,14 @@ impl FcController {
                     {
                         *entry = (cwnd, seen_bytes, rate);
                     }
-                    let (smoothed, n) = self.recv_delivery_rates.get(&recv_id)
+                    let (smoothed, n) = self.recv_rtt_us.get(&recv_id)
                         .map(|&(old, n)| {
-                            let s = ((1.0 - DELIVERY_RATE_EMA_ALPHA) * old as f64
-                                + DELIVERY_RATE_EMA_ALPHA * rate as f64) as u64;
+                            let s = ((1.0 - RTT_EMA_ALPHA) * old as f64
+                                + RTT_EMA_ALPHA * rate as f64) as u64;
                             (s, n + 1)
                         })
                         .unwrap_or((rate, 1));
-                    self.recv_delivery_rates.insert(recv_id, (smoothed, n));
+                    self.recv_rtt_us.insert(recv_id, (smoothed, n));
                 }
             }
         }
@@ -1327,25 +1327,26 @@ impl FcController {
     }
 
     /// Returns the receiver with the lowest delivery rate, along with what the
-    /// new bottleneck rate would be if that receiver were removed from the group.
+    /// Returns the receiver with the highest RTT (the bottleneck), along with
+    /// what the new worst RTT would be if that receiver were removed.
     ///
-    /// Returns `None` if no delivery rates have been recorded yet.
-    /// Otherwise returns `(recv_id, slowest_rate, Option<new_bottleneck_rate>)`.
-    /// If `new_bottleneck_rate` is `None`, there is only one receiver.
-    /// The group's effective rate improves when `new_bottleneck_rate > slowest_rate`.
+    /// Returns `None` if no RTT samples have been recorded yet, or no receiver
+    /// has reached the minimum sample count.
+    /// Otherwise returns `(recv_id, worst_rtt_us, Option<new_worst_rtt_us>)`.
+    /// `new_worst_rtt_us` is `None` when there is only one eligible receiver.
     pub fn slowest_receiver(&self) -> Option<(u64, u64, Option<u64>)> {
-        let (&slowest_id, &(slowest_rate, _)) = self
-            .recv_delivery_rates
+        let (&slowest_id, &(worst_rtt, _)) = self
+            .recv_rtt_us
             .iter()
             .filter(|(_, &(_, n))| n >= self.fallback_min_samples)
-            .min_by_key(|(_, &(rate, _))| rate)?;
-        let new_bottleneck = self
-            .recv_delivery_rates
+            .max_by_key(|(_, &(rtt, _))| rtt)?;
+        let new_worst_rtt = self
+            .recv_rtt_us
             .iter()
             .filter(|(&id, &(_, n))| id != slowest_id && n >= self.fallback_min_samples)
-            .map(|(_, &(rate, _))| rate)
-            .min();
-        Some((slowest_id, slowest_rate, new_bottleneck))
+            .map(|(_, &(rtt, _))| rtt)
+            .max();
+        Some((slowest_id, worst_rtt, new_worst_rtt))
     }
 
     /// Add a new leaf controller to the root controller.

@@ -392,7 +392,7 @@ impl Connection {
     /// the sent packets.
     ///
     /// Returns `None` if this is not the unicast path source.
-    pub fn fc_get_flow_cwnd(&self) -> Option<(usize, usize, u64)> {
+    pub fn fc_get_flow_cwnd(&mut self) -> Option<(usize, usize, u64)> {
         if let Some(flexicast) = self.flexicast.as_ref() {
             match flexicast.get_mc_role() {
                 McRole::ServerUnicast(McClientStatus::ListenMcPath(_)) =>
@@ -400,15 +400,15 @@ impl Connection {
                         .get_fc_path_id()
                         .and_then(|path_id| self.paths.pid_from_path_id(path_id))
                     {
-                        if let Ok(uc_path) = self.paths.get(pid) {
+                        if let Ok((uc_path, uc_path_nt)) = self.paths.get_mut_with_active(pid) {
                             if uc_path.recovery.cwnd_available() == usize::MAX {
                                 return None;
                             }
                             let nb_sent = uc_path.recovery.bytes_sent();
                             let cwnd = uc_path.recovery.cwnd();
-                            let rate = uc_path.recovery.delivery_rate();
+                            let rtt_us = uc_path_nt.rtt().as_micros() as u64;
 
-                            return Some((cwnd, nb_sent, rate));
+                            return Some((cwnd, nb_sent, rtt_us));
                         }
                     },
                 McRole::ServerFlexicast => {
