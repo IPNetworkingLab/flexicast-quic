@@ -28,7 +28,7 @@ impl fmt::Display for Node {
         let _ = write!(f, "Node of key [{}]=>{} : ",self.key_id,hexkey);
         match &self.user  {
             None =>     write!(f,"None"),
-            Some(user) => write!(f, "{},", user.user_id)
+            Some(user) => write!(f, "{:?},", user.user_id)
         }
 
         

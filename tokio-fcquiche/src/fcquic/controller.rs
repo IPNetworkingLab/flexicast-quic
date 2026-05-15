@@ -6,6 +6,7 @@ use super::aggregator::FcAggregator;
 use super::messages::*;
 use crate::send_uc_path;
 use crate::Result;
+use quiche::flexicast::lkhlib::lkh::LKHPlus;
 use log::*;
 use quiche::flexicast::ack;
 use quiche::flexicast::ack::FcDelegatedStream;
@@ -16,6 +17,7 @@ use quiche::flexicast::control::OpenSent;
 use quiche::flexicast::McAnnounceData;
 use quiche::flexicast::MissingRangeSet;
 use quiche::ConnectionId;
+use quiche::flexicast::lkhlib::lkh::Lkh;
 use std::collections::hash_map::Entry::Occupied;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::HashMap;
@@ -131,6 +133,12 @@ pub struct FcController {
     /// The first value is the congestion window.
     /// The second value the number of seen bytes.
     fc_flow_cwnd: HashMap<u64, (usize, usize)>,
+    
+    /// LKH tree to distribute the keys efficiently
+    /// should only live on the root node
+    fc_lkh_tree: Option<Vec<LKHPlus>>
+
+
 }
 
 impl FcController {
@@ -167,6 +175,7 @@ impl FcController {
             app_data_fin: HashMap::new(),
             possible_send_ack: false,
             fc_flow_cwnd: HashMap::new(),
+            fc_lkh_tree: None,
         }
     }
 
@@ -310,9 +319,9 @@ impl FcController {
                         // The offset of the new given piece of data.
                         // It is important to give the exact offset to the
                         // receiver to let them know where to put this data.
-                        let new_data_off = *app_data_min_off +
-                            app_data.len() as u64 -
-                            data.len() as u64;
+                        let new_data_off = *app_data_min_off
+                            + app_data.len() as u64
+                            - data.len() as u64;
                         for recv_id in self.unicast_recv.iter() {
                             let msg = MsgRecv::StreamData((
                                 data.clone(),
@@ -443,11 +452,13 @@ impl FcController {
                 }
             },
 
-            MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) =>
-                self.on_new_aggr_msg(recv_id, fc_id, aggr_info).await?,
+            MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) => {
+                self.on_new_aggr_msg(recv_id, fc_id, aggr_info).await?
+            },
 
-            MsgFcCtl::CollectRecv((recv_id, fc_id)) =>
-                self.on_collect_recv(recv_id, fc_id).await?,
+            MsgFcCtl::CollectRecv((recv_id, fc_id)) => {
+                self.on_collect_recv(recv_id, fc_id).await?
+            },
         }
 
         Ok(())
@@ -810,8 +821,8 @@ impl FcController {
                 };
 
                 entry.insert(
-                    stream_piece.offset..
-                        stream_piece.offset + stream_piece.payload.len() as u64,
+                    stream_piece.offset
+                        ..stream_piece.offset + stream_piece.payload.len() as u64,
                 );
             }
         }
@@ -903,10 +914,12 @@ impl FcController {
                             self.nb_ready,
                         ));
                         match root.tx_up[i].try_send(msg) {
-                            Ok(_) =>
-                                self.pending_ack[i] = OpenRangeSet::default(),
-                            Err(_e) =>
-                                info!("Root cannot send ACK to the source"),
+                            Ok(_) => {
+                                self.pending_ack[i] = OpenRangeSet::default()
+                            },
+                            Err(_e) => {
+                                info!("Root cannot send ACK to the source")
+                            },
                         }
                     },
                 }
@@ -925,8 +938,9 @@ impl FcController {
                     for (stream_id, ranges) in fully_acked_stream_pieces.drain(..)
                     {
                         let entry = match pending_stream_ack.entry(stream_id) {
-                            Vacant(entry) =>
-                                entry.insert(OpenRangeSet::default()),
+                            Vacant(entry) => {
+                                entry.insert(OpenRangeSet::default())
+                            },
                             Occupied(entry) => entry.into_mut(),
                         };
                         for range in ranges.iter() {
@@ -1207,8 +1221,8 @@ impl FcController {
         //     ack_stream_pieces,
         //     self.mc_acks[fc_id as usize]
         // );
-        if !self.active_clients[fc_id as usize].contains_key(&recv_id) &&
-            self.recv_ack.get(&recv_id).is_some_and(|rs| rs.len() == 0)
+        if !self.active_clients[fc_id as usize].contains_key(&recv_id)
+            && self.recv_ack.get(&recv_id).is_some_and(|rs| rs.len() == 0)
         {
             // Use the FIRST (smallest) pn the receiver actually received, not
             // last+1. Using last+1 was causing a stall: active_clients would
@@ -1266,9 +1280,9 @@ impl FcController {
                 // - The value is higher and significantly higher than previous
                 //   seen bytes.
                 if self.active_clients[fc_id as usize].contains_key(&recv_id) {
-                    if (cwnd < entry.0 &&
-                        seen_bytes >= entry.1.saturating_sub(10_000)) ||
-                        (seen_bytes >= entry.1)
+                    if (cwnd < entry.0
+                        && seen_bytes >= entry.1.saturating_sub(10_000))
+                        || (seen_bytes >= entry.1)
                     {
                         *entry = (cwnd, seen_bytes);
                     }

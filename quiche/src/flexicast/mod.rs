@@ -386,8 +386,6 @@ pub struct FlexicastAttributes {
     /// Highest packet number acknowledged on the flexicast flow.
     pub fc_highest_ack_pn: Option<u64>,
 
-    /// LKH tree to store and generate the tree, should only be on the server
-    pub fc_lkh: Option<LKHPlus>,
 }
 
 impl FlexicastAttributes {
@@ -811,7 +809,7 @@ impl Default for FlexicastAttributes {
             fc_flow_control: FcFlowControl::default(),
             fc_fec: fec::FcFec::Undefined,
             fc_highest_ack_pn: None,
-            fc_lkh: None,
+            //fc_lkh: None,
         }
     }
 }
