@@ -1318,6 +1318,7 @@ impl FcController {
                             (s, n + 1)
                         })
                         .unwrap_or((rate, 1));
+                    println!("Smoothed RTT for {:?}: {:?}. Sample {}", recv_id, smoothed, n);
                     self.recv_rtt_us.insert(recv_id, (smoothed, n));
                 }
             }

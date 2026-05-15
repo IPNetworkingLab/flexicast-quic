@@ -401,7 +401,7 @@ impl Connection {
                         .and_then(|path_id| self.paths.pid_from_path_id(path_id))
                     {
                         if let Ok((uc_path, uc_path_nt)) = self.paths.get_mut_with_active(pid) {
-                            if uc_path.recovery.cwnd_available() == usize::MAX {
+                            if uc_path.recovery.cwnd() == usize::MAX {
                                 return None;
                             }
                             let nb_sent = uc_path.recovery.bytes_sent();
