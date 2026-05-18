@@ -6,6 +6,7 @@ use quiche::flexicast::ack::FcDelegatedStream;
 use quiche::flexicast::control::OpenSent;
 use quiche::flexicast::FlexicastChannelSource;
 use quiche::flexicast::McAnnounceData;
+use quiche::flexicast::lkhlib::lkhcrypto::lkh_encrypt;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::Receiver;
 
@@ -175,6 +176,12 @@ impl FcChannelAsync {
                         .fc_set_max_tx_stream_data(max_stream_data, stream_id);
                 }
             },
+            MsgFcSource::KeyChangeNeeded(raw_packet) => {
+                let out_packet = lkh_encrypt(raw_packet, self.fc_chan.algo)?;
+                self.fc_chan.channel.schedule_lkh_update(quiche::flexicast::lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(out_packet));
+
+            }
+
         }
 
         Ok(())

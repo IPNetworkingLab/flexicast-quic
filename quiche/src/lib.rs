@@ -5259,6 +5259,30 @@ impl Connection {
                     }
                 }
             }
+
+            // Send, if necessary, key updates
+            if let Some(flexicast) = self.flexicast.as_mut() {
+                while !flexicast.lkh_keys_to_send.is_empty() {
+                    let mc_announce_data =
+                        flexicast.get_mc_announce_data_active().ok_or(
+                            Error::Flexicast(flexicast::FcError::McAnnounce),
+                        )?;
+                    let first_pn = flexicast.fc_first_pn.unwrap_or(0);
+                    let update = flexicast.lkh_keys_to_send.front().unwrap();
+                    let frame = frame::Frame::McKeyLKH {
+                        channel_id: mc_announce_data.channel_id.clone(),
+                        algo: flexicast.get_decryption_key_algo(),
+                        first_pn: first_pn,
+                        key_update: update.clone(),
+                    };
+                    if !push_frame_to_pkt!(b, frames, frame, left) {
+                        break;
+                    }
+                    else {
+                        flexicast.lkh_keys_to_send.pop_front();
+                    }
+                }
+            }
         }
 
         let paths = &mut self.paths;
@@ -8317,7 +8341,7 @@ impl Connection {
     /// Note that the value returned can change throughout the connection's
     /// lifetime.
     #[inline]
-    pub fn destination_id_on_path( 
+    pub fn destination_id_on_path(
         &self, path_id: PathId,
     ) -> Option<ConnectionId> {
         self.ids
@@ -9612,8 +9636,6 @@ impl Connection {
                         Some(action_data),
                     )?;
 
-
-
                     // Keep track of the flexicast channel ID that the client
                     // joins.
                     let idx = flexicast
@@ -9751,16 +9773,8 @@ impl Connection {
                             ),
                         ),
                     ));
+                } else if let Some(flexicast) = self.flexicast.as_mut() {
                 }
-
-                else if let Some(flexicast) = self.flexicast.as_mut() {
-                    
-
-
-                }
-
-
-
             },
 
             frame::Frame::FcAckDelay { seqnum, ack_delay } => {
@@ -21746,6 +21760,7 @@ mod tests {
 }
 
 use crate::fec::schedulers::FecScheduler;
+use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;
 pub use crate::packet::Type;

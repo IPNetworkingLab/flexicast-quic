@@ -3,6 +3,7 @@
 pub mod lkhlib;
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::io::BufRead;
@@ -19,6 +20,7 @@ use crate::flexicast::cca::FcFlowCwnd;
 use crate::flexicast::lkhlib::lkh::LKHPlus;
 use crate::flexicast::lkhlib::lkh::LogicalTree;
 use crate::flexicast::lkhlib::lkhcrypto::lkh_decrypt;
+use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 use crate::flexicast::lkhlib::packet::KeyUpdatePacket;
 use crate::flexicast::nack::FcAckDelayStrategy;
 use crate::packet::Epoch;
@@ -386,6 +388,7 @@ pub struct FlexicastAttributes {
     /// Highest packet number acknowledged on the flexicast flow.
     pub fc_highest_ack_pn: Option<u64>,
 
+    pub lkh_keys_to_send: VecDeque<FCKeyUpdate>,
 }
 
 impl FlexicastAttributes {
@@ -707,7 +710,9 @@ impl FlexicastAttributes {
         &mut self, algo: Algorithm, packet: lkhlib::packet::FCKeyUpdate,
     ) -> Result<()> {
         match packet {
-            lkhlib::packet::FCKeyUpdate::KeyUpdate(packet) => self.process_lkh_update_packet(algo, packet),
+            lkhlib::packet::FCKeyUpdate::KeyUpdate(packet) => {
+                self.process_lkh_update_packet(algo, packet)
+            },
             lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(packet) => {
                 //This packet is encrypted with the key that may be stored with the key ksk_id
                 let key_dict =
@@ -729,21 +734,21 @@ impl FlexicastAttributes {
     fn process_lkh_update_packet(
         &mut self, algo: Algorithm, packet: KeyUpdatePacket,
     ) -> Result<()> {
-        trace!("[LKH] trying to update key {}",&packet.new_key_id);
+        trace!("[LKH] trying to update key {}", &packet.new_key_id);
         let key_dict =
             &mut self.mc_announce_data[fc_chan_idx!(self)?].fc_key_dict;
-            
+
         if !packet.delete_new_key {
             key_dict.insert(packet.new_key_id, packet.new_key.clone());
-            
+
             if packet.is_session_key {
-                trace!("[LKH] new session secret : {:?}",&packet.new_key);
+                trace!("[LKH] new session secret : {:?}", &packet.new_key);
                 self.set_decryption_key_secret(packet.new_key, algo)
             } else {
                 Ok(())
             }
         } else {
-            trace!("[LKH] trying to remove key {}",&packet.new_key_id);
+            trace!("[LKH] trying to remove key {}", &packet.new_key_id);
             key_dict
                 .remove(&packet.new_key_id)
                 .map(|_| ())
@@ -810,6 +815,7 @@ impl Default for FlexicastAttributes {
             fc_fec: fec::FcFec::Undefined,
             fc_highest_ack_pn: None,
             //fc_lkh: None,
+            lkh_keys_to_send: VecDeque::new(),
         }
     }
 }
@@ -1562,6 +1568,13 @@ impl Connection {
             }
         }
     }
+    pub fn schedule_lkh_update(&mut self, raw: FCKeyUpdate) {
+        if let Some(fc) = self.flexicast.as_mut() {
+            fc.lkh_keys_to_send.push_back(raw);
+            trace!("[LKH] Adding key to the schedule\n");
+        }
+    }
+
 }
 
 /// Extension of a RangeSet to support missing ranges.
@@ -1642,6 +1655,8 @@ pub struct FlexicastChannelSource {
 
     /// Flexicast send address.
     pub mc_send_addr: SocketAddr,
+    // LKH ?
+    //pub fc_lkh : Option<LKHPlus>
 }
 
 impl FlexicastChannelSource {
@@ -1756,6 +1771,8 @@ impl FlexicastChannelSource {
                 Some(FecEncoder::new(fc_config.fec_scheduler.into()));
         }
 
+        //let lkh = LKHPlus::new(encryption_algo.key_len(), send_group, 32);
+
         let cid = channel_id.clone().into_owned();
         Ok(Self {
             channel: conn_server,
@@ -1765,6 +1782,7 @@ impl FlexicastChannelSource {
             mc_path_conn_id: (cid, reset_token),
             mc_path_peer: mc_path_info.peer,
             mc_send_addr: peer,
+            //fc_lkh:Some(lkh)
         })
     }
 

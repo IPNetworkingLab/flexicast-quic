@@ -134,9 +134,9 @@ pub struct FcController {
     /// The second value the number of seen bytes.
     fc_flow_cwnd: HashMap<u64, (usize, usize)>,
     
-    /// LKH tree to distribute the keys efficiently
-    /// should only live on the root node
-    fc_lkh_tree: Option<Vec<LKHPlus>>
+    // LKH tree to distribute the keys efficiently
+    // should only live on the root node
+    // fc_lkh_tree: Option<Vec<LKHPlus>>
 
 
 }
@@ -175,7 +175,7 @@ impl FcController {
             app_data_fin: HashMap::new(),
             possible_send_ack: false,
             fc_flow_cwnd: HashMap::new(),
-            fc_lkh_tree: None,
+            //fc_lkh_tree: None,
         }
     }
 

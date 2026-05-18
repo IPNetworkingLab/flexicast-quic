@@ -445,7 +445,7 @@ impl fmt::Display for LKHPlus {
     }
 }
 impl LKHPlus {
-        fn new(key_size : usize, send_group: Arc<Box<dyn Fn(WrappedKeyUpdatePacket) + Send + Sync>>, max_unordered_count: usize) -> Self {
+        pub fn new(key_size : usize, send_group: Arc<Box<dyn Fn(WrappedKeyUpdatePacket) + Send + Sync>>, max_unordered_count: usize) -> Self {
         let lkh = Lkh { tree: Tree::new(), key_size, send_group };
         LKHPlus { lkh, unordered_users: HashMap::new(), max_unordered_count }
     }

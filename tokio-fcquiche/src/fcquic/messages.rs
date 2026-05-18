@@ -5,6 +5,7 @@ use quiche::flexicast::ack::McStreamOff;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
 use quiche::RecvInfo;
+use quiche::flexicast::lkhlib::packet::WrappedKeyUpdatePacket;
 use tokio::sync::mpsc;
 
 use super::aggregator::FcAggregatedMsg;
@@ -147,6 +148,7 @@ pub enum MsgFcSource {
     /// The controller sends aggregated control information to the flexicast
     /// flow.
     AggregatedInfo(FcAggregatedMsg),
+    KeyChangeNeeded(WrappedKeyUpdatePacket),
 }
 
 /// Messages sent to the main thread.
