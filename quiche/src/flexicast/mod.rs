@@ -681,7 +681,7 @@ impl FlexicastAttributes {
             .fc_channel_algo
             .unwrap_or(Algorithm::AES128_GCM)
     }
-    //FC-LKH-TODO: should be called when session key change
+
     /// Sets the channel decryption key secret.
     pub fn set_decryption_key_secret(
         &mut self, key: Vec<u8>, algo: Algorithm,
@@ -689,7 +689,8 @@ impl FlexicastAttributes {
         match self.mc_role {
             McRole::Client(McClientStatus::JoinedNoKey)
             | McRole::Client(McClientStatus::WaitingToJoin)
-            | McRole::Client(McClientStatus::Changing) => {
+            | McRole::Client(McClientStatus::Changing)
+            | McRole::Client(McClientStatus::JoinedAndKey) => {
                 let aead_open = Open::from_secret(algo, &key)?;
                 self.mc_crypto_open = Some(aead_open);
                 let aead_seal = Seal::from_secret(algo, &key)?;
@@ -702,11 +703,12 @@ impl FlexicastAttributes {
 
                 Ok(())
             },
+
             _ => Err(Error::Flexicast(FcError::McInvalidRole(self.mc_role))),
         }
     }
     /// Try to update the lkh keys using the provided packet
-    pub fn update_client_keys(
+    pub fn lkh_update_client_keys(
         &mut self, algo: Algorithm, packet: lkhlib::packet::FCKeyUpdate,
     ) -> Result<()> {
         match packet {
@@ -1574,7 +1576,6 @@ impl Connection {
             trace!("[LKH] Adding key to the schedule\n");
         }
     }
-
 }
 
 /// Extension of a RangeSet to support missing ranges.
@@ -2061,7 +2062,7 @@ pub mod testing {
             &mut self, client_loss: Option<&RangeSet>, mc_buf: &mut [u8],
         ) -> Result<usize> {
             let (written, _) = self.mc_channel.mc_send(&mut mc_buf[..])?;
-
+            
             // This is not optimal but it works...
             let client_loss = if let Some(client_loss) = client_loss {
                 client_loss.flatten().collect()

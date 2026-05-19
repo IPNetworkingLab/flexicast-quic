@@ -2925,6 +2925,7 @@ impl Connection {
                 {
                     v
                 } else {
+                    debug!("Failed to create a new crypto context");
                     return Err(Error::InvalidState);
                 }
             },
@@ -3082,6 +3083,7 @@ impl Connection {
         } else {
             // During handshake, we are on the initial path, and the network
             // path cannot change.
+            debug!("trying to get path(id=0)");
             (
                 self.paths.pid_from_path_id(0).ok_or(Error::InvalidState)?,
                 recv_npid.ok_or(Error::InvalidState)?,
@@ -3908,6 +3910,7 @@ impl Connection {
 
         let (send_path_id, send_npid) = match (from, to) {
             (Some(f), Some(t)) => {
+                
                 let npid = self
                     .paths
                     .network_path_id_from_addrs(&(f, t))
@@ -4378,6 +4381,7 @@ impl Connection {
             } else if pkt_type == packet::Type::Short {
                 ConnectionId::default()
             } else {
+                println!("Invalid scid gen");
                 return Err(Error::InvalidState);
             };
 
@@ -5272,13 +5276,12 @@ impl Connection {
                     let frame = frame::Frame::McKeyLKH {
                         channel_id: mc_announce_data.channel_id.clone(),
                         algo: flexicast.get_decryption_key_algo(),
-                        first_pn: first_pn,
+                        first_pn,
                         key_update: update.clone(),
                     };
                     if !push_frame_to_pkt!(b, frames, frame, left) {
                         break;
-                    }
-                    else {
+                    } else {
                         flexicast.lkh_keys_to_send.pop_front();
                     }
                 }
@@ -7514,10 +7517,12 @@ impl Connection {
     /// [`InvalidState`]: enum.Error.html#InvalidState
     pub fn next_available_path_id(&self) -> Result<PathId> {
         if !self.is_multipath_enabled() {
+            println!("Multipath is not enabled");
             return Err(Error::InvalidState);
         }
 
         if self.is_server {
+            println!("Cannot find next path id as this is a server");
             return Err(Error::InvalidState);
         }
 
@@ -7660,7 +7665,7 @@ impl Connection {
         // If we migrate a QUIC path, it must be existing.
         let pid = match self.paths.pid_from_path_id(path_id) {
             Some(pid) => pid,
-            None => return Err(Error::InvalidState),
+            None => {println!("Trying to migrate an unexisting quic path"); return Err(Error::InvalidState)},
         };
 
         // If the path already exists, mark it as the active one.
@@ -9307,6 +9312,7 @@ impl Connection {
                 reset_token,
             } => {
                 if self.ids.zero_length_dcid() {
+                    println!("Couldn't create a zero_length_dcid");
                     return Err(Error::InvalidState);
                 }
 
@@ -9382,6 +9388,7 @@ impl Connection {
                 // frames, as recommended by the standard, so we don't need a
                 // size check.
                 if !self.dgram_enabled() {
+                    println!("Cannot send a dgram  as it is not enabled");
                     return Err(Error::InvalidState);
                 }
 
@@ -9774,6 +9781,9 @@ impl Connection {
                         ),
                     ));
                 } else if let Some(flexicast) = self.flexicast.as_mut() {
+                    // TODO : Implement
+                    flexicast.lkh_update_client_keys(algo, key_update)?;
+                } else {
                 }
             },
 
@@ -10262,7 +10272,7 @@ impl Connection {
 
             return Ok((p.path_id(), p.network_path_id()));
         };
-
+        println!("Couldn't get the network path id");
         Err(Error::InvalidState)
     }
 
@@ -10485,12 +10495,14 @@ impl Connection {
         &mut self, path_id: PathId, network_path_id: path::NetworkPathId,
     ) -> Result<InternalPathId> {
         if self.is_server {
+            println!("Invalid, should be on client");
             return Err(Error::InvalidState);
         }
 
         // This method should never be called if multipath is not enabled, as
         // path_id 0 was created at connection establishment.
         if !self.is_multipath_enabled() {
+            println!("Multipath is not enabled");
             return Err(Error::InvalidState);
         }
 
@@ -10498,6 +10510,7 @@ impl Connection {
         let expected_path_id =
             self.ids.lowest_spare_path_id().ok_or(Error::OutOfPathId)?;
         if path_id != expected_path_id {
+            println!("Invalid path id");
             return Err(Error::InvalidState);
         }
 
@@ -11704,7 +11717,7 @@ pub mod testing {
 
                     Err(e) => return Err(e),
                 };
-
+                println!("Client side ok");
                 match emit_flight(&mut self.server) {
                     Ok(flight) => process_flight(&mut self.client, flight)?,
 
@@ -11712,6 +11725,7 @@ pub mod testing {
 
                     Err(e) => return Err(e),
                 };
+                println!("Server side ok");
             }
 
             Ok(())

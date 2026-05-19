@@ -5,6 +5,7 @@ use quiche::flexicast::ack::McStreamOff;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
 use quiche::RecvInfo;
+use quiche::flexicast::lkhlib::packet::FCKeyUpdate;
 use quiche::flexicast::lkhlib::packet::WrappedKeyUpdatePacket;
 use tokio::sync::mpsc;
 
@@ -22,6 +23,7 @@ pub enum MsgFcCtl {
     /// Indicate the channel to communicate with it and its client ID.
     NewClient((u64, mpsc::Sender<MsgRecv>)),
 
+    
     /// The receiver joins a new flexicast flow.
     /// The first value is the client ID.
     /// The second value is the index of the flexicast flow.
@@ -36,6 +38,8 @@ pub enum MsgFcCtl {
     /// The second value is the index of the old flexicast flow (to leave).
     /// The third value is the index of the new flexicast flow (to join).
     Change((u64, u64, u64)),
+
+
 
     /// New highest and lowest packet number sent on the flexicast flow.
     /// The controller informs all clients listening to this source.
@@ -101,6 +105,10 @@ pub enum MsgFcCtl {
     /// The first value is the ID of the receiver.
     /// The second value is the flexicast flow ID.
     CollectRecv((u64, u64)),
+
+    /// Message intended to be used root -> node indicating a need to change a key of a specific unicast client
+    /// (client_id, key_update)
+    LKHChangeKeyUnicast((u64, FCKeyUpdate))
 }
 
 /// Messages sent to the receiver.
@@ -127,6 +135,9 @@ pub enum MsgRecv {
     /// on unicast / disable flexicast and still receive the content.
     /// The last value indicates whether the stream is finished.
     StreamData((Arc<Vec<u8>>, u64, u64, bool)),
+    /// Send a new LKH key
+    LKHUnicastKey((FCKeyUpdate)),
+
 }
 
 /// Messages sent to the flexicast source.

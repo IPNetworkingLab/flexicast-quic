@@ -6,7 +6,6 @@ use super::aggregator::FcAggregator;
 use super::messages::*;
 use crate::send_uc_path;
 use crate::Result;
-use quiche::flexicast::lkhlib::lkh::LKHPlus;
 use log::*;
 use quiche::flexicast::ack;
 use quiche::flexicast::ack::FcDelegatedStream;
@@ -14,10 +13,14 @@ use quiche::flexicast::ack::McAck;
 use quiche::flexicast::ack::McStreamOff;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
+use quiche::flexicast::lkhlib::lkh::LKHPlus;
+use quiche::flexicast::lkhlib::lkh::Lkh;
+use quiche::flexicast::lkhlib::lkh::LogicalTree;
+use quiche::flexicast::lkhlib::packet::FCKeyUpdate;
 use quiche::flexicast::McAnnounceData;
 use quiche::flexicast::MissingRangeSet;
 use quiche::ConnectionId;
-use quiche::flexicast::lkhlib::lkh::Lkh;
+use quiche::Error;
 use std::collections::hash_map::Entry::Occupied;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::HashMap;
@@ -133,12 +136,9 @@ pub struct FcController {
     /// The first value is the congestion window.
     /// The second value the number of seen bytes.
     fc_flow_cwnd: HashMap<u64, (usize, usize)>,
-    
     // LKH tree to distribute the keys efficiently
     // should only live on the root node
     // fc_lkh_tree: Option<Vec<LKHPlus>>
-
-
 }
 
 impl FcController {
@@ -458,6 +458,16 @@ impl FcController {
 
             MsgFcCtl::CollectRecv((recv_id, fc_id)) => {
                 self.on_collect_recv(recv_id, fc_id).await?
+            },
+            MsgFcCtl::LKHChangeKeyUnicast((client_id, update)) => {
+                if let ControllerRole::Leaf(leaf) = &self.controller_role {
+                    if leaf.tx_down.contains_key(&client_id) {
+                        trace!("Leaf {} send new key {:?} to {}",leaf.leaf_id,update,client_id);
+                        leaf.tx_down[&client_id].send(MsgRecv::LKHUnicastKey(update));
+                    }
+                }
+
+
             },
         }
 
@@ -1119,20 +1129,50 @@ impl FcController {
         info!(
             "{name} enters on_join for client {recv_id} and max_pn: {max_pn:?}"
         );
-        if let ControllerRole::Leaf(_leaf) = &self.controller_role {
-            if first_join {
-                let pn =
-                    self.mc_acks[fc_id as usize].get_largest_pn().unwrap_or(0);
-                let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
-                send_uc_path!(self, recv_id, msg);
-                return Ok(());
-            }
 
-            // Update flow control limits.
-            if let Some(aggr_msg) = aggr_msg {
-                self.on_new_aggr_msg(recv_id, fc_id, aggr_msg).await?;
-            }
-        }
+        match &mut self.controller_role {
+            ControllerRole::Leaf(leaf) => {
+                if first_join {
+                    let pn = self.mc_acks[fc_id as usize]
+                        .get_largest_pn()
+                        .unwrap_or(0);
+                    let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
+                    //Send the message to the root controller to update the lkh tree
+                    leaf.tx_up.send(MsgFcCtl::Join((
+                        recv_id, fc_id, aggr_msg, max_pn, first_join,
+                    )));
+                    send_uc_path!(self, recv_id, msg);
+
+                    return Ok(());
+                }
+
+                // Update flow control limits.
+                if let Some(aggr_msg) = aggr_msg {
+                    self.on_new_aggr_msg(recv_id, fc_id, aggr_msg).await?;
+                }
+                return Ok(());
+            },
+            ControllerRole::Root(root) => {
+                let tree = root.lkh_tree.get_mut(fc_id as usize).ok_or(
+                    Error::Flexicast(quiche::flexicast::FcError::FcLKHKeyUnknown),
+                )?;
+
+                let captured: Vec<mpsc::Sender<MsgFcCtl>> =
+                    root.tx_down.iter().map(|(k, v)| v.clone()).collect();
+                tree.add_user(
+                    recv_id.to_be_bytes().to_vec(),
+                    Box::new(move |packet| {
+                        for leaf in captured.iter() {
+                            leaf.send(MsgFcCtl::LKHChangeKeyUnicast((
+                                recv_id,
+                                FCKeyUpdate::KeyUpdate(packet.clone()),
+                            )));
+                        }
+                    }),
+                );
+                return Ok(());
+            },
+        };
 
         Ok(())
     }
@@ -1357,6 +1397,8 @@ pub struct ControllerRoot {
 
     /// TX towards the flexicast flows.
     tx_up: Vec<mpsc::Sender<MsgFcSource>>,
+
+    lkh_tree: Vec<LKHPlus>,
 }
 
 impl ControllerRoot {
@@ -1367,7 +1409,17 @@ impl ControllerRoot {
 
     /// Inserts a new flexicast flow tx.
     pub fn add_flow_tx(&mut self, tx: mpsc::Sender<MsgFcSource>) {
+        let captured = tx.clone();
         self.tx_up.push(tx);
+
+        let lkh = LKHPlus::new(
+            32,
+            Arc::new(Box::new(move |packet| {
+                captured.send(MsgFcSource::KeyChangeNeeded(packet));
+            })),
+            32,
+        );
+        self.lkh_tree.push(lkh);
     }
 
     /// Inserts a new leaf controller tx.

@@ -159,6 +159,9 @@ impl UcPath {
                 self.handle_new_stream_data(data, stream_id, off, fin)
                     .await?;
             },
+            MsgRecv::LKHUnicastKey(update) => {
+                    self.conn.schedule_lkh_update(update);
+            }
         }
 
         Ok(())
