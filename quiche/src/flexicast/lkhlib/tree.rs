@@ -1,8 +1,9 @@
 use crate::flexicast::lkhlib::node::Node;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
-
+/// Basic trait that a binary tree should implement to be used in LKH
 pub trait BinaryTree {
+    /// The node to be used in the tree
     type Node;
     /// Ownership of right_node will be transfered to the tree
     /// Return the node_id of the new node
@@ -17,20 +18,27 @@ pub trait BinaryTree {
     fn get_left_child(&self, node_id: usize) -> &Option<Node>;
     /// Get the parent of a node, if it exists
     fn get_parent(&self, node_id: usize) -> &Option<Node>;
-    // get a mutable reference to a node by its id, if it exists
+    /// get a mutable reference to a node by its id, if it exists
     fn get_node_by_id_mut(&mut self, node_id: usize) -> Option<&mut Node>;
+    /// get a reference to a node by its id, if it exists
     fn get_node_by_id(&self, node_id: usize) -> Option<&Node>;
+    /// get a  reference to the root if it exists
     fn get_root(&self) -> Option<&Node>;
+    /// get the node relating to a user if it exist
     fn get_user_node(&self, user_id: Vec<u8>) -> Option<&usize>;
+    /// get the user count in the tree
     fn get_user_count(&self) -> usize;
+    /// Verify the integrity of the tree (node can either have 2 childrens xor a user)
     fn verify_integrity(&self) -> bool;
 }
 #[derive(Debug)]
 #[derive(Default,Clone)]
+/// Basic implementation of a binary tree using an array
 pub struct Tree {
     //root: Option<Node>,
     //nodes: HashMap<u64, &'a Node>, //Association between nodeID and node
-    pub depth: HashMap<u64, BTreeSet<usize>>, //Association between depth (0 being root) and the set of leaves at that depth
+    /// Association between depth (0 being root) and the set of leaves at that depth
+    pub depth: HashMap<u64, BTreeSet<usize>>, 
     users: HashMap<Vec<u8>, usize>, //Association between userID and node, not ideal, should be in LKH
     array: Vec<Option<Node>>,
 }
@@ -51,6 +59,7 @@ impl fmt::Display for Tree {
 
 
 impl Tree {
+    /// Create a new tree
     pub fn new() -> Self {
         Tree {
             users: HashMap::new(),
@@ -94,7 +103,7 @@ impl Tree {
             None => Ok(()),
         }
     }
-    //gemini
+    /// made by gemini : print the tree to the dot format
     pub fn to_dot(&self) {
         println!("digraph BinaryTree {{");
         println!("  node [fontname=\"Arial\"];");
@@ -623,7 +632,7 @@ use crate::flexicast::lkhlib::user::User;
         for i in 0..4  as u64{
             let user = User {
                 user_id: i.to_be_bytes().to_vec(),
-                send: Box::new(|data| ()),
+                send: Box::new(|_data| ()),
             };
             let node = Node {
                 depth: 0,
@@ -644,7 +653,7 @@ use crate::flexicast::lkhlib::user::User;
         for i in 0..4 as u64 {
             let user = User {
                 user_id: i.to_be_bytes().to_vec(),
-                send: Box::new(|data| ()),
+                send: Box::new(|_data| ()),
             };
             let node = Node {
                 depth: 0,

@@ -11,7 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 
 
-//TODO: change the user_id to an int ?
+/// Basic trait required of any LKH scheme
 pub trait LogicalTree {
     ///Add a user designated by `user_id` and a fonction `send` that send a vec8 to the user.
     fn add_user(&mut self, user_id: Vec<u8>, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>)
@@ -22,6 +22,7 @@ pub trait LogicalTree {
     fn get_session_key(&self) -> Option<(u64, &[u8])>;
 }
 #[derive(Clone)]
+/// Simple LKH implementation without any particular optimization 
 pub struct Lkh {
     tree: Tree,
     //users: HashMap<String, usize>, //Delegated to Tree
@@ -45,6 +46,7 @@ impl std::fmt::Debug for Lkh {
 }
 
 impl Lkh {
+    #[allow(dead_code)]
     fn new(key_size : usize, send_group: Arc<Box<dyn Fn(WrappedKeyUpdatePacket) + Send + Sync>>) -> Self {
         Lkh { tree: Tree::new(), key_size, send_group }
     }
@@ -139,13 +141,7 @@ impl Lkh {
     fn send_key_to_children(&self, node_id: usize) {
         // Send the new key to all children of the updated node
         //TODO : implement
-        #[cfg(feature = "debug")]
-        {
-            println!(
-                "Sending new key of node {} to its children if they exist",
-                node_id
-            );
-        }
+
 
         let session_key_id = self
             .tree
@@ -174,13 +170,7 @@ impl Lkh {
             Some(node) => {
                 let ksk = &node.key;
                 let ksk_id = node.key_id;
-                #[cfg(feature = "debug")]
-                {
-                    println!(
-                        "Sending new key to left child : {} with key {}",
-                        node.id, ksk_id
-                    );
-                }
+                
                 let to_send = packet.wrap(ksk.to_vec(), ksk_id);
                 (self.send_group)(to_send);
             }
@@ -190,13 +180,7 @@ impl Lkh {
             Some(node) => {
                 let ksk = &node.key;
                 let ksk_id = node.key_id;
-                #[cfg(feature = "debug")]
-                {
-                    println!(
-                        "Sending new key to right child : {} with key {}",
-                        node.id, ksk_id
-                    );
-                }
+                
                 let to_send = packet.wrap(ksk.to_vec(), ksk_id);
                 (self.send_group)(to_send);
             }
@@ -224,14 +208,7 @@ impl Lkh {
                 delete_new_key: should_delete,
             };
             let node = self.tree.get_node_by_id(node_id);
-            #[cfg(feature = "debug")]
-            {
-                println!(
-                    "Sending key {key_id} to {0} [{1:x?}]",
-                    node.expect("Wrong node").id,
-                    i.1
-                )
-            }
+            
             (node
                 .expect("Trying to send to a non existing node")
                 .user
@@ -308,6 +285,7 @@ impl Lkh {
             }
         }
     }
+    /// Add a group of users directly
     pub fn add_user_vec(&mut self, users: Vec<User>) {
         let _already_updated: HashSet<usize> = HashSet::new();
         //Update in 2 steps, add everyone in the tree then update the keys by starting with the deepest one.
@@ -345,10 +323,7 @@ impl Lkh {
             added_nodes.push(*node_id);
         }
 
-        #[cfg(feature = "debug")]
-        {
-            println!("Current tree before update {}", self.tree);
-        }
+        
         self.update_keys_by_layer(added_nodes);
     }
 }
@@ -429,6 +404,7 @@ impl LogicalTree for Lkh {
     }
 }
 #[derive(Debug)]
+/// Optimized version (slightly) of lkh, adds a group of user not yet added to the tree and drain that group in the tree when its size is larger than `max_unordered_count`
 pub struct LKHPlus {
     lkh: Lkh,
     unordered_users: HashMap<Vec<u8>, User>,
@@ -445,6 +421,7 @@ impl fmt::Display for LKHPlus {
     }
 }
 impl LKHPlus {
+        /// Create a instance of LKHPlus
         pub fn new(key_size : usize, send_group: Arc<Box<dyn Fn(WrappedKeyUpdatePacket) + Send + Sync>>, max_unordered_count: usize) -> Self {
         let lkh = Lkh { tree: Tree::new(), key_size, send_group };
         LKHPlus { lkh, unordered_users: HashMap::new(), max_unordered_count }
@@ -550,9 +527,17 @@ impl LogicalTree for LKHPlus {
 }
 
 //-------------------------------------TEST-------------------------------------------------
-struct TestUser {
+
+
+#[cfg(test)]
+mod tests {
+
+    use std::{ sync::Mutex};
+
+    struct TestUser {
     user_id: Vec<u8>,
     keys: HashMap<u64, Vec<u8>>,
+    #[allow(dead_code)]
     key_len: usize,
     session_key_id: Option<u64>,
     in_tree: bool,
@@ -581,13 +566,7 @@ impl TestUser {
                 self.session_key_id = None;
             }
         } else {
-            #[cfg(feature = "debug")]
-            {
-                println!(
-                    "User {} updated key {} with new key {:?}",
-                    self.user_id, packet.new_key_id, packet.new_key
-                );
-            }
+            
             self.keys.insert(packet.new_key_id, packet.new_key);
             if packet.is_session_key {
                 self.session_key_id = Some(packet.new_key_id);
@@ -597,12 +576,7 @@ impl TestUser {
 
     fn receive_group(&mut self, wrapped: WrappedKeyUpdatePacket) {
         //data : ksk_id,iv,tag,cipher
-        #[cfg(feature = "debug")]
-        {
-            println!("User {} received group data", self.user_id,);
-
-            println!("Availables keys: {:?}", self.keys);
-        }
+        
 
         let (ksk, ksk_id, packet) = wrapped.unwrap();
         if !self.keys.contains_key(&ksk_id) || self.keys[&ksk_id] != ksk {
@@ -615,25 +589,13 @@ impl TestUser {
             if self.session_key_id == Some(packet.new_key_id) {
                 self.session_key_id = None;
             }
-            #[cfg(feature = "debug")]
-            {
-                println!(
-                    "GROUP : User {} deleted key {}",
-                    self.user_id, packet.new_key_id
-                );
-            }
+            
         } else {
             self.keys.insert(packet.new_key_id, packet.new_key);
             if packet.is_session_key {
                 self.session_key_id = Some(packet.new_key_id);
             }
-            #[cfg(feature = "debug")]
-            {
-                println!(
-                    "GROUP : User {} updated key {} with new key {}",
-                    self.user_id, packet.new_key_id, packet.new_key_id
-                );
-            }
+            
         }
     }
 }
@@ -668,6 +630,7 @@ impl TreeTestUser {
             }
         })
     }
+    #[allow(dead_code)]
     fn print_users_in_tree(&self) {
         let ids: Vec<Vec<u8>> = self
             .users
@@ -691,10 +654,7 @@ impl TreeTestUser {
         self.users.len() - 1
     }
     fn receive_group(&mut self, wrapped: WrappedKeyUpdatePacket) {
-        #[cfg(feature = "debug")]
-        {
-            println!("received group data : {:x?}", data);
-        }
+        
         for i in self.users.iter_mut() {
             i.receive_group(wrapped.clone());
         }
@@ -745,12 +705,6 @@ fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
     }
     true
 }
-
-#[cfg(test)]
-mod tests {
-
-    use std::{cell::RefCell, rc::Rc, sync::Mutex};
-
     //use rand::{RngExt, SeedableRng};
 
     use super::*;
@@ -1365,7 +1319,7 @@ mod tests {
         let tree = Tree::new();
         let users = Arc::new(Mutex::new(TreeTestUser { users: Vec::new() })); //Full gemini
         let users_lkh = users.clone();
-        let mut lkh = Lkh {
+        let lkh = Lkh {
             tree: tree,
             key_size: 32,
             send_group: Arc::new(Box::new(move |data| {
@@ -1410,7 +1364,7 @@ mod tests {
         let tree = Tree::new();
         let users = Arc::new(Mutex::new(TreeTestUser { users: Vec::new() })); //Full gemini
         let users_lkh = users.clone();
-        let mut lkh = Lkh {
+        let  lkh = Lkh {
             tree: tree,
             key_size: 32,
             send_group: Arc::new(Box::new(move |data| {
@@ -1461,7 +1415,7 @@ mod tests {
         let tree = Tree::new();
         let users = Arc::new(Mutex::new(TreeTestUser { users: Vec::new() })); //Full gemini
         let users_lkh = users.clone();
-        let mut lkh = Lkh {
+        let  lkh = Lkh {
             tree: tree,
             key_size: 32,
             send_group: Arc::new(Box::new(move |data| {
@@ -1512,7 +1466,7 @@ mod tests {
         let tree = Tree::new();
         let users = Arc::new(Mutex::new(TreeTestUser { users: Vec::new() })); //Full gemini
         let users_lkh = users.clone();
-        let mut lkh = Lkh {
+        let  lkh = Lkh {
             tree: tree,
             key_size: 32,
             send_group: Arc::new(Box::new(move |data| {
@@ -1570,7 +1524,7 @@ mod tests {
         let tree = Tree::new();
         let users = Arc::new(Mutex::new(TreeTestUser { users: Vec::new() })); //Full gemini
         let users_lkh = users.clone();
-        let mut lkh = Lkh {
+        let lkh = Lkh {
             tree: tree,
             key_size: 32,
             send_group: Arc::new(Box::new(move |data| {

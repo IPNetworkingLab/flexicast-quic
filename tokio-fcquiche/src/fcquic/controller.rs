@@ -462,12 +462,16 @@ impl FcController {
             MsgFcCtl::LKHChangeKeyUnicast((client_id, update)) => {
                 if let ControllerRole::Leaf(leaf) = &self.controller_role {
                     if leaf.tx_down.contains_key(&client_id) {
-                        trace!("Leaf {} send new key {:?} to {}",leaf.leaf_id,update,client_id);
-                        leaf.tx_down[&client_id].send(MsgRecv::LKHUnicastKey(update));
+                        trace!(
+                            "Leaf {} send new key {:?} to {}",
+                            leaf.leaf_id,
+                            update,
+                            client_id
+                        );
+                        let _ = leaf.tx_down[&client_id]
+                            .send(MsgRecv::LKHUnicastKey(update)).await;
                     }
                 }
-
-
             },
         }
 
@@ -1138,7 +1142,7 @@ impl FcController {
                         .unwrap_or(0);
                     let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
                     //Send the message to the root controller to update the lkh tree
-                    leaf.tx_up.send(MsgFcCtl::Join((
+                    leaf.tx_up.blocking_send(MsgFcCtl::Join((
                         recv_id, fc_id, aggr_msg, max_pn, first_join,
                     )));
                     send_uc_path!(self, recv_id, msg);
@@ -1162,19 +1166,22 @@ impl FcController {
                 tree.add_user(
                     recv_id.to_be_bytes().to_vec(),
                     Box::new(move |packet| {
-                        for leaf in captured.iter() {
-                            leaf.send(MsgFcCtl::LKHChangeKeyUnicast((
+                        // basé sur gémini donc pas sûr
+                        let inner_captured:Vec<mpsc::Sender<MsgFcCtl>> = captured.iter().map(|v| v.clone()).collect();
+                        tokio::spawn(async move {
+                        for leaf in inner_captured.iter() {
+                            let _ = leaf.send(MsgFcCtl::LKHChangeKeyUnicast((
                                 recv_id,
                                 FCKeyUpdate::KeyUpdate(packet.clone()),
                             )));
-                        }
+                        } });
                     }),
                 );
                 return Ok(());
             },
         };
 
-        Ok(())
+        
     }
 
     /// Adds a new receiver in the state once it received the first packet on
@@ -1414,8 +1421,17 @@ impl ControllerRoot {
 
         let lkh = LKHPlus::new(
             32,
-            Arc::new(Box::new(move |packet| {
-                captured.send(MsgFcSource::KeyChangeNeeded(packet));
+            Arc::new(Box::new( move |packet| {
+                // /!\ Gemini, à confirmer
+                let captured_clone = captured.clone();
+
+                
+                tokio::spawn(async move {
+                    let _ = captured_clone
+                        .send(MsgFcSource::KeyChangeNeeded(packet))
+                        .await;
+
+                });
             })),
             32,
         );

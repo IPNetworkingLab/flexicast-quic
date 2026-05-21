@@ -1,23 +1,36 @@
 #[derive(Clone,Debug,PartialEq,Eq)]
+/// Raw key update packet
 pub struct KeyUpdatePacket {
+    /// The updated key vector
     pub new_key: Vec<u8>,
+    /// The identifier designating the updated key
     pub new_key_id: u64,
+    /// Should the updated key be the considered as the new session key
     pub is_session_key: bool,
+    /// Should this key be removed from the list of keys of the receiver
     pub delete_new_key: bool,
 }
 #[derive(Clone,Debug,PartialEq,Eq)]
+/// A cleartext key update packet associated with a key signing key
 pub struct WrappedKeyUpdatePacket {
+    /// The raw key update
     pub packet:KeyUpdatePacket,
+    /// the key signing key vector
     pub ksk:Vec<u8>,
+    /// the key signing key identifier
     pub ksk_id : u64
 }
 #[derive(Clone,Debug,PartialEq,Eq)]
+/// An encrypted key update packet using the key signging key designated by `ksk_id`
 pub struct KeylessWrappedKeyUpdatePacket {
+    /// the ciphertext containing the key update packet
     pub cipher :Vec<u8>,
+    /// the key identifier of the key used to encrypt the packet
     pub ksk_id : u64
 }
 
 #[derive(Clone,Debug,PartialEq,Eq)]
+/// Enum listing the different possible type of key update packet
 pub enum FCKeyUpdate {
     /// Raw key 
     RawKey(Vec<u8>),
@@ -32,6 +45,7 @@ pub enum FCKeyUpdate {
 
 
 impl KeyUpdatePacket {
+    /// Serialize a key update packet
     pub fn to_bytes(&self) -> Vec<u8> {
         let flags: u8 = (self.is_session_key as u8) | ((self.delete_new_key as u8) << 1);
         let mut out = vec![flags];
@@ -41,7 +55,7 @@ impl KeyUpdatePacket {
         out.extend_from_slice(&self.new_key.clone());
         out
     }
-
+    /// Deserialize a key update packet
     pub fn from_bytes(packet: Vec<u8>) -> Option<Self> {
 
 
@@ -72,7 +86,7 @@ impl KeyUpdatePacket {
             
         }
     }
-
+    /// Utility function to add the key signing key to be used for encryption of this packet
     pub fn wrap(&self,ksk:Vec<u8>,ksk_id:u64) -> WrappedKeyUpdatePacket {
         WrappedKeyUpdatePacket { packet: self.clone(), ksk , ksk_id }
     }
@@ -81,6 +95,7 @@ impl KeyUpdatePacket {
 
 
 impl WrappedKeyUpdatePacket {
+    /// Utility function returning the ksk, ksk identifier and raw key update packet
     pub fn unwrap (&self) -> (Vec<u8>,u64, KeyUpdatePacket) {
         (self.ksk.clone(),self.ksk_id,self.packet.clone())
     }

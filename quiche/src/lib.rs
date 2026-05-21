@@ -8301,7 +8301,7 @@ impl Connection {
     /// Note that the value returned can change throughout the connection's
     /// lifetime.
     #[inline]
-    pub fn source_id_on_path(&self, path_id: PathId) -> Option<ConnectionId> {
+    pub fn source_id_on_path(&'_ self, path_id: PathId) -> Option<ConnectionId<'_>> {
         self.ids
             .oldest_scid_on_path(path_id)
             .map(|e| ConnectionId::from_ref(e.cid.as_ref()))
@@ -8315,7 +8315,7 @@ impl Connection {
     /// Note that the value returned can change throughout the connection's
     /// lifetime.
     #[inline]
-    pub fn source_id(&self) -> ConnectionId {
+    pub fn source_id(&'_ self) -> ConnectionId<'_> {
         if let Ok((path, network_path)) = self.paths.get_any_active() {
             if let Some((_, pc)) = network_path.active_scid_seqs.iter().next() {
                 if let Ok(e) = self.ids.get_scid(path.path_id(), pc.1) {
@@ -8333,7 +8333,7 @@ impl Connection {
     /// An iterator is returned for all active IDs (i.e. ones that have not
     /// been explicitly retired yet).
     #[inline]
-    pub fn source_ids(&self) -> impl Iterator<Item = &ConnectionId> {
+    pub fn source_ids(&'_ self) -> impl Iterator<Item = &'_ ConnectionId<'_>> {
         self.ids.scids_iter()
     }
 
@@ -8347,8 +8347,8 @@ impl Connection {
     /// lifetime.
     #[inline]
     pub fn destination_id_on_path(
-        &self, path_id: PathId,
-    ) -> Option<ConnectionId> {
+        &'_ self, path_id: PathId,
+    ) -> Option<ConnectionId<'_>> {
         self.ids
             .oldest_dcid_on_path(path_id)
             .map(|e| ConnectionId::from_ref(e.cid.as_ref()))
@@ -8359,7 +8359,7 @@ impl Connection {
     /// Note that the value returned can change throughout the connection's
     /// lifetime.
     #[inline]
-    pub fn destination_id(&self) -> ConnectionId {
+    pub fn destination_id(&'_ self) -> ConnectionId<'_> {
         if let Ok((path, network_path)) = self.paths.get_any_active() {
             if let Some((_, pc)) = network_path.active_dcid_seqs.iter().next() {
                 if let Ok(e) = self.ids.get_dcid(path.path_id(), pc.1) {
@@ -9767,9 +9767,9 @@ impl Connection {
                 }
             },
             frame::Frame::McKeyLKH {
-                channel_id,
+                channel_id:_,
                 algo,
-                first_pn,
+                first_pn:_,
                 key_update,
             } => {
                 if self.is_server {
@@ -21774,7 +21774,7 @@ mod tests {
 }
 
 use crate::fec::schedulers::FecScheduler;
-use crate::flexicast::lkhlib::packet::FCKeyUpdate;
+//use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;
 pub use crate::packet::Type;

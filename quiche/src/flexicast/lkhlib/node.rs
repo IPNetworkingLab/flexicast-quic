@@ -3,11 +3,17 @@ use std::fmt::{self};
 use std::sync::Arc;
 use crate::flexicast::lkhlib::user::User;
 #[derive(Debug, PartialEq, Eq)]
+/// Node object to be stored in a binary tree
 pub struct Node {
+    /// Location id in the tree (root at id=1)
     pub id: usize,
+    /// Key vector
     pub key: Vec<u8>,
+    /// Key identifier (must be kept between update)
     pub key_id: u64,
+    /// User if the node is a leaf
     pub user: Option<Arc<User>>,
+    /// Depth from the root
     pub depth: u64,
 }
 
@@ -38,5 +44,5 @@ impl fmt::Display for Node {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 }

@@ -4,7 +4,7 @@ use crate::crypto::{Algorithm, Open, Seal};
 use crate::flexicast::lkhlib::packet::{
     KeyUpdatePacket, KeylessWrappedKeyUpdatePacket, WrappedKeyUpdatePacket,
 };
-
+/// Encrypt a key update packet to be sent on the multicast
 pub fn lkh_encrypt(
     packet: WrappedKeyUpdatePacket, algo: Algorithm,
 ) -> Result<KeylessWrappedKeyUpdatePacket,crate::Error> {
@@ -23,7 +23,7 @@ pub fn lkh_encrypt(
     };
     Ok(out)
 }
-
+/// decrypt a key update received from the multicast
 pub fn lkh_decrypt(
     packet: KeylessWrappedKeyUpdatePacket, key: Vec<u8>, algo: Algorithm,
 ) -> Result<KeyUpdatePacket,crate::Error> {

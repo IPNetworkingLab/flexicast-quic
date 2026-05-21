@@ -674,14 +674,14 @@ mod tests {
                 probe_mc_path: probe_path,
                 ..Default::default()
             };
-
+            println!("Before Pipe");
             let mut fc_pipe = FlexicastPipe::new(
                 1,
                 "/tmp/test_fc_reliable_ack",
                 &mut fc_config,
             )
             .unwrap();
-
+            println!("After pipe");
             assert!(fc_pipe.source_send_single_stream(true, None, 3).is_ok());
             assert!(fc_pipe.source_send_single_stream(true, None, 7).is_ok());
             let now = time::Instant::now();

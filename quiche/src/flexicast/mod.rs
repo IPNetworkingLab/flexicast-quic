@@ -1,5 +1,5 @@
 //! Flexicast extension for QUIC.
-
+/// Module relating to everything of the logical key hierarchy 
 pub mod lkhlib;
 
 use std::collections::HashMap;
@@ -17,8 +17,8 @@ use crate::fec::decoder::FecDecoder;
 use crate::fec::encoder::FecEncoder;
 use crate::fec::schedulers::FecSchedulerAlgorithm;
 use crate::flexicast::cca::FcFlowCwnd;
-use crate::flexicast::lkhlib::lkh::LKHPlus;
-use crate::flexicast::lkhlib::lkh::LogicalTree;
+//use crate::flexicast::lkhlib::lkh::LKHPlus;
+//use crate::flexicast::lkhlib::lkh::LogicalTree;
 use crate::flexicast::lkhlib::lkhcrypto::lkh_decrypt;
 use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 use crate::flexicast::lkhlib::packet::KeyUpdatePacket;
@@ -387,7 +387,7 @@ pub struct FlexicastAttributes {
 
     /// Highest packet number acknowledged on the flexicast flow.
     pub fc_highest_ack_pn: Option<u64>,
-
+    /// Queue of LKH key update to send 
     pub lkh_keys_to_send: VecDeque<FCKeyUpdate>,
 }
 
@@ -1225,9 +1225,12 @@ impl FlexicastConnection for Connection {
         }
 
         let path_id = if to_uc_server {
+            println!("In to_uc_server");
             let next_available = self.next_available_path_id()?;
+
             self.probe_path(next_available, client_addr, server_addr)
                 .map(|(pid, _)| pid)
+            
         } else {
             // Create a new path on the client.
             // If this is the server, temporarily give "client" behaviour to
@@ -1244,9 +1247,10 @@ impl FlexicastConnection for Connection {
                 false,
                 &self.recovery_config,
             );
+            println!("Created network path");
             network_path.verified_peer_address = true;
             self.paths.insert_network_path(network_path, None, false)?;
-
+            println!("Added network path");
             let pid = match self.create_path_on_client(
                 next_available,
                 NetworkPathId(next_available as usize),
@@ -1257,6 +1261,7 @@ impl FlexicastConnection for Connection {
                     return Err(e);
                 },
             };
+            println!("Created mc path");
             match self.set_active(pid.0 as u64, true) {
                 Ok(()) => (),
                 Err(e) => {
@@ -1264,7 +1269,7 @@ impl FlexicastConnection for Connection {
                     return Err(e);
                 },
             }
-
+            println!("Path set as active");
             let path = match self.paths.get_mut(pid) {
                 Ok(v) => v,
                 Err(e) => {
@@ -1283,6 +1288,7 @@ impl FlexicastConnection for Connection {
 
         // Add the first packet number of interest for the new path if possible.
         if let Some(flexicast) = self.flexicast.as_ref() {
+            println!("Doing some flex kst ");
             path.recovery
                 .init_fc_recovery_state(flexicast.get_mc_role());
             if let Some(pn) = flexicast
@@ -1297,7 +1303,7 @@ impl FlexicastConnection for Connection {
                     .insert(pn..pn + 1);
             }
         }
-
+        println!("End create mc path");
         Ok(path_id)
     }
 
@@ -1570,6 +1576,7 @@ impl Connection {
             }
         }
     }
+    /// Add a key update to queue of key update to be sent
     pub fn schedule_lkh_update(&mut self, raw: FCKeyUpdate) {
         if let Some(fc) = self.flexicast.as_mut() {
             fc.lkh_keys_to_send.push_back(raw);
@@ -1989,6 +1996,7 @@ pub mod testing {
                 .mc_announce_data
                 .iter_mut()
                 .for_each(|ad| ad.probe_path = probe_mc_path);
+            println!("Before mcannonce");
             Self::new_from_mc_announce_data(
                 nb_clients,
                 keylog_filename,
@@ -2032,13 +2040,13 @@ pub mod testing {
                 .unwrap()
                 .mc_announce_data
                 .push(mc_announce_data.clone());
-
+            println!("Before setup");
             let pipes: Vec<_> = (0..nb_clients)
-                .flat_map(|_| {
+                .flat_map(|i| { println!("Setting up {i}");
                     FlexicastPipe::setup_client(&mut mc_channel, fc_config)
                 })
                 .collect();
-
+            println!("After setup");
             if pipes.len() != nb_clients {
                 return Err(Error::Flexicast(FcError::McPipe));
             }
@@ -2100,7 +2108,7 @@ pub mod testing {
             let mut pipe =
                 Pipe::with_config_and_scid_lengths(&mut config, 16, 16).ok()?;
             pipe.handshake().ok()?;
-
+            println!("After handshake");
             for mc_announce_data in fc_config.mc_announce_data.iter() {
                 pipe.server.fc_set_announce_data(mc_announce_data).unwrap();
             }
@@ -2110,6 +2118,7 @@ pub mod testing {
 
             // The server adds the connection IDs of the flexicast
             // channel.
+            println!("After secret");
             let mut scid = [0; 16];
             rand::rand_bytes(&mut scid[..]);
 
@@ -2122,7 +2131,7 @@ pub mod testing {
                 .unwrap();
 
             pipe.advance().unwrap();
-
+            println!("After token");
             // Client joins the flexicast channel.
             let chan_id =
                 pipe.client.flexicast.as_ref().unwrap().mc_announce_data
@@ -2131,20 +2140,21 @@ pub mod testing {
                     .to_owned();
             pipe.client.mc_join_channel(true, Some(&chan_id)).unwrap();
             pipe.advance().unwrap();
-
+            println!("After join");
             pipe.server
                 .uc_to_fc_control(&mut mc_channel.channel, time::Instant::now())
                 .unwrap();
 
             // The server gives the master key.
             pipe.advance().unwrap();
-
+            println!("After the mc key");
             let scid = ConnectionId::from_ref(
                 &fc_config.mc_announce_data[fc_config.mc_announce_to_join]
                     .channel_id,
             );
             pipe.client.add_mc_cid(&scid).unwrap();
             assert_eq!(pipe.advance(), Ok(()));
+            println!("After  cid ?");
 
             let server_addr = testing::Pipe::server_addr();
             let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
@@ -2156,13 +2166,14 @@ pub mod testing {
                     fc_config.probe_mc_path,
                 )
                 .unwrap();
-
+            println!("Successful create_mc_path");
             let _pid_c2s_1 =
                 pipe.client.paths.pid_from_path_id(1).expect("no such path");
 
             pipe.client.flexicast.as_mut().unwrap().set_fc_path_id(1);
-
+            println!("before computing set path_id");
             assert_eq!(pipe.advance(), Ok(()));
+            println!("After mc state");
 
             Some((pipe, client_addr_2, server_addr))
         }

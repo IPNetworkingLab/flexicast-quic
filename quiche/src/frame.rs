@@ -30,7 +30,7 @@ use crate::flexicast::lkhlib::MC_KEY_LKH_CODE;
 use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 use crate::flexicast::lkhlib::packet::KeyUpdatePacket;
 use crate::flexicast::lkhlib::packet::KeylessWrappedKeyUpdatePacket;
-use crate::flexicast::lkhlib::packet::WrappedKeyUpdatePacket;
+//use crate::flexicast::lkhlib::packet::WrappedKeyUpdatePacket;
 use crate::flexicast::lkhlib::FCPROTECTEDKEY;
 use crate::flexicast::lkhlib::FCSIMPLEKEY;
 use crate::flexicast::lkhlib::FCUNPROTECTEDKEY;
@@ -55,7 +55,7 @@ use qlog::events::quic::ErrorSpace;
 use qlog::events::quic::QuicFrame;
 #[cfg(feature = "qlog")]
 use qlog::events::quic::StreamType;
-use ring::hkdf::KeyType;
+
 
 pub const MAX_CRYPTO_OVERHEAD: usize = 8;
 pub const MAX_DGRAM_OVERHEAD: usize = 2;
@@ -1067,20 +1067,20 @@ impl Frame {
 
                     },*/
                     FCKeyUpdate::KeyUpdate(packet) => {
-                        b.put_u8(FCUNPROTECTEDKEY); //1 ==> unencrypted
-                        let mut bpacket = packet.to_bytes();
-                        b.put_varint(bpacket.len()as u64);
-                        b.put_bytes(&bpacket);
+                        b.put_u8(FCUNPROTECTEDKEY)?; //1 ==> unencrypted
+                        let bpacket = packet.to_bytes();
+                        b.put_varint(bpacket.len()as u64)?;
+                        b.put_bytes(&bpacket)?;
 
                     },
                     FCKeyUpdate::KeylessWrappedKeyUpdate(_packet)=> {
                         return Err(Error::InvalidFrame); //Shouldn't be sent
                     },
                     FCKeyUpdate::RawKey(key) => {
-                        b.put_u8(FCSIMPLEKEY);
+                        b.put_u8(FCSIMPLEKEY)?;
                         let key_len = key.len();
-                        b.put_varint(key_len as u64);
-                        b.put_bytes(key);
+                        b.put_varint(key_len as u64)?;
+                        b.put_bytes(key)?;
                     }
                 }
                 //b.put_varint(key.len() as u64)?;
