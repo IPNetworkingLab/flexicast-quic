@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time;
 
 use super::reliable::FcUnicastRetransmission;
+use super::FcClientAction;
 use super::FcError;
 use super::FlexicastConnection;
 use super::McClientStatus;
@@ -601,6 +602,27 @@ impl Connection {
                     McRole::ServerUnicast(McClientStatus::UcFallBack);
             },
             _ => (),
+        }
+
+        Ok(())
+    }
+
+    /// Initiates the reintegration of a receiver back into the flexicast flow.
+    /// Transitions the server role from `UcFallBack` to `RejoiningFc`, which
+    /// triggers `should_send_fc_state()` to send `MC_STATE(Rejoin)` to the
+    /// client on the next `send()` call.
+    pub fn fc_do_rejoin(&mut self) -> Result<()> {
+        if self.flexicast.as_ref().is_none() {
+            return Err(Error::Flexicast(FcError::McDisabled));
+        }
+
+        let fc = self.flexicast.as_mut().unwrap();
+
+        if matches!(
+            fc.mc_role,
+            McRole::ServerUnicast(McClientStatus::UcFallBack)
+        ) {
+            fc.update_client_state(FcClientAction::Rejoin, None)?;
         }
 
         Ok(())

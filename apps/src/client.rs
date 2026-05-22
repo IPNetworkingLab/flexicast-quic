@@ -668,7 +668,7 @@ pub fn connect(
         }
     }
     
-    let rct_time = time::Instant::now().duration_since(start).as_millis();
+    let rct_time = std::time::Instant::now().duration_since(start).as_millis();
     println!("RESULT-RCT {:?}", rct_time);
     println!(
         "End of transfer for unicast. Total duration in ms: {:?}",

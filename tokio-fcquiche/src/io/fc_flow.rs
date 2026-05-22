@@ -46,13 +46,6 @@ impl FcFlowRun for FcFlowfileTransfer {
         // spread the traffic.
         let mut sendmmsg_idx = 0;
 
-        // Execute the file transfer application on the source.
-        // let (tx_app, mut rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-        // let mut fc_app = FileTransferSrc::new(&self.file_transfer_kind,
-        // tx_app)?; tokio::spawn(async move {
-        //     let _ = fc_app.run().await;
-        // });
-
         loop {
             let now = time::Instant::now();
             let timeout = self.fc.fc_chan.channel.timeout();

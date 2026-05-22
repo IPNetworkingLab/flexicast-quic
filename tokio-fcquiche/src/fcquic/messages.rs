@@ -92,6 +92,10 @@ pub enum MsgFcCtl {
     /// unicast path.
     RecvUcFallBack((u64, u64)),
 
+    /// The receiver has completed reintegration into the flexicast flow.
+    /// The first value is the receiver ID; the second is the flexicast flow ID.
+    RecvReintegrated((u64, u64)),
+
     /// New aggregated control data from this receiver.
     AggregatedInfo((u64, u64, FcAggregatedMsg)),
 
@@ -130,6 +134,10 @@ pub enum MsgRecv {
     /// The controller instructs this receiver to fall back to unicast because
     /// it was identified as the bottleneck of the multicast group.
     FallBack,
+
+    /// The controller instructs this receiver to reintegrate the flexicast
+    /// flow after its RTT has improved sufficiently.
+    ReintegrateFc,
 }
 
 /// Messages sent to the flexicast source.

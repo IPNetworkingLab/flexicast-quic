@@ -5141,6 +5141,12 @@ impl Connection {
                                 .server()
                                 .and_then(|r| r.fc_highest_pn),
                         ),
+                        flexicast::McRole::ServerUnicast(
+                            flexicast::McClientStatus::RejoiningFc,
+                        ) => (
+                            flexicast::FcClientAction::Rejoin,
+                            flexicast.get_fc_path_id(),
+                        ),
                         _ =>
                             return Err(Error::Flexicast(
                                 flexicast::FcError::McInvalidRole(
@@ -9650,6 +9656,18 @@ impl Connection {
                                 );
                             }
                             flexicast.fc_uc_fallback = true;
+                        },
+
+                        (McRole::Client(_), flexicast::FcClientAction::Rejoin) => {
+                            // Server requests us to rejoin the flexicast flow.
+                            // Clear the fallback flag and transition back to
+                            // JoinedAndKey so should_send_fc_state() fires
+                            // MC_STATE(McPath) on the next send().
+                            flexicast.fc_uc_fallback = false;
+                            flexicast.update_client_state(
+                                flexicast::FcClientAction::Rejoin,
+                                None,
+                            )?;
                         },
 
                         _ => (),

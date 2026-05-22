@@ -155,6 +155,17 @@ pub struct FcController {
 
     /// Minimum number of EMA samples before a receiver is eligible for fallback.
     fallback_min_samples: u64,
+
+    /// Receivers that have fallen back to unicast and are candidates for
+    /// reintegration. Maps recv_id → (fc_id, last_check_instant).
+    reintegration_candidates: HashMap<u64, (u64, time::Instant)>,
+
+    /// Last time we ran the periodic reintegration check.
+    last_reintegration_check: Option<time::Instant>,
+
+    /// How long to wait between reintegration eligibility checks.
+    /// `None` disables reintegration entirely.
+    reintegration_delay: Option<time::Duration>,
 }
 
 impl FcController {
@@ -165,6 +176,7 @@ impl FcController {
         tx_main: mpsc::Sender<MsgMain>, wait: Option<u64>,
         ack_delay: Option<time::Duration>, fallback_gain_ratio: Option<f64>,
         fallback_min_samples: Option<u64>,
+        reintegration_delay: Option<time::Duration>,
     ) -> Self {
         Self {
             controller_role,
@@ -197,6 +209,9 @@ impl FcController {
             fallback_gain_ratio,
             fallback_min_samples: fallback_min_samples
                 .unwrap_or(RTT_MIN_SAMPLES),
+            reintegration_candidates: HashMap::new(),
+            last_reintegration_check: None,
+            reintegration_delay,
         }
     }
 
@@ -375,6 +390,14 @@ impl FcController {
                     return Ok(());
                 }
                 self.do_recv_uc_fallback(id, fc_chan_id).await?;
+            },
+
+            MsgFcCtl::RecvReintegrated((recv_id, fc_id)) => {
+                if matches!(self.controller_role, ControllerRole::Leaf(_)) {
+                    self.reintegration_candidates.remove(&recv_id);
+                    _ = self.unicast_recv.remove(&recv_id);
+                    println!("Receiver {recv_id} reintegrated into FC flow {fc_id}");
+                }
             },
 
             MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) =>
@@ -1010,6 +1033,70 @@ impl FcController {
                         if slowest as f64 >= new_bottleneck as f64 * ratio {
                             println!("Receiver {slowest_id} will fall back. RTT {:?} us vs next {:?} us", slowest, new_bottleneck);
                             self.do_recv_uc_fallback(slowest_id, 0).await?;
+                            self.reintegration_candidates
+                                .insert(slowest_id, (0, now));
+                        }
+                    }
+                }
+            }
+
+            // Periodic reintegration check: every 10 seconds, see if any
+            // fallen-back receiver's RTT has improved enough to rejoin the FC
+            // flow (RTT <= slowest_active_rtt * gain_ratio).
+            if let Some(delay) = self.reintegration_delay {
+                let should_reintegrate_check =
+                    self.last_reintegration_check.map_or(true, |t| {
+                        now.duration_since(t) >= delay
+                    });
+                if should_reintegrate_check &&
+                    self.fallback_gain_ratio.is_some() &&
+                    !self.reintegration_candidates.is_empty()
+                {
+                    self.last_reintegration_check = Some(now);
+
+                    let ratio = self.fallback_gain_ratio.unwrap();
+
+                    // Compute the current slowest active receiver's RTT.
+                    let slowest_active_rtt = self
+                        .recv_rtt_us
+                        .iter()
+                        .filter(|(id, &(_, n))| {
+                            !self.unicast_recv.contains(id) &&
+                                n >= self.fallback_min_samples
+                        })
+                        .map(|(_, &(rtt, _))| rtt)
+                        .max();
+
+                    if let Some(slowest_active) = slowest_active_rtt {
+                        let candidates: Vec<u64> = self
+                            .reintegration_candidates
+                            .keys()
+                            .copied()
+                            .collect();
+                        for recv_id in candidates {
+                            if let Some(&(rtt, n)) =
+                                self.recv_rtt_us.get(&recv_id)
+                            {
+                                if n >= self.fallback_min_samples &&
+                                    (rtt as f64) <=
+                                        slowest_active as f64 * ratio
+                                {
+                                    let fc_id = self
+                                        .reintegration_candidates
+                                        .get(&recv_id)
+                                        .map(|&(id, _)| id)
+                                        .unwrap_or(0);
+                                    println!(
+                                        "Receiver {recv_id} RTT improved ({rtt} us <= {} us * {ratio}), reintegrating into FC flow {fc_id}",
+                                        slowest_active
+                                    );
+                                    send_uc_path!(
+                                        self,
+                                        recv_id,
+                                        MsgRecv::ReintegrateFc
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -1311,6 +1398,14 @@ impl FcController {
                     {
                         *entry = (cwnd, seen_bytes, rate);
                     }
+                }
+
+                // Update RTT EMA for both active and fallen-back receivers so
+                // the reintegration check has fresh samples.
+                let is_tracked = self.active_clients[fc_id as usize]
+                    .contains_key(&recv_id) ||
+                    self.unicast_recv.contains(&recv_id);
+                if is_tracked {
                     let (smoothed, n) = self.recv_rtt_us.get(&recv_id)
                         .map(|&(old, n)| {
                             let s = ((1.0 - RTT_EMA_ALPHA) * old as f64

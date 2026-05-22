@@ -82,6 +82,10 @@ pub struct TokioFcQuicConfig {
     /// Minimum delivery-rate samples before a receiver is eligible for
     /// auto fallback. `None` uses the compiled-in default.
     pub fallback_min_samples: Option<u64>,
+
+    /// Delay between reintegration eligibility checks.
+    /// `None` disables reintegration entirely.
+    pub reintegration_delay: Option<time::Duration>,
 }
 
 pub struct TokioFcQuic {
@@ -424,6 +428,7 @@ impl TokioFcQuic {
             Some(time::Duration::from_secs(0)),
             self.config.fallback_gain_ratio,
             self.config.fallback_min_samples,
+            self.config.reintegration_delay,
         );
 
         let mut ctl_leaves_struct = (0..self.config.nb_leaf_controllers)
@@ -447,6 +452,7 @@ impl TokioFcQuic {
                 Some(time::Duration::from_secs(0)),
                 self.config.fallback_gain_ratio,
                 self.config.fallback_min_samples,
+                self.config.reintegration_delay,
             );
 
             #[cfg(feature = "tokio-tracing")]
