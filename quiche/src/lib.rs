@@ -390,14 +390,6 @@ use flexicast::McRole;
 use networkcoding::source_symbol_metadata_from_u64;
 use octets::BufferTooShortError;
 #[cfg(feature = "qlog")]
-use qlog::events::connectivity::ConnectivityEventType;
-#[cfg(feature = "qlog")]
-use qlog::events::connectivity::TransportOwner;
-#[cfg(feature = "qlog")]
-use qlog::events::quic::RecoveryEventType;
-#[cfg(feature = "qlog")]
-use qlog::events::quic::TransportEventType;
-#[cfg(feature = "qlog")]
 use qlog::events::DataRecipient;
 #[cfg(feature = "qlog")]
 use qlog::events::Event;
@@ -409,6 +401,14 @@ use qlog::events::EventImportance;
 use qlog::events::EventType;
 #[cfg(feature = "qlog")]
 use qlog::events::RawInfo;
+#[cfg(feature = "qlog")]
+use qlog::events::connectivity::ConnectivityEventType;
+#[cfg(feature = "qlog")]
+use qlog::events::connectivity::TransportOwner;
+#[cfg(feature = "qlog")]
+use qlog::events::quic::RecoveryEventType;
+#[cfg(feature = "qlog")]
+use qlog::events::quic::TransportEventType;
 use stream::StreamPriorityKey;
 
 use std::cmp;
@@ -2439,8 +2439,7 @@ impl Connection {
             // the client MUST discard these packets.
             trace!(
                 "{} client received packet from unknown address {:?}, dropping",
-                self.trace_id,
-                info,
+                self.trace_id, info,
             );
 
             return Ok(len);
@@ -2834,8 +2833,7 @@ impl Connection {
             } else {
                 trace!(
                     "{} ignored unknown Source CID {:?}",
-                    self.trace_id,
-                    hdr.dcid
+                    self.trace_id, hdr.dcid
                 );
                 return Err(Error::Done);
             }
@@ -2849,7 +2847,9 @@ impl Connection {
             // We consume the value to avoid doing this multiple times.
             if flexicast.get_fc_path_id() == Some(space_id) {
                 if let Some(first_pn) = flexicast.fc_first_pn.take() {
-                    println!("Setting the largest received packet number to {first_pn}");
+                    println!(
+                        "Setting the largest received packet number to {first_pn}"
+                    );
                     let _ = self
                         .pkt_num_spaces
                         .spaces
@@ -2890,7 +2890,7 @@ impl Connection {
                     e => {
                         return Err(Error::Flexicast(
                             flexicast::FcError::McInvalidRole(e),
-                        ))
+                        ));
                     },
                 }
             } else {
@@ -2997,46 +2997,76 @@ impl Connection {
         // Check for key update.
         let mut aead_next = None;
 
-        if self.handshake_confirmed
-            && hdr.ty != Type::ZeroRTT
-            && hdr.key_phase != self.key_phase
-        {
-            error!("Going into key  update here but pn={pn} and space_id={space_id}. Largest received pn={largest_rx_pkt_num}. Flexicast first pn={:?} and role {:?}", self.flexicast.as_ref().map(|flexicast| flexicast.fc_first_pn), self.flexicast.as_ref().map(|fc| fc.get_mc_role()));
-            // Check if this packet arrived before key update.
-            if let Some(key_update) = self
-                .pkt_num_spaces
-                .crypto
-                .get(epoch)
-                .key_update
-                .as_ref()
-                .and_then(|key_update| {
-                    (pn < key_update.pn_on_update).then_some(key_update)
-                })
+        if self.handshake_confirmed && hdr.ty != Type::ZeroRTT {
+            if !info.from_mc && hdr.key_phase != self.key_phase {
+                // The key phase has changed, do we already know of this update ?
+                error!(
+                    "Going into key  update here but pn={pn} and space_id={space_id}. Largest received pn={largest_rx_pkt_num}. Flexicast first pn={:?} and role {:?}",
+                    self.flexicast
+                        .as_ref()
+                        .map(|flexicast| flexicast.fc_first_pn),
+                    self.flexicast.as_ref().map(|fc| fc.get_mc_role())
+                );
+
+                {
+                    // Check if this packet arrived before key update.
+                    if let Some(key_update) = self
+                        .pkt_num_spaces
+                        .crypto
+                        .get(epoch)
+                        .key_update
+                        .as_ref()
+                        .and_then(|key_update| {
+                            (pn < key_update.pn_on_update).then_some(key_update)
+                        })
+                    {
+                        aead = &key_update.crypto_open;
+                    } else {
+                        trace!("{} peer-initiated key update", self.trace_id);
+
+                        aead_next = Some((
+                            self.pkt_num_spaces
+                                .crypto
+                                .get(epoch)
+                                .crypto_os
+                                .get_open(space_id)
+                                .unwrap()
+                                .derive_next_packet_key()?,
+                            self.pkt_num_spaces
+                                .crypto
+                                .get(epoch)
+                                .crypto_os
+                                .get_seal(space_id)
+                                .unwrap()
+                                .derive_next_packet_key()?,
+                        ));
+
+                        // `aead_next` is always `Some()` at this point, so the `unwrap()`
+                        // will never fail.
+                        aead = &aead_next.as_ref().unwrap().0;
+                    }
+                }
+            } else if info.from_mc && self.flexicast.is_some()
+                
             {
-                aead = &key_update.crypto_open;
-            } else {
-                trace!("{} peer-initiated key update", self.trace_id);
+                let flexicast = self.flexicast.as_ref().unwrap();
 
-                aead_next = Some((
-                    self.pkt_num_spaces
-                        .crypto
-                        .get(epoch)
-                        .crypto_os
-                        .get_open(space_id)
-                        .unwrap()
-                        .derive_next_packet_key()?,
-                    self.pkt_num_spaces
-                        .crypto
-                        .get(epoch)
-                        .crypto_os
-                        .get_seal(space_id)
-                        .unwrap()
-                        .derive_next_packet_key()?,
-                ));
-
-                // `aead_next` is always `Some()` at this point, so the `unwrap()`
-                // will never fail.
-                aead = &aead_next.as_ref().unwrap().0;
+                if flexicast.fc_key_phase != hdr.key_phase {
+                    if let Some(key_update) = flexicast
+                        .get_fc_key_update()
+                        .as_ref()
+                        .and_then(|key_update| {
+                            (pn < key_update.pn_on_update).then_some(key_update)
+                        })
+                    {
+                        aead = &key_update.crypto_open;
+                    } else {
+                        error!(
+                            "Trying to rekey directly through the tree which is forbidden"
+                        );
+                        return Err(Error::Flexicast(FcError::McInvalidCrypto));
+                    }
+                }
             }
         }
 
@@ -3468,7 +3498,12 @@ impl Connection {
                         action_data,
                     } => {
                         if let Some(flexicast) = self.flexicast.as_mut() {
-                            debug!("Receive ack for McState: {:?}, {:?} and current role is {:?}", flexicast::FcClientAction::try_from(action), action_data, flexicast.get_mc_role());
+                            debug!(
+                                "Receive ack for McState: {:?}, {:?} and current role is {:?}",
+                                flexicast::FcClientAction::try_from(action),
+                                action_data,
+                                flexicast.get_mc_role()
+                            );
                             flexicast.set_mc_state_in_flight(false);
                             match flexicast.get_mc_role() {
                                 flexicast::McRole::Client(
@@ -3910,7 +3945,6 @@ impl Connection {
 
         let (send_path_id, send_npid) = match (from, to) {
             (Some(f), Some(t)) => {
-                
                 let npid = self
                     .paths
                     .network_path_id_from_addrs(&(f, t))
@@ -4136,7 +4170,9 @@ impl Connection {
                                 flexicast.get_mc_role(),
                                 McRole::ServerFlexicast
                             ) {
-                                debug!("Flexicast flow does not retransmit lost STREAM frames");
+                                debug!(
+                                    "Flexicast flow does not retransmit lost STREAM frames"
+                                );
                                 continue;
                             }
                         }
@@ -4806,6 +4842,7 @@ impl Connection {
             if let Some(key_update) = crypto_space.key_update.as_mut() {
                 key_update.update_acked = true;
             }
+
         }
 
         if pkt_type == packet::Type::Short && !is_closing {
@@ -5166,7 +5203,7 @@ impl Connection {
                                 flexicast::FcError::McInvalidRole(
                                     flexicast.get_mc_role(),
                                 ),
-                            ))
+                            ));
                         },
                     };
                     let frame = frame::Frame::McState {
@@ -6682,7 +6719,7 @@ impl Connection {
                             self.streams.remove_writable(&priority_key);
 
                             Some(priority_key.id)
-                        }
+                        };
                     },
                 };
 
@@ -7310,8 +7347,11 @@ impl Connection {
             // Potential flexicast timers, e.g., for reliability.
             let fc_ack_delay = self.fc_timeout_instant();
 
+            // Flexicast LKH 
+            let fc_lkh_timer = self.flexicast.as_ref().and_then(|fc| fc.get_fc_key_update().as_ref().and_then(|key_update| Some(key_update.timer.clone())));
+
             let timers =
-                [self.idle_timer, path_timer, key_update_timer, fc_ack_delay];
+                [self.idle_timer, path_timer, key_update_timer, fc_ack_delay,fc_lkh_timer];
 
             timers.iter().filter_map(|&x| x).min()
         }
@@ -7361,6 +7401,16 @@ impl Connection {
                 self.mark_closed();
                 self.timed_out = true;
                 return;
+            }
+        }
+
+        if let Some(flexicast) = &mut self.flexicast  {
+            if let Some(keyupdate) = flexicast.get_fc_key_update() {
+                if keyupdate.timer <= now {
+
+
+                    flexicast.take_fc_key_update();
+                }
             }
         }
 
@@ -7665,7 +7715,10 @@ impl Connection {
         // If we migrate a QUIC path, it must be existing.
         let pid = match self.paths.pid_from_path_id(path_id) {
             Some(pid) => pid,
-            None => {println!("Trying to migrate an unexisting quic path"); return Err(Error::InvalidState)},
+            None => {
+                println!("Trying to migrate an unexisting quic path");
+                return Err(Error::InvalidState);
+            },
         };
 
         // If the path already exists, mark it as the active one.
@@ -8301,7 +8354,9 @@ impl Connection {
     /// Note that the value returned can change throughout the connection's
     /// lifetime.
     #[inline]
-    pub fn source_id_on_path(&'_ self, path_id: PathId) -> Option<ConnectionId<'_>> {
+    pub fn source_id_on_path(
+        &'_ self, path_id: PathId,
+    ) -> Option<ConnectionId<'_>> {
         self.ids
             .oldest_scid_on_path(path_id)
             .map(|e| ConnectionId::from_ref(e.cid.as_ref()))
@@ -8568,7 +8623,7 @@ impl Connection {
         // Validate initial_source_connection_id.
         match &peer_params.initial_source_connection_id {
             Some(v) if v != &self.destination_id() => {
-                return Err(Error::InvalidTransportParam)
+                return Err(Error::InvalidTransportParam);
             },
 
             Some(_) => (),
@@ -8582,7 +8637,7 @@ impl Connection {
         if let Some(odcid) = &self.odcid {
             match &peer_params.original_destination_connection_id {
                 Some(v) if v != odcid => {
-                    return Err(Error::InvalidTransportParam)
+                    return Err(Error::InvalidTransportParam);
                 },
 
                 Some(_) => (),
@@ -8590,7 +8645,7 @@ impl Connection {
                 // original_destination_connection_id must be
                 // sent by the server.
                 None if !self.is_server => {
-                    return Err(Error::InvalidTransportParam)
+                    return Err(Error::InvalidTransportParam);
                 },
 
                 None => (),
@@ -8601,7 +8656,7 @@ impl Connection {
         if let Some(rscid) = &self.rscid {
             match &peer_params.retry_source_connection_id {
                 Some(v) if v != rscid => {
-                    return Err(Error::InvalidTransportParam)
+                    return Err(Error::InvalidTransportParam);
                 },
 
                 Some(_) => (),
@@ -8760,14 +8815,16 @@ impl Connection {
             // 0-RTT packets anymore, so clear the buffer now.
             self.undecryptable_pkts.clear();
 
-            trace!("{} connection established: proto={:?} cipher={:?} curve={:?} sigalg={:?} resumed={} {:?}",
-                   &self.trace_id,
-                   std::str::from_utf8(self.application_proto()),
-                   self.handshake.cipher(),
-                   self.handshake.curve(),
-                   self.handshake.sigalg(),
-                   self.handshake.is_resumed(),
-                   self.peer_transport_params);
+            trace!(
+                "{} connection established: proto={:?} cipher={:?} curve={:?} sigalg={:?} resumed={} {:?}",
+                &self.trace_id,
+                std::str::from_utf8(self.application_proto()),
+                self.handshake.cipher(),
+                self.handshake.curve(),
+                self.handshake.sigalg(),
+                self.handshake.is_resumed(),
+                self.peer_transport_params
+            );
         }
 
         Ok(())
@@ -8796,7 +8853,7 @@ impl Connection {
                     // Downgrade the epoch to Handshake as the handshake is not
                     // completed yet.
                     packet::Epoch::Application => {
-                        return Ok(packet::Type::Handshake)
+                        return Ok(packet::Type::Handshake);
                     },
 
                     // Downgrade the epoch to Initial as the remote peer might
@@ -8808,7 +8865,7 @@ impl Connection {
                             .get(packet::Epoch::Initial)
                             .has_keys(0) =>
                     {
-                        return Ok(packet::Type::Initial)
+                        return Ok(packet::Type::Initial);
                     },
 
                     _ => (),
@@ -9603,7 +9660,16 @@ impl Connection {
                 udp_port,
                 fc_ack_delay,
             } => {
-                debug!("Received an FC_ANNOUNCE frame! FC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={}, source_ip={:?}, group_ip={:?}, udp_port={}, fc_ack_delay={}", channel_id, probe_path, is_ipv6_addr, source_ip, group_ip, udp_port, fc_ack_delay);
+                debug!(
+                    "Received an FC_ANNOUNCE frame! FC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={}, source_ip={:?}, group_ip={:?}, udp_port={}, fc_ack_delay={}",
+                    channel_id,
+                    probe_path,
+                    is_ipv6_addr,
+                    source_ip,
+                    group_ip,
+                    udp_port,
+                    fc_ack_delay
+                );
                 if self.is_server {
                     error!("The server should not receive an FC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -9636,7 +9702,10 @@ impl Connection {
                 if let Some(flexicast) = self.flexicast.as_mut() {
                     debug!(
                         "Received an MC_STATE frame! channel ID: {:?}, action: {:?}, action_data: {} and current mc_role: {:?}",
-                        channel_id, flexicast::FcClientAction::try_from(action)?, action_data, flexicast.get_mc_role(),
+                        channel_id,
+                        flexicast::FcClientAction::try_from(action)?,
+                        action_data,
+                        flexicast.get_mc_role(),
                     );
                     let _new_status = flexicast.update_client_state(
                         action.try_into()?,
@@ -9767,9 +9836,9 @@ impl Connection {
                 }
             },
             frame::Frame::McKeyLKH {
-                channel_id:_,
+                channel_id: _,
                 algo,
-                first_pn:_,
+                first_pn,
                 key_update,
             } => {
                 if self.is_server {
@@ -9780,10 +9849,11 @@ impl Connection {
                             ),
                         ),
                     ));
-                } else if let Some(flexicast) = self.flexicast.as_mut() {
+                } else if let Some(flexicast) = &mut self.flexicast {
                     // TODO : Implement
-                    flexicast.lkh_update_client_keys(algo, key_update)?;
+                    flexicast.lkh_update_client_keys(algo, key_update, first_pn)?;
                 } else {
+
                 }
             },
 
@@ -10039,10 +10109,7 @@ impl Connection {
                 {
                     trace!(
                         "{} peer reused CID {:?} from network path {:?} on network path {:?}",
-                        self.trace_id,
-                        dcid,
-                        in_network_path,
-                        recv_npid,
+                        self.trace_id, dcid, in_network_path, recv_npid,
                     );
 
                     // TODO: reset congestion control.
@@ -10050,10 +10117,7 @@ impl Connection {
 
                 trace!(
                     "{} network path ID {:?} (explicit path ID {}) now see SCID with seq num {}",
-                    self.trace_id,
-                    recv_npid,
-                    path_id,
-                    in_scid_seq
+                    self.trace_id, recv_npid, path_id, in_scid_seq
                 );
 
                 update_scid(
@@ -16523,14 +16587,15 @@ mod tests {
         assert_eq!(pipe.advance(), Ok(()));
 
         // app_limited should be true because we send less than cwnd.
-        assert!(pipe
-            .server
-            .paths
-            .get_any_active()
-            .expect("no active")
-            .0
-            .recovery
-            .app_limited());
+        assert!(
+            pipe.server
+                .paths
+                .get_any_active()
+                .expect("no active")
+                .0
+                .recovery
+                .app_limited()
+        );
     }
 
     #[test]
@@ -16565,14 +16630,16 @@ mod tests {
 
         // We can't create a new packet header because there is no room by cwnd.
         // app_limited should be false because we can't send more by cwnd.
-        assert!(!pipe
-            .server
-            .paths
-            .get_any_active()
-            .expect("no active")
-            .0
-            .recovery
-            .app_limited());
+        assert!(
+            !pipe
+                .server
+                .paths
+                .get_any_active()
+                .expect("no active")
+                .0
+                .recovery
+                .app_limited()
+        );
     }
 
     #[test]
@@ -16623,7 +16690,10 @@ mod tests {
 
         assert_eq!(pipe.client.tx_cap, 0);
 
-        assert!(matches!(ret, Ok((_, _))), "the client should at least send one packet to acknowledge the newly received data");
+        assert!(
+            matches!(ret, Ok((_, _))),
+            "the client should at least send one packet to acknowledge the newly received data"
+        );
 
         let (sent, _) = ret.unwrap();
 
@@ -16641,8 +16711,8 @@ mod tests {
     /// Like sends_ack_only_pkt_when_full_cwnd_and_ack_elicited, but when
     /// ack_eliciting is explicitly requested.
     #[test]
-    fn sends_ack_only_pkt_when_full_cwnd_and_ack_elicited_despite_max_unacknowledging(
-    ) {
+    fn sends_ack_only_pkt_when_full_cwnd_and_ack_elicited_despite_max_unacknowledging()
+     {
         let mut config = Config::new(PROTOCOL_VERSION).unwrap();
         config
             .load_cert_chain_from_pem_file("examples/cert.crt")
@@ -16688,7 +16758,10 @@ mod tests {
             // Client acknowledges despite a full congestion window
             let ret = pipe.client.send(&mut buf);
 
-            assert!(matches!(ret, Ok((_, _))), "the client should at least send one packet to acknowledge the newly received data");
+            assert!(
+                matches!(ret, Ok((_, _))),
+                "the client should at least send one packet to acknowledge the newly received data"
+            );
 
             let (sent, _) = ret.unwrap();
 
@@ -16749,14 +16822,16 @@ mod tests {
 
         // We can't create a new packet header because there is no room by cwnd.
         // app_limited should be false because we can't send more by cwnd.
-        assert!(!pipe
-            .server
-            .paths
-            .get_any_active()
-            .expect("no active")
-            .0
-            .recovery
-            .app_limited());
+        assert!(
+            !pipe
+                .server
+                .paths
+                .get_any_active()
+                .expect("no active")
+                .0
+                .recovery
+                .app_limited()
+        );
     }
 
     #[test]
@@ -16791,14 +16866,16 @@ mod tests {
 
         // We can't create a new frame because there is no room by cwnd.
         // app_limited should be false because we can't send more by cwnd.
-        assert!(!pipe
-            .server
-            .paths
-            .get_any_active()
-            .expect("no active")
-            .0
-            .recovery
-            .app_limited());
+        assert!(
+            !pipe
+                .server
+                .paths
+                .get_any_active()
+                .expect("no active")
+                .0
+                .recovery
+                .app_limited()
+        );
     }
 
     #[test]
@@ -16827,27 +16904,29 @@ mod tests {
 
         // Client's app_limited is true because its bytes-in-flight
         // is much smaller than the current cwnd.
-        assert!(pipe
-            .client
-            .paths
-            .get_any_active()
-            .expect("no active")
-            .0
-            .recovery
-            .app_limited());
+        assert!(
+            pipe.client
+                .paths
+                .get_any_active()
+                .expect("no active")
+                .0
+                .recovery
+                .app_limited()
+        );
 
         // Client has no new frames to send - returns Done.
         assert_eq!(testing::emit_flight(&mut pipe.client), Err(Error::Done));
 
         // Client's app_limited should remain the same.
-        assert!(pipe
-            .client
-            .paths
-            .get_any_active()
-            .expect("no active")
-            .0
-            .recovery
-            .app_limited());
+        assert!(
+            pipe.client
+                .paths
+                .get_any_active()
+                .expect("no active")
+                .0
+                .recovery
+                .app_limited()
+        );
     }
 
     #[test]
@@ -17773,28 +17852,32 @@ mod tests {
             assert_eq!(pipe.client.dgram_send(&send_buf), Ok(()));
         }
 
-        assert!(!pipe
-            .client
-            .paths
-            .get_any_active()
-            .expect("no active")
-            .0
-            .recovery
-            .app_limited());
+        assert!(
+            !pipe
+                .client
+                .paths
+                .get_any_active()
+                .expect("no active")
+                .0
+                .recovery
+                .app_limited()
+        );
         assert_eq!(pipe.client.dgram_send_queue.byte_size(), 1_000_000);
 
         let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 0);
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 1_000_000);
-        assert!(!pipe
-            .client
-            .paths
-            .get_any_active()
-            .expect("no active")
-            .0
-            .recovery
-            .app_limited());
+        assert!(
+            !pipe
+                .client
+                .paths
+                .get_any_active()
+                .expect("no active")
+                .0
+                .recovery
+                .app_limited()
+        );
 
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
@@ -17807,14 +17890,16 @@ mod tests {
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 0);
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 1_000_000);
 
-        assert!(!pipe
-            .client
-            .paths
-            .get_any_active()
-            .expect("no active")
-            .0
-            .recovery
-            .app_limited());
+        assert!(
+            !pipe
+                .client
+                .paths
+                .get_any_active()
+                .expect("no active")
+                .0
+                .recovery
+                .app_limited()
+        );
     }
 
     #[test]
@@ -19659,21 +19744,24 @@ mod tests {
             .paths
             .network_path_id_from_addrs(&(client_addr_2, server_addr))
             .unwrap();
-        assert!(!pipe
-            .client
-            .paths
-            .get_network(probed_npid)
-            .unwrap()
-            .validated(),);
+        assert!(
+            !pipe
+                .client
+                .paths
+                .get_network(probed_npid)
+                .unwrap()
+                .validated(),
+        );
         assert_eq!(pipe.client.path_event_next(), None);
         // Now let the client probe at its MTU.
         assert_eq!(pipe.advance(), Ok(()));
-        assert!(pipe
-            .client
-            .paths
-            .get_network(probed_npid)
-            .unwrap()
-            .validated());
+        assert!(
+            pipe.client
+                .paths
+                .get_network(probed_npid)
+                .unwrap()
+                .validated()
+        );
         assert_eq!(
             pipe.client.path_event_next(),
             Some((0, PathEvent::Validated(client_addr_2, server_addr)))
@@ -20935,10 +21023,12 @@ mod tests {
             .expect("server receive path challenge");
 
         // Show that the new path is not considered a destination path by quiche
-        assert!(!pipe
-            .server
-            .paths_iter(server_addr)
-            .any(|path| path == (client_addr_2, 0)));
+        assert!(
+            !pipe
+                .server
+                .paths_iter(server_addr)
+                .any(|path| path == (client_addr_2, 0))
+        );
     }
 
     #[test]
