@@ -5365,7 +5365,7 @@ impl Connection {
                             }
                         }
                     },
-                    other => { error!("[LKH] Trying to send MCKeyLKH with the wrong role");
+                    other => { error!("[LKH] Trying to send MCKeyLKH with the wrong role :{other:?}");
                         return Err(Error::Flexicast(FcError::McInvalidRole(other)));},
                 }
             }
