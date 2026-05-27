@@ -1142,6 +1142,7 @@ impl FcController {
                         .unwrap_or(0);
                     let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
                     //Send the message to the root controller to update the lkh tree
+                    trace!("[LKH] propagation join to the root");
                     match leaf.tx_up.try_send(MsgFcCtl::Join((
                         recv_id, fc_id, aggr_msg, max_pn, first_join,
                     ))) {
@@ -1172,8 +1173,8 @@ impl FcController {
                         // basé sur gémini donc pas sûr
                         for leaf in captured.iter() {
                             match leaf.try_send(MsgFcCtl::LKHChangeKeyUnicast((recv_id, FCKeyUpdate::KeyUpdate(packet.clone())))) {
-                                Err(_) => info!("[LKH] root couldn't send message"),
-                                Ok(_) => ()
+                                Err(_) => error!("[LKH] root couldn't send message"),
+                                Ok(_) => trace!("[LKH] root request to send unicast message"),
                             }
                         }
                     }),
@@ -1419,7 +1420,7 @@ impl ControllerRoot {
     pub fn add_flow_tx(&mut self, tx: mpsc::Sender<MsgFcSource>) {
         let captured = tx.clone();
         self.tx_up.push(tx);
-
+        trace!("[LKH] Creating the LKH tree");
         let lkh = LKHPlus::new(
             32,
             Arc::new(Box::new( move |packet| {

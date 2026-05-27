@@ -2890,6 +2890,7 @@ impl Connection {
                         .crypto_os
                         .get_open(space_id),
                     e => {
+                        error!("Trying to receive message as the server on the multicast tree");
                         return Err(Error::Flexicast(
                             flexicast::FcError::McInvalidRole(e),
                         ));
@@ -5227,6 +5228,7 @@ impl Connection {
                                 .and_then(|r| r.fc_highest_pn),
                         ),
                         _ => {
+                            error!("Invalid FC state change");
                             return Err(Error::Flexicast(
                                 flexicast::FcError::McInvalidRole(
                                     flexicast.get_mc_role(),
@@ -5363,7 +5365,8 @@ impl Connection {
                             }
                         }
                     },
-                    other => {return Err(Error::Flexicast(FcError::McInvalidRole(other)));},
+                    other => { error!("[LKH] Trying to send MCKeyLKH with the wrong role");
+                        return Err(Error::Flexicast(FcError::McInvalidRole(other)));},
                 }
             }
         }
@@ -9893,8 +9896,8 @@ impl Connection {
                 first_pn,
                 key_update,
             } => {
-                if self.is_server {
-                    return Err(Error::Flexicast(
+                if self.is_server { error!("[LKH] Trying to decrypt a McKeyLKH as a server >:[");
+                    return Err(Error::Flexicast( 
                         flexicast::FcError::McInvalidRole(
                             flexicast::McRole::ServerUnicast(
                                 flexicast::McClientStatus::Unspecified,

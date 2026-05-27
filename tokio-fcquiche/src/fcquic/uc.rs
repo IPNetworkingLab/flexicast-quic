@@ -160,6 +160,7 @@ impl UcPath {
                     .await?;
             },
             MsgRecv::LKHUnicastKey(update) => {
+                    trace!("[LKH] Received a request to send a unicast key update");
                     self.conn.schedule_lkh_update(update);
             }
         }
