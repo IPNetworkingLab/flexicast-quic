@@ -42,7 +42,7 @@ pub async fn fcquiche_client() -> (TokioFcQuicRecv, mpsc::Receiver<FcQuicMsg>) {
     let peer_addr = "127.0.0.1:12345".parse().unwrap();
     let local_ip = "127.0.0.1".parse().unwrap();
     let (_tx, rx) = mpsc::channel(10);
-    TokioFcQuicRecv::new(peer_addr, config, local_ip, true, false, rx, None)
+    TokioFcQuicRecv::new(peer_addr, config, local_ip, true, false, rx, None,None)
 }
 
 pub fn get_fcquiche_server_config(keylog_path: &str) -> TokioFcQuicConfig {

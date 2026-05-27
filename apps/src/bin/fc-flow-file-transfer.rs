@@ -197,7 +197,21 @@ async fn main() {
     let tx_app = fcquiche.get_tx_fc_flow(0).unwrap();
 
     // Start Tokio Flexicast Quiche.
-    let uc_config = get_config(&args);
+    let mut uc_config = get_config(&args);
+
+    let mut keylog = None;
+
+    if let Some(keylog_path) = std::env::var_os("SSLKEYLOGFILE") {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(keylog_path)
+            .unwrap();
+
+        keylog = Some(file);
+
+        uc_config.log_keys(); //Faudrait continuer
+    }
 
     // Start the application.
     match &args.transfer_kind {
