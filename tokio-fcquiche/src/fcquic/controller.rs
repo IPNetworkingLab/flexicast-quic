@@ -1142,9 +1142,12 @@ impl FcController {
                         .unwrap_or(0);
                     let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
                     //Send the message to the root controller to update the lkh tree
-                    leaf.tx_up.blocking_send(MsgFcCtl::Join((
+                    match leaf.tx_up.try_send(MsgFcCtl::Join((
                         recv_id, fc_id, aggr_msg, max_pn, first_join,
-                    )));
+                    ))) {
+                        Err(_) =>  info!("leaf {} could not send join message to root", leaf.leaf_id),
+                        Ok(_) => ()
+                    };
                     send_uc_path!(self, recv_id, msg);
 
                     return Ok(());
@@ -1167,14 +1170,12 @@ impl FcController {
                     recv_id.to_be_bytes().to_vec(),
                     Box::new(move |packet| {
                         // basé sur gémini donc pas sûr
-                        let inner_captured:Vec<mpsc::Sender<MsgFcCtl>> = captured.iter().map(|v| v.clone()).collect();
-                        tokio::spawn(async move {
-                        for leaf in inner_captured.iter() {
-                            let _ = leaf.send(MsgFcCtl::LKHChangeKeyUnicast((
-                                recv_id,
-                                FCKeyUpdate::KeyUpdate(packet.clone()),
-                            )));
-                        } });
+                        for leaf in captured.iter() {
+                            match leaf.try_send(MsgFcCtl::LKHChangeKeyUnicast((recv_id, FCKeyUpdate::KeyUpdate(packet.clone())))) {
+                                Err(_) => info!("[LKH] root couldn't send message"),
+                                Ok(_) => ()
+                            }
+                        }
                     }),
                 );
                 return Ok(());
@@ -1422,16 +1423,11 @@ impl ControllerRoot {
         let lkh = LKHPlus::new(
             32,
             Arc::new(Box::new( move |packet| {
-                // /!\ Gemini, à confirmer
-                let captured_clone = captured.clone();
-
+                match captured.try_send(MsgFcSource::KeyChangeNeeded(packet)) {
+                    Ok(_) => (),
+                    Err(_) => info!("[LKH] Couldn't push a group key update to the channel")
+                }
                 
-                tokio::spawn(async move {
-                    let _ = captured_clone
-                        .send(MsgFcSource::KeyChangeNeeded(packet))
-                        .await;
-
-                });
             })),
             32,
         );

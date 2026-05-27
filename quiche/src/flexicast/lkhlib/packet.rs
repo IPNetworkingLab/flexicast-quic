@@ -44,6 +44,8 @@ pub enum FCKeyUpdate {
 }
 
 
+
+
 impl KeyUpdatePacket {
     /// Serialize a key update packet
     pub fn to_bytes(&self) -> Vec<u8> {

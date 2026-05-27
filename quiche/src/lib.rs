@@ -390,6 +390,14 @@ use flexicast::McRole;
 use networkcoding::source_symbol_metadata_from_u64;
 use octets::BufferTooShortError;
 #[cfg(feature = "qlog")]
+use qlog::events::connectivity::ConnectivityEventType;
+#[cfg(feature = "qlog")]
+use qlog::events::connectivity::TransportOwner;
+#[cfg(feature = "qlog")]
+use qlog::events::quic::RecoveryEventType;
+#[cfg(feature = "qlog")]
+use qlog::events::quic::TransportEventType;
+#[cfg(feature = "qlog")]
 use qlog::events::DataRecipient;
 #[cfg(feature = "qlog")]
 use qlog::events::Event;
@@ -401,14 +409,6 @@ use qlog::events::EventImportance;
 use qlog::events::EventType;
 #[cfg(feature = "qlog")]
 use qlog::events::RawInfo;
-#[cfg(feature = "qlog")]
-use qlog::events::connectivity::ConnectivityEventType;
-#[cfg(feature = "qlog")]
-use qlog::events::connectivity::TransportOwner;
-#[cfg(feature = "qlog")]
-use qlog::events::quic::RecoveryEventType;
-#[cfg(feature = "qlog")]
-use qlog::events::quic::TransportEventType;
 use stream::StreamPriorityKey;
 
 use std::cmp;
@@ -2439,7 +2439,8 @@ impl Connection {
             // the client MUST discard these packets.
             trace!(
                 "{} client received packet from unknown address {:?}, dropping",
-                self.trace_id, info,
+                self.trace_id,
+                info,
             );
 
             return Ok(len);
@@ -2833,7 +2834,8 @@ impl Connection {
             } else {
                 trace!(
                     "{} ignored unknown Source CID {:?}",
-                    self.trace_id, hdr.dcid
+                    self.trace_id,
+                    hdr.dcid
                 );
                 return Err(Error::Done);
             }
@@ -3046,9 +3048,7 @@ impl Connection {
                         aead = &aead_next.as_ref().unwrap().0;
                     }
                 }
-            } else if info.from_mc && self.flexicast.is_some()
-                
-            {
+            } else if info.from_mc && self.flexicast.is_some() {
                 let flexicast = self.flexicast.as_ref().unwrap();
 
                 if flexicast.fc_key_phase != hdr.key_phase {
@@ -4421,6 +4421,35 @@ impl Connection {
                 return Err(Error::InvalidState);
             };
 
+        
+        if let Some(flexicast) = &mut self.flexicast {
+            if !flexicast.fc_lkh_server_updates.is_empty() {
+                match flexicast.get_mc_role() {
+                    McRole::ServerFlexicast => {
+                        let min_pn = *flexicast.fc_lkh_server_updates.keys().min().unwrap();
+                        if min_pn>= pn {
+                            let (algo, key) = flexicast.fc_lkh_server_updates.remove(&min_pn).unwrap();
+
+                            let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
+
+                            let path_id = flexicast.get_fc_path_id().ok_or(Error::Flexicast(FcError::FcPathId))?;
+                            let new_open = crypto::Open::from_secret(algo, &key)?;
+                            let new_seal = crypto::Seal::from_secret(algo, &key)?;
+                            crypto_space.crypto_os.replace_open(path_id, new_open).ok_or(Error::CryptoFail)?;
+                            crypto_space.crypto_os.replace_seal(path_id, new_seal).ok_or(Error::CryptoFail)?;
+                            self.key_phase = !self.key_phase;
+                        }
+                        let _ = flexicast.fc_lkh_server_updates.extract_if(|min_pn,_| *min_pn<pn);
+
+
+
+                    },
+                    _ => ()
+                }
+            }
+        }
+
+        
         let hdr = Header {
             ty: pkt_type,
 
@@ -4842,7 +4871,6 @@ impl Connection {
             if let Some(key_update) = crypto_space.key_update.as_mut() {
                 key_update.update_acked = true;
             }
-
         }
 
         if pkt_type == packet::Type::Short && !is_closing {
@@ -5301,26 +5329,41 @@ impl Connection {
                 }
             }
 
-            // Send, if necessary, key updates
+            // Send, if necessary, LKH key updates
             if let Some(flexicast) = self.flexicast.as_mut() {
-                while !flexicast.lkh_keys_to_send.is_empty() {
-                    let mc_announce_data =
-                        flexicast.get_mc_announce_data_active().ok_or(
-                            Error::Flexicast(flexicast::FcError::McAnnounce),
-                        )?;
-                    let first_pn = flexicast.fc_first_pn.unwrap_or(0);
-                    let update = flexicast.lkh_keys_to_send.front().unwrap();
-                    let frame = frame::Frame::McKeyLKH {
-                        channel_id: mc_announce_data.channel_id.clone(),
-                        algo: flexicast.get_decryption_key_algo(),
-                        first_pn,
-                        key_update: update.clone(),
-                    };
-                    if !push_frame_to_pkt!(b, frames, frame, left) {
-                        break;
-                    } else {
-                        flexicast.lkh_keys_to_send.pop_front();
-                    }
+                match flexicast.get_mc_role() {
+                    McRole::ServerFlexicast => {
+                        while !flexicast.lkh_keys_to_send.is_empty() {
+                            let mc_announce_data = flexicast
+                                .get_mc_announce_data_active()
+                                .ok_or(Error::Flexicast(
+                                    flexicast::FcError::McAnnounce,
+                                ))?;
+
+                            let update =
+                                flexicast.lkh_keys_to_send.front().unwrap();
+
+                            let first_pn = self.ids.get_next_pkt_num(
+                                flexicast
+                                    .get_fc_path_id()
+                                    .ok_or(Error::Flexicast(FcError::McPath))?,
+                            )?;
+                            let frame = frame::Frame::McKeyLKH {
+                                channel_id: mc_announce_data.channel_id.clone(),
+                                algo: flexicast.get_decryption_key_algo(),
+                                first_pn,
+                                key_update: update.clone(),
+                            };
+                            if !push_frame_to_pkt!(b, frames, frame, left) {
+                                break;
+                            } else {
+                                let last_update = flexicast.lkh_keys_to_send.pop_front().unwrap();
+                                flexicast.lkh_server_update_key_backlog(last_update, first_pn)?;
+
+                            }
+                        }
+                    },
+                    other => {return Err(Error::Flexicast(FcError::McInvalidRole(other)));},
                 }
             }
         }
@@ -6036,6 +6079,8 @@ impl Connection {
             Some(v) => v,
             None => return Err(Error::InvalidState),
         };
+
+
 
         let written = packet::encrypt_pkt(
             &mut b,
@@ -7347,11 +7392,20 @@ impl Connection {
             // Potential flexicast timers, e.g., for reliability.
             let fc_ack_delay = self.fc_timeout_instant();
 
-            // Flexicast LKH 
-            let fc_lkh_timer = self.flexicast.as_ref().and_then(|fc| fc.get_fc_key_update().as_ref().and_then(|key_update| Some(key_update.timer.clone())));
+            // Flexicast LKH
+            let fc_lkh_timer = self.flexicast.as_ref().and_then(|fc| {
+                fc.get_fc_key_update()
+                    .as_ref()
+                    .and_then(|key_update| Some(key_update.timer.clone()))
+            });
 
-            let timers =
-                [self.idle_timer, path_timer, key_update_timer, fc_ack_delay,fc_lkh_timer];
+            let timers = [
+                self.idle_timer,
+                path_timer,
+                key_update_timer,
+                fc_ack_delay,
+                fc_lkh_timer,
+            ];
 
             timers.iter().filter_map(|&x| x).min()
         }
@@ -7404,11 +7458,9 @@ impl Connection {
             }
         }
 
-        if let Some(flexicast) = &mut self.flexicast  {
+        if let Some(flexicast) = &mut self.flexicast {
             if let Some(keyupdate) = flexicast.get_fc_key_update() {
                 if keyupdate.timer <= now {
-
-
                     flexicast.take_fc_key_update();
                 }
             }
@@ -9851,9 +9903,9 @@ impl Connection {
                     ));
                 } else if let Some(flexicast) = &mut self.flexicast {
                     // TODO : Implement
-                    flexicast.lkh_update_client_keys(algo, key_update, first_pn)?;
+                    flexicast
+                        .lkh_update_client_keys(algo, key_update, first_pn)?;
                 } else {
-
                 }
             },
 
@@ -16587,15 +16639,14 @@ mod tests {
         assert_eq!(pipe.advance(), Ok(()));
 
         // app_limited should be true because we send less than cwnd.
-        assert!(
-            pipe.server
-                .paths
-                .get_any_active()
-                .expect("no active")
-                .0
-                .recovery
-                .app_limited()
-        );
+        assert!(pipe
+            .server
+            .paths
+            .get_any_active()
+            .expect("no active")
+            .0
+            .recovery
+            .app_limited());
     }
 
     #[test]
@@ -16630,16 +16681,14 @@ mod tests {
 
         // We can't create a new packet header because there is no room by cwnd.
         // app_limited should be false because we can't send more by cwnd.
-        assert!(
-            !pipe
-                .server
-                .paths
-                .get_any_active()
-                .expect("no active")
-                .0
-                .recovery
-                .app_limited()
-        );
+        assert!(!pipe
+            .server
+            .paths
+            .get_any_active()
+            .expect("no active")
+            .0
+            .recovery
+            .app_limited());
     }
 
     #[test]
@@ -16711,8 +16760,8 @@ mod tests {
     /// Like sends_ack_only_pkt_when_full_cwnd_and_ack_elicited, but when
     /// ack_eliciting is explicitly requested.
     #[test]
-    fn sends_ack_only_pkt_when_full_cwnd_and_ack_elicited_despite_max_unacknowledging()
-     {
+    fn sends_ack_only_pkt_when_full_cwnd_and_ack_elicited_despite_max_unacknowledging(
+    ) {
         let mut config = Config::new(PROTOCOL_VERSION).unwrap();
         config
             .load_cert_chain_from_pem_file("examples/cert.crt")
@@ -16822,16 +16871,14 @@ mod tests {
 
         // We can't create a new packet header because there is no room by cwnd.
         // app_limited should be false because we can't send more by cwnd.
-        assert!(
-            !pipe
-                .server
-                .paths
-                .get_any_active()
-                .expect("no active")
-                .0
-                .recovery
-                .app_limited()
-        );
+        assert!(!pipe
+            .server
+            .paths
+            .get_any_active()
+            .expect("no active")
+            .0
+            .recovery
+            .app_limited());
     }
 
     #[test]
@@ -16866,16 +16913,14 @@ mod tests {
 
         // We can't create a new frame because there is no room by cwnd.
         // app_limited should be false because we can't send more by cwnd.
-        assert!(
-            !pipe
-                .server
-                .paths
-                .get_any_active()
-                .expect("no active")
-                .0
-                .recovery
-                .app_limited()
-        );
+        assert!(!pipe
+            .server
+            .paths
+            .get_any_active()
+            .expect("no active")
+            .0
+            .recovery
+            .app_limited());
     }
 
     #[test]
@@ -16904,29 +16949,27 @@ mod tests {
 
         // Client's app_limited is true because its bytes-in-flight
         // is much smaller than the current cwnd.
-        assert!(
-            pipe.client
-                .paths
-                .get_any_active()
-                .expect("no active")
-                .0
-                .recovery
-                .app_limited()
-        );
+        assert!(pipe
+            .client
+            .paths
+            .get_any_active()
+            .expect("no active")
+            .0
+            .recovery
+            .app_limited());
 
         // Client has no new frames to send - returns Done.
         assert_eq!(testing::emit_flight(&mut pipe.client), Err(Error::Done));
 
         // Client's app_limited should remain the same.
-        assert!(
-            pipe.client
-                .paths
-                .get_any_active()
-                .expect("no active")
-                .0
-                .recovery
-                .app_limited()
-        );
+        assert!(pipe
+            .client
+            .paths
+            .get_any_active()
+            .expect("no active")
+            .0
+            .recovery
+            .app_limited());
     }
 
     #[test]
@@ -17852,32 +17895,28 @@ mod tests {
             assert_eq!(pipe.client.dgram_send(&send_buf), Ok(()));
         }
 
-        assert!(
-            !pipe
-                .client
-                .paths
-                .get_any_active()
-                .expect("no active")
-                .0
-                .recovery
-                .app_limited()
-        );
+        assert!(!pipe
+            .client
+            .paths
+            .get_any_active()
+            .expect("no active")
+            .0
+            .recovery
+            .app_limited());
         assert_eq!(pipe.client.dgram_send_queue.byte_size(), 1_000_000);
 
         let (len, _) = pipe.client.send(&mut buf).unwrap();
 
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 0);
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 1_000_000);
-        assert!(
-            !pipe
-                .client
-                .paths
-                .get_any_active()
-                .expect("no active")
-                .0
-                .recovery
-                .app_limited()
-        );
+        assert!(!pipe
+            .client
+            .paths
+            .get_any_active()
+            .expect("no active")
+            .0
+            .recovery
+            .app_limited());
 
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
@@ -17890,16 +17929,14 @@ mod tests {
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 0);
         assert_ne!(pipe.client.dgram_send_queue.byte_size(), 1_000_000);
 
-        assert!(
-            !pipe
-                .client
-                .paths
-                .get_any_active()
-                .expect("no active")
-                .0
-                .recovery
-                .app_limited()
-        );
+        assert!(!pipe
+            .client
+            .paths
+            .get_any_active()
+            .expect("no active")
+            .0
+            .recovery
+            .app_limited());
     }
 
     #[test]
@@ -19744,24 +19781,21 @@ mod tests {
             .paths
             .network_path_id_from_addrs(&(client_addr_2, server_addr))
             .unwrap();
-        assert!(
-            !pipe
-                .client
-                .paths
-                .get_network(probed_npid)
-                .unwrap()
-                .validated(),
-        );
+        assert!(!pipe
+            .client
+            .paths
+            .get_network(probed_npid)
+            .unwrap()
+            .validated(),);
         assert_eq!(pipe.client.path_event_next(), None);
         // Now let the client probe at its MTU.
         assert_eq!(pipe.advance(), Ok(()));
-        assert!(
-            pipe.client
-                .paths
-                .get_network(probed_npid)
-                .unwrap()
-                .validated()
-        );
+        assert!(pipe
+            .client
+            .paths
+            .get_network(probed_npid)
+            .unwrap()
+            .validated());
         assert_eq!(
             pipe.client.path_event_next(),
             Some((0, PathEvent::Validated(client_addr_2, server_addr)))
@@ -21023,12 +21057,10 @@ mod tests {
             .expect("server receive path challenge");
 
         // Show that the new path is not considered a destination path by quiche
-        assert!(
-            !pipe
-                .server
-                .paths_iter(server_addr)
-                .any(|path| path == (client_addr_2, 0))
-        );
+        assert!(!pipe
+            .server
+            .paths_iter(server_addr)
+            .any(|path| path == (client_addr_2, 0)));
     }
 
     #[test]

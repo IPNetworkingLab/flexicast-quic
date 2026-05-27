@@ -22,6 +22,7 @@ use crate::flexicast::cca::FcFlowCwnd;
 //use crate::flexicast::lkhlib::lkh::LKHPlus;
 //use crate::flexicast::lkhlib::lkh::LogicalTree;
 use crate::flexicast::lkhlib::lkhcrypto::lkh_decrypt;
+use crate::flexicast::lkhlib::packet;
 use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 use crate::flexicast::lkhlib::packet::KeyUpdatePacket;
 use crate::flexicast::nack::FcAckDelayStrategy;
@@ -182,6 +183,9 @@ pub enum FcError {
     FcLKHKeyUnknown,
     /// Timer error,
     FcTimeError,
+    /// FcPath id mistakenly uninitialized
+    
+    FcPathId
 }
 
 /// MC_ANNOUNCE frame type.
@@ -400,6 +404,9 @@ pub struct FlexicastAttributes {
     pub lkh_keys_to_send: VecDeque<FCKeyUpdate>,
     /// Key phase of the multicast flow
     pub fc_key_phase: bool,
+    /// Session key not yet applied,
+    /// contain NewSessionKey, first pn to encrypt with the new key
+    pub fc_lkh_server_updates: HashMap<u64, (Algorithm, Vec<u8>)>,
 }
 
 impl FlexicastAttributes {
@@ -736,31 +743,30 @@ impl FlexicastAttributes {
         first_pn: u64,
     ) -> Result<()> {
         match self.mc_role {
-            McRole::Client(_) =>match packet {
-            lkhlib::packet::FCKeyUpdate::KeyUpdate(packet) => {
-                self.process_lkh_update_packet(algo, packet,first_pn)
-            },
-            lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(packet) => {
-                //This packet is encrypted with the key that may be stored with the key ksk_id
-                let key_dict =
-                    &mut self.mc_announce_data[fc_chan_idx!(self)?].fc_key_dict;
-                let ksk = key_dict
-                    .get(&packet.ksk_id)
-                    .ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))?;
+            McRole::Client(_) => match packet {
+                lkhlib::packet::FCKeyUpdate::KeyUpdate(packet) => {
+                    self.process_lkh_update_packet(algo, packet, first_pn)
+                },
+                lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(packet) => {
+                    //This packet is encrypted with the key that may be stored with the key ksk_id
+                    let key_dict = &mut self.mc_announce_data
+                        [fc_chan_idx!(self)?]
+                    .fc_key_dict;
+                    let ksk = key_dict
+                        .get(&packet.ksk_id)
+                        .ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))?;
 
-                let clear = lkh_decrypt(packet, ksk.clone(), algo)?;
-                self.process_lkh_update_packet(algo, clear,first_pn)
+                    let clear = lkh_decrypt(packet, ksk.clone(), algo)?;
+                    self.process_lkh_update_packet(algo, clear, first_pn)
+                },
+                lkhlib::packet::FCKeyUpdate::RawKey(key) => {
+                    // standard update
+                    self.add_key_update(algo, key, first_pn) //TODO incorrect
+                },
+                //lkhlib::packet::FCKeyUpdate::WrappedKeyUpdate$(_) => Err(Error::Flexicast(FcError::McInvalidAsymKey) )
             },
-            lkhlib::packet::FCKeyUpdate::RawKey(key) => {
-                // standard update
-                self.add_key_update(algo, key,first_pn) //TODO incorrect
-            },
-            //lkhlib::packet::FCKeyUpdate::WrappedKeyUpdate$(_) => Err(Error::Flexicast(FcError::McInvalidAsymKey) )
-        },
-        role => Err(Error::Flexicast(FcError::McInvalidRole(role)))
+            role => Err(Error::Flexicast(FcError::McInvalidRole(role))),
         }
-
-        
     }
 
     fn add_key_update(
@@ -783,7 +789,7 @@ impl FlexicastAttributes {
         Ok(())
     }
     fn process_lkh_update_packet(
-        &mut self, algo: Algorithm, packet: KeyUpdatePacket, first_pn:u64
+        &mut self, algo: Algorithm, packet: KeyUpdatePacket, first_pn: u64,
     ) -> Result<()> {
         trace!("[LKH] trying to update key {}", &packet.new_key_id);
 
@@ -807,6 +813,26 @@ impl FlexicastAttributes {
                 .map(|_| ())
                 .ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))
         }
+    }
+
+    /// Process a lkh keyupdate and, if it's a session key, adds it to the backlog of session key change
+    pub fn lkh_server_update_key_backlog(
+        &mut self, update: FCKeyUpdate, next_pn: u64
+    ) -> Result<()> {
+        let (is_session, key) = match update {
+            FCKeyUpdate::KeyUpdate(packet) => {
+                (packet.is_session_key, packet.new_key.clone())
+            },
+            FCKeyUpdate::KeylessWrappedKeyUpdate(packet) => {
+                return Err(Error::Flexicast(FcError::McInvalidCrypto))
+            },
+            FCKeyUpdate::RawKey(key) => (true, key.clone()),
+        };
+        if is_session {
+            self.fc_lkh_server_updates.insert(next_pn, (self.get_decryption_key_algo(),key));
+        };
+
+        Ok(())
     }
 
     /// Gives the decryption context for the flexicast channel.
@@ -872,6 +898,7 @@ impl Default for FlexicastAttributes {
             //fc_lkh: None,
             lkh_keys_to_send: VecDeque::new(),
             fc_key_phase: false,
+            fc_lkh_server_updates: HashMap::new(),
         }
     }
 }
