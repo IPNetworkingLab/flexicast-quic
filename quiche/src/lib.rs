@@ -4422,35 +4422,48 @@ impl Connection {
                 return Err(Error::InvalidState);
             };
 
-        
         if let Some(flexicast) = &mut self.flexicast {
             if !flexicast.fc_lkh_server_updates.is_empty() {
                 match flexicast.get_mc_role() {
                     McRole::ServerFlexicast => {
-                        let min_pn = *flexicast.fc_lkh_server_updates.keys().min().unwrap();
-                        if min_pn>= pn {
-                            let (algo, key) = flexicast.fc_lkh_server_updates.remove(&min_pn).unwrap();
+                        let min_pn = *flexicast
+                            .fc_lkh_server_updates
+                            .keys()
+                            .min()
+                            .unwrap();
+                        if min_pn >= pn {
+                            let (algo, key) = flexicast
+                                .fc_lkh_server_updates
+                                .remove(&min_pn)
+                                .unwrap();
 
-                            let crypto_space = self.pkt_num_spaces.crypto.get_mut(epoch);
+                            let crypto_space =
+                                self.pkt_num_spaces.crypto.get_mut(epoch);
 
-                            let path_id = flexicast.get_fc_path_id().ok_or(Error::Flexicast(FcError::FcPathId))?;
+                            let path_id = flexicast
+                                .get_fc_path_id()
+                                .ok_or(Error::Flexicast(FcError::FcPathId))?;
                             let new_open = crypto::Open::from_secret(algo, &key)?;
                             let new_seal = crypto::Seal::from_secret(algo, &key)?;
-                            crypto_space.crypto_os.replace_open(path_id, new_open).ok_or(Error::CryptoFail)?;
-                            crypto_space.crypto_os.replace_seal(path_id, new_seal).ok_or(Error::CryptoFail)?;
+                            crypto_space
+                                .crypto_os
+                                .replace_open(path_id, new_open)
+                                .ok_or(Error::CryptoFail)?;
+                            crypto_space
+                                .crypto_os
+                                .replace_seal(path_id, new_seal)
+                                .ok_or(Error::CryptoFail)?;
                             self.key_phase = !self.key_phase;
                         }
-                        let _ = flexicast.fc_lkh_server_updates.extract_if(|min_pn,_| *min_pn<pn);
-
-
-
+                        let _ = flexicast
+                            .fc_lkh_server_updates
+                            .extract_if(|min_pn, _| *min_pn < pn);
                     },
-                    _ => ()
+                    _ => (),
                 }
             }
         }
 
-        
         let hdr = Header {
             ty: pkt_type,
 
@@ -5333,40 +5346,56 @@ impl Connection {
 
             // Send, if necessary, LKH key updates
             if let Some(flexicast) = self.flexicast.as_mut() {
-                match flexicast.get_mc_role() {
-                    McRole::ServerFlexicast|McRole::ServerUnicast(flexicast::McClientStatus::Unaware) => {
-                        while !flexicast.lkh_keys_to_send.is_empty() {
-                            let mc_announce_data = flexicast
-                                .get_mc_announce_data_active()
-                                .ok_or(Error::Flexicast(
-                                    flexicast::FcError::McAnnounce,
-                                ))?;
+                if !flexicast.lkh_keys_to_send.is_empty() {
+                    match flexicast.get_mc_role() {
+                        McRole::ServerFlexicast
+                        | McRole::ServerUnicast(
+                            flexicast::McClientStatus::Unaware,
+                        ) => {
+                            while !flexicast.lkh_keys_to_send.is_empty() {
+                                let mc_announce_data = flexicast
+                                    .get_mc_announce_data_active()
+                                    .ok_or(Error::Flexicast(
+                                        flexicast::FcError::McAnnounce,
+                                    ))?;
 
-                            let update =
-                                flexicast.lkh_keys_to_send.front().unwrap();
+                                let update =
+                                    flexicast.lkh_keys_to_send.front().unwrap();
 
-                            let first_pn = self.ids.get_next_pkt_num(
-                                flexicast
-                                    .get_fc_path_id()
-                                    .ok_or(Error::Flexicast(FcError::McPath))?,
-                            )?;
-                            let frame = frame::Frame::McKeyLKH {
-                                channel_id: mc_announce_data.channel_id.clone(),
-                                algo: flexicast.get_decryption_key_algo(),
-                                first_pn,
-                                key_update: update.clone(),
-                            };
-                            if !push_frame_to_pkt!(b, frames, frame, left) {
-                                break;
-                            } else {
-                                let last_update = flexicast.lkh_keys_to_send.pop_front().unwrap();
-                                flexicast.lkh_server_update_key_backlog(last_update, first_pn)?;
-
+                                let first_pn = self.ids.get_next_pkt_num(
+                                    flexicast.get_fc_path_id().ok_or(
+                                        Error::Flexicast(FcError::McPath),
+                                    )?,
+                                )?;
+                                let frame = frame::Frame::McKeyLKH {
+                                    channel_id: mc_announce_data
+                                        .channel_id
+                                        .clone(),
+                                    algo: flexicast.get_decryption_key_algo(),
+                                    first_pn,
+                                    key_update: update.clone(),
+                                };
+                                if !push_frame_to_pkt!(b, frames, frame, left) {
+                                    break;
+                                } else {
+                                    let last_update = flexicast
+                                        .lkh_keys_to_send
+                                        .pop_front()
+                                        .unwrap();
+                                    flexicast.lkh_server_update_key_backlog(
+                                        last_update,
+                                        first_pn,
+                                    )?;
+                                }
                             }
-                        }
-                    },
-                    other => { error!("[LKH] Trying to send MCKeyLKH with the wrong role :{other:?}");
-                        return Err(Error::Flexicast(FcError::McInvalidRole(other)));},
+                        },
+                        other => {
+                            error!("[LKH] Trying to send MCKeyLKH with the wrong role :{other:?}");
+                            return Err(Error::Flexicast(
+                                FcError::McInvalidRole(other),
+                            ));
+                        },
+                    }
                 }
             }
         }
@@ -6082,8 +6111,6 @@ impl Connection {
             Some(v) => v,
             None => return Err(Error::InvalidState),
         };
-
-
 
         let written = packet::encrypt_pkt(
             &mut b,
@@ -9896,8 +9923,9 @@ impl Connection {
                 first_pn,
                 key_update,
             } => {
-                if self.is_server { error!("[LKH] Trying to decrypt a McKeyLKH as a server >:[");
-                    return Err(Error::Flexicast( 
+                if self.is_server {
+                    error!("[LKH] Trying to decrypt a McKeyLKH as a server >:[");
+                    return Err(Error::Flexicast(
                         flexicast::FcError::McInvalidRole(
                             flexicast::McRole::ServerUnicast(
                                 flexicast::McClientStatus::Unspecified,
