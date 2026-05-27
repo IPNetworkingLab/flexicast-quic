@@ -11,6 +11,7 @@ use quiche::Config;
 use quiche::ConnectionId;
 use ring::rand::SecureRandom;
 use ring::rand::SystemRandom;
+use std::fs::File;
 use std::net;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -55,6 +56,8 @@ pub struct TokioFcQuicRecv {
 
     /// Potential HTTP/3 pending request.
     h3_pending_request: Option<Vec<Header>>,
+
+    keylog_file: Option<File>,
 }
 
 impl TokioFcQuicRecv {
@@ -62,7 +65,7 @@ impl TokioFcQuicRecv {
     pub fn new(
         peer_addr: SocketAddr, config: Config, local_ip: Ipv4Addr,
         flexicast: bool, proxy_uc: bool, rx_from_app: mpsc::Receiver<FcQuicMsg>,
-        h3_config: Option<quiche::h3::Config>,
+        h3_config: Option<quiche::h3::Config>, keylog_file: Option<File>,
     ) -> (Self, mpsc::Receiver<FcQuicMsg>) {
         let (tx_app, rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         (
@@ -77,6 +80,7 @@ impl TokioFcQuicRecv {
                 h3_config,
                 h3_conn: None,
                 h3_pending_request: None,
+                keylog_file,
             },
             rx_app,
         )
@@ -115,6 +119,11 @@ impl TokioFcQuicRecv {
             self.peer_addr,
             &mut self.config,
         )?;
+        if let Some(keylog) = &self.keylog_file {
+            if let Ok(keylog) = keylog.try_clone() {
+                conn.set_keylog(Box::new(keylog));
+            }
+        }
 
         // Stream ID of the HTTP/3 request.
         let mut _h3_stream_id: Option<u64> = None;
@@ -243,8 +252,8 @@ impl TokioFcQuicRecv {
                 // not already done.
                 if matches!(
                     conn.get_flexicast_attributes().unwrap().get_mc_role(),
-                    McRole::Client(McClientStatus::AwareUnjoined) |
-                        McRole::Client(McClientStatus::Changing)
+                    McRole::Client(McClientStatus::AwareUnjoined)
+                        | McRole::Client(McClientStatus::Changing)
                 ) {
                     debug!("Client joins the flexicast channel.");
 
@@ -304,7 +313,7 @@ impl TokioFcQuicRecv {
                                     ))
                                 };
 
-			    let mc_socket =
+                            let mc_socket =
                                 UdpSocket::bind(mc_group_sockaddr).await?;
 
                             info!(
@@ -325,10 +334,10 @@ impl TokioFcQuicRecv {
 
                 // Join the flexicast socket.
                 if let Some(flexicast) = conn.get_flexicast_attributes() {
-                    if flexicast.get_mc_role() ==
-                        McRole::Client(McClientStatus::ListenMcPath(true)) &&
-                        !joined_mc_ip &&
-                        !self.proxy_uc
+                    if flexicast.get_mc_role()
+                        == McRole::Client(McClientStatus::ListenMcPath(true))
+                        && !joined_mc_ip
+                        && !self.proxy_uc
                     {
                         info!("Join MULTICAST");
                         mc_socket_opt.as_mut().unwrap().join_multicast_v4(
@@ -461,7 +470,7 @@ impl TokioFcQuicRecv {
 
             FcQuicMsg::Close => {
                 return Ok(true); // Close.
-            }
+            },
 
             _ => panic!("Cannot send other message from the receiving-side"),
         }
