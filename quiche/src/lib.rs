@@ -5348,10 +5348,7 @@ impl Connection {
             if let Some(flexicast) = self.flexicast.as_mut() {
                 if !flexicast.lkh_keys_to_send.is_empty() {
                     match flexicast.get_mc_role() {
-                        McRole::ServerFlexicast
-                        | McRole::ServerUnicast(
-                            flexicast::McClientStatus::Unaware,
-                        ) => {
+                        McRole::ServerFlexicast | McRole::ServerUnicast(_) => {
                             while !flexicast.lkh_keys_to_send.is_empty() {
                                 let mc_announce_data = flexicast
                                     .get_mc_announce_data_active()
