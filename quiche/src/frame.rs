@@ -62,6 +62,23 @@ pub const MAX_DGRAM_OVERHEAD: usize = 2;
 pub const MAX_STREAM_OVERHEAD: usize = 12;
 pub const MAX_STREAM_SIZE: u64 = 1 << 62;
 
+
+
+pub const PATH_ACK: u64 = 0x3e;
+pub const PATH_ACK_ECN: u64 = 0x3f;
+pub const PATH_ABANDON: u64 = 0x3e75;
+pub const PATH_STATUS_BACKUP: u64 = 0x3e76;
+pub const PATH_STATUS_AVAILABLE: u64 = 0x3e77;
+pub const PATH_NEW_CONNECTION_ID: u64 = 0x3e78;
+pub const PATH_RETIRE_CONNECTION_ID: u64 = 0x3e79;
+pub const MAX_PATH_ID: u64 = 0x3e7a;
+pub const PATHS_BLOCKED: u64 = 0x3e7b;
+pub const PATH_CIDS_BLOCKED: u64 = 0x3e7c;
+
+
+
+
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EcnCounts {
     ect0_count: u64,
@@ -450,24 +467,24 @@ impl Frame {
 
             0x30 | 0x31 => parse_datagram_frame(frame_type, b)?,
 
-            0x15228c00..=0x15228c01 => parse_path_ack_frame(frame_type, b)?,
+            PATH_ACK..=PATH_ACK_ECN => parse_path_ack_frame(frame_type, b)?,
 
-            0x15228c05 => Frame::PathAbandon {
+            PATH_ABANDON => Frame::PathAbandon {
                 path_id: b.get_varint()?,
                 error_code: b.get_varint()?,
             },
 
-            0x15228c07 => Frame::PathBackup {
+            PATH_STATUS_BACKUP => Frame::PathBackup {
                 path_id: b.get_varint()?,
                 seq_num: b.get_varint()?,
             },
 
-            0x15228c08 => Frame::PathAvailable {
+            PATH_STATUS_AVAILABLE => Frame::PathAvailable {
                 path_id: b.get_varint()?,
                 seq_num: b.get_varint()?,
             },
 
-            0x15228c09 => {
+            PATH_NEW_CONNECTION_ID => {
                 let path_id = b.get_varint()?;
                 let seq_num = b.get_varint()?;
                 let retire_prior_to = b.get_varint()?;
@@ -490,20 +507,20 @@ impl Frame {
                 }
             },
 
-            0x15228c0a => Frame::PathRetireConnectionId {
+            PATH_RETIRE_CONNECTION_ID => Frame::PathRetireConnectionId {
                 path_id: b.get_varint()?,
                 seq_num: b.get_varint()?,
             },
 
-            0x15228c0c => Frame::MaxPathId {
+            MAX_PATH_ID => Frame::MaxPathId {
                 max_path_id: b.get_varint()?,
             },
 
-            0x15228c0d => Frame::PathsBlocked {
+            PATHS_BLOCKED => Frame::PathsBlocked {
                 max_path_id: b.get_varint()?,
             },
 
-            0x15228c0e => Frame::PathCidsBlocked {
+            PATH_CIDS_BLOCKED => Frame::PathCidsBlocked {
                 path_id: b.get_varint()?,
                 next_seq_num: b.get_varint()?,
             },
@@ -910,9 +927,9 @@ impl Frame {
                 ecn_counts,
             } => {
                 if ecn_counts.is_none() {
-                    b.put_varint(0x15228c00)?;
+                    b.put_varint(PATH_ACK)?;
                 } else {
-                    b.put_varint(0x15228c01)?;
+                    b.put_varint(PATH_ACK_ECN)?;
                 }
                 b.put_varint(*path_identifier)?;
                 common_ack_to_bytes(b, ack_delay, ranges, ecn_counts)?;
@@ -922,21 +939,21 @@ impl Frame {
                 path_id,
                 error_code,
             } => {
-                b.put_varint(0x15228c05)?;
+                b.put_varint(PATH_ABANDON)?;
 
                 b.put_varint(*path_id)?;
                 b.put_varint(*error_code)?;
             },
 
             Frame::PathBackup { path_id, seq_num } => {
-                b.put_varint(0x15228c07)?;
+                b.put_varint(PATH_STATUS_BACKUP)?;
 
                 b.put_varint(*path_id)?;
                 b.put_varint(*seq_num)?;
             },
 
             Frame::PathAvailable { path_id, seq_num } => {
-                b.put_varint(0x15228c08)?;
+                b.put_varint(PATH_STATUS_AVAILABLE)?;
 
                 b.put_varint(*path_id)?;
                 b.put_varint(*seq_num)?;
@@ -949,7 +966,7 @@ impl Frame {
                 conn_id,
                 reset_token,
             } => {
-                b.put_varint(0x15228c09)?;
+                b.put_varint(PATH_NEW_CONNECTION_ID)?;
 
                 b.put_varint(*path_id)?;
                 b.put_varint(*seq_num)?;
@@ -960,20 +977,20 @@ impl Frame {
             },
 
             Frame::PathRetireConnectionId { path_id, seq_num } => {
-                b.put_varint(0x15228c0a)?;
+                b.put_varint(PATH_RETIRE_CONNECTION_ID)?;
 
                 b.put_varint(*path_id)?;
                 b.put_varint(*seq_num)?;
             },
 
             Frame::MaxPathId { max_path_id } => {
-                b.put_varint(0x15228c0c)?;
+                b.put_varint(MAX_PATH_ID)?;
 
                 b.put_varint(*max_path_id)?;
             },
 
             Frame::PathsBlocked { max_path_id } => {
-                b.put_varint(0x15228c0d)?;
+                b.put_varint(PATHS_BLOCKED)?;
 
                 b.put_varint(*max_path_id)?;
             },
@@ -982,7 +999,7 @@ impl Frame {
                 path_id,
                 next_seq_num: next_sequence_number,
             } => {
-                b.put_varint(0x15228c0e)?;
+                b.put_varint(PATH_CIDS_BLOCKED)?;
 
                 b.put_varint(*path_id)?;
                 b.put_varint(*next_sequence_number)?;
@@ -1321,7 +1338,7 @@ impl Frame {
                 ranges,
                 ecn_counts,
             } => {
-                4 + // frame_type
+                octets::varint_len(PATH_ACK) + // frame_type
                 octets::varint_len(*path_identifier) + // path_identifier
                 common_ack_wire_len(ack_delay, ranges, ecn_counts)
             },
@@ -1330,19 +1347,19 @@ impl Frame {
                 path_id,
                 error_code,
             } => {
-                4 + // frame type
+                octets::varint_len(PATH_ABANDON) + // frame type
                 octets::varint_len(*path_id) +
                 octets::varint_len(*error_code)
             },
 
             Frame::PathBackup { path_id, seq_num } => {
-                4 + // frame size
+                 octets::varint_len(PATH_STATUS_BACKUP) + // frame size
                 octets::varint_len(*path_id) +
                 octets::varint_len(*seq_num)
             },
 
             Frame::PathAvailable { path_id, seq_num } => {
-                4 + // frame size
+                octets::varint_len(PATH_STATUS_AVAILABLE) + // frame size
                 octets::varint_len(*path_id) +
                 octets::varint_len(*seq_num)
             },
@@ -1354,7 +1371,7 @@ impl Frame {
                 conn_id,
                 reset_token,
             } => {
-                4 + // frame type
+                octets::varint_len(PATH_NEW_CONNECTION_ID) + // frame type
                 octets::varint_len(*path_id) + // path_id
                 octets::varint_len(*seq_num) + // seq_num
                 octets::varint_len(*retire_prior_to) + // retire_prior_to
@@ -1364,7 +1381,7 @@ impl Frame {
             },
 
             Frame::PathRetireConnectionId { path_id, seq_num } => {
-                4 + // frame type
+                octets::varint_len(PATH_RETIRE_CONNECTION_ID) + // frame type
                 octets::varint_len(*path_id) + // path_id
                 octets::varint_len(*seq_num) // seq_num
             },
@@ -1375,7 +1392,7 @@ impl Frame {
             },
 
             Frame::PathsBlocked { max_path_id } => {
-                4 + // frame type
+                octets::varint_len(PATHS_BLOCKED) + // frame type
                 octets::varint_len(*max_path_id) // path_id
             },
 
@@ -1383,7 +1400,7 @@ impl Frame {
                 path_id,
                 next_seq_num,
             } => {
-                4 + // frame type
+                octets::varint_len(PATH_CIDS_BLOCKED) + // frame type
                 octets::varint_len(*path_id) + // path_id
                 octets::varint_len(*next_seq_num) // next_seq_num
             },
@@ -3204,7 +3221,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 12);
+        assert_eq!(wire_len, 10);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
@@ -3244,7 +3261,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 24);
+        assert_eq!(wire_len, 21);
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
@@ -3287,7 +3304,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 30);
+        assert_eq!(wire_len, 27);
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
@@ -3317,7 +3334,7 @@ mod tests {
         };
 
         assert_eq!(frame.wire_len(), wire_len);
-        assert_eq!(wire_len, 14);
+        assert_eq!(wire_len, 12);
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
@@ -3347,7 +3364,7 @@ mod tests {
         };
 
         assert_eq!(frame.wire_len(), wire_len);
-        assert_eq!(wire_len, 14);
+        assert_eq!(wire_len, 12);
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
@@ -3379,7 +3396,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 48);
+        assert_eq!(wire_len, 46);
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
@@ -3408,7 +3425,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 12);
+        assert_eq!(wire_len, 10);
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
@@ -3424,7 +3441,7 @@ mod tests {
     }
 
     #[test]
-    fn max_path_id_frame() {
+    fn max_path_id_frame() {    
         let mut d = [42; 128];
 
         let frame = Frame::MaxPathId { max_path_id: 42 };
@@ -3434,7 +3451,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 5);
+        assert_eq!(wire_len, 3);
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
@@ -3459,8 +3476,8 @@ mod tests {
             let mut b = octets::OctetsMut::with_slice(&mut d);
             frame.to_bytes(&mut b).unwrap()
         };
-
-        assert_eq!(wire_len, 5);
+        
+        assert_eq!(wire_len, 3);
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
@@ -3489,7 +3506,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 7);
+        assert_eq!(wire_len, 5);
 
         let mut b = octets::Octets::with_slice(&d);
         assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short), Ok(frame));
