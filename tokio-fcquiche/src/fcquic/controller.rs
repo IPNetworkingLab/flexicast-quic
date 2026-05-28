@@ -1203,7 +1203,7 @@ impl FcController {
             // Emulate ACK for all pn < first_ack (packets this receiver
             // never received because it joined late). This decrements their
             // counters in McAck so they are not blocked on this receiver.
-            self.mc_acks[fc_id as usize].new_recv(first_ack, true);
+            self.mc_acks[fc_id as usize].new_recv(first_ack, false);
         }
 
         // Must notify this new client of the first packet number of

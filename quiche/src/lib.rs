@@ -11348,7 +11348,7 @@ impl TransportParams {
                     tp.max_datagram_frame_size = Some(val.get_varint()?);
                 },
 
-                0x0f739bbc1b666d0d => {
+                0x3e => {
                     tp.initial_max_path_id = Some(val.get_varint()?);
                 },
 
@@ -11544,7 +11544,7 @@ impl TransportParams {
         if let Some(initial_max_path_id) = tp.initial_max_path_id {
             TransportParams::encode_param(
                 &mut b,
-                0x0f739bbc1b666d0d,
+                0x3e,
                 octets::varint_len(initial_max_path_id),
             )?;
             b.put_varint(initial_max_path_id)?;
