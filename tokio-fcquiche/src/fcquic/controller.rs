@@ -1179,6 +1179,7 @@ impl FcController {
                         }
                     }),
                 );
+                println!("[LKH] current tree : {tree}");
                 return Ok(());
             },
         };

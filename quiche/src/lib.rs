@@ -12229,7 +12229,7 @@ mod tests {
         let mut raw_params = [42; 256];
         let raw_params =
             TransportParams::encode(&tp, true, &mut raw_params).unwrap();
-        assert_eq!(raw_params.len(), 104);
+        assert_eq!(raw_params.len(), 97);
 
         let new_tp = TransportParams::decode(raw_params, false, None).unwrap();
 
@@ -12264,7 +12264,7 @@ mod tests {
         let mut raw_params = [42; 256];
         let raw_params =
             TransportParams::encode(&tp, false, &mut raw_params).unwrap();
-        assert_eq!(raw_params.len(), 79);
+        assert_eq!(raw_params.len(), 72);
 
         let new_tp = TransportParams::decode(raw_params, true, None).unwrap();
 
