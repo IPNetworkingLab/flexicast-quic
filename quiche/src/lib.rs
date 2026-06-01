@@ -409,6 +409,7 @@ use qlog::events::EventImportance;
 use qlog::events::EventType;
 #[cfg(feature = "qlog")]
 use qlog::events::RawInfo;
+use ring::aead;
 use stream::StreamPriorityKey;
 
 use std::cmp;
@@ -2907,7 +2908,10 @@ impl Connection {
                 .crypto_os
                 .get_open(space_id)
         };
-
+        
+        if info.from_mc {
+            println!("Packet from mc : PN={}", hdr.pkt_num);
+        }
         // Finally, discard packet if no usable key is available.
         let mut aead = match aead {
             Some(v) => v,
@@ -2999,12 +3003,16 @@ impl Connection {
 
         // Check for key update.
         let mut aead_next = None;
-
+        let mut fc_lkh_updated = false;
         if self.handshake_confirmed && hdr.ty != Type::ZeroRTT {
             if !info.from_mc && hdr.key_phase != self.key_phase {
                 // The key phase has changed, do we already know of this update ?
-                error!(
-                    "Going into key  update here but pn={pn} and space_id={space_id}. Largest received pn={largest_rx_pkt_num}. Flexicast first pn={:?} and role {:?}",
+                println!(
+                    "Key phase change from the unicast, now={}",
+                    hdr.key_phase
+                );
+                println!(
+                    "Going into key  update here, pn={pn} and space_id={space_id}. Largest received pn={largest_rx_pkt_num}. Flexicast first pn={:?} and role {:?}",
                     self.flexicast
                         .as_ref()
                         .map(|flexicast| flexicast.fc_first_pn),
@@ -3051,21 +3059,38 @@ impl Connection {
                 }
             } else if info.from_mc && self.flexicast.is_some() {
                 let flexicast = self.flexicast.as_ref().unwrap();
+                println!("[LKH] mc_key_phase = {}, packet key phase = {}, UC key phase ={}",flexicast.fc_key_phase, hdr.key_phase,self.key_phase);
 
-                if flexicast.fc_key_phase != hdr.key_phase {
+                if flexicast.fc_key_phase != hdr.key_phase ||flexicast.get_mc_role()==McRole::Client(flexicast::McClientStatus::JoinedNoKey){
+                    println!("[LKH] Key phase change detected");
                     if let Some(key_update) = flexicast
                         .get_fc_key_update()
                         .as_ref()
                         .and_then(|key_update| {
-                            (pn < key_update.pn_on_update).then_some(key_update)
+                            (pn >= key_update.pn_on_update).then_some(key_update)
                         })
-                    {
+                    {   
+
+                        //flexicast.apply_key_update();
                         aead = &key_update.crypto_open;
+                        fc_lkh_updated = true;
+                        println!("[LKH] trying the new key at PN={pn}, scheduled for PN={}",key_update.pn_on_update);
+
+
+                        
                     } else {
-                        error!(
-                            "Trying to rekey directly through the tree which is forbidden"
-                        );
-                        return Err(Error::Flexicast(FcError::McInvalidCrypto));
+                        println!("Packet received with a different key_phase but no key update");
+                        println!("Current update : {:?}",flexicast.get_fc_key_update());
+                        Err(Error::Flexicast(FcError::McInvalidCrypto)).map_err(
+                            |e| {
+                                drop_pkt_on_err(
+                                    e,
+                                    self.recv_count,
+                                    self.is_server,
+                                    &self.trace_id,
+                                )
+                            },
+                        )?;
                     }
                 }
             }
@@ -3077,7 +3102,7 @@ impl Connection {
         } else {
             space_id as u32
         };
-
+        println!("Trying to decrypt with {:?}",aead);
         let mut payload = packet::decrypt_pkt(
             &mut b,
             space_id_to_decrypt,
@@ -3086,10 +3111,10 @@ impl Connection {
             payload_len,
             aead,
         )
-        .map_err(|e| {
+        .map_err(|e| {println!("Decryption error : {e}");
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
-
+        println!("Packet decrypted");
         let pkt_num_space = self
             .pkt_num_spaces
             .spaces
@@ -3190,6 +3215,15 @@ impl Connection {
 
                 q.add_event_data_with_instant(ev_data_server, now).ok();
             });
+        }
+
+        if fc_lkh_updated {
+            println!("[LKH] new key successful");
+            // Then we can safely apply the key update
+            if let Some(flexicast) = self.flexicast.as_mut() {
+                flexicast.apply_key_update();
+            }
+
         }
 
         if !self.is_server && !self.got_peer_conn_id {
@@ -4423,6 +4457,10 @@ impl Connection {
             };
 
         if let Some(flexicast) = &mut self.flexicast {
+            if flexicast.get_mc_role() == McRole::ServerFlexicast {
+                //println!("[LKH] MCstatus : keyphase = {}, updates : {:?}",self.key_phase ,flexicast.fc_lkh_server_updates);
+            }
+
             if !flexicast.fc_lkh_server_updates.is_empty() {
                 match flexicast.get_mc_role() {
                     McRole::ServerFlexicast => {
@@ -4431,7 +4469,10 @@ impl Connection {
                             .keys()
                             .min()
                             .unwrap();
-                        if min_pn >= pn {
+                        println!("Next change at PN={min_pn}, current PN={pn}");
+
+                        if min_pn <= pn {
+                            println!("[LKH] dropping olds keys");
                             let (algo, key) = flexicast
                                 .fc_lkh_server_updates
                                 .remove(&min_pn)
@@ -4454,6 +4495,12 @@ impl Connection {
                                 .replace_seal(path_id, new_seal)
                                 .ok_or(Error::CryptoFail)?;
                             self.key_phase = !self.key_phase;
+                            println!(
+                                "[LKH] Role: {:?}  New key phase :{}",
+                                flexicast.get_mc_role(),
+                                self.key_phase
+                            );
+                            println!("[LKH] New key : {:?}", &key);
                         }
                         let _ = flexicast
                             .fc_lkh_server_updates
@@ -5350,6 +5397,12 @@ impl Connection {
                     match flexicast.get_mc_role() {
                         McRole::ServerFlexicast | McRole::ServerUnicast(_) => {
                             while !flexicast.lkh_keys_to_send.is_empty() {
+                                if flexicast
+                                    .get_mc_announce_data_active()
+                                    .is_none()
+                                {
+                                    break;
+                                }
                                 let mc_announce_data = flexicast
                                     .get_mc_announce_data_active()
                                     .ok_or(Error::Flexicast(
@@ -5362,7 +5415,7 @@ impl Connection {
                                 let first_pn = self.ids.get_next_pkt_num(
                                     flexicast.get_fc_path_id().ok_or(
                                         Error::Flexicast(FcError::McPath),
-                                    )?,
+                                    )?, // incorrect
                                 )?;
                                 let frame = frame::Frame::McKeyLKH {
                                     channel_id: mc_announce_data
@@ -5375,14 +5428,27 @@ impl Connection {
                                 if !push_frame_to_pkt!(b, frames, frame, left) {
                                     break;
                                 } else {
+                                    println!("Sending a key update : Role = {:?}, Update = {:?}",flexicast.get_mc_role(),update);
                                     let last_update = flexicast
                                         .lkh_keys_to_send
                                         .pop_front()
                                         .unwrap();
-                                    flexicast.lkh_server_update_key_backlog(
-                                        last_update,
-                                        first_pn,
-                                    )?;
+                                    println!(
+                                        "[LKH] Update pushed to packet from {:?}",
+                                        flexicast.get_mc_role()
+                                    );
+
+                                    match flexicast.get_mc_role() {
+                                        McRole::ServerFlexicast => {
+                                            println!("[LKH] MC session key change might be needed :");
+                                            flexicast
+                                                .lkh_server_update_key_backlog(
+                                                    last_update,
+                                                    first_pn,
+                                                )?;
+                                        },
+                                        _ => (),
+                                    }
                                 }
                             }
                         },
@@ -6119,6 +6185,11 @@ impl Connection {
             None,
             aead,
         )?;
+        if let Some(fc) = &self.flexicast {
+            if (fc.get_mc_role() == ServerFlexicast) {
+                println!("Encrypted packet {pn} with {aead:?}");
+            }
+        }
 
         let sent_pkt = recovery::Sent {
             pkt_num: pn,
@@ -21924,6 +21995,7 @@ mod tests {
 }
 
 use crate::fec::schedulers::FecScheduler;
+use crate::flexicast::McRole::ServerFlexicast;
 //use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 pub use crate::packet::ConnectionId;
 pub use crate::packet::Header;

@@ -1858,7 +1858,7 @@ impl Frame {
                 raw: None,
             },
              Frame::McKeyLKH { .. } => QuicFrame::Unknown {
-                raw_frame_type: MC_ANNOUNCE_CODE,
+                raw_frame_type: MC_KEY_LKH_CODE,
                 frame_type_value: None,
                 raw: None,
             },

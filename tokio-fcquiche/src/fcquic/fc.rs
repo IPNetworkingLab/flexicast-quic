@@ -176,12 +176,16 @@ impl FcChannelAsync {
                         .fc_set_max_tx_stream_data(max_stream_data, stream_id);
                 }
             },
-            MsgFcSource::KeyChangeNeeded(raw_packet) => {
+            MsgFcSource::KeyUpdateNeededOnMC(raw_packet) => {
                 let out_packet = lkh_encrypt(raw_packet, self.fc_chan.algo)?;
                 self.fc_chan.channel.schedule_lkh_update(quiche::flexicast::lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(out_packet));
                 
             }
-
+            MsgFcSource::LKHNotifySessionChange(notification) =>{
+                println!("[LKH] Notify received");
+                //self.fc_chan.channel.schedule_lkh_update(quiche::flexicast::lkhlib::packet::FCKeyUpdate::KeyUpdate(notification) );
+                self.fc_chan.channel.update_session_key_now(notification)?
+            }
         }
 
         Ok(())

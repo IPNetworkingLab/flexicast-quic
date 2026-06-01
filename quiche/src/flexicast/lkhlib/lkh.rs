@@ -20,6 +20,7 @@ pub trait LogicalTree {
     fn remove_user(&mut self, user_id: Vec<u8>) -> ();
     ///Return a tuple `(key_id, key)` if possible
     fn get_session_key(&self) -> Option<(u64, &[u8])>;
+    fn get_user_count(&self) -> usize;
 }
 #[derive(Clone)]
 /// Simple LKH implementation without any particular optimization 
@@ -329,6 +330,9 @@ impl Lkh {
 }
 
 impl LogicalTree for Lkh {
+    fn get_user_count(&self) -> usize {
+        self.get_user_count()
+    }
     fn remove_user(&mut self, user_id: Vec<u8>) {
         let session_key_id = self
             .tree
@@ -432,7 +436,9 @@ impl LogicalTree for LKHPlus {
     fn get_session_key(&self) -> Option<(u64, &[u8])> {
         self.lkh.get_session_key()
     }
-
+    fn get_user_count(&self) -> usize {
+        self.lkh.get_user_count()+self.unordered_users.len()
+    }
     fn add_user(&mut self, user_id: Vec<u8>, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>) {
         if self.lkh.get_user_count() == 0 {
             self.lkh.add_user(user_id, send);

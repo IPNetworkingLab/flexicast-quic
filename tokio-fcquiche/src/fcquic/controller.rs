@@ -21,6 +21,8 @@ use quiche::flexicast::McAnnounceData;
 use quiche::flexicast::MissingRangeSet;
 use quiche::ConnectionId;
 use quiche::Error;
+use quiche::flexicast::lkhlib::packet::KeyUpdatePacket;
+use quiche::flexicast::lkhlib::packet::WrappedKeyUpdatePacket;
 use std::collections::hash_map::Entry::Occupied;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::HashMap;
@@ -461,6 +463,7 @@ impl FcController {
             },
             MsgFcCtl::LKHChangeKeyUnicast((client_id, update)) => {
                 if let ControllerRole::Leaf(leaf) = &self.controller_role {
+                    println!("Leaf recieved a unicast key change : {:?} for {client_id}",update);
                     if leaf.tx_down.contains_key(&client_id) {
                         trace!(
                             "Leaf {} send new key {:?} to {}",
@@ -1142,7 +1145,7 @@ impl FcController {
                         .unwrap_or(0);
                     let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
                     //Send the message to the root controller to update the lkh tree
-                    trace!("[LKH] propagation join to the root");
+                    println!("[LKH] propagation join to the root");
                     match leaf.tx_up.try_send(MsgFcCtl::Join((
                         recv_id, fc_id, aggr_msg, max_pn, first_join,
                     ))) {
@@ -1173,12 +1176,27 @@ impl FcController {
                         // basé sur gémini donc pas sûr
                         for leaf in captured.iter() {
                             match leaf.try_send(MsgFcCtl::LKHChangeKeyUnicast((recv_id, FCKeyUpdate::KeyUpdate(packet.clone())))) {
-                                Err(_) => error!("[LKH] root couldn't send message"),
-                                Ok(_) => trace!("[LKH] root request to send unicast message"),
+                                Err(_) => println!("[LKH] root couldn't send message"),
+                                Ok(_) => println!("[LKH] root request to send unicast message"),
                             }
                         }
                     }),
                 );
+                let (key_id, new_key) = tree.get_session_key().unwrap();
+                
+                if (tree.get_user_count()<=1) {
+                    let packet = KeyUpdatePacket {
+                        delete_new_key:false,
+                        new_key:new_key.to_vec(),
+                        new_key_id:key_id,
+                        is_session_key:true
+                    };
+
+                    root.tx_up.get(fc_id as usize).ok_or(Error::Flexicast(quiche::flexicast::FcError::FcPathId))?.try_send(MsgFcSource::LKHNotifySessionChange(packet))?;
+
+
+                }
+
                 println!("[LKH] current tree : {tree}");
                 return Ok(());
             },
@@ -1421,13 +1439,13 @@ impl ControllerRoot {
     pub fn add_flow_tx(&mut self, tx: mpsc::Sender<MsgFcSource>) {
         let captured = tx.clone();
         self.tx_up.push(tx);
-        trace!("[LKH] Creating the LKH tree");
+        println!("[LKH] Creating the LKH tree");
         let lkh = LKHPlus::new(
             32,
             Arc::new(Box::new( move |packet| {
-                match captured.try_send(MsgFcSource::KeyChangeNeeded(packet)) {
+                match captured.try_send(MsgFcSource::KeyUpdateNeededOnMC(packet)) {
                     Ok(_) => (),
-                    Err(_) => info!("[LKH] Couldn't push a group key update to the channel")
+                    Err(_) => println!("[LKH] Couldn't push a group key update to the channel")
                 }
                 
             })),

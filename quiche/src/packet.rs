@@ -847,7 +847,7 @@ fn compute_retry_integrity_tag(
 
     Ok(out_tag)
 }
-
+#[derive(Debug)]
 pub struct KeyUpdate {
     /// 1-RTT key used prior to a key update.
     pub crypto_open: crypto::Open,

@@ -149,7 +149,7 @@ struct EVP_MD {
 }
 
 type HeaderProtectionMask = [u8; HP_MASK_LEN];
-
+#[derive(Debug)]
 pub struct Open {
     alg: Algorithm,
 
@@ -245,7 +245,7 @@ impl Open {
             .open_with_u64_counter(path_seq, counter, ad, buf)
     }
 }
-
+#[derive(Debug)]
 pub struct Seal {
     alg: Algorithm,
 

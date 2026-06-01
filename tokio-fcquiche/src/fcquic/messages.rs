@@ -6,6 +6,7 @@ use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
 use quiche::RecvInfo;
 use quiche::flexicast::lkhlib::packet::FCKeyUpdate;
+use quiche::flexicast::lkhlib::packet::KeyUpdatePacket;
 use quiche::flexicast::lkhlib::packet::WrappedKeyUpdatePacket;
 use tokio::sync::mpsc;
 
@@ -159,7 +160,12 @@ pub enum MsgFcSource {
     /// The controller sends aggregated control information to the flexicast
     /// flow.
     AggregatedInfo(FcAggregatedMsg),
-    KeyChangeNeeded(WrappedKeyUpdatePacket),
+    /// Message sent when the tree need a key update to be sent on the multicast
+    KeyUpdateNeededOnMC(WrappedKeyUpdatePacket),
+    /// Message sent when a MC session key change should happen
+    LKHNotifySessionChange(KeyUpdatePacket),
+
+
 }
 
 /// Messages sent to the main thread.

@@ -19,6 +19,9 @@ use crate::fec::decoder::FecDecoder;
 use crate::fec::encoder::FecEncoder;
 use crate::fec::schedulers::FecSchedulerAlgorithm;
 use crate::flexicast::cca::FcFlowCwnd;
+use crate::flexicast::McRole::ServerFlexicast;
+use crate::flexicast::McRole::ServerUnicast;
+use crate::flexicast::McRole::Undefined;
 //use crate::flexicast::lkhlib::lkh::LKHPlus;
 //use crate::flexicast::lkhlib::lkh::LogicalTree;
 use crate::flexicast::lkhlib::lkhcrypto::lkh_decrypt;
@@ -122,7 +125,7 @@ macro_rules! fca_mut {
 pub enum FcError {
     /// Incorrect McAnnounce data.
     McAnnounce,
-
+    Debug, // TO REMOVE
     /// Incomplete server channel initiation.
     McServerInit,
 
@@ -184,8 +187,7 @@ pub enum FcError {
     /// Timer error,
     FcTimeError,
     /// FcPath id mistakenly uninitialized
-    
-    FcPathId
+    FcPathId,
 }
 
 /// MC_ANNOUNCE frame type.
@@ -339,6 +341,17 @@ pub enum McRole {
     Undefined,
 }
 
+impl std::fmt::Display for McRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServerFlexicast => write!(f, "[Flexicast multicast server]"),
+            ServerUnicast(_) => write!(f, "[Flexicast unicast server]"),
+            McRole::Client(_) => write!(f, "[Flexicast client]"),
+            Undefined => write!(f, "[undefined]"),
+        }
+    }
+}
+
 /// Structure containing all flexicast-related variables of the extension
 /// in a quiche::Connection.
 pub struct FlexicastAttributes {
@@ -362,7 +375,7 @@ pub struct FlexicastAttributes {
     mc_key_up_to_date: bool,
 
     /// Contain the current key transition ()
-    mc_key_update: Option<(KeyUpdate)>,
+    mc_key_update: Option<KeyUpdate>,
 
     /// Set to true if the client just left the flexicast channel and the
     /// synchronisation step is not performed yet.
@@ -479,6 +492,7 @@ impl FlexicastAttributes {
     #[inline]
     /// Take the current key transition
     pub fn take_fc_key_update(&mut self) -> Option<KeyUpdate> {
+        println!("Taking key update");
         self.mc_key_update.take()
     }
 
@@ -768,10 +782,11 @@ impl FlexicastAttributes {
             role => Err(Error::Flexicast(FcError::McInvalidRole(role))),
         }
     }
-
+    /// Prepare for a mc key change on the clien side
     fn add_key_update(
         &mut self, algo: Algorithm, key: Vec<u8>, first_pn: u64,
     ) -> Result<()> {
+        println!("[LKH] Adding key update");
         let new_update = KeyUpdate {
             crypto_open: Open::from_secret(algo, &key)?,
             pn_on_update: first_pn,
@@ -780,11 +795,18 @@ impl FlexicastAttributes {
                 .checked_add(Duration::new(5, 0))
                 .ok_or(Error::Flexicast(FcError::FcTimeError))?, //TODO change to use RTT
         };
+        println!(
+            "[LKH] Preparing new key {:?} to be used at PN={first_pn}",
+            key
+        );
+        println!("Replacing the old update");
         let update = self.mc_key_update.replace(new_update);
+        println!("Old update : {:?}",update);
         if let Some(old_update) = update {
             self.fc_key_phase = !self.fc_key_phase;
             self.mc_crypto_open.replace(old_update.crypto_open);
         }
+        
 
         Ok(())
     }
@@ -797,6 +819,7 @@ impl FlexicastAttributes {
             &mut self.mc_announce_data[fc_chan_idx!(self)?].fc_key_dict;
 
         if !packet.delete_new_key {
+            println!("[LKH] Received a keyupdate : key={:?}, key_id={:?} to be used at PN>={first_pn}",packet.new_key,packet.new_key_id);
             key_dict.insert(packet.new_key_id, packet.new_key.clone());
 
             if packet.is_session_key {
@@ -817,7 +840,7 @@ impl FlexicastAttributes {
 
     /// Process a lkh keyupdate and, if it's a session key, adds it to the backlog of session key change
     pub fn lkh_server_update_key_backlog(
-        &mut self, update: FCKeyUpdate, next_pn: u64
+        &mut self, update: FCKeyUpdate, next_pn: u64,
     ) -> Result<()> {
         let (is_session, key) = match update {
             FCKeyUpdate::KeyUpdate(packet) => {
@@ -829,7 +852,10 @@ impl FlexicastAttributes {
             FCKeyUpdate::RawKey(key) => (true, key.clone()),
         };
         if is_session {
-            self.fc_lkh_server_updates.insert(next_pn, (self.get_decryption_key_algo(),key));
+            println!("[LKH] Scheduling a session key change for PN={next_pn}, role : {:?}",self.get_mc_role());
+
+            self.fc_lkh_server_updates
+                .insert(next_pn, (self.get_decryption_key_algo(), key));
         };
 
         Ok(())
@@ -839,6 +865,18 @@ impl FlexicastAttributes {
 
     pub fn get_mc_crypto_open(&self) -> Option<&Open> {
         self.mc_crypto_open.as_ref()
+    }
+
+    pub fn apply_key_update(&mut self) {
+
+        if self.mc_key_update.is_some() {
+            let open = self.mc_key_update.take().unwrap().crypto_open;
+            self.mc_crypto_open.replace(open);
+            self.fc_key_phase = !self.fc_key_phase;
+        }
+        
+        
+        
     }
 
     /// Sets the flexicast path space identifier.
@@ -1660,7 +1698,9 @@ impl Connection {
     pub fn schedule_lkh_update(&mut self, raw: FCKeyUpdate) {
         if let Some(fc) = self.flexicast.as_mut() {
             fc.lkh_keys_to_send.push_back(raw);
-            trace!("[LKH] Adding key to the schedule\n");
+            println!("[LKH] {} Adding key to the schedule", fc.get_mc_role());
+        } else {
+            println!("Flexicast does not yet exist");
         }
     }
 
@@ -1696,6 +1736,32 @@ impl Connection {
         space.key_update = Some(key_update);
         self.key_phase = !self.key_phase;
 
+        Ok(())
+    }
+    pub fn update_session_key_now(&mut self, packet: KeyUpdatePacket) -> Result<()> {
+        if let Some(fc) = &self.flexicast {
+            let path_id = self
+                .flexicast
+                .as_ref()
+                .unwrap()
+                .get_fc_path_id()
+                .ok_or(Error::InvalidState)?;
+            let key = packet.new_key;
+            let algo = fc.get_decryption_key_algo();
+            let new_seal = Seal::from_secret(algo, &key)?;
+            let new_open = Open::from_secret(algo, &key)?;
+            let  space =
+                self.pkt_num_spaces.crypto.get_mut(Epoch::Application);
+            space
+                .crypto_os
+                .replace_open(path_id, new_open)
+                .ok_or(Error::Flexicast(FcError::McInvalidCrypto))?;
+            space
+                .crypto_os
+                .replace_seal(path_id, new_seal)
+                .ok_or(Error::Flexicast(FcError::McInvalidCrypto))?;
+            self.key_phase = !self.key_phase;
+        }
         Ok(())
     }
 }
