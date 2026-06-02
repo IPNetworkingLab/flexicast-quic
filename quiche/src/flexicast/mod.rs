@@ -755,10 +755,6 @@ pub struct McAnnounceData {
     /// Source UDP port to use for the clients.
     pub udp_port: u16,
 
-    /// EdDSA public key to authenticate the flexicast source.
-    /// None if authentication is not used.
-    pub public_key: Option<Vec<u8>>,
-
     /// Flexicast-specific timer.
     /// The main purpose of this timer is to use negative acknowledgments only
     /// for the receivers. If the timer is set to a value different than 0,
@@ -773,11 +769,6 @@ pub struct McAnnounceData {
     /// For a client, it means that the data is received.
     pub is_processed: bool,
 
-    /// Bitrate of this channel in bits per second.
-    /// If `None`, it means that the channel uses a classical congestion
-    /// control.
-    pub bitrate: Option<u64>,
-
     /// Flexicast channel decryption key material.
     ///
     /// Distributed in the MC_KEY frame.
@@ -788,11 +779,6 @@ pub struct McAnnounceData {
     /// Distributed in the MC_KEY frame.
     /// mc_channel_algo: Algorithm::AES128_GCM,
     pub fc_channel_algo: Option<Algorithm>,
-
-    /// Whether the client should reset its stream states on joigning this
-    /// channel. This value is used for example if different flexicast
-    /// channels expose different data, e.g., streams at different quality.
-    pub reset_stream_on_join: bool,
 }
 
 impl McAnnounceData {
@@ -2210,11 +2196,8 @@ pub mod testing {
             source_ip: std::net::Ipv4Addr::new(127, 0, 0, 1).octets(),
             group_ip: std::net::Ipv4Addr::new(224, 0, 0, 1).octets(),
             udp_port: 7676,
-            public_key: None,
             fc_ack_delay: 0,
-            reset_stream_on_join: false,
             is_processed: false,
-            bitrate: None,
             fc_channel_algo: None,
             fc_channel_secret: None,
         }

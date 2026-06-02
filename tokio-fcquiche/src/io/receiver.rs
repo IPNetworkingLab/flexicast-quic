@@ -304,8 +304,9 @@ impl TokioFcQuicRecv {
                                     ))
                                 };
 
-                            let mc_socket =
+			    let mc_socket =
                                 UdpSocket::bind(mc_group_sockaddr).await?;
+
                             info!(
                                 "Multicast client binds on address: {:?}",
                                 mc_group_sockaddr

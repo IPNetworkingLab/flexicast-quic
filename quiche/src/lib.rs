@@ -5087,29 +5087,15 @@ impl Connection {
                 let frame = frame::Frame::McAnnounce {
                     channel_id: mc_announce_data.channel_id.clone(),
                     is_ipv6_addr: if mc_announce_data.is_ipv6_addr {
-                        1
+                        6
                     } else {
-                        0
+                        4
                     },
                     probe_path: if mc_announce_data.probe_path { 1 } else { 0 },
-                    reset_stream_on_join: if mc_announce_data.reset_stream_on_join
-                    {
-                        1
-                    } else {
-                        0
-                    },
                     source_ip: mc_announce_data.source_ip,
                     group_ip: mc_announce_data.group_ip,
                     udp_port: mc_announce_data.udp_port,
                     fc_ack_delay: mc_announce_data.fc_ack_delay,
-                    public_key: if let Some(key) =
-                        mc_announce_data.public_key.as_ref()
-                    {
-                        key.clone()
-                    } else {
-                        Vec::new()
-                    },
-                    bitrate: mc_announce_data.bitrate,
                 };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
@@ -9553,15 +9539,12 @@ impl Connection {
                 channel_id,
                 probe_path,
                 is_ipv6_addr,
-                reset_stream_on_join,
                 source_ip,
                 group_ip,
                 udp_port,
                 fc_ack_delay,
-                public_key,
-                bitrate,
             } => {
-                debug!("Received an FC_ANNOUNCE frame! FC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={}, reset_stream_on_joih={}, source_ip={:?}, group_ip={:?}, udp_port={}, fc_ack_delay={}, bitrate={:?}", channel_id, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, fc_ack_delay, bitrate);
+                debug!("Received an FC_ANNOUNCE frame! FC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={}, source_ip={:?}, group_ip={:?}, udp_port={}, fc_ack_delay={}", channel_id, probe_path, is_ipv6_addr, source_ip, group_ip, udp_port, fc_ack_delay);
                 if self.is_server {
                     error!("The server should not receive an FC_ANNOUNCE frame!");
                     return Err(Error::InvalidFrame);
@@ -9571,18 +9554,11 @@ impl Connection {
                     channel_id,
                     probe_path: probe_path == 1,
                     is_ipv6_addr: is_ipv6_addr == 1,
-                    reset_stream_on_join: reset_stream_on_join == 1,
                     source_ip,
                     group_ip,
                     udp_port,
-                    public_key: if public_key.is_empty() {
-                        None
-                    } else {
-                        Some(public_key)
-                    },
                     fc_ack_delay,
                     is_processed: true,
-                    bitrate,
                     fc_channel_algo: None,
                     fc_channel_secret: None,
                 };

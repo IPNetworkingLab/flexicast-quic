@@ -241,15 +241,12 @@ pub enum Frame {
 
     McAnnounce {
         channel_id: Vec<u8>,
-        is_ipv6_addr: u8,
         probe_path: u8,
-        reset_stream_on_join: u8,
+        is_ipv6_addr: u8,
         source_ip: [u8; 4],
         group_ip: [u8; 4],
         udp_port: u16,
         fc_ack_delay: u64, // In ms
-        public_key: Vec<u8>,
-        bitrate: Option<u64>,
     },
 
     McState {
@@ -497,7 +494,6 @@ impl Frame {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
                 let probe_path = b.get_u8()?;
                 let is_ipv6_addr = b.get_u8()?;
-                let reset_stream_on_join = b.get_u8()?;
                 let source_ip = b
                     .get_bytes(4)?
                     .buf()
@@ -510,30 +506,15 @@ impl Frame {
                     .map_err(|_| Error::BufferTooShort)?;
                 let udp_port = b.get_u16()?;
                 let fc_ack_delay = b.get_u64()?;
-                let key_len = b.get_varint()? as usize;
-                let public_key = b
-                    .get_bytes(key_len)?
-                    .buf()
-                    .into();
-
-                // Parse the eventual bitrate information.
-                let bitrate = if frame_type == MC_ANNOUNCE_BW_CODE {
-                    Some(b.get_varint()?)
-                } else {
-                    None
-                };
 
                 Frame::McAnnounce {
                     channel_id,
                     probe_path,
                     is_ipv6_addr,
-                    reset_stream_on_join,
                     source_ip,
                     group_ip,
                     udp_port,
                     fc_ack_delay,
-                    public_key,
-                    bitrate,
                 }
             },
 
@@ -937,34 +918,20 @@ impl Frame {
                 channel_id,
                 probe_path,
                 is_ipv6_addr,
-                reset_stream_on_join,
                 source_ip,
                 group_ip,
                 udp_port,
                 fc_ack_delay,
-                public_key,
-                bitrate,
             } => {
-                let ty = if bitrate.is_some() {
-                    MC_ANNOUNCE_BW_CODE
-                } else {
-                    MC_ANNOUNCE_CODE
-                };
-                b.put_varint(ty)?;
+                b.put_varint(MC_ANNOUNCE_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
                 b.put_u8(*probe_path)?;
                 b.put_u8(*is_ipv6_addr)?;
-                b.put_u8(*reset_stream_on_join)?;
                 b.put_bytes(source_ip)?;
                 b.put_bytes(group_ip)?;
                 b.put_u16(*udp_port)?;
                 b.put_u64(*fc_ack_delay)?;
-                b.put_varint(public_key.len() as u64)?;
-                b.put_bytes(public_key)?;
-                if let Some(bw) = bitrate {
-                    b.put_varint(*bw)?;
-                }
             },
 
             Frame::McState {
@@ -1300,33 +1267,21 @@ impl Frame {
                 channel_id,
                 probe_path: _,
                 is_ipv6_addr: _,
-                reset_stream_on_join: _,
                 source_ip: _,
                 group_ip: _,
                 udp_port: _,
                 fc_ack_delay: _,
-                public_key,
-                bitrate,
             } => {
-                let public_key_len_size =
-                    octets::varint_len(public_key.len() as u64);
-                let frame_type_size = if bitrate.is_some() {
-                    octets::varint_len(MC_ANNOUNCE_BW_CODE)
-                } else {
-                    octets::varint_len(MC_ANNOUNCE_CODE)
-                };
+                let frame_type_size = octets::varint_len(MC_ANNOUNCE_CODE);
                 frame_type_size + // frame type
                 1 + // channel_id len
                 channel_id.len() +
                 1 + // is_ipv6
                 1 + // full_reliability
-                1 + // reset_stream_on_join
                 4 + // source_ip
                 4 + // group_ip
                 2 + // udp_port
-                8 + // fc_ack_delay
-                public_key_len_size +
-                public_key.len()
+                8 // fc_ack_delay
             },
 
             Frame::McState {
@@ -1986,15 +1941,12 @@ impl std::fmt::Debug for Frame {
                 channel_id,
                 probe_path,
                 is_ipv6_addr,
-                reset_stream_on_join,
                 source_ip,
                 group_ip,
                 udp_port,
                 fc_ack_delay,
-                public_key: _,
-                bitrate,
             } => {
-                write!(f, "MC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={} reset_stream_on_join={} source_ip={:?}, group_ip={:?}, udp_port={}, fc_ack_delay={}, bitrate={:?}", channel_id, probe_path, is_ipv6_addr, reset_stream_on_join, source_ip, group_ip, udp_port, fc_ack_delay, bitrate)?;
+                write!(f, "MC_ANNOUNCE channel ID={:?}, probe_path={}, is_ipv6_addr={} source_ip={:?}, group_ip={:?}, udp_port={}, fc_ack_delay={}", channel_id, probe_path, is_ipv6_addr, source_ip, group_ip, udp_port, fc_ack_delay)?;
             },
 
             Frame::McState {
@@ -3386,13 +3338,10 @@ mod tests {
             .to_vec(),
             probe_path: 1,
             is_ipv6_addr: 0,
-            reset_stream_on_join: 0,
             source_ip: [127, 0, 0, 1],
             group_ip: [239, 239, 239, 35],
             udp_port: 8889,
             fc_ack_delay: 350,
-            public_key: vec![64, 33, 53, 127],
-            bitrate: None,
         };
 
         let wire_len = {
@@ -3400,51 +3349,7 @@ mod tests {
             frame.to_bytes(&mut b).unwrap()
         };
 
-        assert_eq!(wire_len, 45);
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert_eq!(
-            Frame::from_bytes(&mut b, packet::Type::Short),
-            Ok(frame.clone())
-        );
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial).is_err());
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT).is_ok());
-
-        let mut b = octets::Octets::with_slice(&mut d);
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake).is_err());
-    }
-
-    #[test]
-    fn mc_announce_with_bw() {
-        let mut d = [42; 128];
-
-        let frame = Frame::McAnnounce {
-            channel_id: [
-                180, 12, 104, 233, 220, 221, 226, 11, 141, 195, 27, 5, 100, 51,
-                58, 220,
-            ]
-            .to_vec(),
-            probe_path: 1,
-            is_ipv6_addr: 0,
-            reset_stream_on_join: 1,
-            source_ip: [127, 0, 0, 1],
-            group_ip: [239, 239, 239, 35],
-            udp_port: 8889,
-            fc_ack_delay: 350,
-            public_key: vec![64, 33, 53, 127],
-            bitrate: Some(10_000_000),
-        };
-
-        let wire_len = {
-            let mut b = octets::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b).unwrap()
-        };
-
-        assert_eq!(wire_len, 49);
+        assert_eq!(wire_len, 39);
 
         let mut b = octets::Octets::with_slice(&mut d);
         assert_eq!(
