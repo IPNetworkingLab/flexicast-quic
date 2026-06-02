@@ -1184,7 +1184,7 @@ impl FcController {
                 );
                 let (key_id, new_key) = tree.get_session_key().unwrap();
                 
-                if (tree.get_user_count()<=1) {
+                if tree.get_user_count()<=1 {
                     let packet = KeyUpdatePacket {
                         delete_new_key:false,
                         new_key:new_key.to_vec(),

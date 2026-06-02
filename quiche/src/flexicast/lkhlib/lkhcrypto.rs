@@ -9,6 +9,7 @@ pub fn lkh_encrypt(
     packet: WrappedKeyUpdatePacket, algo: Algorithm,
 ) -> Result<KeylessWrappedKeyUpdatePacket,crate::Error> {
     let seal = Seal::from_secret(algo, &packet.ksk.clone())?;
+    println!("{seal:?}");
     let mut buf = packet.packet.to_bytes();
     let data_len = buf.len();
     buf.resize(data_len + algo.tag_len(), 0);
@@ -28,6 +29,7 @@ pub fn lkh_decrypt(
     packet: KeylessWrappedKeyUpdatePacket, key: Vec<u8>, algo: Algorithm,
 ) -> Result<KeyUpdatePacket,crate::Error> {
     let open = Open::from_secret(algo, &key.clone())?;
+    println!("{open:?}");
     let mut cipher = packet.cipher.to_owned();
     let ad = packet.ksk_id.to_be_bytes();
     open.open_with_u64_counter(0, 1, &ad, &mut cipher)?;

@@ -413,6 +413,9 @@ pub struct FlexicastAttributes {
 
     /// Highest packet number acknowledged on the flexicast flow.
     pub fc_highest_ack_pn: Option<u64>,
+    /// Does the flexicast flow uses the LKH key system
+    pub fc_uses_lkh: bool,
+
     /// Queue of LKH key update to send
     pub lkh_keys_to_send: VecDeque<FCKeyUpdate>,
     /// Key phase of the multicast flow
@@ -519,6 +522,7 @@ impl FlexicastAttributes {
             (McClientStatus::AwareUnjoined, FcClientAction::Join)
                 if !is_server =>
             {
+                println!("Transition to waiting to join");
                 McClientStatus::WaitingToJoin
             },
             (McClientStatus::AwareUnjoined, FcClientAction::Join)
@@ -533,6 +537,7 @@ impl FlexicastAttributes {
                 McClientStatus::JoinedNoKey
             },
             (McClientStatus::WaitingToJoin, FcClientAction::Join) => {
+                println!("Transitioned to joined no key");
                 McClientStatus::JoinedNoKey
             },
             (McClientStatus::JoinedNoKey, FcClientAction::DecryptionKey) => {
@@ -671,6 +676,9 @@ impl FlexicastAttributes {
     /// but has received not the authentication key yet.
     /// Always false for a client.
     pub fn should_send_fc_key(&self) -> bool {
+        if self.fc_uses_lkh {
+            return false;
+        }
         if let Some((_, idx)) = self.fc_chan_id {
             if self.mc_announce_data[idx].fc_channel_secret.is_none() {
                 return false;
@@ -693,6 +701,24 @@ impl FlexicastAttributes {
         } else {
             false
         }
+    }
+    /// Should the server send fc lkh keys
+    pub fn should_send_fc_lkh_key(&self) -> bool {
+        !self.lkh_keys_to_send.is_empty()
+            && self.fc_uses_lkh
+            && match self.mc_role {
+                McRole::ServerUnicast(status) => {
+                    matches!(
+                        status,
+                        McClientStatus::JoinedAndKey
+                            | McClientStatus::ListenMcPath(_)
+                            | McClientStatus::Changing
+                            | McClientStatus::JoinedNoKey
+                    )
+                },
+                ServerFlexicast => true,
+                _ => false,
+            }
     }
 
     /// Read the last flexicast decryption key secret.
@@ -786,8 +812,18 @@ impl FlexicastAttributes {
     fn add_key_update(
         &mut self, algo: Algorithm, key: Vec<u8>, first_pn: u64,
     ) -> Result<()> {
-        println!("[LKH] Adding key update");
-        let new_update = KeyUpdate {
+        //println!("[LKH] Adding key update");
+        
+        println!(
+            "[LKH] Preparing new key {:?} to be used at PN={first_pn}",
+            key
+        );
+        if self.mc_crypto_open.is_none() {
+            println!("No mc crypto open specified, skipping wait");
+            self.mc_crypto_open.replace(Open::from_secret(algo, &key)?);
+        }
+        else {
+            let new_update = KeyUpdate {
             crypto_open: Open::from_secret(algo, &key)?,
             pn_on_update: first_pn,
             update_acked: true, //TODO change to a smart way of doing that
@@ -795,18 +831,15 @@ impl FlexicastAttributes {
                 .checked_add(Duration::new(5, 0))
                 .ok_or(Error::Flexicast(FcError::FcTimeError))?, //TODO change to use RTT
         };
-        println!(
-            "[LKH] Preparing new key {:?} to be used at PN={first_pn}",
-            key
-        );
-        println!("Replacing the old update");
+            println!("Replacing the old update");
         let update = self.mc_key_update.replace(new_update);
-        println!("Old update : {:?}",update);
-        if let Some(old_update) = update {
-            self.fc_key_phase = !self.fc_key_phase;
-            self.mc_crypto_open.replace(old_update.crypto_open);
+        println!("Old update : {:?}", update);
         }
         
+        /*if let Some(old_update) = update {
+            self.fc_key_phase = !self.fc_key_phase;
+            self.mc_crypto_open.replace(old_update.crypto_open);
+        }*/
 
         Ok(())
     }
@@ -866,16 +899,14 @@ impl FlexicastAttributes {
     pub fn get_mc_crypto_open(&self) -> Option<&Open> {
         self.mc_crypto_open.as_ref()
     }
-
+    /// Apply the pending lkh session key update if it exist
     pub fn apply_key_update(&mut self) {
-
         if self.mc_key_update.is_some() {
             let open = self.mc_key_update.take().unwrap().crypto_open;
             self.mc_crypto_open.replace(open);
-            self.fc_key_phase = !self.fc_key_phase;
+            
+            
         }
-        
-        
         
     }
 
@@ -936,6 +967,7 @@ impl Default for FlexicastAttributes {
             //fc_lkh: None,
             lkh_keys_to_send: VecDeque::new(),
             fc_key_phase: false,
+            fc_uses_lkh: true,
             fc_lkh_server_updates: HashMap::new(),
         }
     }
@@ -1223,7 +1255,8 @@ impl FlexicastConnection for Connection {
             return self.fc_should_send_fc_announce().is_some()
                 || flexicast.should_send_fc_state()
                 || flexicast.should_send_fc_key()
-                || flexicast.fc_use_nack_and_should_send_positive();
+                || flexicast.fc_use_nack_and_should_send_positive()
+                || (flexicast.fc_uses_lkh && !flexicast.lkh_keys_to_send.is_empty());
         }
         false
     }
@@ -1699,6 +1732,7 @@ impl Connection {
         if let Some(fc) = self.flexicast.as_mut() {
             fc.lkh_keys_to_send.push_back(raw);
             println!("[LKH] {} Adding key to the schedule", fc.get_mc_role());
+            println!("[LKH] current schedule : {:?}",fc.lkh_keys_to_send);
         } else {
             println!("Flexicast does not yet exist");
         }
@@ -1738,7 +1772,9 @@ impl Connection {
 
         Ok(())
     }
-    pub fn update_session_key_now(&mut self, packet: KeyUpdatePacket) -> Result<()> {
+    pub fn update_session_key_now(
+        &mut self, packet: KeyUpdatePacket,
+    ) -> Result<()> {
         if let Some(fc) = &self.flexicast {
             let path_id = self
                 .flexicast
@@ -1750,8 +1786,7 @@ impl Connection {
             let algo = fc.get_decryption_key_algo();
             let new_seal = Seal::from_secret(algo, &key)?;
             let new_open = Open::from_secret(algo, &key)?;
-            let  space =
-                self.pkt_num_spaces.crypto.get_mut(Epoch::Application);
+            let space = self.pkt_num_spaces.crypto.get_mut(Epoch::Application);
             space
                 .crypto_os
                 .replace_open(path_id, new_open)
@@ -1761,6 +1796,7 @@ impl Connection {
                 .replace_seal(path_id, new_seal)
                 .ok_or(Error::Flexicast(FcError::McInvalidCrypto))?;
             self.key_phase = !self.key_phase;
+            println!("Replaced the crypto");
         }
         Ok(())
     }

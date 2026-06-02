@@ -2575,7 +2575,7 @@ impl Connection {
         }
 
         let buf_len = buf.len();
-
+        let mut original_buf = buf.to_owned(); //TODO: faire mieux
         let mut b = octets::OctetsMut::with_slice(buf);
 
         let mut hdr = Header::from_bytes(&mut b, self.source_id().len())
@@ -2686,7 +2686,7 @@ impl Connection {
 
             return Err(Error::Done);
         }
-
+        
         if hdr.ty == packet::Type::Retry {
             // Retry packets can only be sent by the server.
             if self.is_server {
@@ -2863,6 +2863,16 @@ impl Connection {
                 }
             }
         }
+        
+        
+        //println!("before split");
+        let mut payload;
+        let mut pn;
+        let mut aead_next = None;
+        let mut aead_tag_len;
+        let mut fc_lkh_updated = false;
+        #[cfg(feature = "qlog")]
+        let mut qlog_frames = vec![];
 
         // Select AEAD context used to open incoming packet.
         let aead = if hdr.ty == packet::Type::ZeroRTT {
@@ -2883,7 +2893,10 @@ impl Connection {
                     )
                     | flexicast::McRole::Client(
                         flexicast::McClientStatus::JoinedAndKey,
-                    ) => flexicast.get_mc_crypto_open(),
+                    ) => {
+                        //println!("Getting via flexicast");
+                        flexicast.get_mc_crypto_open()
+                    },
                     flexicast::McRole::Client(_) => self
                         .pkt_num_spaces
                         .crypto
@@ -2892,6 +2905,7 @@ impl Connection {
                         .get_open(space_id),
                     e => {
                         error!("Trying to receive message as the server on the multicast tree");
+                        println!("Invalid role");
                         return Err(Error::Flexicast(
                             flexicast::FcError::McInvalidRole(e),
                         ));
@@ -2908,11 +2922,9 @@ impl Connection {
                 .crypto_os
                 .get_open(space_id)
         };
-        
-        if info.from_mc {
-            println!("Packet from mc : PN={}", hdr.pkt_num);
-        }
+        //println!("Before aead unpacking");
         // Finally, discard packet if no usable key is available.
+        //println!("Aead : {aead:?}");
         let mut aead = match aead {
             Some(v) => v,
 
@@ -2933,6 +2945,7 @@ impl Connection {
                     v
                 } else {
                     debug!("Failed to create a new crypto context");
+                    println!("Failed to create a new crypto context");
                     return Err(Error::InvalidState);
                 }
             },
@@ -2951,9 +2964,10 @@ impl Connection {
                     let pkt = (b.buf()[..pkt_len]).to_vec();
 
                     self.undecryptable_pkts.push_back((pkt, *info));
+                    println!("Packet is added to undecryptable");
                     return Ok(pkt_len);
                 }
-
+                //println!("Error :c");
                 let e = drop_pkt_on_err(
                     Error::CryptoFail,
                     self.recv_count,
@@ -2965,53 +2979,73 @@ impl Connection {
             },
         };
 
-        let aead_tag_len = aead.alg().tag_len();
+        aead_tag_len = aead.alg().tag_len();
+        //println!("Before loop");
+        loop {
+            if fc_lkh_updated {
+                //We need to restore the buffer to before the attempted decryption
+                b = octets::OctetsMut::with_slice(&mut original_buf);
+                hdr = Header::from_bytes(&mut b, self.source_id().len())
+                    .map_err(|e| {
+                        drop_pkt_on_err(
+                            e,
+                            self.recv_count,
+                            self.is_server,
+                            &self.trace_id,
+                        )
+                    })?;
+            }
+            //println!("Trying to decrypt header");
+            packet::decrypt_hdr(&mut b, &mut hdr, aead).map_err(|e| {
+                println!("Header decryption failed");
+                drop_pkt_on_err(
+                    e,
+                    self.recv_count,
+                    self.is_server,
+                    &self.trace_id,
+                )
+            })?;
+            if info.from_mc {
+                //println!("Packet from mc : PN={}", hdr.pkt_num);
+            }
+            // This might be a new space identifier yet unseen before. In such case,
+            // it should start with 0.
+            let largest_rx_pkt_num = self
+                .pkt_num_spaces
+                .spaces
+                .get(epoch, space_id)
+                .map(|pns| pns.largest_rx_pkt_num)
+                .unwrap_or(0);
+            pn = packet::decode_pkt_num(
+                largest_rx_pkt_num,
+                hdr.pkt_num,
+                hdr.pkt_num_len,
+            );
 
-        packet::decrypt_hdr(&mut b, &mut hdr, aead).map_err(|e| {
-            drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
-        })?;
+            let pn_len = hdr.pkt_num_len;
+            let multipath_enabled = self.paths.multipath();
 
-        // This might be a new space identifier yet unseen before. In such case,
-        // it should start with 0.
-        let largest_rx_pkt_num = self
-            .pkt_num_spaces
-            .spaces
-            .get(epoch, space_id)
-            .map(|pns| pns.largest_rx_pkt_num)
-            .unwrap_or(0);
-        let pn = packet::decode_pkt_num(
-            largest_rx_pkt_num,
-            hdr.pkt_num,
-            hdr.pkt_num_len,
-        );
+            trace!(
+                "{} rx pkt {:?} len={} pn={} {} {}",
+                self.trace_id,
+                hdr,
+                payload_len,
+                pn,
+                PathIdFmt(multipath_enabled, space_id),
+                AddrTupleFmt(info.from, info.to)
+            );
 
-        let pn_len = hdr.pkt_num_len;
-        let multipath_enabled = self.paths.multipath();
+            // Check for key update.
+            //let mut aead_next = None;
 
-        trace!(
-            "{} rx pkt {:?} len={} pn={} {} {}",
-            self.trace_id,
-            hdr,
-            payload_len,
-            pn,
-            PathIdFmt(multipath_enabled, space_id),
-            AddrTupleFmt(info.from, info.to)
-        );
-
-        #[cfg(feature = "qlog")]
-        let mut qlog_frames = vec![];
-
-        // Check for key update.
-        let mut aead_next = None;
-        let mut fc_lkh_updated = false;
-        if self.handshake_confirmed && hdr.ty != Type::ZeroRTT {
-            if !info.from_mc && hdr.key_phase != self.key_phase {
-                // The key phase has changed, do we already know of this update ?
-                println!(
-                    "Key phase change from the unicast, now={}",
-                    hdr.key_phase
-                );
-                println!(
+            if self.handshake_confirmed && hdr.ty != Type::ZeroRTT {
+                if !info.from_mc && hdr.key_phase != self.key_phase {
+                    // The key phase has changed, do we already know of this update ?
+                    println!(
+                        "Key phase change from the unicast, now={}",
+                        hdr.key_phase
+                    );
+                    println!(
                     "Going into key  update here, pn={pn} and space_id={space_id}. Largest received pn={largest_rx_pkt_num}. Flexicast first pn={:?} and role {:?}",
                     self.flexicast
                         .as_ref()
@@ -3019,102 +3053,148 @@ impl Connection {
                     self.flexicast.as_ref().map(|fc| fc.get_mc_role())
                 );
 
-                {
-                    // Check if this packet arrived before key update.
-                    if let Some(key_update) = self
-                        .pkt_num_spaces
-                        .crypto
-                        .get(epoch)
-                        .key_update
-                        .as_ref()
-                        .and_then(|key_update| {
-                            (pn < key_update.pn_on_update).then_some(key_update)
-                        })
                     {
-                        aead = &key_update.crypto_open;
-                    } else {
-                        trace!("{} peer-initiated key update", self.trace_id);
+                        // Check if this packet arrived before key update.
+                        if let Some(key_update) = self
+                            .pkt_num_spaces
+                            .crypto
+                            .get(epoch)
+                            .key_update
+                            .as_ref()
+                            .and_then(|key_update| {
+                                (pn < key_update.pn_on_update)
+                                    .then_some(key_update)
+                            })
+                        {
+                            aead = &key_update.crypto_open;
+                        } else {
+                            trace!("{} peer-initiated key update", self.trace_id);
 
-                        aead_next = Some((
-                            self.pkt_num_spaces
-                                .crypto
-                                .get(epoch)
-                                .crypto_os
-                                .get_open(space_id)
-                                .unwrap()
-                                .derive_next_packet_key()?,
-                            self.pkt_num_spaces
-                                .crypto
-                                .get(epoch)
-                                .crypto_os
-                                .get_seal(space_id)
-                                .unwrap()
-                                .derive_next_packet_key()?,
-                        ));
+                            aead_next = Some((
+                                self.pkt_num_spaces
+                                    .crypto
+                                    .get(epoch)
+                                    .crypto_os
+                                    .get_open(space_id)
+                                    .unwrap()
+                                    .derive_next_packet_key()?,
+                                self.pkt_num_spaces
+                                    .crypto
+                                    .get(epoch)
+                                    .crypto_os
+                                    .get_seal(space_id)
+                                    .unwrap()
+                                    .derive_next_packet_key()?,
+                            ));
 
-                        // `aead_next` is always `Some()` at this point, so the `unwrap()`
-                        // will never fail.
-                        aead = &aead_next.as_ref().unwrap().0;
+                            // `aead_next` is always `Some()` at this point, so the `unwrap()`
+                            // will never fail.
+                            aead = &aead_next.as_ref().unwrap().0;
+                        }
                     }
+                } else if info.from_mc && self.flexicast.is_some() {
+                    let flexicast = self.flexicast.as_ref().unwrap();
+                    //println!("[LKH] mc_key_phase = {}, packet key phase = {}, UC key phase ={}",flexicast.fc_key_phase, hdr.key_phase,self.key_phase);
+
+                    /*if flexicast.fc_key_phase != hdr.key_phase
+                        || flexicast.get_mc_role()
+                            == McRole::Client(
+                                flexicast::McClientStatus::JoinedNoKey,
+                            )
+                    {
+                        println!("[LKH] Key phase change detected");
+                        if let Some(key_update) = flexicast
+                            .get_fc_key_update()
+                            .as_ref()
+                            .and_then(|key_update| {
+                                (pn >= key_update.pn_on_update)
+                                    .then_some(key_update)
+                            })
+                        {
+                            //flexicast.apply_key_update();
+                            aead = &key_update.crypto_open;
+                            fc_lkh_updated = true;
+                            println!("[LKH] trying the new key at PN={pn}, scheduled for PN={}",key_update.pn_on_update);
+                        } else {
+                            println!("Packet received with a different key_phase but no key update");
+                            println!(
+                                "Current update : {:?}",
+                                flexicast.get_fc_key_update()
+                            );
+                            Err(Error::Flexicast(FcError::McInvalidCrypto))
+                                .map_err(|e| {
+                                    drop_pkt_on_err(
+                                        e,
+                                        self.recv_count,
+                                        self.is_server,
+                                        &self.trace_id,
+                                    )
+                                })?;
+                        }
+                    }*/
                 }
-            } else if info.from_mc && self.flexicast.is_some() {
-                let flexicast = self.flexicast.as_ref().unwrap();
-                println!("[LKH] mc_key_phase = {}, packet key phase = {}, UC key phase ={}",flexicast.fc_key_phase, hdr.key_phase,self.key_phase);
+            }
 
-                if flexicast.fc_key_phase != hdr.key_phase ||flexicast.get_mc_role()==McRole::Client(flexicast::McClientStatus::JoinedNoKey){
-                    println!("[LKH] Key phase change detected");
-                    if let Some(key_update) = flexicast
-                        .get_fc_key_update()
-                        .as_ref()
-                        .and_then(|key_update| {
-                            (pn >= key_update.pn_on_update).then_some(key_update)
-                        })
-                    {   
-
-                        //flexicast.apply_key_update();
-                        aead = &key_update.crypto_open;
-                        fc_lkh_updated = true;
-                        println!("[LKH] trying the new key at PN={pn}, scheduled for PN={}",key_update.pn_on_update);
-
-
-                        
+            // For the flexicast flow, the space_id is always 1.
+            let space_id_to_decrypt = if info.from_mc {
+                1 // Always 1 for the flexicast source.
+            } else {
+                space_id as u32
+            };
+            //println!("Trying to decrypt with {:?}, {fc_lkh_updated}", aead);
+            let result = packet::decrypt_pkt(
+                &mut b,
+                space_id_to_decrypt,
+                pn,
+                pn_len,
+                payload_len,
+                aead,
+            );
+            /*.map_err(|e| {
+            drop_pkt_on_err(
+                e,
+                self.recv_count,
+                self.is_server,
+                &self.trace_id,
+            )*/
+            match result {
+                Err(e) => {
+                    if self.flexicast.is_none() || fc_lkh_updated {
+                        // Either we do not have a flexicast flow or we tried to decrypt with a new key to no avail, we should drop the packet
+                        //println!("Failed to decrypt the packet");
+                        return Err(drop_pkt_on_err(
+                            e,
+                            self.recv_count,
+                            self.is_server,
+                            &self.trace_id,
+                        ));
                     } else {
-                        println!("Packet received with a different key_phase but no key update");
-                        println!("Current update : {:?}",flexicast.get_fc_key_update());
-                        Err(Error::Flexicast(FcError::McInvalidCrypto)).map_err(
-                            |e| {
-                                drop_pkt_on_err(
+                        //println!("Might be a key update");
+                        if let Some(flexicast) = &self.flexicast {
+                            if let Some(keyupdate) = flexicast.get_fc_key_update()
+                            {
+                                println!("There is a new key,trying it");
+                                aead = &keyupdate.crypto_open;
+                                fc_lkh_updated = true;
+                            } else {
+                                return Err(drop_pkt_on_err(
                                     e,
                                     self.recv_count,
                                     self.is_server,
                                     &self.trace_id,
-                                )
-                            },
-                        )?;
+                                ));
+                            }
+                        }
                     }
-                }
+                },
+                Ok(val) => {
+                    payload = val;
+                    break;
+                },
             }
         }
-
-        // For the flexicast flow, the space_id is always 1.
-        let space_id_to_decrypt = if info.from_mc {
-            1 // Always 1 for the flexicast source.
-        } else {
-            space_id as u32
-        };
-        println!("Trying to decrypt with {:?}",aead);
-        let mut payload = packet::decrypt_pkt(
-            &mut b,
-            space_id_to_decrypt,
-            pn,
-            pn_len,
-            payload_len,
-            aead,
-        )
-        .map_err(|e| {println!("Decryption error : {e}");
-            drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
-        })?;
-        println!("Packet decrypted");
+        //println!("Packet decrypted");
+        //println!("aead : {:?}",aead);
         let pkt_num_space = self
             .pkt_num_spaces
             .spaces
@@ -3217,13 +3297,16 @@ impl Connection {
             });
         }
 
+        if let Some(fc) = &mut self.flexicast {
+            fc.fc_key_phase = hdr.key_phase; //might be useless
+        }
+
         if fc_lkh_updated {
             println!("[LKH] new key successful");
             // Then we can safely apply the key update
             if let Some(flexicast) = self.flexicast.as_mut() {
                 flexicast.apply_key_update();
             }
-
         }
 
         if !self.is_server && !self.got_peer_conn_id {
@@ -5391,74 +5474,61 @@ impl Connection {
                 }
             }
 
-            // Send, if necessary, LKH key updates
+            // Send, if necessary, MC_KEY_LKH key updates
             if let Some(flexicast) = self.flexicast.as_mut() {
-                if !flexicast.lkh_keys_to_send.is_empty() {
-                    match flexicast.get_mc_role() {
-                        McRole::ServerFlexicast | McRole::ServerUnicast(_) => {
-                            while !flexicast.lkh_keys_to_send.is_empty() {
-                                if flexicast
-                                    .get_mc_announce_data_active()
-                                    .is_none()
-                                {
-                                    break;
-                                }
-                                let mc_announce_data = flexicast
-                                    .get_mc_announce_data_active()
-                                    .ok_or(Error::Flexicast(
-                                        flexicast::FcError::McAnnounce,
-                                    ))?;
+                //println!("Should send key ?");
+                if flexicast.should_send_fc_lkh_key() {
+                    //println!("Yes!");
+                    while !flexicast.lkh_keys_to_send.is_empty() {
+                        if flexicast.get_mc_announce_data_active().is_none() {
+                            break;
+                        }
+                        let mc_announce_data =
+                            flexicast.get_mc_announce_data_active().ok_or(
+                                Error::Flexicast(flexicast::FcError::McAnnounce),
+                            )?;
 
-                                let update =
-                                    flexicast.lkh_keys_to_send.front().unwrap();
+                        let update = flexicast.lkh_keys_to_send.front().unwrap();
 
-                                let first_pn = self.ids.get_next_pkt_num(
-                                    flexicast.get_fc_path_id().ok_or(
-                                        Error::Flexicast(FcError::McPath),
-                                    )?, // incorrect
-                                )?;
-                                let frame = frame::Frame::McKeyLKH {
-                                    channel_id: mc_announce_data
-                                        .channel_id
-                                        .clone(),
-                                    algo: flexicast.get_decryption_key_algo(),
-                                    first_pn,
-                                    key_update: update.clone(),
-                                };
-                                if !push_frame_to_pkt!(b, frames, frame, left) {
-                                    break;
-                                } else {
-                                    println!("Sending a key update : Role = {:?}, Update = {:?}",flexicast.get_mc_role(),update);
-                                    let last_update = flexicast
-                                        .lkh_keys_to_send
-                                        .pop_front()
-                                        .unwrap();
-                                    println!(
-                                        "[LKH] Update pushed to packet from {:?}",
-                                        flexicast.get_mc_role()
-                                    );
+                        let first_pn = flexicast.fc_first_pn.unwrap_or(0);
 
-                                    match flexicast.get_mc_role() {
-                                        McRole::ServerFlexicast => {
-                                            println!("[LKH] MC session key change might be needed :");
-                                            flexicast
-                                                .lkh_server_update_key_backlog(
-                                                    last_update,
-                                                    first_pn,
-                                                )?;
-                                        },
-                                        _ => (),
-                                    }
-                                }
+                        let frame = frame::Frame::McKeyLKH {
+                            channel_id: mc_announce_data.channel_id.clone(),
+                            algo: flexicast.get_decryption_key_algo(),
+                            first_pn,
+                            key_update: update.clone(),
+                        };
+                        if !push_frame_to_pkt!(b, frames, frame, left) {
+                            break;
+                        } else {
+                            println!("Sending a key update : Role = {:?}, Update = {:?}",flexicast.get_mc_role(),update);
+                            let last_update =
+                                flexicast.lkh_keys_to_send.pop_front().unwrap();
+
+                            flexicast.set_mc_key_read(true);
+
+                            ack_eliciting = true;
+                            in_flight = true;
+
+                            println!(
+                                "[LKH] Update pushed to packet from {:?}",
+                                flexicast.get_mc_role()
+                            );
+
+                            match flexicast.get_mc_role() {
+                                McRole::ServerFlexicast => {
+                                    println!("[LKH] MC session key change might be needed :");
+                                    flexicast.lkh_server_update_key_backlog(
+                                        last_update,
+                                        first_pn,
+                                    )?;
+                                },
+                                _ => (),
                             }
-                        },
-                        other => {
-                            error!("[LKH] Trying to send MCKeyLKH with the wrong role :{other:?}");
-                            return Err(Error::Flexicast(
-                                FcError::McInvalidRole(other),
-                            ));
-                        },
+                        }
                     }
+                } else {
+                    //println!("No");
                 }
             }
         }
@@ -6187,7 +6257,7 @@ impl Connection {
         )?;
         if let Some(fc) = &self.flexicast {
             if (fc.get_mc_role() == ServerFlexicast) {
-                println!("Encrypted packet {pn} with {aead:?}");
+                //println!("Encrypted packet {pn} with {aead:?}");
             }
         }
 
@@ -9857,6 +9927,7 @@ impl Connection {
                         action_data,
                         flexicast.get_mc_role(),
                     );
+                    println!("Trying to process the state");
                     let _new_status = flexicast.update_client_state(
                         action.try_into()?,
                         Some(action_data),
@@ -10004,6 +10075,22 @@ impl Connection {
                     // TODO : Implement
                     flexicast
                         .lkh_update_client_keys(algo, key_update, first_pn)?;
+
+                    flexicast.update_client_state(
+                        flexicast::FcClientAction::DecryptionKey,
+                        None,
+                    )?;
+                    flexicast.fc_first_pn = Some(first_pn);
+                    if let Some(mc_space_id) = flexicast.get_fc_path_id() {
+                        self.pkt_num_spaces
+                            .spaces
+                            .get_mut_or_create(
+                                packet::Epoch::Application,
+                                mc_space_id,
+                            )
+                            .recv_pkt_need_ack
+                            .insert(first_pn..first_pn + 1);
+                    }
                 } else {
                 }
             },
