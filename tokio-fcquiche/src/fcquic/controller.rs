@@ -310,9 +310,9 @@ impl FcController {
                         // The offset of the new given piece of data.
                         // It is important to give the exact offset to the
                         // receiver to let them know where to put this data.
-                        let new_data_off = *app_data_min_off +
-                            app_data.len() as u64 -
-                            data.len() as u64;
+                        let new_data_off = *app_data_min_off
+                            + app_data.len() as u64
+                            - data.len() as u64;
                         for recv_id in self.unicast_recv.iter() {
                             let msg = MsgRecv::StreamData((
                                 data.clone(),
@@ -443,11 +443,13 @@ impl FcController {
                 }
             },
 
-            MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) =>
-                self.on_new_aggr_msg(recv_id, fc_id, aggr_info).await?,
+            MsgFcCtl::AggregatedInfo((recv_id, fc_id, aggr_info)) => {
+                self.on_new_aggr_msg(recv_id, fc_id, aggr_info).await?
+            },
 
-            MsgFcCtl::CollectRecv((recv_id, fc_id)) =>
-                self.on_collect_recv(recv_id, fc_id).await?,
+            MsgFcCtl::CollectRecv((recv_id, fc_id)) => {
+                self.on_collect_recv(recv_id, fc_id).await?
+            },
         }
 
         Ok(())
@@ -810,8 +812,8 @@ impl FcController {
                 };
 
                 entry.insert(
-                    stream_piece.offset..
-                        stream_piece.offset + stream_piece.payload.len() as u64,
+                    stream_piece.offset
+                        ..stream_piece.offset + stream_piece.payload.len() as u64,
                 );
             }
         }
@@ -903,10 +905,12 @@ impl FcController {
                             self.nb_ready,
                         ));
                         match root.tx_up[i].try_send(msg) {
-                            Ok(_) =>
-                                self.pending_ack[i] = OpenRangeSet::default(),
-                            Err(_e) =>
-                                info!("Root cannot send ACK to the source"),
+                            Ok(_) => {
+                                self.pending_ack[i] = OpenRangeSet::default()
+                            },
+                            Err(_e) => {
+                                info!("Root cannot send ACK to the source")
+                            },
                         }
                     },
                 }
@@ -925,8 +929,9 @@ impl FcController {
                     for (stream_id, ranges) in fully_acked_stream_pieces.drain(..)
                     {
                         let entry = match pending_stream_ack.entry(stream_id) {
-                            Vacant(entry) =>
-                                entry.insert(OpenRangeSet::default()),
+                            Vacant(entry) => {
+                                entry.insert(OpenRangeSet::default())
+                            },
                             Occupied(entry) => entry.into_mut(),
                         };
                         for range in ranges.iter() {
@@ -1111,6 +1116,24 @@ impl FcController {
                     self.mc_acks[fc_id as usize].get_largest_pn().unwrap_or(0);
                 let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
                 send_uc_path!(self, recv_id, msg);
+
+                // Add the receiver in the state if we have to wait for a given number of receiver greater than 1.
+                // This is ugly.
+                if self.wait.is_some_and(|w| w > 1) {
+                    // The first packet number should be 2?
+                    let new_insert = self.active_clients[fc_id as usize]
+                        .insert(recv_id, pn);
+                    _ = self.unicast_recv.remove(&recv_id);
+                    _ = self.delegated_recv[fc_id as usize].remove(&recv_id);
+                    if new_insert.is_none() {
+                        // Emulate ACK for all pn < first_ack (packets this receiver
+                        // never received because it joined late). This decrements their
+                        // counters in McAck so they are not blocked on this receiver.
+                        debug!("Add receiver {recv_id} in multicast flow {fc_id} with first packet number {pn}");
+                        self.mc_acks[fc_id as usize].new_recv(pn, true);
+                    }
+                }
+
                 return Ok(());
             }
 
@@ -1207,8 +1230,8 @@ impl FcController {
         //     ack_stream_pieces,
         //     self.mc_acks[fc_id as usize]
         // );
-        if !self.active_clients[fc_id as usize].contains_key(&recv_id) &&
-            self.recv_ack.get(&recv_id).is_some_and(|rs| rs.len() == 0)
+        if !self.active_clients[fc_id as usize].contains_key(&recv_id)
+            && self.recv_ack.get(&recv_id).is_some_and(|rs| rs.len() == 0)
         {
             // Use the FIRST (smallest) pn the receiver actually received, not
             // last+1. Using last+1 was causing a stall: active_clients would
@@ -1264,9 +1287,9 @@ impl FcController {
                 // - The value is higher and significantly higher than previous
                 //   seen bytes.
                 if self.active_clients[fc_id as usize].contains_key(&recv_id) {
-                    if (cwnd < entry.0 &&
-                        seen_bytes >= entry.1.saturating_sub(50_000)) ||
-                        (seen_bytes >= entry.1 + 50_000)
+                    if (cwnd < entry.0
+                        && seen_bytes >= entry.1.saturating_sub(50_000))
+                        || (seen_bytes >= entry.1 + 50_000)
                     {
                         *entry = (cwnd, seen_bytes);
                     }
