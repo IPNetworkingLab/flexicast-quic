@@ -590,17 +590,17 @@ impl Frame {
                 match is_encrypted {
 
                     FCPROTECTEDKEY => { //Encrypted 
-                        let ksk_id = b.get_u64()?;
-                        let cipher_len = b.get_varint()?;
-                        let cipher = b.get_bytes(cipher_len as usize)?.to_vec();
-                        println!("Got a KeylessWrappedKeyUpdate !");
+                        let packet_len = b.get_varint()?;
+                        let bpacket = b.get_bytes(packet_len as usize)?.to_vec();
 
+                        println!("Got a KeylessWrappedKeyUpdate !");
+                        let packet = KeylessWrappedKeyUpdatePacket::from_bytes(bpacket).ok_or(Error::InvalidFrame).map_err(|e| {println!("Unable to deserialise McKeyLKH");e})?;
                         
 
 
                         Frame::McKeyLKH {
                     channel_id,
-                    key_update: FCKeyUpdate::KeylessWrappedKeyUpdate( KeylessWrappedKeyUpdatePacket{cipher, ksk_id}),
+                    key_update: FCKeyUpdate::KeylessWrappedKeyUpdate( packet),
                     algo,
                     first_pn,
                 }
@@ -1092,9 +1092,9 @@ impl Frame {
                     },
                     FCKeyUpdate::KeylessWrappedKeyUpdate(packet)=> {
                         b.put_u8(FCPROTECTEDKEY)?;
-                        b.put_u64(packet.ksk_id)?;
-                        b.put_varint(packet.cipher.len() as u64)?;
-                        b.put_bytes(&packet.cipher)?;
+                        let bpacket = packet.to_bytes();
+                        b.put_varint(bpacket.len()as u64)?;
+                        b.put_bytes(&bpacket)?;
 
 
 

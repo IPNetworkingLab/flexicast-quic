@@ -101,4 +101,28 @@ impl WrappedKeyUpdatePacket {
     pub fn unwrap (&self) -> (Vec<u8>,u64, KeyUpdatePacket) {
         (self.ksk.clone(),self.ksk_id,self.packet.clone())
     }
+    
+}
+
+impl KeylessWrappedKeyUpdatePacket {
+    /// Serialize a keyless wrapped key update
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.cipher.len()+8+4);
+        out.extend_from_slice(&self.ksk_id.to_be_bytes());
+        out.extend_from_slice(&self.cipher);
+        out
+    }
+    /// Deserialize a keyless wrapped key update
+    pub fn from_bytes(packet:Vec<u8>) -> Option<Self> {
+        let ksk_idb:[u8;8] = packet[..8].try_into().ok()?;
+        let ksk_id = u64::from_be_bytes(ksk_idb);
+        let cipher = packet[8..].to_vec();
+        Some(KeylessWrappedKeyUpdatePacket {
+            cipher,
+            ksk_id
+        })
+
+
+    }
+
 }
