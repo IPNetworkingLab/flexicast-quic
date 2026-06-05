@@ -593,7 +593,7 @@ impl Frame {
                         let ksk_id = b.get_u64()?;
                         let cipher_len = b.get_varint()?;
                         let cipher = b.get_bytes(cipher_len as usize)?.to_vec();
-
+                        println!("Got a KeylessWrappedKeyUpdate !");
 
                         
 
@@ -608,7 +608,7 @@ impl Frame {
                     FCUNPROTECTEDKEY => { //Raw key update 
                         let packet_len = b.get_varint()?;
                         let bpacket = b.get_bytes(packet_len as usize)?.to_vec();
-                        let packet = KeyUpdatePacket::from_bytes(bpacket).ok_or(Error::InvalidFrame)?;
+                        let packet = KeyUpdatePacket::from_bytes(bpacket).ok_or(Error::InvalidFrame).map_err(|e| {println!("Unable to deserialise McKeyLKH");e})?;
                         Frame::McKeyLKH {
                     channel_id,
                     key_update : FCKeyUpdate::KeyUpdate(packet),
@@ -1060,7 +1060,7 @@ impl Frame {
                 first_pn,
                 key_update
             } => {
-                debug!("Going to encode the MC_KEY frame");
+                debug!("Going to encode the MC_KEY_LKH frame");
                 b.put_varint(MC_KEY_LKH_CODE)?;
                 b.put_u8(channel_id.len() as u8)?;
                 b.put_bytes(channel_id.as_ref())?;
@@ -1090,8 +1090,15 @@ impl Frame {
                         b.put_bytes(&bpacket)?;
 
                     },
-                    FCKeyUpdate::KeylessWrappedKeyUpdate(_packet)=> {
-                        return Err(Error::InvalidFrame); //Shouldn't be sent
+                    FCKeyUpdate::KeylessWrappedKeyUpdate(packet)=> {
+                        b.put_u8(FCPROTECTEDKEY)?;
+                        b.put_u64(packet.ksk_id)?;
+                        b.put_varint(packet.cipher.len() as u64)?;
+                        b.put_bytes(&packet.cipher)?;
+
+
+
+
                     },
                     FCKeyUpdate::RawKey(key) => {
                         b.put_u8(FCSIMPLEKEY)?;

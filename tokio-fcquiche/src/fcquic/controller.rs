@@ -386,7 +386,7 @@ impl FcController {
                         info!("Largest={largest_pn:?}. Largest pn considered={largest_pn_considered:?}. ack_to_use={acks_:?}. Missing={missing:?}. Remove_until={pn_drain:?}");
                         // Also remove older, out of interest, values!
                         if let Some(pn) = pn_drain {
-                            missing.remove_until(pn - 1);
+                            missing.remove_until( pn.saturating_sub( 1));
                         }
                         info!(
                             "{} UC FB. Hack for {} missing: {:?}",
@@ -1175,16 +1175,17 @@ impl FcController {
                     Box::new(move |packet| {
                         // basé sur gémini donc pas sûr
                         for leaf in captured.iter() {
+                            println!("[LKH] Sent a LKHChangeKeyUnicast {:?}", packet);
                             match leaf.try_send(MsgFcCtl::LKHChangeKeyUnicast((recv_id, FCKeyUpdate::KeyUpdate(packet.clone())))) {
                                 Err(_) => println!("[LKH] root couldn't send message"),
-                                Ok(_) => println!("[LKH] root request to send unicast message"),
+                                Ok(_) => (),
                             }
                         }
                     }),
                 );
                 let (key_id, new_key) = tree.get_session_key().unwrap();
                 
-                if tree.get_user_count()<=1 {
+                if true {
                     let packet = KeyUpdatePacket {
                         delete_new_key:false,
                         new_key:new_key.to_vec(),
@@ -1443,6 +1444,7 @@ impl ControllerRoot {
         let lkh = LKHPlus::new(
             32,
             Arc::new(Box::new( move |packet| {
+                println!("[LKH] Sending a KeyupdateNeeded {:?} to group", packet); 
                 match captured.try_send(MsgFcSource::KeyUpdateNeededOnMC(packet)) {
                     Ok(_) => (),
                     Err(_) => println!("[LKH] Couldn't push a group key update to the channel")

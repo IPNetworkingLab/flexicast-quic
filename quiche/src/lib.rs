@@ -2573,6 +2573,15 @@ impl Connection {
         if is_closing {
             return Err(Error::Done);
         }
+        if let Some(fc) = &self.flexicast {
+            match fc.get_mc_role() {
+                McRole::Client(_) => {
+                    println!("----------------------------------");
+                    println!("Received a packet [{}]: {buf:?}", info.from_mc);
+                },
+                _ => (),
+            }
+        }
 
         let buf_len = buf.len();
         let mut original_buf = buf.to_owned(); //TODO: faire mieux
@@ -2686,7 +2695,7 @@ impl Connection {
 
             return Err(Error::Done);
         }
-        
+
         if hdr.ty == packet::Type::Retry {
             // Retry packets can only be sent by the server.
             if self.is_server {
@@ -2863,8 +2872,7 @@ impl Connection {
                 }
             }
         }
-        
-        
+
         //println!("before split");
         let mut payload;
         let mut pn;
@@ -3141,7 +3149,16 @@ impl Connection {
             } else {
                 space_id as u32
             };
-            //println!("Trying to decrypt with {:?}, {fc_lkh_updated}", aead);
+            if let Some(fc) = &self.flexicast {
+                match fc.get_mc_role() {
+                    McRole::Client(_) => println!(
+                        "Trying to decrypt with {:?}, {fc_lkh_updated}",
+                        aead
+                    ),
+                    _ => (),
+                }
+            }
+
             let result = packet::decrypt_pkt(
                 &mut b,
                 space_id_to_decrypt,
@@ -3161,7 +3178,7 @@ impl Connection {
                 Err(e) => {
                     if self.flexicast.is_none() || fc_lkh_updated {
                         // Either we do not have a flexicast flow or we tried to decrypt with a new key to no avail, we should drop the packet
-                        //println!("Failed to decrypt the packet");
+                        println!("Failed to decrypt the packet");
                         return Err(drop_pkt_on_err(
                             e,
                             self.recv_count,
@@ -3169,7 +3186,7 @@ impl Connection {
                             &self.trace_id,
                         ));
                     } else {
-                        //println!("Might be a key update");
+                        println!("Might need to apply key update");
                         if let Some(flexicast) = &self.flexicast {
                             if let Some(keyupdate) = flexicast.get_fc_key_update()
                             {
@@ -3193,7 +3210,14 @@ impl Connection {
                 },
             }
         }
-        //println!("Packet decrypted");
+
+        if info.from_mc {
+            println!("Packet decrypted from multicast");
+        }
+        else {
+            println!("Packet decrypted");
+        }
+
         //println!("aead : {:?}",aead);
         let pkt_num_space = self
             .pkt_num_spaces
@@ -3298,7 +3322,9 @@ impl Connection {
         }
 
         if let Some(fc) = &mut self.flexicast {
-            fc.fc_key_phase = hdr.key_phase; //might be useless
+            if (info.from_mc) {
+                fc.fc_key_phase = hdr.key_phase; //might be useless
+            }
         }
 
         if fc_lkh_updated {
@@ -3366,6 +3392,17 @@ impl Connection {
 
             if !frame.probing() {
                 probing = false;
+            }
+
+            if matches!(frame, frame::Frame::McKeyLKH { .. }) {
+                if info.from_mc {
+                    println!("[LKH] Received a McKeyLKH From group");
+                } else {
+                    println!("[LKH] Received a McKeyLKH from Unicast");
+                }
+            }
+            if info.from_mc {
+                println!("Frame received from mc : {:?}", frame);
             }
 
             if let Err(e) =
@@ -4161,7 +4198,7 @@ impl Connection {
 
             return Err(Error::Done);
         }
-
+        //println!("After done");
         // Pad UDP datagram if it contains a QUIC Initial packet.
         #[cfg(not(feature = "fuzzing"))]
         if has_initial && left > 0 && done < MIN_CLIENT_INITIAL_LEN {
@@ -4183,7 +4220,7 @@ impl Connection {
 
             at: send_path.recovery.get_packet_send_time(),
         };
-
+        //println!("[{:?}] exiting send on path",self.flexicast.as_ref().and_then(|fc| Some(fc.get_mc_role())));
         Ok((done, info))
     }
 
@@ -5478,37 +5515,62 @@ impl Connection {
             if let Some(flexicast) = self.flexicast.as_mut() {
                 //println!("Should send key ?");
                 if flexicast.should_send_fc_lkh_key() {
+                    println!(
+                        "[LKH] I ({:?}) have keys to send : {:?}",
+                        flexicast.get_mc_role(),
+                        flexicast.lkh_keys_to_send
+                    );
                     //println!("Yes!");
                     while !flexicast.lkh_keys_to_send.is_empty() {
-                        if flexicast.get_mc_announce_data_active().is_none() {
-                            break;
-                        }
-                        let mc_announce_data =
-                            flexicast.get_mc_announce_data_active().ok_or(
-                                Error::Flexicast(flexicast::FcError::McAnnounce),
-                            )?;
+                        let channel_id = if flexicast
+                            .get_mc_announce_data_active()
+                            .is_none()
+                        {
+                            match flexicast.get_mc_role() {
+                                ServerFlexicast => self
+                                    .ids
+                                    .get_dcid(space_id, dcid_seq)?
+                                    .cid
+                                    .as_ref()
+                                    .to_vec(),
+                                _ => {
+                                    println!("Cannot get channel id");
+                                    break;
+                                },
+                            }
+                        } else {
+                            let mc_announce_data = flexicast
+                                .get_mc_announce_data_active()
+                                .ok_or(Error::Flexicast(
+                                    flexicast::FcError::McAnnounce,
+                                ))?;
+                            mc_announce_data.channel_id.clone()
+                        };
 
                         let update = flexicast.lkh_keys_to_send.front().unwrap();
 
                         let first_pn = flexicast.fc_first_pn.unwrap_or(0);
 
                         let frame = frame::Frame::McKeyLKH {
-                            channel_id: mc_announce_data.channel_id.clone(),
+                            channel_id,
                             algo: flexicast.get_decryption_key_algo(),
                             first_pn,
                             key_update: update.clone(),
                         };
+                        println!(
+                            "[LKH] ({:?}) Sending {:?}",
+                            flexicast.get_mc_role(),
+                            frame
+                        );
                         if !push_frame_to_pkt!(b, frames, frame, left) {
                             break;
                         } else {
                             println!("Sending a key update : Role = {:?}, Update = {:?}",flexicast.get_mc_role(),update);
+                            //println!("State after push : {frames:?}");
                             let last_update =
                                 flexicast.lkh_keys_to_send.pop_front().unwrap();
 
                             flexicast.set_mc_key_read(true);
-
-                            ack_eliciting = true;
-                            in_flight = true;
 
                             println!(
                                 "[LKH] Update pushed to packet from {:?}",
@@ -5523,7 +5585,10 @@ impl Connection {
                                         first_pn,
                                     )?;
                                 },
-                                _ => (),
+                                _ => {
+                                    ack_eliciting = true;
+                                    in_flight = true;
+                                },
                             }
                         }
                     }
@@ -6256,9 +6321,7 @@ impl Connection {
             aead,
         )?;
         if let Some(fc) = &self.flexicast {
-            if (fc.get_mc_role() == ServerFlexicast) {
-                //println!("Encrypted packet {pn} with {aead:?}");
-            }
+            //println!("({:?}) Encrypted packet {pn} with {aead:?} \n packet : {frames:?} \n\t [{written}]raw Packet :  {b:?}",fc.get_mc_role());
         }
 
         let sent_pkt = recovery::Sent {
@@ -6360,7 +6423,10 @@ impl Connection {
         if ack_eliciting {
             self.ack_eliciting_sent = true;
         }
-
+        if let Some(fc) = &self.flexicast {
+            println!("({:?})Reached end of send",fc.get_mc_role());
+        }
+        
         Ok((pkt_type, written))
     }
 
@@ -10072,7 +10138,8 @@ impl Connection {
                         ),
                     ));
                 } else if let Some(flexicast) = &mut self.flexicast {
-                    // TODO : Implement
+                    println!("[LKH] Received a McKeyLKH");
+
                     flexicast
                         .lkh_update_client_keys(algo, key_update, first_pn)?;
 

@@ -356,6 +356,7 @@ impl TokioFcQuic {
                 nb_active_receivers: 0,
                 max_ack_rate: self.config.max_ack_rate,
                 largest_pn_atomic: largest_pn_atomic.clone(),
+                has_control_packet_to_send:false
             };
 
             id_fc_chan += 1;

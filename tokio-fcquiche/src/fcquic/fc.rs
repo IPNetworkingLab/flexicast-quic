@@ -96,6 +96,8 @@ pub struct FcChannelAsync {
 
     /// Atomic to update the largest sent packet number on the multicast flow.
     pub largest_pn_atomic: Arc<AtomicU64>,
+    /// Does the fc flow need to send control packet
+    pub has_control_packet_to_send:bool
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the
@@ -179,7 +181,7 @@ impl FcChannelAsync {
             MsgFcSource::KeyUpdateNeededOnMC(raw_packet) => {
                 let out_packet = lkh_encrypt(raw_packet, self.fc_chan.algo)?;
                 self.fc_chan.channel.schedule_lkh_update(quiche::flexicast::lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(out_packet));
-                
+                self.has_control_packet_to_send=true;
             }
             MsgFcSource::LKHNotifySessionChange(notification) =>{
                 println!("[LKH] Notify received");

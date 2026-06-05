@@ -813,29 +813,29 @@ impl FlexicastAttributes {
         &mut self, algo: Algorithm, key: Vec<u8>, first_pn: u64,
     ) -> Result<()> {
         //println!("[LKH] Adding key update");
-        
+
         println!(
-            "[LKH] Preparing new key {:?} to be used at PN={first_pn}",
+            "[LKH] {:#?} Preparing new key {:?} to be used at PN={first_pn}",
+            time::SystemTime::now(),
             key
         );
         if self.mc_crypto_open.is_none() {
             println!("No mc crypto open specified, skipping wait");
             self.mc_crypto_open.replace(Open::from_secret(algo, &key)?);
-        }
-        else {
+        } else {
             let new_update = KeyUpdate {
-            crypto_open: Open::from_secret(algo, &key)?,
-            pn_on_update: first_pn,
-            update_acked: true, //TODO change to a smart way of doing that
-            timer: Instant::now()
-                .checked_add(Duration::new(5, 0))
-                .ok_or(Error::Flexicast(FcError::FcTimeError))?, //TODO change to use RTT
-        };
+                crypto_open: Open::from_secret(algo, &key)?,
+                pn_on_update: first_pn,
+                update_acked: true, //TODO change to a smart way of doing that
+                timer: Instant::now()
+                    .checked_add(Duration::new(5, 0))
+                    .ok_or(Error::Flexicast(FcError::FcTimeError))?, //TODO change to use RTT
+            };
             println!("Replacing the old update");
-        let update = self.mc_key_update.replace(new_update);
-        println!("Old update : {:?}", update);
+            let update = self.mc_key_update.replace(new_update);
+            println!("Old update : {:?}", update);
         }
-        
+
         /*if let Some(old_update) = update {
             self.fc_key_phase = !self.fc_key_phase;
             self.mc_crypto_open.replace(old_update.crypto_open);
@@ -880,7 +880,7 @@ impl FlexicastAttributes {
                 (packet.is_session_key, packet.new_key.clone())
             },
             FCKeyUpdate::KeylessWrappedKeyUpdate(packet) => {
-                return Err(Error::Flexicast(FcError::McInvalidCrypto))
+                return Ok(())
             },
             FCKeyUpdate::RawKey(key) => (true, key.clone()),
         };
@@ -904,10 +904,7 @@ impl FlexicastAttributes {
         if self.mc_key_update.is_some() {
             let open = self.mc_key_update.take().unwrap().crypto_open;
             self.mc_crypto_open.replace(open);
-            
-            
         }
-        
     }
 
     /// Sets the flexicast path space identifier.
@@ -1256,7 +1253,8 @@ impl FlexicastConnection for Connection {
                 || flexicast.should_send_fc_state()
                 || flexicast.should_send_fc_key()
                 || flexicast.fc_use_nack_and_should_send_positive()
-                || (flexicast.fc_uses_lkh && !flexicast.lkh_keys_to_send.is_empty());
+                || (flexicast.fc_uses_lkh
+                    && !flexicast.lkh_keys_to_send.is_empty());
         }
         false
     }
@@ -1732,7 +1730,7 @@ impl Connection {
         if let Some(fc) = self.flexicast.as_mut() {
             fc.lkh_keys_to_send.push_back(raw);
             println!("[LKH] {} Adding key to the schedule", fc.get_mc_role());
-            println!("[LKH] current schedule : {:?}",fc.lkh_keys_to_send);
+            println!("[LKH] current schedule : {:?}", fc.lkh_keys_to_send);
         } else {
             println!("Flexicast does not yet exist");
         }

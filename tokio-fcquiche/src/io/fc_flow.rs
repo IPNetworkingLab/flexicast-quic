@@ -10,6 +10,7 @@ use log::*;
 use quiche::fec::FecError;
 use quiche::flexicast::cca::FcFlowCwnd;
 use quiche::flexicast::reliable::FcUnicastRetransmission;
+use quiche::flexicast::FlexicastConnection;
 use std::cmp;
 use std::io;
 use std::sync::Arc;
@@ -63,10 +64,10 @@ impl FcFlowRun for FcFlowfileTransfer {
                     .saturating_sub(now.duration_since(timer))
             });
 
-            if timeout.is_none() &&
-                self.fc.pending_data.is_none() &&
-                app_close_timeout.is_none() &&
-                self.fc.rx_ctl.is_closed()
+            if timeout.is_none()
+                && self.fc.pending_data.is_none()
+                && app_close_timeout.is_none()
+                && self.fc.rx_ctl.is_closed()
             {
                 info!("Exiting the flexicast flow");
                 break;
@@ -152,8 +153,8 @@ impl FcFlowRun for FcFlowfileTransfer {
                 if self
                     .fc
                     .fc_flow_stop_timer
-                    .saturating_sub(now.duration_since(timer)) ==
-                    time::Duration::ZERO
+                    .saturating_sub(now.duration_since(timer))
+                    == time::Duration::ZERO
                 {
                     // Yes, we can close now.
                     can_close_conn_after_rtp = true;
@@ -283,10 +284,12 @@ impl FcFlowRun for FcFlowfileTransfer {
 
             // Potentially unlimit the congestion window.
             match self.fc.cca {
-                FcFlowCwnd::Unlimited =>
-                    self.fc.fc_chan.channel.fc_set_flow_cwnd(usize::MAX - 1000),
-                FcFlowCwnd::Limited(v) =>
-                    self.fc.fc_chan.channel.fc_set_flow_cwnd(v as usize),
+                FcFlowCwnd::Unlimited => {
+                    self.fc.fc_chan.channel.fc_set_flow_cwnd(usize::MAX - 1000)
+                },
+                FcFlowCwnd::Limited(v) => {
+                    self.fc.fc_chan.channel.fc_set_flow_cwnd(v as usize)
+                },
                 _ => (),
             }
 
@@ -321,9 +324,18 @@ impl FcFlowRun for FcFlowfileTransfer {
                                 break 'fc;
                             },
                         };
-
+                    println!("Buf state : {buf:?}");
                     // Send the packets on the wire.
-                    if !self.fc.must_wait {
+                    if !self.fc.must_wait || self.fc.has_control_packet_to_send {
+                        if self
+                            .fc
+                            .fc_chan
+                            .channel
+                            .get_flexicast_attributes()
+                            .is_some_and(|fc| fc.lkh_keys_to_send.is_empty())
+                        {
+                            self.fc.has_control_packet_to_send = false; //TODO: faire ça proprement
+                        }
                         // Use `sendmmsg` instead.
                         if let Some(sendmmsg_tx) = &self.fc.sendmmsg_txs {
                             let tx = sendmmsg_tx.get(sendmmsg_idx);
@@ -374,7 +386,7 @@ impl FcFlowRun for FcFlowfileTransfer {
                             );
                         }
                     } else {
-                        debug!("Not actually sending data on the wire because we wait...");
+                        println!("Not actually sending data on the wire because we wait...");
                     }
 
                     nb_sent_pkt += 1;
@@ -401,8 +413,8 @@ impl FcFlowRun for FcFlowfileTransfer {
 
                 // Fall back on unicast if the performance is too low.
                 if let Some(cwnd) = self.fc.fc_chan.channel.fc_get_flow_cwnd() {
-                    if time::Instant::now().duration_since(start).as_secs() > 30 &&
-                        cwnd.0 < 12_000
+                    if time::Instant::now().duration_since(start).as_secs() > 30
+                        && cwnd.0 < 12_000
                     {
                         // println!("FALL BACK ON UNICAST BECAUSE: {:?}", cwnd);
                         // self.fc.do_flexicast = false;

@@ -1374,6 +1374,7 @@ fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
             tree: tree,
             key_size: 32,
             send_group: Arc::new(Box::new(move |data| {
+                println!("Sent to group : {data:?}");
                 users_lkh.lock().unwrap().receive_group(data)
             })),
         };
@@ -1397,6 +1398,7 @@ fn verify_key_chain(tree: &Lkh, users: &TreeTestUser) -> bool {
             lkhp.add_user(
                 unicast_user_id,
                 Box::new(move |data| {
+                    println!("Sent to {user_id} : {data:?}");
                     unicast_user
                         .lock()
                         .unwrap()
