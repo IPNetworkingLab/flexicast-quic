@@ -58,7 +58,7 @@ impl FileTransferSrc {
             len,
             nb_bytes_sent: 0,
             tx_chan,
-            stream_id: 3,
+            stream_id: 32+3,
         })
     }
 
