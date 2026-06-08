@@ -18,6 +18,8 @@ struct Args {
     /// Activate flexicast extension.
     #[clap(long)]
     flexicast: bool,
+    #[clap(long)]
+    lkh: bool,
 
     /// URL of the server to contact.
     url: url::Url,
@@ -83,7 +85,7 @@ async fn main() {
     // Create the Flexicast Quiche tokio receiver.
     let peer_addr = *args.url.socket_addrs(|| None).unwrap().first().unwrap();
     let mut config = get_config(&args);
-
+    println!("Config : {:?}",args.lkh);
     let mut keylog = None;
     if let Some(keylog_path) = std::env::var_os("SSLKEYLOGFILE") {
         let file = std::fs::OpenOptions::new()
@@ -211,6 +213,9 @@ fn get_config(args: &Args) -> quiche::Config {
         config.set_initial_max_path_id(10);
         config.set_enable_flexicast(args.flexicast);
         config.set_recv_fec(true);
+        
+            config.set_enable_lkh(args.lkh);
+        
     }
 
     config

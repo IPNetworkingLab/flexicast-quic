@@ -18,3 +18,5 @@ pub const FCUNPROTECTEDKEY:u8 = 1;
 pub const FCPROTECTEDKEY:u8 = 2;
 /// Frame identifier code
 pub const MC_KEY_LKH_CODE:u64 = 0xbeeffeeb; 
+/// LKH support transport parameter
+pub const LKH_TRANSPORT_PARAM:u64 = 0xedf6;

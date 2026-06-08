@@ -3100,46 +3100,6 @@ impl Connection {
                             aead = &aead_next.as_ref().unwrap().0;
                         }
                     }
-                } else if info.from_mc && self.flexicast.is_some() {
-                    let flexicast = self.flexicast.as_ref().unwrap();
-                    //println!("[LKH] mc_key_phase = {}, packet key phase = {}, UC key phase ={}",flexicast.fc_key_phase, hdr.key_phase,self.key_phase);
-
-                    /*if flexicast.fc_key_phase != hdr.key_phase
-                        || flexicast.get_mc_role()
-                            == McRole::Client(
-                                flexicast::McClientStatus::JoinedNoKey,
-                            )
-                    {
-                        println!("[LKH] Key phase change detected");
-                        if let Some(key_update) = flexicast
-                            .get_fc_key_update()
-                            .as_ref()
-                            .and_then(|key_update| {
-                                (pn >= key_update.pn_on_update)
-                                    .then_some(key_update)
-                            })
-                        {
-                            //flexicast.apply_key_update();
-                            aead = &key_update.crypto_open;
-                            fc_lkh_updated = true;
-                            println!("[LKH] trying the new key at PN={pn}, scheduled for PN={}",key_update.pn_on_update);
-                        } else {
-                            println!("Packet received with a different key_phase but no key update");
-                            println!(
-                                "Current update : {:?}",
-                                flexicast.get_fc_key_update()
-                            );
-                            Err(Error::Flexicast(FcError::McInvalidCrypto))
-                                .map_err(|e| {
-                                    drop_pkt_on_err(
-                                        e,
-                                        self.recv_count,
-                                        self.is_server,
-                                        &self.trace_id,
-                                    )
-                                })?;
-                        }
-                    }*/
                 }
             }
 
@@ -3213,8 +3173,7 @@ impl Connection {
 
         if info.from_mc {
             println!("Packet decrypted from multicast");
-        }
-        else {
+        } else {
             println!("Packet decrypted");
         }
 
@@ -3705,6 +3664,7 @@ impl Connection {
                     },
 
                     frame::Frame::McKey { .. } => {
+                        
                         if let Some(flexicast) = self.flexicast.as_mut() {
                             flexicast.set_mc_key_read(true);
 
@@ -3715,6 +3675,7 @@ impl Connection {
                         }
                     },
                     frame::Frame::McKeyLKH { .. } => {
+                        
                         if let Some(flexicast) = self.flexicast.as_mut() {
                             flexicast.set_mc_key_read(true);
 
@@ -4580,7 +4541,7 @@ impl Connection {
             if flexicast.get_mc_role() == McRole::ServerFlexicast {
                 //println!("[LKH] MCstatus : keyphase = {}, updates : {:?}",self.key_phase ,flexicast.fc_lkh_server_updates);
             }
-
+            // We might need to change key according to a previously sent key
             if !flexicast.fc_lkh_server_updates.is_empty() {
                 match flexicast.get_mc_role() {
                     McRole::ServerFlexicast => {
@@ -5466,7 +5427,7 @@ impl Connection {
                         algo: flexicast.get_decryption_key_algo(),
                         first_pn,
                     };
-
+                    debug!("Sending McKey");
                     if push_frame_to_pkt!(b, frames, frame, left) {
                         flexicast.set_mc_key_read(true);
 
@@ -6424,9 +6385,9 @@ impl Connection {
             self.ack_eliciting_sent = true;
         }
         if let Some(fc) = &self.flexicast {
-            println!("({:?})Reached end of send",fc.get_mc_role());
+            println!("({:?})Reached end of send", fc.get_mc_role());
         }
-        
+
         Ok((pkt_type, written))
     }
 
@@ -7627,11 +7588,17 @@ impl Connection {
             let fc_ack_delay = self.fc_timeout_instant();
 
             // Flexicast LKH
-            let fc_lkh_timer = self.flexicast.as_ref().and_then(|fc| {
-                fc.get_fc_key_update()
-                    .as_ref()
-                    .and_then(|key_update| Some(key_update.timer.clone()))
-            });
+            let fc_lkh_timer = if let Some(fc) = &self.flexicast {
+                if fc.fc_uses_lkh {
+                    fc.get_fc_key_update()
+                        .as_ref()
+                        .and_then(|key_update| Some(key_update.timer.clone()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             let timers = [
                 self.idle_timer,
@@ -10018,7 +9985,7 @@ impl Connection {
                             // state if the receiver joined a flexicast flow
                             // without path probing.
 
-                            //FC-LKH-TODO: Should add the user to the tree
+                            
                             if let Some(mc_announce) =
                                 flexicast.get_mc_announce_data(idx)
                             {
@@ -10091,6 +10058,7 @@ impl Connection {
                         ),
                     ));
                 } else if let Some(flexicast) = self.flexicast.as_mut() {
+                    println!("MCKEY: first_pn={:?}, key = {:?}", first_pn, key);
                     flexicast.set_decryption_key_secret(key, algo)?;
 
                     flexicast.update_client_state(
@@ -10098,7 +10066,7 @@ impl Connection {
                         None,
                     )?;
 
-                    println!("MCKEY: first_pn={:?}", first_pn);
+                    
 
                     // Record the first packet number to listen to because we
                     // don't have a FC path id yet.
@@ -10139,6 +10107,7 @@ impl Connection {
                     ));
                 } else if let Some(flexicast) = &mut self.flexicast {
                     println!("[LKH] Received a McKeyLKH");
+
 
                     flexicast
                         .lkh_update_client_keys(algo, key_update, first_pn)?;
@@ -11383,6 +11352,8 @@ pub struct TransportParams {
     // pub preferred_address: ...,
     /// Flexicast support.
     pub flexicast_support: bool,
+    /// LKH Support
+    pub lkh_support: bool,
     /// Send FEC.
     pub send_fec: bool,
     /// Receive FEC.
@@ -11412,6 +11383,7 @@ impl Default for TransportParams {
             initial_max_path_id: None,
             unknown_params: Default::default(),
             flexicast_support: false,
+            lkh_support: false,
             send_fec: false,
             recv_fec: false,
         }
@@ -11593,6 +11565,10 @@ impl TransportParams {
                 0xedf5 => {
                     debug!("Received recv_fec TP");
                     tp.recv_fec = true;
+                },
+                LKH_TRANSPORT_PARAM => {
+                    debug!("Received LKH TP");
+                    tp.lkh_support = true;
                 },
 
                 // Track unknown transport parameters specially.
@@ -11785,6 +11761,9 @@ impl TransportParams {
 
         if tp.recv_fec {
             TransportParams::encode_param(&mut b, 0xedf5, 0)?;
+        }
+        if tp.lkh_support {
+            TransportParams::encode_param(&mut b, LKH_TRANSPORT_PARAM, 0)?;
         }
 
         let out_len = b.off();
@@ -12446,6 +12425,7 @@ mod tests {
             max_datagram_frame_size: Some(32),
             initial_max_path_id: Some(4),
             flexicast_support: false,
+            lkh_support: false,
             send_fec: false,
             recv_fec: false,
             unknown_params: Default::default(),
@@ -12481,6 +12461,7 @@ mod tests {
             max_datagram_frame_size: Some(32),
             initial_max_path_id: Some(4),
             flexicast_support: false,
+            lkh_support: false,
             send_fec: false,
             recv_fec: false,
             unknown_params: Default::default(),
@@ -22149,6 +22130,7 @@ mod tests {
 }
 
 use crate::fec::schedulers::FecScheduler;
+use crate::flexicast::lkhlib::LKH_TRANSPORT_PARAM;
 use crate::flexicast::McRole::ServerFlexicast;
 //use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 pub use crate::packet::ConnectionId;

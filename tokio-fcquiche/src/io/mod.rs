@@ -56,6 +56,9 @@ pub struct TokioFcQuicConfig {
     /// Whether to enable Flexicast delivery.
     pub flexicast: bool,
 
+    /// 
+    pub lkh:bool,
+
     /// Path to the flexicast flow keylog file.
     pub fc_keylog_file: String,
 
@@ -132,8 +135,8 @@ impl TokioFcQuic {
         let socket = UdpSocket::from_std(new_socket.into())?;
         socket.set_multicast_ttl_v4(64)?;
 
-        let mut server_config = get_mc_config(true, &fc_config);
-        let mut client_config = get_mc_config(true, &fc_config);
+        let mut server_config = get_mc_config(true,true,&fc_config);
+        let mut client_config = get_mc_config(true,true,&fc_config);
 
         // Generate a random source connection ID for the connection.
         let mut channel_id = [0; 16];
@@ -406,6 +409,9 @@ impl TokioFcQuic {
         // root.
         
         let mut ctl_root_struct = ControllerRoot::new();
+        if self.config.lkh {
+            ctl_root_struct.lkh_enabled=true;
+        }
         tx_fc_flows
             .iter()
             .for_each(|tx| ctl_root_struct.add_flow_tx(tx.clone()));
@@ -514,7 +520,7 @@ impl TokioFcQuic {
         #[cfg(not(feature = "tokio-tracing"))]
         {
             tokio::spawn(async move {
-                controller.run().await.unwrap();
+                controller.run().await.map_err(|e| {println!("Got error {e:?}");e}).unwrap();
             });
         }
 

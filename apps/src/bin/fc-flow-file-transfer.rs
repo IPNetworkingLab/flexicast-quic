@@ -23,7 +23,8 @@ struct Args {
     /// Activate flexicast extension.
     #[clap(long)]
     flexicast: bool,
-
+    #[clap(long)]
+    lkh: bool,
     /// Keylog file for flexicast channel.
     #[clap(long = "keylog", value_parser, default_value = "/tmp/fc-server.txt")]
     fc_keylog_file: String,
@@ -147,11 +148,13 @@ async fn main() {
 
     // Create Flexicast Quiche tokio config.
     let fc_quic_tokio_config = TokioFcQuicConfig {
+
         unicast: args.allow_unicast,
         unicast_unlimited_cwnd: args.uc_unlimited_cwnd,
         sendmmsg: args.sendmmsg,
         wait: args.wait,
         flexicast: args.flexicast,
+        lkh:args.lkh,
         fc_keylog_file: args.fc_keylog_file.clone(),
         fallback_delay: args.fall_back_delay.clone(),
         uc_src_addr: args.src_addr,
@@ -170,6 +173,7 @@ async fn main() {
     // Create a single flexicast flow.
     let flow_config = FcConfig {
         fc_tp: args.flexicast,
+        fc_lkh_tp : args.lkh,
         probe_mc_path: false,
         max_data: args.initial_fc_flow.unwrap_or(1_000_000),
         max_stream_data: args.initial_fc_flow.unwrap_or(1_000_000),
@@ -198,7 +202,7 @@ async fn main() {
 
     // Start Tokio Flexicast Quiche.
     let mut uc_config = get_config(&args);
-
+    println!("Config : {:?}",args.lkh);
     let mut keylog = None;
 
     if let Some(keylog_path) = std::env::var_os("SSLKEYLOGFILE") {
@@ -295,6 +299,7 @@ fn get_config(args: &Args) -> quiche::Config {
     config.set_send_fec(args.fec_scheduler.is_some());
     config.set_recv_fec(args.fec_scheduler.is_some());
     config.set_enable_flexicast(args.flexicast);
+    config.set_enable_lkh(args.lkh);
     config.set_initial_max_path_id(10);
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
 

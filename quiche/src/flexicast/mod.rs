@@ -316,11 +316,18 @@ pub trait McConfig {
     ///
     /// The default value is `false`.
     fn set_enable_flexicast(&mut self, v: bool);
+    /// Set the `lkh_support` transport parameter. 
+    /// 
+    /// Default to `false`
+    fn set_enable_lkh(&mut self, v: bool);
 }
 
 impl McConfig for crate::Config {
     fn set_enable_flexicast(&mut self, v: bool) {
         self.local_transport_params.flexicast_support = v;
+    }
+    fn set_enable_lkh(&mut self,v:bool) {
+        self.local_transport_params.lkh_support=v;
     }
 }
 
@@ -1240,6 +1247,7 @@ impl FlexicastConnection for Connection {
                 mc_announce_data: vec![mc_data_cloned],
                 fc_reliable,
                 fc_fec,
+                fc_uses_lkh:self.local_transport_params.lkh_support,
                 ..Default::default()
             });
         }
@@ -2116,6 +2124,8 @@ impl FlexicastChannelSource {
 /// Flexicast configuration.
 pub struct FcConfig {
     pub fc_tp: bool,
+    /// Flexicast LKH transport parameter
+    pub fc_lkh_tp: bool,
 
     pub mc_announce_data: Vec<McAnnounceData>,
 
@@ -2151,6 +2161,7 @@ impl Default for FcConfig {
             mc_announce_to_join: 0,
             probe_mc_path: true,
             fc_tp: true,
+            fc_lkh_tp: false,
             max_data: 5_000_000_000,
             max_stream_data: 1_000_000_000,
             fc_ack_delay: FcAckDelayStrategy::Immediate,

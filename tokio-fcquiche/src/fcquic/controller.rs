@@ -14,15 +14,13 @@ use quiche::flexicast::ack::McStreamOff;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
 use quiche::flexicast::lkhlib::lkh::LKHPlus;
-use quiche::flexicast::lkhlib::lkh::Lkh;
 use quiche::flexicast::lkhlib::lkh::LogicalTree;
 use quiche::flexicast::lkhlib::packet::FCKeyUpdate;
+use quiche::flexicast::lkhlib::packet::KeyUpdatePacket;
 use quiche::flexicast::McAnnounceData;
 use quiche::flexicast::MissingRangeSet;
 use quiche::ConnectionId;
 use quiche::Error;
-use quiche::flexicast::lkhlib::packet::KeyUpdatePacket;
-use quiche::flexicast::lkhlib::packet::WrappedKeyUpdatePacket;
 use std::collections::hash_map::Entry::Occupied;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::HashMap;
@@ -386,7 +384,7 @@ impl FcController {
                         info!("Largest={largest_pn:?}. Largest pn considered={largest_pn_considered:?}. ack_to_use={acks_:?}. Missing={missing:?}. Remove_until={pn_drain:?}");
                         // Also remove older, out of interest, values!
                         if let Some(pn) = pn_drain {
-                            missing.remove_until( pn.saturating_sub( 1));
+                            missing.remove_until(pn.saturating_sub(1));
                         }
                         info!(
                             "{} UC FB. Hack for {} missing: {:?}",
@@ -472,7 +470,8 @@ impl FcController {
                             client_id
                         );
                         let _ = leaf.tx_down[&client_id]
-                            .send(MsgRecv::LKHUnicastKey(update)).await;
+                            .send(MsgRecv::LKHUnicastKey(update))
+                            .await;
                     }
                 }
             },
@@ -1096,7 +1095,8 @@ macro_rules! send_uc_path {
     ($ctl:expr, $recv_id:expr, $msg:expr) => {
         if let ControllerRole::Leaf(leaf) = &mut $ctl.controller_role {
             if let Some(tx_client) = leaf.tx_down.get(&$recv_id) {
-                if let Err(_send_error) = tx_client.try_send($msg) {
+                if let Err(send_error) = tx_client.try_send($msg) {
+                    println!("Send error : {send_error:?}");
                     // Remove this unicast path from the structure.
                     let _ = $ctl.recv_ack.remove(&$recv_id);
                     let _ = $ctl.rec_fec_md.remove(&$recv_id);
@@ -1149,8 +1149,11 @@ impl FcController {
                     match leaf.tx_up.try_send(MsgFcCtl::Join((
                         recv_id, fc_id, aggr_msg, max_pn, first_join,
                     ))) {
-                        Err(_) =>  info!("leaf {} could not send join message to root", leaf.leaf_id),
-                        Ok(_) => ()
+                        Err(_) => info!(
+                            "leaf {} could not send join message to root",
+                            leaf.leaf_id
+                        ),
+                        Ok(_) => (),
                     };
                     send_uc_path!(self, recv_id, msg);
 
@@ -1164,6 +1167,10 @@ impl FcController {
                 return Ok(());
             },
             ControllerRole::Root(root) => {
+                if !root.lkh_enabled {
+                    
+                    return Ok(());
+                }
                 let tree = root.lkh_tree.get_mut(fc_id as usize).ok_or(
                     Error::Flexicast(quiche::flexicast::FcError::FcLKHKeyUnknown),
                 )?;
@@ -1175,35 +1182,44 @@ impl FcController {
                     Box::new(move |packet| {
                         // basé sur gémini donc pas sûr
                         for leaf in captured.iter() {
-                            println!("[LKH] Sent a LKHChangeKeyUnicast {:?}", packet);
-                            match leaf.try_send(MsgFcCtl::LKHChangeKeyUnicast((recv_id, FCKeyUpdate::KeyUpdate(packet.clone())))) {
-                                Err(_) => println!("[LKH] root couldn't send message"),
+                            println!(
+                                "[LKH] Sent a LKHChangeKeyUnicast {:?}",
+                                packet
+                            );
+                            match leaf.try_send(MsgFcCtl::LKHChangeKeyUnicast((
+                                recv_id,
+                                FCKeyUpdate::KeyUpdate(packet.clone()),
+                            ))) {
+                                Err(_) => {
+                                    println!("[LKH] root couldn't send message")
+                                },
                                 Ok(_) => (),
                             }
                         }
                     }),
                 );
                 let (key_id, new_key) = tree.get_session_key().unwrap();
-                
+
                 if true {
                     let packet = KeyUpdatePacket {
-                        delete_new_key:false,
-                        new_key:new_key.to_vec(),
-                        new_key_id:key_id,
-                        is_session_key:true
+                        delete_new_key: false,
+                        new_key: new_key.to_vec(),
+                        new_key_id: key_id,
+                        is_session_key: true,
                     };
 
-                    root.tx_up.get(fc_id as usize).ok_or(Error::Flexicast(quiche::flexicast::FcError::FcPathId))?.try_send(MsgFcSource::LKHNotifySessionChange(packet))?;
-
-
+                    root.tx_up
+                        .get(fc_id as usize)
+                        .ok_or(Error::Flexicast(
+                            quiche::flexicast::FcError::FcPathId,
+                        ))?
+                        .try_send(MsgFcSource::LKHNotifySessionChange(packet))?;
                 }
 
                 println!("[LKH] current tree : {tree}");
                 return Ok(());
             },
         };
-
-        
     }
 
     /// Adds a new receiver in the state once it received the first packet on
@@ -1428,32 +1444,41 @@ pub struct ControllerRoot {
     tx_up: Vec<mpsc::Sender<MsgFcSource>>,
 
     lkh_tree: Vec<LKHPlus>,
+    /// Should lkh functionnality be enabled
+    pub lkh_enabled: bool,
 }
 
 impl ControllerRoot {
     /// Creates a new instance.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            lkh_enabled: false,
+            ..Default::default()
+        }
     }
 
     /// Inserts a new flexicast flow tx.
     pub fn add_flow_tx(&mut self, tx: mpsc::Sender<MsgFcSource>) {
         let captured = tx.clone();
         self.tx_up.push(tx);
-        println!("[LKH] Creating the LKH tree");
-        let lkh = LKHPlus::new(
-            32,
-            Arc::new(Box::new( move |packet| {
-                println!("[LKH] Sending a KeyupdateNeeded {:?} to group", packet); 
-                match captured.try_send(MsgFcSource::KeyUpdateNeededOnMC(packet)) {
+        if self.lkh_enabled {
+            println!("[LKH] Creating the LKH tree");
+            let lkh = LKHPlus::new(
+                32,
+                Arc::new(Box::new(move |packet| {
+                    println!(
+                        "[LKH] Sending a KeyupdateNeeded {:?} to group",
+                        packet
+                    );
+                    match captured.try_send(MsgFcSource::KeyUpdateNeededOnMC(packet)) {
                     Ok(_) => (),
                     Err(_) => println!("[LKH] Couldn't push a group key update to the channel")
                 }
-                
-            })),
-            32,
-        );
-        self.lkh_tree.push(lkh);
+                })),
+                32,
+            );
+            self.lkh_tree.push(lkh);
+        }
     }
 
     /// Inserts a new leaf controller tx.

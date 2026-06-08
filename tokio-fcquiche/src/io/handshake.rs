@@ -532,7 +532,7 @@ impl Handshake {
     }
 }
 
-pub fn get_mc_config(enable_fc: bool, fc_config: &FcConfig) -> quiche::Config {
+pub fn get_mc_config(enable_fc: bool, enable_lkh:bool, fc_config: &FcConfig) -> quiche::Config {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
     config
         .load_cert_chain_from_pem_file(
@@ -566,6 +566,7 @@ pub fn get_mc_config(enable_fc: bool, fc_config: &FcConfig) -> quiche::Config {
     config.verify_peer(false);
     config.set_initial_max_path_id(10);
     config.set_enable_flexicast(enable_fc);
+    config.set_enable_lkh(enable_lkh);
     config.set_send_fec(fc_config.fec);
     config.set_recv_fec(fc_config.fec);
     config.enable_pacing(false);
