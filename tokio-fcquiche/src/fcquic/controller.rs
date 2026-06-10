@@ -1136,15 +1136,16 @@ impl FcController {
         info!(
             "{name} enters on_join for client {recv_id} and max_pn: {max_pn:?}"
         );
-
         match &mut self.controller_role {
-            ControllerRole::Leaf(leaf) => {
-                if first_join {
-                    let pn = self.mc_acks[fc_id as usize]
-                        .get_largest_pn()
-                        .unwrap_or(0);
-                    let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
-                    //Send the message to the root controller to update the lkh tree
+         ControllerRole::Leaf(leaf) => {
+            if first_join {
+                let pn =
+                    self.mc_acks[fc_id as usize].get_largest_pn().unwrap_or(0);
+                let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
+                
+                
+
+                 //Send the message to the root controller to update the lkh tree
                     println!("[LKH] propagation join to the root");
                     match leaf.tx_up.try_send(MsgFcCtl::Join((
                         recv_id, fc_id, aggr_msg, max_pn, first_join,
@@ -1155,15 +1156,24 @@ impl FcController {
                         ),
                         Ok(_) => (),
                     };
-                    send_uc_path!(self, recv_id, msg);
-
-                    return Ok(());
+                send_uc_path!(self, recv_id, msg);
+                // Add the receiver in the state if we have to wait for a given number of receiver greater than 1.
+                // This is ugly.
+                if self.wait.is_some_and(|w| w > 1) {
+                    // The first packet number should be 2?
+                    let new_insert = self.active_clients[fc_id as usize]
+                        .insert(recv_id, pn);
+                    _ = self.unicast_recv.remove(&recv_id);
+                    _ = self.delegated_recv[fc_id as usize].remove(&recv_id);
+                    if new_insert.is_none() {
+                        // Emulate ACK for all pn < first_ack (packets this receiver
+                        // never received because it joined late). This decrements their
+                        // counters in McAck so they are not blocked on this receiver.
+                        debug!("Add receiver {recv_id} in multicast flow {fc_id} with first packet number {pn}");
+                        self.mc_acks[fc_id as usize].new_recv(pn, true);
+                    }
                 }
-
-                // Update flow control limits.
-                if let Some(aggr_msg) = aggr_msg {
-                    self.on_new_aggr_msg(recv_id, fc_id, aggr_msg).await?;
-                }
+            }
                 return Ok(());
             },
             ControllerRole::Root(root) => {

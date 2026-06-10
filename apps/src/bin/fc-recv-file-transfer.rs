@@ -85,7 +85,6 @@ async fn main() {
     // Create the Flexicast Quiche tokio receiver.
     let peer_addr = *args.url.socket_addrs(|| None).unwrap().first().unwrap();
     let mut config = get_config(&args);
-    println!("Config : {:?}",args.lkh);
     let mut keylog = None;
     if let Some(keylog_path) = std::env::var_os("SSLKEYLOGFILE") {
         let file = std::fs::OpenOptions::new()
