@@ -113,6 +113,7 @@ async fn main() {
                     let mut fc_app = FileTransferRecv::new(
                         &output_prefix.join(out_filename),
                         rx_app,
+                        tx_app,
                         &tmp_filename,
                     )
                     .unwrap();

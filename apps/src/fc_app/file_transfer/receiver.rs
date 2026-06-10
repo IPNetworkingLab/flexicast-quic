@@ -5,7 +5,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::time;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_fcquiche::FcQuicMsg;
 
 #[derive(Debug)]
@@ -20,6 +20,9 @@ pub struct FileTransferRecv {
     /// Tokio channel to receive the data.
     rx_chan: Receiver<FcQuicMsg>,
 
+    /// Tokio channel to send data.
+    tx_chan: Sender<FcQuicMsg>,
+
     /// True filename.
     true_filename: String,
 
@@ -31,7 +34,8 @@ impl FileTransferRecv {
     /// New structure to handle the file transfer delivery on the
     /// receiving-side.
     pub fn new(
-        filepath: &Path, rx_chan: Receiver<FcQuicMsg>, tmp_filename: &Path,
+        filepath: &Path, rx_chan: Receiver<FcQuicMsg>,
+        tx_chan: Sender<FcQuicMsg>, tmp_filename: &Path,
     ) -> Result<Self> {
         let true_filename = filepath
             .to_str()
@@ -43,6 +47,7 @@ impl FileTransferRecv {
             file: Some(file),
             nb_bytes_recv: 0,
             rx_chan,
+            tx_chan,
             true_filename: true_filename.to_string(),
             tmp_filename: tmp_filename.to_str().unwrap().to_string(),
         })
@@ -62,7 +67,9 @@ impl FileTransferRecv {
                     }
                     self.handle_new_data(v, fin, stream_id).await?;
                     if fin {
-                        let rct_time = time::Instant::now().duration_since(start).as_millis();
+                        let rct_time = time::Instant::now()
+                            .duration_since(start)
+                            .as_millis();
                         println!("RESULT-RCT {:?}", rct_time);
                         println!(
                             "End of transfer. Total duration in ms: {:?}. Since first byte: {:?}",
@@ -99,7 +106,8 @@ impl FileTransferRecv {
             if fin {
                 debug!("File download is done. Change the filename from {:?} to {:?}", self.tmp_filename, self.true_filename);
                 std::fs::rename(&self.tmp_filename, &self.true_filename)?;
-                self.file = Some(std::fs::File::create(&self.tmp_filename)?)
+                self.file = Some(std::fs::File::create(&self.tmp_filename)?);
+                self.tx_chan.send(FcQuicMsg::Close).await?;
             }
         }
 
