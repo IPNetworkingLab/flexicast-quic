@@ -884,7 +884,8 @@ impl FlexicastAttributes {
             key_dict
                 .remove(&packet.new_key_id)
                 .map(|_| ())
-                .ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))
+                .ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))?;
+            self.mc_announce_data[fc_chan_idx!(self)?].fc_lkh_counters.remove(&packet.new_key_id).map(|_| ()).ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))
         }
     }
 
