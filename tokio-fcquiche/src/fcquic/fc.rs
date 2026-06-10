@@ -100,7 +100,7 @@ pub struct FcChannelAsync {
     /// Does the fc flow need to send control packet
     pub has_control_packet_to_send: bool,
     /// LKH packet counter
-    pub lkh_counter: u64
+    pub lkh_counter: u64,
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the
@@ -186,13 +186,10 @@ impl FcChannelAsync {
                 }
             },
             MsgFcSource::KeyUpdateNeededOnMC(raw_packet) => {
-                let out_packet = lkh_encrypt(
-                    raw_packet,
-                    self.fc_chan.algo,
-                    self.lkh_counter
-                )
-                .map_err(|e| {println!("Error : {e:?}");e})?;
-            self.lkh_counter+=1;
+                let out_packet =
+                    lkh_encrypt(raw_packet, self.fc_chan.algo, self.lkh_counter)?;
+                self.lkh_counter += 1;
+
                 self.fc_chan.channel.schedule_lkh_update(quiche::flexicast::lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(out_packet));
                 self.has_control_packet_to_send = true;
             },
