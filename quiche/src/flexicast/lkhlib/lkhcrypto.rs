@@ -6,7 +6,7 @@ use crate::flexicast::lkhlib::packet::{
 };
 /// Encrypt a key update packet to be sent on the multicast
 pub fn lkh_encrypt(
-    packet: WrappedKeyUpdatePacket, algo: Algorithm,
+    packet: WrappedKeyUpdatePacket, algo: Algorithm, counter:u64
 ) -> Result<KeylessWrappedKeyUpdatePacket,crate::Error> {
     let seal = Seal::from_secret(algo, &packet.ksk.clone())?;
     println!("{seal:?}");
@@ -16,11 +16,12 @@ pub fn lkh_encrypt(
 
     let ad = packet.ksk_id.to_be_bytes();
 
-    seal.seal_with_u64_counter(0, 1, &ad, &mut buf, data_len, None)?;
+    seal.seal_with_u64_counter(0, counter, &ad, &mut buf, data_len, None)?;
 
     let out = KeylessWrappedKeyUpdatePacket {
         cipher: buf,
         ksk_id: packet.ksk_id,
+        counter:counter,
     };
     Ok(out)
 }
@@ -32,7 +33,8 @@ pub fn lkh_decrypt(
     println!("{open:?}");
     let mut cipher = packet.cipher.to_owned();
     let ad = packet.ksk_id.to_be_bytes();
-    open.open_with_u64_counter(0, 1, &ad, &mut cipher)?;
+    
+    open.open_with_u64_counter(0, packet.counter, &ad, &mut cipher)?;
 
     let out = KeyUpdatePacket::from_bytes(cipher).ok_or(Error::CryptoFail)?;
     Ok(out)
@@ -60,7 +62,7 @@ mod testing {
             };
             let wrapped = packet.wrap(ksk.clone(), ksk_id);
 
-            let cipher = lkh_encrypt(wrapped, algo).unwrap();
+            let cipher = lkh_encrypt(wrapped, algo,1).unwrap();
             
             let clear = lkh_decrypt(cipher, ksk, algo).unwrap();
 

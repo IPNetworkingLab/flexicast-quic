@@ -316,8 +316,8 @@ pub trait McConfig {
     ///
     /// The default value is `false`.
     fn set_enable_flexicast(&mut self, v: bool);
-    /// Set the `lkh_support` transport parameter. 
-    /// 
+    /// Set the `lkh_support` transport parameter.
+    ///
     /// Default to `false`
     fn set_enable_lkh(&mut self, v: bool);
 }
@@ -326,8 +326,8 @@ impl McConfig for crate::Config {
     fn set_enable_flexicast(&mut self, v: bool) {
         self.local_transport_params.flexicast_support = v;
     }
-    fn set_enable_lkh(&mut self,v:bool) {
-        self.local_transport_params.lkh_support=v;
+    fn set_enable_lkh(&mut self, v: bool) {
+        self.local_transport_params.lkh_support = v;
     }
 }
 
@@ -796,14 +796,24 @@ impl FlexicastAttributes {
                 },
                 lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(packet) => {
                     //This packet is encrypted with the key that may be stored with the key ksk_id
-                    let key_dict = &mut self.mc_announce_data
-                        [fc_chan_idx!(self)?]
-                    .fc_key_dict;
-                    let ksk = key_dict
+                    let mc_data = &mut self.mc_announce_data[fc_chan_idx!(self)?];
+                    let ksk_id = packet.ksk_id;
+                    let ksk = mc_data.fc_key_dict
                         .get(&packet.ksk_id)
                         .ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))?;
 
+                    let counter = mc_data.fc_lkh_counters.get(&ksk_id).unwrap_or(&0);
+
+                    if *counter >= packet.counter {
+                        println!("[LKH] Got a key with counter {} but last one was {}",packet.counter,*counter);
+                        return Err(Error::Flexicast(FcError::FcLKHKeyUnknown));
+                    }
+                    
+                    let new_counter = packet.counter;
+                    
+                    println!("[LKH] Received a protected key update : ksk_id:{:?}, counter : {}",packet.ksk_id,packet.counter);
                     let clear = lkh_decrypt(packet, ksk.clone(), algo)?;
+                    mc_data.fc_lkh_counters.insert(ksk_id, new_counter);
                     self.process_lkh_update_packet(algo, clear, first_pn)
                 },
                 lkhlib::packet::FCKeyUpdate::RawKey(key) => {
@@ -886,9 +896,7 @@ impl FlexicastAttributes {
             FCKeyUpdate::KeyUpdate(packet) => {
                 (packet.is_session_key, packet.new_key.clone())
             },
-            FCKeyUpdate::KeylessWrappedKeyUpdate(packet) => {
-                return Ok(())
-            },
+            FCKeyUpdate::KeylessWrappedKeyUpdate(packet) => return Ok(()),
             FCKeyUpdate::RawKey(key) => (true, key.clone()),
         };
         if is_session {
@@ -1023,8 +1031,10 @@ pub struct McAnnounceData {
     /// mc_channel_algo: Algorithm::AES128_GCM,
     pub fc_channel_algo: Option<Algorithm>,
 
-    /// Dictionnary to store the LKH keys
+    /// Dictionnary to store the LKH keys and their associated counter
     pub fc_key_dict: HashMap<u64, Vec<u8>>,
+    /// Anti replay counters for LKH
+    pub fc_lkh_counters: HashMap<u64, u64>,
 }
 
 impl McAnnounceData {
@@ -1247,7 +1257,7 @@ impl FlexicastConnection for Connection {
                 mc_announce_data: vec![mc_data_cloned],
                 fc_reliable,
                 fc_fec,
-                fc_uses_lkh:self.local_transport_params.lkh_support,
+                fc_uses_lkh: self.local_transport_params.lkh_support,
                 ..Default::default()
             });
         }
@@ -2546,6 +2556,7 @@ pub mod testing {
             fc_channel_algo: None,
             fc_channel_secret: None,
             fc_key_dict: HashMap::new(),
+            fc_lkh_counters: HashMap::new(),
         }
     }
 

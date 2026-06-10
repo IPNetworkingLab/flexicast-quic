@@ -9940,6 +9940,7 @@ impl Connection {
                     fc_channel_algo: None,
                     fc_channel_secret: None,
                     fc_key_dict: std::collections::HashMap::new(),
+                    fc_lkh_counters:std::collections::HashMap::new()
                 };
 
                 self.fc_set_announce_data(&mc_announce_data)?;
@@ -9960,7 +9961,7 @@ impl Connection {
                         action_data,
                         flexicast.get_mc_role(),
                     );
-                    println!("Trying to process the state");
+                    println!("Trying to process the state : {:?}",action );
                     let _new_status = flexicast.update_client_state(
                         action.try_into()?,
                         Some(action_data),
@@ -22130,6 +22131,7 @@ mod tests {
 }
 
 use crate::fec::schedulers::FecScheduler;
+use crate::flexicast::FcClientAction;
 use crate::flexicast::lkhlib::LKH_TRANSPORT_PARAM;
 use crate::flexicast::McRole::ServerFlexicast;
 //use crate::flexicast::lkhlib::packet::FCKeyUpdate;

@@ -182,7 +182,8 @@ impl TokioFcQuic {
             is_processed: false,
             fc_channel_algo: None,
             fc_channel_secret: None,
-            fc_key_dict: HashMap::new()
+            fc_key_dict: HashMap::new(),
+            fc_lkh_counters : HashMap::new()
         };
 
         fc_chan
@@ -359,7 +360,8 @@ impl TokioFcQuic {
                 nb_active_receivers: 0,
                 max_ack_rate: self.config.max_ack_rate,
                 largest_pn_atomic: largest_pn_atomic.clone(),
-                has_control_packet_to_send:false
+                has_control_packet_to_send:false,
+                lkh_counter:1
             };
 
             id_fc_chan += 1;

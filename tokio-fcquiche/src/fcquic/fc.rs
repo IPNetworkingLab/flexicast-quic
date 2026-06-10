@@ -4,9 +4,10 @@ use super::sendmmsg::MsgSmsg;
 use crate::Result;
 use quiche::flexicast::ack::FcDelegatedStream;
 use quiche::flexicast::control::OpenSent;
+use quiche::flexicast::lkhlib::lkhcrypto::lkh_encrypt;
 use quiche::flexicast::FlexicastChannelSource;
 use quiche::flexicast::McAnnounceData;
-use quiche::flexicast::lkhlib::lkhcrypto::lkh_encrypt;
+use quiche::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::Receiver;
 
@@ -15,8 +16,8 @@ use super::messages::*;
 use crate::FcQuicMsg;
 use log::*;
 use quiche::flexicast::cca::FcFlowCwnd;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -97,7 +98,9 @@ pub struct FcChannelAsync {
     /// Atomic to update the largest sent packet number on the multicast flow.
     pub largest_pn_atomic: Arc<AtomicU64>,
     /// Does the fc flow need to send control packet
-    pub has_control_packet_to_send:bool
+    pub has_control_packet_to_send: bool,
+    /// LKH packet counter
+    pub lkh_counter: u64
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the
@@ -141,7 +144,11 @@ impl FcChannelAsync {
                 if ranges.first().is_some_and(|v| v % 5000 == 0) {
                     println!(
                         "RESULT-CWND {:?}",
-                        self.fc_chan.channel.fc_get_flow_cwnd().unwrap_or((0, 0)).0
+                        self.fc_chan
+                            .channel
+                            .fc_get_flow_cwnd()
+                            .unwrap_or((0, 0))
+                            .0
                     );
                 }
             },
@@ -179,15 +186,21 @@ impl FcChannelAsync {
                 }
             },
             MsgFcSource::KeyUpdateNeededOnMC(raw_packet) => {
-                let out_packet = lkh_encrypt(raw_packet, self.fc_chan.algo)?;
+                let out_packet = lkh_encrypt(
+                    raw_packet,
+                    self.fc_chan.algo,
+                    self.lkh_counter
+                )
+                .map_err(|e| {println!("Error : {e:?}");e})?;
+            self.lkh_counter+=1;
                 self.fc_chan.channel.schedule_lkh_update(quiche::flexicast::lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(out_packet));
-                self.has_control_packet_to_send=true;
-            }
-            MsgFcSource::LKHNotifySessionChange(notification) =>{
+                self.has_control_packet_to_send = true;
+            },
+            MsgFcSource::LKHNotifySessionChange(notification) => {
                 println!("[LKH] Notify received");
                 //self.fc_chan.channel.schedule_lkh_update(quiche::flexicast::lkhlib::packet::FCKeyUpdate::KeyUpdate(notification) );
                 self.fc_chan.channel.update_session_key_now(notification)?
-            }
+            },
         }
 
         Ok(())
@@ -235,8 +248,9 @@ impl FcChannelAsync {
             FcQuicMsg::Stream(v) => {
                 self.pending_data = Some(v);
             },
-            _ =>
-                unreachable!("Cannot send an HTTP/3 request from the source-side"),
+            _ => {
+                unreachable!("Cannot send an HTTP/3 request from the source-side")
+            },
         }
 
         Ok(())
