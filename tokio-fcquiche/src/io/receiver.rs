@@ -38,9 +38,11 @@ pub struct TokioFcQuicRecv {
     flexicast: bool,
 
     /// Transmission channel to send data from QUIC to the app.
+    /// Quiche -> App
     tx_app: mpsc::Sender<FcQuicMsg>,
 
     /// Reception channel to receive data from the app to QUIC.
+    /// App -> Quiche
     rx_app: mpsc::Receiver<FcQuicMsg>,
 
     /// Address of the server to contact.
@@ -64,25 +66,27 @@ impl TokioFcQuicRecv {
     /// Creates a new instance.
     pub fn new(
         peer_addr: SocketAddr, config: Config, local_ip: Ipv4Addr,
-        flexicast: bool, proxy_uc: bool, rx_from_app: mpsc::Receiver<FcQuicMsg>,
+        flexicast: bool, proxy_uc: bool,
+        rx_app_quiche: mpsc::Receiver<FcQuicMsg>,
         h3_config: Option<quiche::h3::Config>, keylog_file: Option<File>,
     ) -> (Self, mpsc::Receiver<FcQuicMsg>) {
-        let (tx_app, rx_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        // Tokio Channel Quiche -> App
+        let (tx_quiche_app, rx_quiche_app) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         (
             Self {
                 peer_addr,
                 config,
                 local_ip,
                 flexicast,
-                tx_app,
-                rx_app: rx_from_app,
+                tx_app: tx_quiche_app,
+                rx_app: rx_app_quiche,
                 proxy_uc,
                 h3_config,
                 h3_conn: None,
                 h3_pending_request: None,
                 keylog_file,
             },
-            rx_app,
+            rx_quiche_app,
         )
     }
 

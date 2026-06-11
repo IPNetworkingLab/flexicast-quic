@@ -79,8 +79,8 @@ async fn main() {
     } else {
         None
     };
-
-    let (tx_app, rx_app) = tokio::sync::mpsc::channel(1000);
+    // Tokio Channel App->Quiche
+    let (tx_app_quiche, rx_app_quiche) = tokio::sync::mpsc::channel(1000);
 
     // Create the Flexicast Quiche tokio receiver.
     let peer_addr = *args.url.socket_addrs(|| None).unwrap().first().unwrap();
@@ -98,13 +98,13 @@ async fn main() {
         config.log_keys();
     }
 
-    let (mut tfc_recv, rx_app) = TokioFcQuicRecv::new(
+    let (mut tfc_recv, rx_quiche_app) = TokioFcQuicRecv::new(
         peer_addr,
         config,
         args.local_ip,
         args.flexicast,
         args.proxy_uc,
-        rx_app,
+        rx_app_quiche,
         h3_config,
         keylog
     );
@@ -128,7 +128,8 @@ async fn main() {
                     };
                     let mut fc_app = FileTransferRecv::new(
                         &output_prefix.join(out_filename),
-                        rx_app,
+                        rx_quiche_app,
+                        tx_app_quiche,
                         &tmp_filename,
                     )
                     .unwrap();
@@ -147,7 +148,7 @@ async fn main() {
         TransferKind::Stream(stream_transfer_kind) =>
             match stream_transfer_kind {
                 StreamTransferKind::Hls(output_dir) => {
-                    let mut fc_app = HlsSink::new(&output_dir, rx_app);
+                    let mut fc_app = HlsSink::new(&output_dir, rx_quiche_app);
                     tokio::spawn(async move {
                         fc_app.run().await.unwrap();
                     });
@@ -155,7 +156,7 @@ async fn main() {
 
                 StreamTransferKind::Rtp(sockaddr) => {
                     let mut fc_app =
-                        RtpSink::new(rx_app, sockaddr).await.unwrap();
+                        RtpSink::new(rx_quiche_app, sockaddr).await.unwrap();
                     tokio::spawn(async move {
                         fc_app.run().await.unwrap();
                     });
@@ -164,8 +165,8 @@ async fn main() {
 
         TransferKind::HTTP3(path_to_store) => {
             let mut fc_app = Http3Receiver::new(
-                rx_app,
-                tx_app,
+                rx_quiche_app,
+                tx_app_quiche,
                 args.url,
                 &path_to_store.split(",").next().unwrap(),
             );
