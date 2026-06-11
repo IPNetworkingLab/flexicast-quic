@@ -798,23 +798,27 @@ impl FlexicastAttributes {
                     //This packet is encrypted with the key that may be stored with the key ksk_id
                     let mc_data = &mut self.mc_announce_data[fc_chan_idx!(self)?];
                     let ksk_id = packet.ksk_id;
-                    let ksk = mc_data.fc_key_dict
-                        .get(&packet.ksk_id)
-                        .ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))?;
+                    if let Some(ksk) = mc_data.fc_key_dict.get(&packet.ksk_id) {
+                        let counter =
+                            mc_data.fc_lkh_counters.get(&ksk_id).unwrap_or(&0);
 
-                    let counter = mc_data.fc_lkh_counters.get(&ksk_id).unwrap_or(&0);
+                        if *counter >= packet.counter {
+                            println!("[LKH] Got a key with counter {} but last one was {}",packet.counter,*counter);
+                            return Err(Error::Flexicast(
+                                FcError::FcLKHKeyUnknown,
+                            ));
+                        }
 
-                    if *counter >= packet.counter {
-                        println!("[LKH] Got a key with counter {} but last one was {}",packet.counter,*counter);
-                        return Err(Error::Flexicast(FcError::FcLKHKeyUnknown));
+                        let new_counter = packet.counter;
+
+                        println!("[LKH] Received a protected key update : ksk_id:{:?}, counter : {}",packet.ksk_id,packet.counter);
+                        let clear = lkh_decrypt(packet, ksk.clone(), algo)?;
+                        mc_data.fc_lkh_counters.insert(ksk_id, new_counter);
+                        self.process_lkh_update_packet(algo, clear, first_pn)
+                    } else {
+                        // We are unable to decrypt the packet so we drop it ?
+                        Ok(())
                     }
-                    
-                    let new_counter = packet.counter;
-                    
-                    println!("[LKH] Received a protected key update : ksk_id:{:?}, counter : {}",packet.ksk_id,packet.counter);
-                    let clear = lkh_decrypt(packet, ksk.clone(), algo)?;
-                    mc_data.fc_lkh_counters.insert(ksk_id, new_counter);
-                    self.process_lkh_update_packet(algo, clear, first_pn)
                 },
                 lkhlib::packet::FCKeyUpdate::RawKey(key) => {
                     // standard update
@@ -885,7 +889,11 @@ impl FlexicastAttributes {
                 .remove(&packet.new_key_id)
                 .map(|_| ())
                 .ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))?;
-            self.mc_announce_data[fc_chan_idx!(self)?].fc_lkh_counters.remove(&packet.new_key_id).map(|_| ()).ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))
+            self.mc_announce_data[fc_chan_idx!(self)?]
+                .fc_lkh_counters
+                .remove(&packet.new_key_id)
+                .map(|_| ())
+                .ok_or(Error::Flexicast(FcError::FcLKHKeyUnknown))
         }
     }
 

@@ -21,6 +21,8 @@ pub trait LogicalTree {
     ///Return a tuple `(key_id, key)` if possible
     fn get_session_key(&self) -> Option<(u64, &[u8])>;
     fn get_user_count(&self) -> usize;
+
+    fn contain_user(&self,user_id: &Vec<u8>) -> bool;
 }
 #[derive(Clone)]
 /// Simple LKH implementation without any particular optimization 
@@ -403,6 +405,9 @@ impl LogicalTree for Lkh {
         let new_id = self.tree.add_node(node);
         self.update_keys(new_id, &mut HashSet::new());
     }
+    fn contain_user(&self,user_id: &Vec<u8>) -> bool {
+        self.tree.get_user_node(user_id.clone()).is_some()
+    }
     fn get_session_key(&self) -> Option<(u64, &[u8])> {
         self.tree.get_root().map(|u| (u.key_id, u.key.as_slice()))
     }
@@ -438,6 +443,9 @@ impl LogicalTree for LKHPlus {
     }
     fn get_user_count(&self) -> usize {
         self.lkh.get_user_count()+self.unordered_users.len()
+    }
+    fn contain_user(&self,user_id: &Vec<u8>) -> bool {
+        self.lkh.contain_user(user_id)||self.unordered_users.contains_key(user_id)
     }
     fn add_user(&mut self, user_id: Vec<u8>, send: Box<dyn Fn(KeyUpdatePacket) + Send + Sync>) {
         if self.lkh.get_user_count() == 0 {

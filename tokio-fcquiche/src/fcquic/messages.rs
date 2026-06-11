@@ -109,7 +109,13 @@ pub enum MsgFcCtl {
 
     /// Message intended to be used root -> node indicating a need to change a key of a specific unicast client
     /// (client_id, key_update)
-    LKHChangeKeyUnicast((u64, FCKeyUpdate))
+    LKHChangeKeyUnicast((u64, FCKeyUpdate)),
+
+    /// Message to inform the root that a user has left the flexicast flow
+    /// Very similar to CollectRecv but should be transmitted to the root controller for each user that is leaving
+    /// The first value is the client ID
+    /// The second value is the flexicast flow ID.
+    LKHUserLeaving((u64, u64))
 }
 
 /// Messages sent to the receiver.

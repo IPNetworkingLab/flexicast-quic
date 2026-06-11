@@ -4,6 +4,7 @@
 use super::aggregator::FcAggregatedMsg;
 use super::aggregator::FcAggregator;
 use super::messages::*;
+use crate::fcquic::messages::MsgFcCtl::LKHUserLeaving;
 use crate::send_uc_path;
 use crate::Result;
 use log::*;
@@ -354,6 +355,9 @@ impl FcController {
                     return Ok(());
                 }
 
+                if let ControllerRole::Leaf(leaf) = &mut self.controller_role {
+                    leaf.tx_up.try_send(LKHUserLeaving((id, fc_chan_id)))?;
+                }
                 info!(
                     "{} Before fall back of receiver: {id}, this is the state of
                 the McAck: {:?}",
@@ -473,6 +477,28 @@ impl FcController {
                             .send(MsgRecv::LKHUnicastKey(update))
                             .await;
                     }
+                }
+            },
+            MsgFcCtl::LKHUserLeaving((client_id, fc_id)) => {
+                match &mut self.controller_role {
+                    ControllerRole::Leaf(_) => (),
+                    ControllerRole::Root(root) => {
+                        if root.lkh_enabled {
+                            let tree = root
+                                .lkh_tree
+                                .get_mut(fc_id as usize)
+                                .ok_or(Error::Flexicast(
+                                    quiche::flexicast::FcError::FcLKHKeyUnknown,
+                                ))?;
+                            println!("Removing user {client_id}");
+                            let user_id_vec = client_id.to_be_bytes().to_vec();
+                            if tree.contain_user(&user_id_vec) {
+                                tree.remove_user(user_id_vec);
+                            }
+
+                            println!("New tree : {tree}");
+                        }
+                    },
                 }
             },
         }
@@ -1065,9 +1091,16 @@ impl FcController {
         _ = self.recv_ack.remove(&recv_id);
         _ = self.rec_fec_md.remove(&recv_id);
         self.nb_clients = self.nb_clients.map(|nb| nb.saturating_sub(1));
+        println!("Entering the collect RecvMatch");
         match &mut self.controller_role {
-            ControllerRole::Leaf(leaf) => _ = leaf.tx_down.remove(&recv_id),
-            ControllerRole::Root(root) => _ = root.tx_down.remove(&recv_id),
+            ControllerRole::Leaf(leaf) => {
+                _ = leaf.tx_down.remove(&recv_id);
+
+                leaf.tx_up.try_send(LKHUserLeaving((recv_id, fc_id)))?;
+            },
+            ControllerRole::Root(root) => {
+                _ = root.tx_down.remove(&recv_id);
+            },
         }
 
         // If this is a leaf and there is no more receiver, indicate it to the
@@ -1137,15 +1170,14 @@ impl FcController {
             "{name} enters on_join for client {recv_id} and max_pn: {max_pn:?}"
         );
         match &mut self.controller_role {
-         ControllerRole::Leaf(leaf) => {
-            if first_join {
-                let pn =
-                    self.mc_acks[fc_id as usize].get_largest_pn().unwrap_or(0);
-                let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
-                
-                
+            ControllerRole::Leaf(leaf) => {
+                if first_join {
+                    let pn = self.mc_acks[fc_id as usize]
+                        .get_largest_pn()
+                        .unwrap_or(0);
+                    let msg = MsgRecv::NewHighestPn((fc_id, pn, pn));
 
-                 //Send the message to the root controller to update the lkh tree
+                    //Send the message to the root controller to update the lkh tree
                     println!("[LKH] propagation join to the root");
                     match leaf.tx_up.try_send(MsgFcCtl::Join((
                         recv_id, fc_id, aggr_msg, max_pn, first_join,
@@ -1156,29 +1188,28 @@ impl FcController {
                         ),
                         Ok(_) => (),
                     };
-                send_uc_path!(self, recv_id, msg);
-                // Add the receiver in the state if we have to wait for a given number of receiver greater than 1.
-                // This is ugly.
-                if self.wait.is_some_and(|w| w > 1) {
-                    // The first packet number should be 2?
-                    let new_insert = self.active_clients[fc_id as usize]
-                        .insert(recv_id, pn);
-                    _ = self.unicast_recv.remove(&recv_id);
-                    _ = self.delegated_recv[fc_id as usize].remove(&recv_id);
-                    if new_insert.is_none() {
-                        // Emulate ACK for all pn < first_ack (packets this receiver
-                        // never received because it joined late). This decrements their
-                        // counters in McAck so they are not blocked on this receiver.
-                        debug!("Add receiver {recv_id} in multicast flow {fc_id} with first packet number {pn}");
-                        self.mc_acks[fc_id as usize].new_recv(pn, true);
+                    send_uc_path!(self, recv_id, msg);
+                    // Add the receiver in the state if we have to wait for a given number of receiver greater than 1.
+                    // This is ugly.
+                    if self.wait.is_some_and(|w| w > 1) {
+                        // The first packet number should be 2?
+                        let new_insert = self.active_clients[fc_id as usize]
+                            .insert(recv_id, pn);
+                        _ = self.unicast_recv.remove(&recv_id);
+                        _ = self.delegated_recv[fc_id as usize].remove(&recv_id);
+                        if new_insert.is_none() {
+                            // Emulate ACK for all pn < first_ack (packets this receiver
+                            // never received because it joined late). This decrements their
+                            // counters in McAck so they are not blocked on this receiver.
+                            debug!("Add receiver {recv_id} in multicast flow {fc_id} with first packet number {pn}");
+                            self.mc_acks[fc_id as usize].new_recv(pn, true);
+                        }
                     }
                 }
-            }
                 return Ok(());
             },
             ControllerRole::Root(root) => {
                 if !root.lkh_enabled {
-                    
                     return Ok(());
                 }
                 let tree = root.lkh_tree.get_mut(fc_id as usize).ok_or(

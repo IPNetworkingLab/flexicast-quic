@@ -473,6 +473,8 @@ impl TokioFcQuicRecv {
             },
 
             FcQuicMsg::Close => {
+                println!("Connection closing !");
+                self.tx_app.try_send(FcQuicMsg::Close);
                 return Ok(true); // Close.
             },
 
