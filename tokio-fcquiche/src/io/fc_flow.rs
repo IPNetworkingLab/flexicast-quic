@@ -326,6 +326,9 @@ impl FcFlowRun for FcFlowfileTransfer {
                         };
                     println!("Buf state : {buf:?}");
                     // Send the packets on the wire.
+                    if !self.fc.must_wait {
+                        println!("No waiting required");
+                    }
                     if !self.fc.must_wait || self.fc.has_control_packet_to_send {
                         if self
                             .fc

@@ -23,6 +23,8 @@ capture_keylogs = []
 # Enable qlog support.
 qlog = ["quiche/qlog"]
 
+#LKH use LKHPlus instead of simple LKH (temporary ?)
+LKHPlus = []
 [dependencies]
 docopt = "1"
 env_logger = { workspace = true }

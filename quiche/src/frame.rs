@@ -583,7 +583,7 @@ impl Frame {
 
             MC_KEY_LKH_CODE => {
                 let channel_id = b.get_bytes_with_u8_length()?.to_vec();
-                let algo =b.get_u8()?.try_into().map_err(|_| Error::CryptoFail)?;
+                let algo =b.get_u8()?.try_into().map_err(|_| Error::CryptoFail).map_err(|e| {println!("Cannot map u8 to algo");e})?;
                 let first_pn = b.get_varint()?;
 
                 let is_encrypted = b.get_u8()?;

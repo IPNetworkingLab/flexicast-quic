@@ -842,7 +842,7 @@ fn compute_retry_integrity_tag(
 
     // Ensure that the output only contains the AEAD tag.
     if out_len != out_tag.len() {
-        return Err(Error::CryptoFail);
+        return Err(Error::CryptoFail).map_err(|e| {println!("Error in integrity tag");e});
     }
 
     Ok(out_tag)

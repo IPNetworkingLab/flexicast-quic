@@ -124,7 +124,7 @@ async fn main() {
                         // Path::new("tmp_filename.txt").into()
                         Path::new("/shared/tmp_filename.txt").into()
                     } else {
-                        Path::new(".").join(out_filename)
+                        output_prefix.join("recv-tmp")
                     };
                     let mut fc_app = FileTransferRecv::new(
                         &output_prefix.join(out_filename),

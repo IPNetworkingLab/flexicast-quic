@@ -879,6 +879,7 @@ impl FlexicastAttributes {
             if packet.is_session_key {
                 trace!("[LKH] new session secret : {:?}", &packet.new_key);
                 //self.set_decryption_key_secret(packet.new_key, algo)
+                self.mc_announce_data[fc_chan_idx!(self)?].fc_channel_secret.replace(packet.new_key.clone());
                 self.add_key_update(algo, packet.new_key, first_pn)
             } else {
                 Ok(())
@@ -1766,6 +1767,7 @@ impl Connection {
     fn update_session_key(
         &mut self, algo: Algorithm, key: Vec<u8>, first_pn: u64,
     ) -> Result<()> {
+        panic!("Untested");
         let path_id = self
             .flexicast
             .as_ref()
@@ -1797,6 +1799,7 @@ impl Connection {
 
         Ok(())
     }
+    /// Change the crypto session without wait
     pub fn update_session_key_now(
         &mut self, packet: KeyUpdatePacket,
     ) -> Result<()> {
@@ -1947,7 +1950,7 @@ impl FlexicastChannelSource {
 
         // Get the encryption algorithm.
         let encryption_algo =
-            conn_server.handshake.cipher().ok_or(Error::CryptoFail)?;
+            conn_server.handshake.cipher().ok_or(Error::CryptoFail).map_err(|e| {println!("Error in handshake");e})?;
 
         conn_server.flexicast = Some(FlexicastAttributes {
             mc_role: McRole::ServerFlexicast,

@@ -15,6 +15,7 @@ use quiche::flexicast::ack::McStreamOff;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
 use quiche::flexicast::lkhlib::lkh::LKHPlus;
+use quiche::flexicast::lkhlib::lkh::Lkh;
 use quiche::flexicast::lkhlib::lkh::LogicalTree;
 use quiche::flexicast::lkhlib::packet::FCKeyUpdate;
 use quiche::flexicast::lkhlib::packet::KeyUpdatePacket;
@@ -480,6 +481,7 @@ impl FcController {
                 }
             },
             MsgFcCtl::LKHUserLeaving((client_id, fc_id)) => {
+                return Ok(());
                 match &mut self.controller_role {
                     ControllerRole::Leaf(_) => (),
                     ControllerRole::Root(root) => {
@@ -493,7 +495,7 @@ impl FcController {
                             println!("Removing user {client_id}");
                             let user_id_vec = client_id.to_be_bytes().to_vec();
                             if tree.contain_user(&user_id_vec) {
-                                tree.remove_user(user_id_vec);
+                                //tree.remove_user(user_id_vec);
                             }
 
                             println!("New tree : {tree}");
@@ -1484,8 +1486,8 @@ pub struct ControllerRoot {
     /// TX towards the flexicast flows.
     tx_up: Vec<mpsc::Sender<MsgFcSource>>,
 
-    lkh_tree: Vec<LKHPlus>,
-    /// Should lkh functionnality be enabled
+    lkh_tree: Vec< Box<dyn LogicalTree>>,
+    /// Should the lkh functionnality be enabled
     pub lkh_enabled: bool,
 }
 
@@ -1504,6 +1506,8 @@ impl ControllerRoot {
         self.tx_up.push(tx);
         if self.lkh_enabled {
             println!("[LKH] Creating the LKH tree");
+            
+            #[cfg(feature="LKHPlus")]
             let lkh = LKHPlus::new(
                 32,
                 Arc::new(Box::new(move |packet| {
@@ -1516,9 +1520,23 @@ impl ControllerRoot {
                     Err(_) => println!("[LKH] Couldn't push a group key update to the channel")
                 }
                 })),
-                32,
+                2,
             );
-            self.lkh_tree.push(lkh);
+            #[cfg(not(feature= "LKHPlus"))]
+            let lkh = Lkh::new(
+                32,
+                Arc::new(Box::new(move |packet| {
+                    println!(
+                        "[LKH] Sending a KeyupdateNeeded {:?} to group",
+                        packet
+                    );
+                    match captured.try_send(MsgFcSource::KeyUpdateNeededOnMC(packet)) {
+                    Ok(_) => (),
+                    Err(_) => println!("[LKH] Couldn't push a group key update to the channel")
+                }
+                })),
+            );
+            self.lkh_tree.push(Box::from(lkh));
         }
     }
 

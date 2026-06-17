@@ -9,14 +9,13 @@ pub fn lkh_encrypt(
     packet: WrappedKeyUpdatePacket, algo: Algorithm, counter:u64
 ) -> Result<KeylessWrappedKeyUpdatePacket,crate::Error> {
     let seal = Seal::from_secret(algo, &packet.ksk.clone())?;
-    println!("{seal:?}");
+    println!("[LKH] trying to lkh encrypt with : {seal:?}");
     let mut buf = packet.packet.to_bytes();
     let data_len = buf.len();
     buf.resize(data_len + algo.tag_len(), 0);
 
     let ad = packet.ksk_id.to_be_bytes();
-
-    seal.seal_with_u64_counter(0, counter, &ad, &mut buf, data_len, None)?;
+    seal.seal_with_u64_counter(0, counter, &ad, &mut buf, data_len, None).map_err(|e|{println!("Error in LKH encrypt !");Error::Flexicast(crate::flexicast::FcError::Debug)})?;
 
     let out = KeylessWrappedKeyUpdatePacket {
         cipher: buf,
@@ -30,13 +29,13 @@ pub fn lkh_decrypt(
     packet: KeylessWrappedKeyUpdatePacket, key: Vec<u8>, algo: Algorithm,
 ) -> Result<KeyUpdatePacket,crate::Error> {
     let open = Open::from_secret(algo, &key.clone())?;
-    println!("{open:?}");
+    println!("[LKH] [Crypto] trying to decrypt with : {open:?}");
     let mut cipher = packet.cipher.to_owned();
     let ad = packet.ksk_id.to_be_bytes();
     
-    open.open_with_u64_counter(0, packet.counter, &ad, &mut cipher)?;
-
-    let out = KeyUpdatePacket::from_bytes(cipher).ok_or(Error::CryptoFail)?;
+    open.open_with_u64_counter(0, packet.counter, &ad, &mut cipher).map_err(|e| {println!("Error trying to decrypt with the key : {:?} ",key);e})?;
+    println!("In lkh_decrypt : \n\n\n");
+    let out = KeyUpdatePacket::from_bytes(cipher).ok_or(Error::CryptoFail).map_err(|e| {println!("Unable to decypher lkh update");e})?;
     Ok(out)
 }
 

@@ -413,6 +413,7 @@ use ring::aead;
 use stream::StreamPriorityKey;
 
 use std::cmp;
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::time;
@@ -2975,7 +2976,7 @@ impl Connection {
                     println!("Packet is added to undecryptable");
                     return Ok(pkt_len);
                 }
-                //println!("Error :c");
+                println!("Error :c");
                 let e = drop_pkt_on_err(
                     Error::CryptoFail,
                     self.recv_count,
@@ -3006,6 +3007,7 @@ impl Connection {
             //println!("Trying to decrypt header");
             packet::decrypt_hdr(&mut b, &mut hdr, aead).map_err(|e| {
                 println!("Header decryption failed");
+                println!("Error : {e}");
                 drop_pkt_on_err(
                     e,
                     self.recv_count,
@@ -3013,6 +3015,7 @@ impl Connection {
                     &self.trace_id,
                 )
             })?;
+            println!("Header decrypted");
             if info.from_mc {
                 //println!("Packet from mc : PN={}", hdr.pkt_num);
             }
@@ -3340,7 +3343,7 @@ impl Connection {
         // Process packet payload.
         while payload.cap() > 0 {
             let frame = frame::Frame::from_bytes(&mut payload, hdr.ty)?;
-
+            println!("Received frame : {frame:?}");
             qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
                 qlog_frames.push(frame.to_qlog());
             });
@@ -3664,7 +3667,6 @@ impl Connection {
                     },
 
                     frame::Frame::McKey { .. } => {
-                        
                         if let Some(flexicast) = self.flexicast.as_mut() {
                             flexicast.set_mc_key_read(true);
 
@@ -3675,7 +3677,6 @@ impl Connection {
                         }
                     },
                     frame::Frame::McKeyLKH { .. } => {
-                        
                         if let Some(flexicast) = self.flexicast.as_mut() {
                             flexicast.set_mc_key_read(true);
 
@@ -4565,16 +4566,16 @@ impl Connection {
                             let path_id = flexicast
                                 .get_fc_path_id()
                                 .ok_or(Error::Flexicast(FcError::FcPathId))?;
-                            let new_open = crypto::Open::from_secret(algo, &key)?;
-                            let new_seal = crypto::Seal::from_secret(algo, &key)?;
+                            let new_open = crypto::Open::from_secret(algo, &key).map_err(|e| {println!("Error while creating open");e})?;
+                            let new_seal = crypto::Seal::from_secret(algo, &key).map_err(|e| {println!("Error while creating seal");e})?;
                             crypto_space
                                 .crypto_os
                                 .replace_open(path_id, new_open)
-                                .ok_or(Error::CryptoFail)?;
+                                .ok_or(Error::Flexicast(FcError::Debug))?;
                             crypto_space
                                 .crypto_os
                                 .replace_seal(path_id, new_seal)
-                                .ok_or(Error::CryptoFail)?;
+                                .ok_or(Error::Flexicast(FcError::Debug))?;
                             self.key_phase = !self.key_phase;
                             println!(
                                 "[LKH] Role: {:?}  New key phase :{}",
@@ -5567,6 +5568,14 @@ impl Connection {
         if path_active || n_paths == 1 {
             if let Some(conn_err) = self.local_error.as_ref() {
                 if conn_err.is_app {
+                    println!("Sending a connection close");
+                    if let Some(fc) = &self.flexicast {
+                        println!(
+                            "Keys at the end : {:?}",
+                            fc.get_mc_announce_data_active()
+                                .and_then(|mc| Some(&mc.fc_key_dict))
+                        );
+                    }
                     // Create ApplicationClose frame.
                     if pkt_type == packet::Type::Short {
                         let frame = frame::Frame::ApplicationClose {
@@ -6282,7 +6291,7 @@ impl Connection {
             aead,
         )?;
         if let Some(fc) = &self.flexicast {
-            //println!("({:?}) Encrypted packet {pn} with {aead:?} \n packet : {frames:?} \n\t [{written}]raw Packet :  {b:?}",fc.get_mc_role());
+            println!("({:?}) Encrypted packet {pn} with {aead:?} \n packet : {frames:?} \n\t [{written}]raw Packet :  {b:?}",fc.get_mc_role());
         }
 
         let sent_pkt = recovery::Sent {
@@ -6384,9 +6393,9 @@ impl Connection {
         if ack_eliciting {
             self.ack_eliciting_sent = true;
         }
-        if let Some(fc) = &self.flexicast {
+        /*if let Some(fc) = &self.flexicast {
             println!("({:?})Reached end of send", fc.get_mc_role());
-        }
+        }*/
 
         Ok((pkt_type, written))
     }
@@ -9940,7 +9949,7 @@ impl Connection {
                     fc_channel_algo: None,
                     fc_channel_secret: None,
                     fc_key_dict: std::collections::HashMap::new(),
-                    fc_lkh_counters:std::collections::HashMap::new()
+                    fc_lkh_counters: std::collections::HashMap::new(),
                 };
 
                 self.fc_set_announce_data(&mc_announce_data)?;
@@ -9961,7 +9970,7 @@ impl Connection {
                         action_data,
                         flexicast.get_mc_role(),
                     );
-                    println!("Trying to process the state : {:?}",action );
+                    println!("Trying to process the state : {:?}", action);
                     let _new_status = flexicast.update_client_state(
                         action.try_into()?,
                         Some(action_data),
@@ -9986,7 +9995,6 @@ impl Connection {
                             // state if the receiver joined a flexicast flow
                             // without path probing.
 
-                            
                             if let Some(mc_announce) =
                                 flexicast.get_mc_announce_data(idx)
                             {
@@ -10067,8 +10075,6 @@ impl Connection {
                         None,
                     )?;
 
-                    
-
                     // Record the first packet number to listen to because we
                     // don't have a FC path id yet.
                     flexicast.fc_first_pn = Some(first_pn);
@@ -10109,10 +10115,19 @@ impl Connection {
                 } else if let Some(flexicast) = &mut self.flexicast {
                     println!("[LKH] Received a McKeyLKH");
 
-
                     flexicast
                         .lkh_update_client_keys(algo, key_update, first_pn)?;
 
+                    let keys = flexicast.get_mc_announce_data_active().and_then(|mc| Some(&mc.fc_key_dict)).unwrap();
+                    println!("Current keys :",);
+                    for (key_id,key) in keys.iter() {
+                        print!("\n\t [{key_id}] : \t");
+                        for bytes in key {
+{                            print!("{bytes:02X}");
+}                        }
+                    }
+                    println!("");
+                    println!("Current session key : {:?}", flexicast.get_mc_announce_data_active().and_then(|mc| Some(&mc.fc_channel_secret)));
                     flexicast.update_client_state(
                         flexicast::FcClientAction::DecryptionKey,
                         None,
@@ -22131,8 +22146,8 @@ mod tests {
 }
 
 use crate::fec::schedulers::FecScheduler;
-use crate::flexicast::FcClientAction;
 use crate::flexicast::lkhlib::LKH_TRANSPORT_PARAM;
+use crate::flexicast::FcClientAction;
 use crate::flexicast::McRole::ServerFlexicast;
 //use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 pub use crate::packet::ConnectionId;
