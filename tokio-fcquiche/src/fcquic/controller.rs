@@ -32,6 +32,12 @@ use std::time;
 use tokio;
 use tokio::sync::mpsc;
 
+/// EMA smoothing factor for per-receiver RTT estimates.
+const RTT_EMA_ALPHA: f64 = 0.2;
+
+/// Minimum number of EMA samples before a receiver is eligible for fallback.
+const RTT_MIN_SAMPLES: u64 = 100;
+
 /// Controller structure using tokio to handle messages between the flexicast
 /// source and the unicast server instances.
 pub struct FcController {
@@ -133,14 +139,40 @@ pub struct FcController {
     /// receive info from receivers.
     possible_send_ack: bool,
 
+    /// Last time the bottleneck check was performed (leaf only).
+    last_bottleneck_check: Option<time::Instant>,
+
     /// The set of congestion windows for active receivers.
     /// TODO: need to consider fall back receivers.
     /// The first value is the congestion window.
     /// The second value the number of seen bytes.
-    fc_flow_cwnd: HashMap<u64, (usize, usize)>,
-    // LKH tree to distribute the keys efficiently
-    // should only live on the root node
-    // fc_lkh_tree: Option<Vec<LKHPlus>>
+    /// The third value is the delivery rate.
+    fc_flow_cwnd: HashMap<u64, (usize, usize, u64)>,
+
+    /// Per-receiver RTT estimates. Maps recv_id → (smoothed_rtt_us, n_samples).
+    /// `smoothed_rtt_us` is an EMA of the FC-path RTT in microseconds.
+    /// `n_samples` counts how many ACKs have contributed. Cleared when
+    /// a receiver falls back or disconnects.
+    recv_rtt_us: HashMap<u64, (u64, u64)>,
+
+    /// Minimum ratio new_bottleneck / slowest_rate to trigger unicast fallback
+    /// for the slowest receiver (leaf bottleneck check).
+    /// `None` disables the auto-ejection entirely.
+    fallback_gain_ratio: Option<f64>,
+
+    /// Minimum number of EMA samples before a receiver is eligible for fallback.
+    fallback_min_samples: u64,
+
+    /// Receivers that have fallen back to unicast and are candidates for
+    /// reintegration. Maps recv_id → (fc_id, last_check_instant).
+    reintegration_candidates: HashMap<u64, (u64, time::Instant)>,
+
+    /// Last time we ran the periodic reintegration check.
+    last_reintegration_check: Option<time::Instant>,
+
+    /// How long to wait between reintegration eligibility checks.
+    /// `None` disables reintegration entirely.
+    reintegration_delay: Option<time::Duration>,
 }
 
 impl FcController {
@@ -149,7 +181,9 @@ impl FcController {
         rx_fc_ctl: mpsc::Receiver<MsgFcCtl>,
         mc_announce_data: Vec<McAnnounceData>, controller_role: ControllerRole,
         tx_main: mpsc::Sender<MsgMain>, wait: Option<u64>,
-        ack_delay: Option<time::Duration>,
+        ack_delay: Option<time::Duration>, fallback_gain_ratio: Option<f64>,
+        fallback_min_samples: Option<u64>,
+        reintegration_delay: Option<time::Duration>,
     ) -> Self {
         Self {
             controller_role,
@@ -177,7 +211,14 @@ impl FcController {
             app_data_fin: HashMap::new(),
             possible_send_ack: false,
             fc_flow_cwnd: HashMap::new(),
-            //fc_lkh_tree: None,
+            recv_rtt_us: HashMap::new(),
+            last_bottleneck_check: None,
+            fallback_gain_ratio,
+            fallback_min_samples: fallback_min_samples
+                .unwrap_or(RTT_MIN_SAMPLES),
+            reintegration_candidates: HashMap::new(),
+            last_reintegration_check: None,
+            reintegration_delay,
         }
     }
 
@@ -258,7 +299,7 @@ impl FcController {
             },
 
             MsgFcCtl::Sent((fc_id, sent)) => {
-                // self.handle_sent_pkt(fc_id, sent).await?;
+                self.handle_sent_pkt(fc_id, sent).await?;
             },
 
             MsgFcCtl::DelegateStreams((
@@ -355,105 +396,14 @@ impl FcController {
                 if matches!(self.controller_role, ControllerRole::Root(_)) {
                     return Ok(());
                 }
+                self.do_recv_uc_fallback(id, fc_chan_id).await?;
+            },
 
-                if let ControllerRole::Leaf(leaf) = &mut self.controller_role {
-                    leaf.tx_up.try_send(LKHUserLeaving((id, fc_chan_id)))?;
-                }
-                info!(
-                    "{} Before fall back of receiver: {id}, this is the state of
-                the McAck: {:?}",
-                    self.controller_role.name(),
-                    self.mc_acks[fc_chan_id as usize]
-                );
-                let pn_drain =
-                    self.active_clients[fc_chan_id as usize].remove(&id);
-                _ = self.unicast_recv.insert(id);
-                // _ = self.delegated_recv[fc_chan_id as usize].insert(id);
-
-                if let Some(mut acks_) = self.recv_ack.get(&id).cloned() {
-                    let largest_pn =
-                        self.mc_acks[fc_chan_id as usize].get_largest_pn();
-                    if let Some(largest) = largest_pn {
-                        // Also add potential packets that were before what we
-                        // ACK.
-                        if let Some(first_pn) =
-                            self.last_drained_pn[fc_chan_id as usize]
-                        {
-                            acks_.insert(first_pn..first_pn + 1);
-                        }
-
-                        let largest_pn_considered =
-                            largest.max(acks_.last().unwrap_or(0));
-                        let mut missing =
-                            acks_.get_missing_up_to(largest_pn_considered + 1);
-                        info!("Largest={largest_pn:?}. Largest pn considered={largest_pn_considered:?}. ack_to_use={acks_:?}. Missing={missing:?}. Remove_until={pn_drain:?}");
-                        // Also remove older, out of interest, values!
-                        if let Some(pn) = pn_drain {
-                            missing.remove_until(pn.saturating_sub(1));
-                        }
-                        info!(
-                            "{} UC FB. Hack for {} missing: {:?}",
-                            self.controller_role.name(),
-                            id,
-                            missing
-                        );
-                        self.mc_acks[fc_chan_id as usize]
-                            .on_ack_received(&missing);
-                    }
-                }
-
-                // And potentially "ack" stream pieces delegated to this receiver
-                // because we will fall back on unicast for this receiver.
-                if let Some(recv_del) = self.delegated_streams.get_mut(&id) {
-                    for (stream_id, off, len) in recv_del.drain() {
-                        // info!("During fallback {}. on_stream_ack_received:
-                        // id={}, off={}, len={}", id, stream_id, off, len);
-                        self.mc_acks[fc_chan_id as usize]
-                            .on_stream_ack_received(stream_id, off, len);
-                    }
-                }
-
-                // pn_drain is the first_pn stored in active_clients for this
-                // receiver; pass it so that the late-joiner threshold is
-                // cleaned up from the McAck structure.
-                self.mc_acks[fc_chan_id as usize].remove_recv(pn_drain);
-
-                // Instead of asking for a retransmission, we give the stream data
-                // directly.
-                for (stream_id, app_data) in self.app_data.iter() {
-                    let msg = MsgRecv::StreamData((
-                        Arc::new(app_data.clone()),
-                        *stream_id,
-                        *self.app_data_min_off.get(stream_id).unwrap_or(&0),
-                        *self.app_data_fin.get(stream_id).unwrap_or(&false),
-                    ));
-                    info!(
-                        "Send StreamData len={} with off={}",
-                        self.app_data.len(),
-                        *self.app_data_min_off.get(stream_id).unwrap_or(&0)
-                    );
-                    send_uc_path!(self, id, msg);
-                }
-
-                info!(
-                    "{} After fall back of receiver: {id}, this is the state
-                of the McAck: {:?}",
-                    self.controller_role.name(),
-                    self.mc_acks[fc_chan_id as usize]
-                );
-
-                self.possible_send_ack = true;
-
-                // If everyone fell back, the controller will ACK one every two
-                // packets to decrease the source's congestion window while
-                // keeping sending data.
-                if self.mc_acks[fc_chan_id as usize].get_nb_recv() == 0 {
-                    if let ControllerRole::Leaf(leaf) = &mut self.controller_role
-                    {
-                        let pn =
-                            self.mc_acks[fc_chan_id as usize].get_largest_pn();
-                        leaf.set_dummy_ack(true, pn);
-                    }
+            MsgFcCtl::RecvReintegrated((recv_id, fc_id)) => {
+                if matches!(self.controller_role, ControllerRole::Leaf(_)) {
+                    self.reintegration_candidates.remove(&recv_id);
+                    _ = self.unicast_recv.remove(&recv_id);
+                    println!("Receiver {recv_id} reintegrated into FC flow {fc_id}");
                 }
             },
 
@@ -876,6 +826,92 @@ impl FcController {
         Ok(())
     }
 
+    /// Performs the unicast fallback for a receiver on a given flexicast flow.
+    /// Removes the receiver from active FC clients, credits its unacked packets
+    /// to McAck, and pushes cached stream data over the unicast path.
+    /// Must only be called on a leaf controller.
+    async fn do_recv_uc_fallback(
+        &mut self, id: u64, fc_chan_id: u64,
+    ) -> Result<()> {
+        info!(
+            "{} Before fall back of receiver: {id}, this is the state of
+                the McAck: {:?}",
+            self.controller_role.name(),
+            self.mc_acks[fc_chan_id as usize]
+        );
+        let pn_drain = self.active_clients[fc_chan_id as usize].remove(&id);
+        _ = self.unicast_recv.insert(id);
+
+        if let Some(mut acks_) = self.recv_ack.get(&id).cloned() {
+            let largest_pn = self.mc_acks[fc_chan_id as usize].get_largest_pn();
+            if let Some(largest) = largest_pn {
+                if let Some(first_pn) = self.last_drained_pn[fc_chan_id as usize]
+                {
+                    acks_.insert(first_pn..first_pn + 1);
+                }
+                let largest_pn_considered = largest.max(acks_.last().unwrap_or(0));
+                let mut missing =
+                    acks_.get_missing_up_to(largest_pn_considered + 1);
+                info!("Largest={largest_pn:?}. Largest pn considered={largest_pn_considered:?}. ack_to_use={acks_:?}. Missing={missing:?}. Remove_until={pn_drain:?}");
+                if let Some(pn) = pn_drain {
+                    missing.remove_until(pn - 1);
+                }
+                info!(
+                    "{} UC FB. Hack for {} missing: {:?}",
+                    self.controller_role.name(),
+                    id,
+                    missing
+                );
+                self.mc_acks[fc_chan_id as usize].on_ack_received(&missing);
+            }
+        }
+
+        if let Some(recv_del) = self.delegated_streams.get_mut(&id) {
+            for (stream_id, off, len) in recv_del.drain() {
+                self.mc_acks[fc_chan_id as usize]
+                    .on_stream_ack_received(stream_id, off, len);
+            }
+        }
+
+        self.mc_acks[fc_chan_id as usize].remove_recv(pn_drain);
+        self.recv_rtt_us.remove(&id);
+
+        send_uc_path!(self, id, MsgRecv::FallBack);
+
+        for (stream_id, app_data) in self.app_data.iter() {
+            let msg = MsgRecv::StreamData((
+                Arc::new(app_data.clone()),
+                *stream_id,
+                *self.app_data_min_off.get(stream_id).unwrap_or(&0),
+                *self.app_data_fin.get(stream_id).unwrap_or(&false),
+            ));
+            info!(
+                "Send StreamData len={} with off={}",
+                self.app_data.len(),
+                *self.app_data_min_off.get(stream_id).unwrap_or(&0)
+            );
+            send_uc_path!(self, id, msg);
+        }
+
+        info!(
+            "{} After fall back of receiver: {id}, this is the state
+                of the McAck: {:?}",
+            self.controller_role.name(),
+            self.mc_acks[fc_chan_id as usize]
+        );
+
+        self.possible_send_ack = true;
+
+        if self.mc_acks[fc_chan_id as usize].get_nb_recv() == 0 {
+            if let ControllerRole::Leaf(leaf) = &mut self.controller_role {
+                let pn = self.mc_acks[fc_chan_id as usize].get_largest_pn();
+                leaf.set_dummy_ack(true, pn);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Sends acknowledgment to the flexicast sources if an ack delay is
     /// provided.
     async fn handle_send_ack(&mut self) -> Result<()> {
@@ -941,9 +977,7 @@ impl FcController {
                             lowest_cwnd,
                         ));
                         match leaf.tx_up.try_send(msg) {
-                            Ok(_) => {
-                                self.pending_ack[i] = OpenRangeSet::default();
-                            },
+                            Ok(_) => self.pending_ack[i] = OpenRangeSet::default(),
                             Err(_e) => info!(
                                 "Leaf {} cannot send ACK to the root.",
                                 leaf.leaf_id
@@ -967,6 +1001,7 @@ impl FcController {
                         }
                     },
                 }
+
             }
 
             // Stream pieces.
@@ -1036,6 +1071,89 @@ impl FcController {
         let now = time::Instant::now();
         self.last_ack_sent = Some(now);
 
+        if matches!(self.controller_role, ControllerRole::Leaf(_)) {
+            let should_check = self.last_bottleneck_check.map_or(true, |t| {
+                now.duration_since(t) >= time::Duration::from_secs(5)
+            });
+            if should_check {
+                self.last_bottleneck_check = Some(now);
+                if let Some(ratio) = self.fallback_gain_ratio {
+                    if let Some((slowest_id, slowest, Some(new_bottleneck))) =
+                        self.slowest_receiver()
+                    {
+                        if slowest as f64 >= new_bottleneck as f64 * ratio {
+                            println!("Receiver {slowest_id} will fall back. RTT {:?} us vs next {:?} us", slowest, new_bottleneck);
+                            self.do_recv_uc_fallback(slowest_id, 0).await?;
+                            self.reintegration_candidates
+                                .insert(slowest_id, (0, now));
+                        }
+                    }
+                }
+            }
+
+            // Periodic reintegration check: every 10 seconds, see if any
+            // fallen-back receiver's RTT has improved enough to rejoin the FC
+            // flow (RTT <= slowest_active_rtt * gain_ratio).
+            if let Some(delay) = self.reintegration_delay {
+                let should_reintegrate_check =
+                    self.last_reintegration_check.map_or(true, |t| {
+                        now.duration_since(t) >= delay
+                    });
+                if should_reintegrate_check &&
+                    self.fallback_gain_ratio.is_some() &&
+                    !self.reintegration_candidates.is_empty()
+                {
+                    self.last_reintegration_check = Some(now);
+
+                    let ratio = self.fallback_gain_ratio.unwrap();
+
+                    // Compute the current slowest active receiver's RTT.
+                    let slowest_active_rtt = self
+                        .recv_rtt_us
+                        .iter()
+                        .filter(|(id, &(_, n))| {
+                            !self.unicast_recv.contains(id) &&
+                                n >= self.fallback_min_samples
+                        })
+                        .map(|(_, &(rtt, _))| rtt)
+                        .max();
+
+                    if let Some(slowest_active) = slowest_active_rtt {
+                        let candidates: Vec<u64> = self
+                            .reintegration_candidates
+                            .keys()
+                            .copied()
+                            .collect();
+                        for recv_id in candidates {
+                            if let Some(&(rtt, n)) =
+                                self.recv_rtt_us.get(&recv_id)
+                            {
+                                if n >= self.fallback_min_samples &&
+                                    (rtt as f64) <=
+                                        slowest_active as f64 * ratio
+                                {
+                                    let fc_id = self
+                                        .reintegration_candidates
+                                        .get(&recv_id)
+                                        .map(|&(id, _)| id)
+                                        .unwrap_or(0);
+                                    println!(
+                                        "Receiver {recv_id} RTT improved ({rtt} us <= {} us * {ratio}), reintegrating into FC flow {fc_id}",
+                                        slowest_active
+                                    );
+                                    send_uc_path!(
+                                        self,
+                                        recv_id,
+                                        MsgRecv::ReintegrateFc
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1092,6 +1210,7 @@ impl FcController {
         _ = self.unicast_recv.remove(&recv_id);
         _ = self.recv_ack.remove(&recv_id);
         _ = self.rec_fec_md.remove(&recv_id);
+        _ = self.recv_rtt_us.remove(&recv_id);
         self.nb_clients = self.nb_clients.map(|nb| nb.saturating_sub(1));
         println!("Entering the collect RecvMatch");
         match &mut self.controller_role {
@@ -1336,7 +1455,7 @@ impl FcController {
     async fn on_new_ack_data(
         &mut self, recv_id: u64, fc_id: u64, mut ack_pn: Option<OpenRangeSet>,
         ack_stream_pieces: Option<Vec<(u64, OpenRangeSet)>>,
-        rec_md: Option<OpenRangeSet>, cwnd_opt: Option<(usize, usize)>,
+        rec_md: Option<OpenRangeSet>, cwnd_opt: Option<(usize, usize, u64)>,
     ) -> Result<()> {
         // let name = self.controller_role.name();
         // info!(
@@ -1392,13 +1511,13 @@ impl FcController {
             )
             .await?;
 
-            let cwnd_opt = Some((100_000, 100_000));
+            // let cwnd_opt = Some((100_000, 100_000, 100_000));
 
             // Updates the lowest congestion window.
             // Filters our the potential unactive receivers.
-            if let Some((cwnd, seen_bytes)) = cwnd_opt {
+            if let Some((cwnd, seen_bytes, rate)) = cwnd_opt {
                 let entry = match self.fc_flow_cwnd.entry(fc_id) {
-                    Vacant(entry) => entry.insert((cwnd, seen_bytes)),
+                    Vacant(entry) => entry.insert((cwnd, seen_bytes, rate)),
                     Occupied(entry) => entry.into_mut(),
                 };
 
@@ -1412,13 +1531,53 @@ impl FcController {
                         && seen_bytes >= entry.1.saturating_sub(10_000))
                         || (seen_bytes >= entry.1)
                     {
-                        *entry = (cwnd, seen_bytes);
+                        *entry = (cwnd, seen_bytes, rate);
                     }
+                }
+
+                // Update RTT EMA for both active and fallen-back receivers so
+                // the reintegration check has fresh samples.
+                let is_tracked = self.active_clients[fc_id as usize]
+                    .contains_key(&recv_id) ||
+                    self.unicast_recv.contains(&recv_id);
+                if is_tracked {
+                    let (smoothed, n) = self.recv_rtt_us.get(&recv_id)
+                        .map(|&(old, n)| {
+                            let s = ((1.0 - RTT_EMA_ALPHA) * old as f64
+                                + RTT_EMA_ALPHA * rate as f64) as u64;
+                            (s, n + 1)
+                        })
+                        .unwrap_or((rate, 1));
+                    println!("Smoothed RTT for {:?}: {:?}. Sample {}", recv_id, smoothed, n);
+                    self.recv_rtt_us.insert(recv_id, (smoothed, n));
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Returns the receiver with the lowest delivery rate, along with what the
+    /// Returns the receiver with the highest RTT (the bottleneck), along with
+    /// what the new worst RTT would be if that receiver were removed.
+    ///
+    /// Returns `None` if no RTT samples have been recorded yet, or no receiver
+    /// has reached the minimum sample count.
+    /// Otherwise returns `(recv_id, worst_rtt_us, Option<new_worst_rtt_us>)`.
+    /// `new_worst_rtt_us` is `None` when there is only one eligible receiver.
+    pub fn slowest_receiver(&self) -> Option<(u64, u64, Option<u64>)> {
+        let (&slowest_id, &(worst_rtt, _)) = self
+            .recv_rtt_us
+            .iter()
+            .filter(|(_, &(_, n))| n >= self.fallback_min_samples)
+            .max_by_key(|(_, &(rtt, _))| rtt)?;
+        let new_worst_rtt = self
+            .recv_rtt_us
+            .iter()
+            .filter(|(&id, &(_, n))| id != slowest_id && n >= self.fallback_min_samples)
+            .map(|(_, &(rtt, _))| rtt)
+            .max();
+        Some((slowest_id, worst_rtt, new_worst_rtt))
     }
 
     /// Add a new leaf controller to the root controller.

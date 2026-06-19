@@ -2,6 +2,7 @@
 
 use crate::Result;
 use log::*;
+use socket2::{Socket, Domain, Type, Protocol};
 use quiche::flexicast::FlexicastConnection;
 use quiche::flexicast::McClientStatus;
 use quiche::flexicast::McRole;
@@ -319,8 +320,15 @@ impl TokioFcQuicRecv {
                                     ))
                                 };
 
-                            let mc_socket =
-                                UdpSocket::bind(mc_group_sockaddr).await?;
+                            let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+
+                            socket.set_reuse_address(true)?;
+                            // socket.bind_device(Some(b"phy1-sta0"))?;
+                            socket.bind(&mc_group_sockaddr.into())?;
+
+                            // Conversion vers tokio
+                            socket.set_nonblocking(true)?;
+                            let mc_socket = tokio::net::UdpSocket::from_std(socket.into())?;
 
                             info!(
                                 "Multicast client binds on address: {:?}",
@@ -356,6 +364,24 @@ impl TokioFcQuicRecv {
                             self.local_ip,
                         )?;
                         joined_mc_ip = true;
+                    }
+                }
+
+                // Leave the multicast group if the server instructed fallback.
+                if conn.fc_should_leave_mc() && joined_mc_ip && !self.proxy_uc {
+                    if let Some(socket) = mc_socket_opt.as_mut() {
+                        if let Some(flexicast) = conn.get_flexicast_attributes() {
+                            let group_ip = net::Ipv4Addr::from(
+                                flexicast
+                                    .get_mc_announce_data(0)
+                                    .ok_or("Impossible to fetch the FC_ANNOUNCE_DATA")?
+                                    .group_ip
+                                    .to_owned(),
+                            );
+                            println!("Leave MULTICAST group {:?}", group_ip);
+                            socket.leave_multicast_v4(group_ip, self.local_ip)?;
+                            joined_mc_ip = false;
+                        }
                     }
                 }
             }

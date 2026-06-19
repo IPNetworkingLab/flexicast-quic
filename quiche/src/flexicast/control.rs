@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time;
 
 use super::reliable::FcUnicastRetransmission;
+use super::FcClientAction;
 use super::FcError;
 use super::FlexicastConnection;
 use super::McClientStatus;
@@ -392,7 +393,7 @@ impl Connection {
     /// the sent packets.
     ///
     /// Returns `None` if this is not the unicast path source.
-    pub fn fc_get_flow_cwnd(&self) -> Option<(usize, usize)> {
+    pub fn fc_get_flow_cwnd(&mut self) -> Option<(usize, usize, u64)> {
         if let Some(flexicast) = self.flexicast.as_ref() {
             match flexicast.get_mc_role() {
                 McRole::ServerUnicast(McClientStatus::ListenMcPath(_)) =>
@@ -400,14 +401,15 @@ impl Connection {
                         .get_fc_path_id()
                         .and_then(|path_id| self.paths.pid_from_path_id(path_id))
                     {
-                        if let Ok(uc_path) = self.paths.get(pid) {
-                            if uc_path.recovery.cwnd_available() == usize::MAX {
+                        if let Ok((uc_path, uc_path_nt)) = self.paths.get_mut_with_active(pid) {
+                            if uc_path.recovery.cwnd() == usize::MAX {
                                 return None;
                             }
                             let nb_sent = uc_path.recovery.bytes_sent();
                             let cwnd = uc_path.recovery.cwnd();
+                            let rtt_us = uc_path_nt.rtt().as_micros() as u64;
 
-                            return Some((cwnd, nb_sent));
+                            return Some((cwnd, nb_sent, rtt_us));
                         }
                     },
                 McRole::ServerFlexicast => {
@@ -418,6 +420,7 @@ impl Connection {
                         return Some((
                             fc_flow.recovery.cwnd(),
                             fc_flow.sent_count,
+                            fc_flow.recovery.delivery_rate(),
                         ));
                     }
                 },
@@ -576,5 +579,61 @@ impl Connection {
         }
 
         Ok(output)
+    }
+
+    /// Performs unicast fallback.
+    pub fn fc_do_uc_fallback(&mut self) -> Result<()> {
+        if self.flexicast.as_ref().is_none() {
+            return Err(Error::Flexicast(FcError::McDisabled));
+        }
+
+        let fc = self.flexicast.as_mut().unwrap();
+
+        match fc.mc_role {
+            McRole::ServerFlexicast =>
+                return Err(Error::Flexicast(FcError::McInvalidRole(
+                    McRole::ServerFlexicast,
+                ))),
+            McRole::ServerUnicast(McClientStatus::ListenMcPath(true)) => {
+                // Transition to UcFallBack: triggers should_send_fc_state()
+                // to return true, causing MC_STATE(Sync) to be sent to the
+                // client on the next send() call.
+                fc.mc_role =
+                    McRole::ServerUnicast(McClientStatus::UcFallBack);
+            },
+            _ => (),
+        }
+
+        Ok(())
+    }
+
+    /// Initiates the reintegration of a receiver back into the flexicast flow.
+    /// Transitions the server role from `UcFallBack` to `RejoiningFc`, which
+    /// triggers `should_send_fc_state()` to send `MC_STATE(Rejoin)` to the
+    /// client on the next `send()` call.
+    pub fn fc_do_rejoin(&mut self) -> Result<()> {
+        if self.flexicast.as_ref().is_none() {
+            return Err(Error::Flexicast(FcError::McDisabled));
+        }
+
+        let fc = self.flexicast.as_mut().unwrap();
+
+        if matches!(
+            fc.mc_role,
+            McRole::ServerUnicast(McClientStatus::UcFallBack)
+        ) {
+            fc.update_client_state(FcClientAction::Rejoin, None)?;
+        }
+
+        Ok(())
+    }
+
+    /// Returns true if the client-side connection has been instructed to leave
+    /// the multicast group by the server (via MC_STATE(Sync)). Resets the flag.
+    pub fn fc_should_leave_mc(&mut self) -> bool {
+        self.flexicast
+            .as_mut()
+            .map(|fc| std::mem::replace(&mut fc.fc_uc_fallback, false))
+            .unwrap_or(false)
     }
 }

@@ -5,7 +5,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::time;
-use tokio::sync::mpsc::{Receiver,Sender};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_fcquiche::FcQuicMsg;
 
 #[derive(Debug)]
@@ -24,7 +24,6 @@ pub struct FileTransferRecv {
     /// App -> Quiche
     tx_chan : Sender<FcQuicMsg>,
 
-
     /// True filename.
     true_filename: String,
 
@@ -36,7 +35,8 @@ impl FileTransferRecv {
     /// New structure to handle the file transfer delivery on the
     /// receiving-side.
     pub fn new(
-        filepath: &Path, rx_chan: Receiver<FcQuicMsg>, tx_chan:Sender<FcQuicMsg>, tmp_filename: &Path,
+        filepath: &Path, rx_chan: Receiver<FcQuicMsg>,
+        tx_chan: Sender<FcQuicMsg>, tmp_filename: &Path,
     ) -> Result<Self> {
         let true_filename = filepath
             .to_str()
@@ -68,7 +68,9 @@ impl FileTransferRecv {
                     }
                     self.handle_new_data(v, fin, stream_id).await?;
                     if fin {
-                        let rct_time = time::Instant::now().duration_since(start).as_millis();
+                        let rct_time = time::Instant::now()
+                            .duration_since(start)
+                            .as_millis();
                         println!("RESULT-RCT {:?}", rct_time);
                         println!(
                             "End of transfer. Total duration in ms: {:?}. Since first byte: {:?}",

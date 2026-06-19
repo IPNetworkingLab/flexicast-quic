@@ -56,7 +56,7 @@ pub enum MsgFcCtl {
     /// This allows to avoid retransmission if the packet was recovered through
     /// Forward Erasure Correction.
     /// The sixth value is the potential congestion window of this unicast path
-    /// and the number of sent bytes as seen on the flow.
+    /// and the number of sent bytes as seen on the flow, and the delivery rate.
     AckData(
         (
             u64,
@@ -64,7 +64,7 @@ pub enum MsgFcCtl {
             Option<OpenRangeSet>,
             Option<McStreamOff>,
             Option<OpenRangeSet>,
-            Option<(usize, usize)>,
+            Option<(usize, usize, u64)>,
         ),
     ),
 
@@ -97,6 +97,10 @@ pub enum MsgFcCtl {
     /// The receiver falls-back on unicast and must receive content through its
     /// unicast path.
     RecvUcFallBack((u64, u64)),
+
+    /// The receiver has completed reintegration into the flexicast flow.
+    /// The first value is the receiver ID; the second is the flexicast flow ID.
+    RecvReintegrated((u64, u64)),
 
     /// New aggregated control data from this receiver.
     AggregatedInfo((u64, u64, FcAggregatedMsg)),
@@ -145,6 +149,14 @@ pub enum MsgRecv {
     /// Send a new LKH key
     LKHUnicastKey((FCKeyUpdate)),
 
+
+    /// The controller instructs this receiver to fall back to unicast because
+    /// it was identified as the bottleneck of the multicast group.
+    FallBack,
+
+    /// The controller instructs this receiver to reintegrate the flexicast
+    /// flow after its RTT has improved sufficiently.
+    ReintegrateFc,
 }
 
 /// Messages sent to the flexicast source.

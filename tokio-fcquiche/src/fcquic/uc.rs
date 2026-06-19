@@ -74,6 +74,10 @@ pub struct UcPath {
 
     /// Largest packet number sent on the multicast flow.
     pub largest_pn: Option<u64>,
+
+    /// True while we are waiting for the client to confirm reintegration via
+    /// MC_STATE(McPath), after the controller sent us a `ReintegrateFc` message.
+    pub reintegrating: bool,
 }
 
 /// Trait defining a unique function, `run`, which must be implemented by the
@@ -163,6 +167,15 @@ impl UcPath {
                     trace!("[LKH] Received a request to send a unicast key update");
                     self.conn.schedule_lkh_update(update);
             }
+
+            MsgRecv::FallBack => {
+                self.conn.fc_do_uc_fallback()?;
+            },
+
+            MsgRecv::ReintegrateFc => {
+                self.conn.fc_do_rejoin()?;
+                self.reintegrating = true;
+            },
         }
 
         Ok(())
@@ -209,8 +222,65 @@ impl UcPath {
             }
         }
 
+        // If a reintegration is in progress and the server role just transitioned
+        // back to ListenMcPath(true) (client confirmed via MC_STATE(McPath)),
+        // notify the controller.
+        if self.reintegrating {
+            let is_reintegrated = self
+                .conn
+                .get_flexicast_attributes()
+                .map(|fc| {
+                    fc.get_mc_role() ==
+                        McRole::ServerUnicast(
+                            quiche::flexicast::McClientStatus::ListenMcPath(
+                                true,
+                            ),
+                        )
+                })
+                .unwrap_or(false);
+            if is_reintegrated {
+                self.reintegrating = false;
+                if let Some(fc_id_val) = fc_id {
+                    let msg = MsgFcCtl::RecvReintegrated((
+                        self.client_id,
+                        fc_id_val as u64,
+                    ));
+                    let _ = self.tx_tcl.send(msg).await;
+                }
+            }
+        }
+
+        // Send RTT-only AckData for fallen-back receivers so the controller
+        // can track their RTT and decide when to reintegrate them.
+        let is_uc_fallback = self
+            .conn
+            .get_flexicast_attributes()
+            .map(|fc| {
+                fc.get_mc_role() ==
+                    McRole::ServerUnicast(
+                        quiche::flexicast::McClientStatus::UcFallBack,
+                    )
+            })
+            .unwrap_or(false);
+        if is_uc_fallback && fc_id.is_some() {
+            if let Some(cwnd_fc_flow) = self.conn.fc_get_flow_cwnd() {
+                let msg = MsgFcCtl::AckData((
+                    self.client_id,
+                    fc_id.unwrap() as u64,
+                    None,
+                    None,
+                    None,
+                    Some(cwnd_fc_flow),
+                ));
+                let _ = self.tx_tcl.try_send(msg);
+            }
+        }
+
         // Skip if nothing to send.
         if fc_id.is_some() && (pn.len() > 0 || !stream.is_empty()) {
+            // Give the congestion window for this receiver.
+            let cwnd_fc_flow = self.conn.fc_get_flow_cwnd();
+            
             let fec_rec_md = self
                 .conn
                 .get_flexicast_attributes()
@@ -220,9 +290,6 @@ impl UcPath {
                         .map(|fc_fec| fc_fec.fc_get_recovered_esi())
                 })
                 .flatten();
-
-            // Give the congestion window for this receiver.
-            let cwnd_fc_flow = self.conn.fc_get_flow_cwnd();
 
             // Potentially fall back on unicast when the congestion window is too
             // low for this receiver.

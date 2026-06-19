@@ -5,6 +5,7 @@ use std::io::Read;
 
 use quiche::h3::NameValue;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 use crate::fc_app::h3::Manifest;
 use crate::fc_app::Result;
@@ -91,6 +92,7 @@ impl Http3Source {
                 // reading from the start and a fresh stream id.
                 if written == 0 {
                     self.file = std::fs::File::open(&self.file_path)?;
+                    // tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
                     // We restart the loop to avoid setting read_new to false.
                     continue;

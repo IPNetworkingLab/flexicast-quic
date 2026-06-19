@@ -246,6 +246,10 @@ pub enum McClientStatus {
 
     /// The receiver falled back on unicast.
     UcFallBack,
+
+    /// The server is waiting for the receiver to confirm reintegration into
+    /// the flexicast flow.
+    RejoiningFc,
 }
 
 /// Actions of flexicast client in the finite state machine.
@@ -275,6 +279,10 @@ pub enum FcClientAction {
     /// flexicast flow. This is required to resync the receiver with the
     /// flexicast flow.
     Sync,
+
+    /// The server requests the client to rejoin the flexicast channel after a
+    /// unicast fallback.
+    Rejoin,
 }
 
 impl TryFrom<u64> for FcClientAction {
@@ -289,6 +297,7 @@ impl TryFrom<u64> for FcClientAction {
             4 => FcClientAction::McPath,
             5 => FcClientAction::Change,
             6 => FcClientAction::Sync,
+            7 => FcClientAction::Rejoin,
             _ => return Err(Error::Flexicast(FcError::McInvalidAction)),
         })
     }
@@ -306,6 +315,7 @@ impl TryInto<u64> for FcClientAction {
             FcClientAction::McPath => 4,
             FcClientAction::Change => 5,
             FcClientAction::Sync => 6,
+            FcClientAction::Rejoin => 7,
         })
     }
 }
@@ -434,6 +444,11 @@ pub struct FlexicastAttributes {
     pub fc_lkh_server_updates: HashMap<u64, (Algorithm, Vec<u8>, u64)>,
     /// What is the current count of the sent keyupdate on the flexicast, used to sync the session key change
     pub fc_lkh_highest_key_update_count_sent: u64,
+
+    /// Set by the server when it sends MC_STATE(Sync) to instruct the client
+    /// to leave the multicast group. The application polls this to trigger
+    /// leave_multicast_v4().
+    pub fc_uc_fallback: bool,
 }
 
 impl FlexicastAttributes {
@@ -615,12 +630,31 @@ impl FlexicastAttributes {
                 self.fc_path_id = Some(action_data.unwrap());
                 McClientStatus::Changing
             },
-            (McClientStatus::Changing, FcClientAction::DecryptionKey) => {
+            (McClientStatus::Changing, FcClientAction::DecryptionKey) =>
+                McClientStatus::ListenMcPath(true),
+            (McClientStatus::AwareUnjoined, FcClientAction::Leave) =>
+                McClientStatus::AwareUnjoined,
+
+            // Server: begin reintegration handshake.
+            (McClientStatus::UcFallBack, FcClientAction::Rejoin)
+                if is_server =>
+                McClientStatus::RejoiningFc,
+
+            // Server: client confirmed reintegration via MC_STATE(McPath).
+            (
+                McClientStatus::RejoiningFc,
+                FcClientAction::McPath,
+            ) if action_data.is_some() && is_server => {
+                self.fc_path_id = Some(action_data.unwrap());
                 McClientStatus::ListenMcPath(true)
             },
-            (McClientStatus::AwareUnjoined, FcClientAction::Leave) => {
-                McClientStatus::AwareUnjoined
-            },
+
+            // Client: server requests rejoin; move back to JoinedAndKey so
+            // should_send_fc_state() fires MC_STATE(McPath).
+            (McClientStatus::ListenMcPath(_), FcClientAction::Rejoin)
+                if !is_server =>
+                McClientStatus::JoinedAndKey,
+
             (McClientStatus::ListenMcPath(_), _) => current_status,
             (McClientStatus::JoinedAndKey, FcClientAction::Join) => {
                 current_status
@@ -677,6 +711,7 @@ impl FlexicastAttributes {
                 .fc_reliable
                 .server()
                 .is_some_and(|r| r.fc_highest_pn.is_some()),
+            McRole::ServerUnicast(McClientStatus::RejoiningFc) => true,
             _ => false,
         }
     }
@@ -1004,6 +1039,7 @@ impl Default for FlexicastAttributes {
             fc_lkh_server_updates: HashMap::new(),
             fc_lkh_session_key_sent: false,
             fc_lkh_highest_key_update_count_sent: 1,
+            fc_uc_fallback: false,
         }
     }
 }
@@ -2996,6 +3032,150 @@ mod tests {
         fc_pipe.source_send_single_stream(true, None, 1);
 
         assert_eq!(fc_pipe.clients_send(), Ok(()));
+    }
+
+    #[test]
+    /// Tests that after a server-forced unicast fallback, calling `fc_do_rejoin()`
+    /// drives the full reintegration handshake: server sends MC_STATE(Rejoin),
+    /// client responds with MC_STATE(McPath), and the server transitions back to
+    /// ListenMcPath(true). The other receiver is unaffected throughout.
+    fn test_server_reintegrates_client_after_uc_fallback() {
+        let mut fc_config = FcConfig {
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_pipe = FlexicastPipe::new(
+            2,
+            "/tmp/test_server_reintegrates_client",
+            &mut fc_config,
+        )
+        .unwrap();
+
+        // Populate fc_highest_pn so the Sync message has data to send.
+        fc_pipe.source_send_single_stream(true, None, 3).unwrap();
+        let now = time::Instant::now();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+
+        // Force receiver 0 to fall back.
+        fc_pipe.unicast_pipes[0].0.server.fc_do_uc_fallback().unwrap();
+        fc_pipe.unicast_pipes[0].0.advance().unwrap();
+        assert!(fc_pipe.unicast_pipes[0].0.client.fc_should_leave_mc());
+
+        // Server role for receiver 0 must be UcFallBack.
+        assert_eq!(
+            fc_pipe.unicast_pipes[0]
+                .0
+                .server
+                .get_flexicast_attributes()
+                .unwrap()
+                .get_mc_role(),
+            McRole::ServerUnicast(McClientStatus::UcFallBack),
+        );
+
+        // Initiate reintegration: server transitions to RejoiningFc.
+        fc_pipe.unicast_pipes[0].0.server.fc_do_rejoin().unwrap();
+        assert_eq!(
+            fc_pipe.unicast_pipes[0]
+                .0
+                .server
+                .get_flexicast_attributes()
+                .unwrap()
+                .get_mc_role(),
+            McRole::ServerUnicast(McClientStatus::RejoiningFc),
+        );
+
+        // Exchange packets: server sends MC_STATE(Rejoin), client replies
+        // with MC_STATE(McPath).
+        fc_pipe.unicast_pipes[0].0.advance().unwrap();
+
+        // Server must have completed reintegration: back to ListenMcPath(true).
+        assert_eq!(
+            fc_pipe.unicast_pipes[0]
+                .0
+                .server
+                .get_flexicast_attributes()
+                .unwrap()
+                .get_mc_role(),
+            McRole::ServerUnicast(McClientStatus::ListenMcPath(true)),
+        );
+
+        // Client's fallback flag must be cleared.
+        assert!(!fc_pipe.unicast_pipes[0].0.client.fc_should_leave_mc());
+
+        // Receiver 1 must be completely unaffected.
+        assert_eq!(
+            fc_pipe.unicast_pipes[1]
+                .0
+                .server
+                .get_flexicast_attributes()
+                .unwrap()
+                .get_mc_role(),
+            McRole::ServerUnicast(McClientStatus::ListenMcPath(true)),
+        );
+    }
+
+    #[test]
+    /// Tests that with 2 receivers, the server can force only one to fall back
+    /// to unicast. The falling-back receiver gets fc_uc_fallback set (so the
+    /// application can leave the multicast group); the other receiver is
+    /// unaffected. Both still receive data after the fallback.
+    fn test_server_forces_one_client_uc_fallback() {
+        let mut fc_config = FcConfig {
+            probe_mc_path: true,
+            ..Default::default()
+        };
+        let mut fc_pipe = FlexicastPipe::new(
+            2,
+            "/tmp/test_server_forces_one_uc_fallback",
+            &mut fc_config,
+        )
+        .unwrap();
+
+        // Send data so fc_highest_pn is populated on both unicast server paths.
+        fc_pipe.source_send_single_stream(true, None, 3).unwrap();
+        let now = time::Instant::now();
+        fc_pipe.server_control_to_mc_source(now).unwrap();
+
+        // Server forces only receiver 0 to fall back.
+        fc_pipe.unicast_pipes[0].0.server.fc_do_uc_fallback().unwrap();
+
+        // Exchange packets for both pipes: pipe 0 gets MC_STATE(Sync),
+        // pipe 1 gets nothing special.
+        fc_pipe.unicast_pipes[0].0.advance().unwrap();
+        fc_pipe.unicast_pipes[1].0.advance().unwrap();
+
+        // Receiver 0 must signal leaving the multicast group.
+        assert!(fc_pipe.unicast_pipes[0].0.client.fc_should_leave_mc());
+        // Flag is consumed on second call.
+        assert!(!fc_pipe.unicast_pipes[0].0.client.fc_should_leave_mc());
+
+        // Receiver 1 must be unaffected.
+        assert!(!fc_pipe.unicast_pipes[1].0.client.fc_should_leave_mc());
+
+        // Receiver 0 still receives data via unicast.
+        fc_pipe.uc_server_send_single_stream(7, 0).unwrap();
+        let mut buf = [0u8; 300];
+        let (read, fin) =
+            fc_pipe.unicast_pipes[0].0.client.stream_recv(7, &mut buf).unwrap();
+        assert!(read > 0);
+        assert!(fin);
+
+        // Simulate IGMP leave: receiver 0 no longer gets FC packets.
+        let mut loss_recv_0 = RangeSet::default();
+        loss_recv_0.insert(0..1);
+        fc_pipe.source_send_single_stream(true, Some(&loss_recv_0), 11).unwrap();
+
+        // Receiver 0 must not get stream 11 via FC (stream was never opened).
+        assert_eq!(
+            fc_pipe.unicast_pipes[0].0.client.stream_recv(11, &mut buf),
+            Err(Error::InvalidStreamState(11))
+        );
+
+        // Receiver 1 still receives stream 11 via flexicast.
+        let (read, fin) =
+            fc_pipe.unicast_pipes[1].0.client.stream_recv(11, &mut buf).unwrap();
+        assert!(read > 0);
+        assert!(fin);
     }
 }
 

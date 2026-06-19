@@ -126,6 +126,23 @@ struct Args {
     #[clap(long = "nb-controllers", default_value = "1")]
     nb_controllers: u64,
 
+    /// Minimum bandwidth gain ratio to trigger unicast fallback for the
+    /// slowest receiver. The slowest receiver is ejected when removing it
+    /// would multiply the group's bottleneck rate by at least this factor.
+    /// If not set, the controller never auto-ejects slow receivers.
+    #[clap(long = "fallback-gain-ratio")]
+    fallback_gain_ratio: Option<f64>,
+
+    /// Minimum number of delivery-rate samples before a receiver is eligible
+    /// for auto fallback. If not set, defaults to the compiled-in constant.
+    #[clap(long = "fallback-min-samples")]
+    fallback_min_samples: Option<u64>,
+
+    /// Seconds between reintegration eligibility checks for fallen-back
+    /// receivers. If not set, fallen-back receivers are never reintegrated.
+    #[clap(long = "reintegration-delay")]
+    reintegration_delay: Option<f64>,
+
     /// Maximum expected acknowledgment rate, in bps.
     #[clap(long = "max-ack-rate", default_value = "100000000")]
     max_ack_rate: u64,
@@ -161,6 +178,10 @@ async fn main() {
         nb_leaf_controllers: args.nb_controllers,
         h3_config,
         max_ack_rate: args.max_ack_rate,
+        fallback_gain_ratio: args.fallback_gain_ratio,
+        fallback_min_samples: args.fallback_min_samples,
+        reintegration_delay: args.reintegration_delay
+            .map(std::time::Duration::from_secs_f64),
     };
 
     // Transmission channel towards the application, supposed to be unique because
@@ -235,7 +256,9 @@ async fn main() {
                 StreamTransferKind::Rtp(addr) => {
                     let mut rtp_src =
                         RtpSource::new(*addr, tx_app, None).await.unwrap();
-                    rtp_src.run().await.unwrap();
+                    tokio::spawn(async move {
+                        rtp_src.run().await.unwrap();
+                    });            
                 },
             },
 

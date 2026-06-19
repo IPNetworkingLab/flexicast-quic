@@ -413,6 +413,7 @@ impl Handshake {
                     tx_app: self.tx_app.clone(),
                     largest_pn_atomic: self.largest_pn_atomic.clone(),
                     largest_pn: None,
+                    reintegrating: false,
                 };
 
                 // Notify the controller with a new receiver.

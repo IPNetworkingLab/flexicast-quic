@@ -59,6 +59,9 @@ pub fn get_fcquiche_server_config(keylog_path: &str) -> TokioFcQuicConfig {
         nb_leaf_controllers: 1,
         h3_config: None,
         max_ack_rate: u64::MAX / 10,
+        fallback_gain_ratio: None,
+        fallback_min_samples: None,
+        reintegration_delay: None,
     }
 }
 
