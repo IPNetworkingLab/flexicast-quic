@@ -413,6 +413,7 @@ use ring::aead;
 use stream::StreamPriorityKey;
 
 use std::cmp;
+use std::cmp::max;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::convert::TryInto;
@@ -2993,6 +2994,7 @@ impl Connection {
         loop {
             if fc_lkh_updated {
                 //We need to restore the buffer to before the attempted decryption
+                println!("Trying to decrypt with new key");
                 b = octets::OctetsMut::with_slice(&mut original_buf);
                 hdr = Header::from_bytes(&mut b, self.source_id().len())
                     .map_err(|e| {
@@ -3157,6 +3159,7 @@ impl Connection {
                                 aead = &keyupdate.crypto_open;
                                 fc_lkh_updated = true;
                             } else {
+                                println!("Unable to decrypt packet with current session key and no session key update received");
                                 return Err(drop_pkt_on_err(
                                     e,
                                     self.recv_count,
@@ -4541,54 +4544,104 @@ impl Connection {
         if let Some(flexicast) = &mut self.flexicast {
             if flexicast.get_mc_role() == McRole::ServerFlexicast {
                 //println!("[LKH] MCstatus : keyphase = {}, updates : {:?}",self.key_phase ,flexicast.fc_lkh_server_updates);
-            }
-            // We might need to change key according to a previously sent key
-            if !flexicast.fc_lkh_server_updates.is_empty() {
-                match flexicast.get_mc_role() {
-                    McRole::ServerFlexicast => {
-                        let min_pn = *flexicast
-                            .fc_lkh_server_updates
-                            .keys()
+
+                // We might need to change key according to a previously sent key
+                println!(
+                    "Current lkh backlog : {:?}",
+                    flexicast.fc_lkh_server_updates
+                );
+                if !flexicast.fc_lkh_server_updates.is_empty() {
+                    match flexicast.get_mc_role() {
+                        McRole::ServerFlexicast => {
+                            let min_pn = *flexicast
+                            .fc_lkh_server_updates.iter()
+                            //.filter(|(k,v)| (*v).2 <= flexicast.fc_lkh_highest_key_update_count_sent)
+                            .map(|a| a.0)
                             .min()
                             .unwrap();
-                        println!("Next change at PN={min_pn}, current PN={pn}");
 
-                        if min_pn <= pn {
-                            println!("[LKH] dropping olds keys");
-                            let (algo, key) = flexicast
-                                .fc_lkh_server_updates
-                                .remove(&min_pn)
-                                .unwrap();
-
-                            let crypto_space =
-                                self.pkt_num_spaces.crypto.get_mut(epoch);
-
-                            let path_id = flexicast
-                                .get_fc_path_id()
-                                .ok_or(Error::Flexicast(FcError::FcPathId))?;
-                            let new_open = crypto::Open::from_secret(algo, &key).map_err(|e| {println!("Error while creating open");e})?;
-                            let new_seal = crypto::Seal::from_secret(algo, &key).map_err(|e| {println!("Error while creating seal");e})?;
-                            crypto_space
-                                .crypto_os
-                                .replace_open(path_id, new_open)
-                                .ok_or(Error::Flexicast(FcError::Debug))?;
-                            crypto_space
-                                .crypto_os
-                                .replace_seal(path_id, new_seal)
-                                .ok_or(Error::Flexicast(FcError::Debug))?;
-                            self.key_phase = !self.key_phase;
                             println!(
-                                "[LKH] Role: {:?}  New key phase :{}",
-                                flexicast.get_mc_role(),
-                                self.key_phase
+                                "Next change at PN={min_pn}, current PN={pn}"
                             );
-                            println!("[LKH] New key : {:?}", &key);
-                        }
-                        let _ = flexicast
-                            .fc_lkh_server_updates
-                            .extract_if(|min_pn, _| *min_pn < pn);
-                    },
-                    _ => (),
+
+                            println!(
+                                "Keys to send : {:?}",
+                                flexicast.lkh_keys_to_send
+                            );
+                            let counter = flexicast
+                                .fc_lkh_server_updates
+                                .get(&min_pn)
+                                .unwrap()
+                                .2;
+                            println!(
+                                "counter {counter}, current : {}",
+                                flexicast.fc_lkh_highest_key_update_count_sent
+                            );
+                            println!(
+                                "\t Condition : PN : [{}] \t Keys : [{}]",
+                                if min_pn <= pn { "OK" } else { "Not OK" },
+                                if counter
+                                    <= flexicast
+                                        .fc_lkh_highest_key_update_count_sent
+                                {
+                                    "OK"
+                                } else {
+                                    "Not OK"
+                                }
+                            );
+
+                            if min_pn <= pn
+                                && (counter
+                                    <= flexicast
+                                        .fc_lkh_highest_key_update_count_sent  )
+                            {
+                                println!("[LKH] dropping olds keys");
+                                flexicast.fc_lkh_highest_key_update_count_sent = max(counter,flexicast.fc_lkh_highest_key_update_count_sent);
+                                let (algo, key, counter) = flexicast
+                                    .fc_lkh_server_updates
+                                    .remove(&min_pn)
+                                    .unwrap();
+
+                                let crypto_space =
+                                    self.pkt_num_spaces.crypto.get_mut(epoch);
+
+                                let path_id = flexicast
+                                    .get_fc_path_id()
+                                    .ok_or(Error::Flexicast(FcError::FcPathId))?;
+                                let new_open =
+                                    crypto::Open::from_secret(algo, &key)
+                                        .map_err(|e| {
+                                            println!("Error while creating open");
+                                            e
+                                        })?;
+                                let new_seal =
+                                    crypto::Seal::from_secret(algo, &key)
+                                        .map_err(|e| {
+                                            println!("Error while creating seal");
+                                            e
+                                        })?;
+                                crypto_space
+                                    .crypto_os
+                                    .replace_open(path_id, new_open)
+                                    .ok_or(Error::Flexicast(FcError::Debug))?;
+                                crypto_space
+                                    .crypto_os
+                                    .replace_seal(path_id, new_seal)
+                                    .ok_or(Error::Flexicast(FcError::Debug))?;
+                                self.key_phase = !self.key_phase;
+                                println!(
+                                    "[LKH] Role: {:?}  New key phase :{}",
+                                    flexicast.get_mc_role(),
+                                    self.key_phase
+                                );
+                                println!("[LKH] New key : {:?}", &key);
+                            }
+                            let _ = flexicast
+                                .fc_lkh_server_updates
+                                .extract_if(|min_pn, _| *min_pn < pn);
+                        },
+                        _ => (),
+                    }
                 }
             }
         }
@@ -5520,7 +5573,7 @@ impl Connection {
                             key_update: update.clone(),
                         };
                         println!(
-                            "[LKH] ({:?}) Sending {:?}",
+                            "[LKH] ({:?}) \n\t\tSending {:?}",
                             flexicast.get_mc_role(),
                             frame
                         );
@@ -5529,6 +5582,7 @@ impl Connection {
                         } else {
                             println!("Sending a key update : Role = {:?}, Update = {:?}",flexicast.get_mc_role(),update);
                             //println!("State after push : {frames:?}");
+                            flexicast.fc_lkh_highest_key_update_count_sent += 1;
                             let last_update =
                                 flexicast.lkh_keys_to_send.pop_front().unwrap();
 
@@ -5540,13 +5594,14 @@ impl Connection {
                             );
 
                             match flexicast.get_mc_role() {
-                                McRole::ServerFlexicast => {
+                                /*McRole::ServerFlexicast => {
                                     println!("[LKH] MC session key change might be needed :");
                                     flexicast.lkh_server_update_key_backlog(
                                         last_update,
                                         first_pn,
                                     )?;
-                                },
+
+                                },*/
                                 _ => {
                                     ack_eliciting = true;
                                     in_flight = true;
@@ -6290,8 +6345,9 @@ impl Connection {
             None,
             aead,
         )?;
+
         if let Some(fc) = &self.flexicast {
-            println!("({:?}) Encrypted packet {pn} with {aead:?} \n packet : {frames:?} \n\t [{written}]raw Packet :  {b:?}",fc.get_mc_role());
+            println!("({:?}) Encrypted packet {pn} with {aead:?} \n [{}]packet : {frames:?}",payload_len,fc.get_mc_role());
         }
 
         let sent_pkt = recovery::Sent {
@@ -10118,16 +10174,26 @@ impl Connection {
                     flexicast
                         .lkh_update_client_keys(algo, key_update, first_pn)?;
 
-                    let keys = flexicast.get_mc_announce_data_active().and_then(|mc| Some(&mc.fc_key_dict)).unwrap();
+                    let keys = flexicast
+                        .get_mc_announce_data_active()
+                        .and_then(|mc| Some(&mc.fc_key_dict))
+                        .unwrap();
                     println!("Current keys :",);
-                    for (key_id,key) in keys.iter() {
+                    for (key_id, key) in keys.iter() {
                         print!("\n\t [{key_id}] : \t");
                         for bytes in key {
-{                            print!("{bytes:02X}");
-}                        }
+                            {
+                                print!("{bytes:02X}");
+                            }
+                        }
                     }
                     println!("");
-                    println!("Current session key : {:?}", flexicast.get_mc_announce_data_active().and_then(|mc| Some(&mc.fc_channel_secret)));
+                    println!(
+                        "Current session key : {:?}",
+                        flexicast
+                            .get_mc_announce_data_active()
+                            .and_then(|mc| Some(&mc.fc_channel_secret))
+                    );
                     flexicast.update_client_state(
                         flexicast::FcClientAction::DecryptionKey,
                         None,

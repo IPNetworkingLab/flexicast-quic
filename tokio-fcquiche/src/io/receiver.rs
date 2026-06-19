@@ -174,6 +174,7 @@ impl TokioFcQuicRecv {
                         from,
                         from_mc: false,
                     };
+                    println!("[RAW] unicast {len} bytes");
                     conn.recv(&mut buf[..len], recv_info)?;
                     read_uc = true;
                 },
@@ -184,6 +185,7 @@ impl TokioFcQuicRecv {
                         from,
                         from_mc: true,
                     };
+                    println!("[RAW] multicast {len} bytes");
                     conn.recv(&mut out[..len], recv_info)?;
                     read_mc = true;
                 },

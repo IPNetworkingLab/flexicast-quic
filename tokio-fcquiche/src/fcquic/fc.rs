@@ -186,17 +186,20 @@ impl FcChannelAsync {
                 }
             },
             MsgFcSource::KeyUpdateNeededOnMC(raw_packet) => {
+                println!("Counter FC : {} update : {raw_packet:?}",self.lkh_counter+1);
+                
                 let out_packet =
                     lkh_encrypt(raw_packet, self.fc_chan.algo, self.lkh_counter)?;
                 self.lkh_counter += 1;
-
+                
                 self.fc_chan.channel.schedule_lkh_update(quiche::flexicast::lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(out_packet));
                 self.has_control_packet_to_send = true;
             },
             MsgFcSource::LKHNotifySessionChange(notification) => {
                 println!("[LKH] Notify received");
+                println!("Target Counter FC: {}",self.lkh_counter);
                 //self.fc_chan.channel.schedule_lkh_update(quiche::flexicast::lkhlib::packet::FCKeyUpdate::KeyUpdate(notification) );
-                self.fc_chan.channel.update_session_key_now(notification)?
+                self.fc_chan.channel.update_session_key(notification,self.lkh_counter)?
             },
         }
 

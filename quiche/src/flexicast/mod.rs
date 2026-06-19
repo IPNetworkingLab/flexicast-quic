@@ -427,9 +427,13 @@ pub struct FlexicastAttributes {
     pub lkh_keys_to_send: VecDeque<FCKeyUpdate>,
     /// Key phase of the multicast flow
     pub fc_key_phase: bool,
+    /// Has the new session LKH key been sent ? (To avoid encrypting the new session with the new session key)
+    pub fc_lkh_session_key_sent: bool,
     /// Session key not yet applied,
     /// contain NewSessionKey, first pn to encrypt with the new key
-    pub fc_lkh_server_updates: HashMap<u64, (Algorithm, Vec<u8>)>,
+    pub fc_lkh_server_updates: HashMap<u64, (Algorithm, Vec<u8>, u64)>,
+    /// What is the current count of the sent keyupdate on the flexicast, used to sync the session key change
+    pub fc_lkh_highest_key_update_count_sent: u64,
 }
 
 impl FlexicastAttributes {
@@ -812,9 +816,13 @@ impl FlexicastAttributes {
                         let new_counter = packet.counter;
 
                         println!("[LKH] Received a protected key update : ksk_id:{:?}, counter : {}",packet.ksk_id,packet.counter);
-                        let clear = lkh_decrypt(packet, ksk.clone(), algo)?;
-                        mc_data.fc_lkh_counters.insert(ksk_id, new_counter);
-                        self.process_lkh_update_packet(algo, clear, first_pn)
+                        let decrypted = lkh_decrypt(packet, ksk.clone(), algo);
+                        if let Ok(clear) = decrypted {
+                            mc_data.fc_lkh_counters.insert(ksk_id, new_counter);
+                            self.process_lkh_update_packet(algo, clear, first_pn)
+                        } else {
+                            Ok(())
+                        }
                     } else {
                         // We are unable to decrypt the packet so we drop it ?
                         Ok(())
@@ -877,9 +885,11 @@ impl FlexicastAttributes {
             key_dict.insert(packet.new_key_id, packet.new_key.clone());
 
             if packet.is_session_key {
-                trace!("[LKH] new session secret : {:?}", &packet.new_key);
+                println!("[LKH] new session secret : {:?}", &packet.new_key);
                 //self.set_decryption_key_secret(packet.new_key, algo)
-                self.mc_announce_data[fc_chan_idx!(self)?].fc_channel_secret.replace(packet.new_key.clone());
+                /*self.mc_announce_data[fc_chan_idx!(self)?]
+                .fc_channel_secret
+                .replace(packet.new_key.clone());*/
                 self.add_key_update(algo, packet.new_key, first_pn)
             } else {
                 Ok(())
@@ -902,6 +912,7 @@ impl FlexicastAttributes {
     pub fn lkh_server_update_key_backlog(
         &mut self, update: FCKeyUpdate, next_pn: u64,
     ) -> Result<()> {
+        panic!("Unused");
         let (is_session, key) = match update {
             FCKeyUpdate::KeyUpdate(packet) => {
                 (packet.is_session_key, packet.new_key.clone())
@@ -913,7 +924,7 @@ impl FlexicastAttributes {
             println!("[LKH] Scheduling a session key change for PN={next_pn}, role : {:?}",self.get_mc_role());
 
             self.fc_lkh_server_updates
-                .insert(next_pn, (self.get_decryption_key_algo(), key));
+                .insert(next_pn, (self.get_decryption_key_algo(), key, 0));
         };
 
         Ok(())
@@ -991,6 +1002,8 @@ impl Default for FlexicastAttributes {
             fc_key_phase: false,
             fc_uses_lkh: true,
             fc_lkh_server_updates: HashMap::new(),
+            fc_lkh_session_key_sent: false,
+            fc_lkh_highest_key_update_count_sent: 1,
         }
     }
 }
@@ -1764,11 +1777,10 @@ impl Connection {
         }
     }
 
-    fn update_session_key(
-        &mut self, algo: Algorithm, key: Vec<u8>, first_pn: u64,
+    pub fn update_session_key(
+        &mut self, packet: KeyUpdatePacket, counter: u64,
     ) -> Result<()> {
-        panic!("Untested");
-        let path_id = self
+        /*let path_id = self
             .flexicast
             .as_ref()
             .unwrap()
@@ -1797,6 +1809,19 @@ impl Connection {
         space.key_update = Some(key_update);
         self.key_phase = !self.key_phase;
 
+        Ok(())*/
+        let key = packet.new_key;
+
+        let first_pn = self.fc_next_and_first_pn().unwrap_or((0, 0)).0;
+        if let Some(fc) = &mut self.flexicast {
+            let algo = fc.get_decryption_key_algo();
+            fc.fc_lkh_server_updates
+                .insert(first_pn, (algo, key, counter));
+            println!(
+                "[LKH] Current Update QUEUE : {:?}",
+                fc.fc_lkh_server_updates
+            )
+        };
         Ok(())
     }
     /// Change the crypto session without wait
@@ -1949,8 +1974,14 @@ impl FlexicastChannelSource {
             FlexicastChannelSource::get_exporter_secret(keylog_filename)?;
 
         // Get the encryption algorithm.
-        let encryption_algo =
-            conn_server.handshake.cipher().ok_or(Error::CryptoFail).map_err(|e| {println!("Error in handshake");e})?;
+        let encryption_algo = conn_server
+            .handshake
+            .cipher()
+            .ok_or(Error::CryptoFail)
+            .map_err(|e| {
+                println!("Error in handshake");
+                e
+            })?;
 
         conn_server.flexicast = Some(FlexicastAttributes {
             mc_role: McRole::ServerFlexicast,

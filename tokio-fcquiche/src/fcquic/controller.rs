@@ -1226,7 +1226,7 @@ impl FcController {
                         // basé sur gémini donc pas sûr
                         for leaf in captured.iter() {
                             println!(
-                                "[LKH] Sent a LKHChangeKeyUnicast {:?}",
+                                "[LKH] Sent a LKHChangeKeyUnicast {:?} to {recv_id}",
                                 packet
                             );
                             match leaf.try_send(MsgFcCtl::LKHChangeKeyUnicast((

@@ -539,6 +539,7 @@ impl LogicalTree for LKHPlus {
                 send,
             };
             self.unordered_users.insert(user_id, new_user);
+            
         }
     }
     fn remove_user(&mut self, user_id: Vec<u8>) {
@@ -1452,7 +1453,7 @@ mod tests {
         };
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
-            max_unordered_count: 2,
+            max_unordered_count: 1,
 
             lkh,
         };
@@ -1484,6 +1485,7 @@ mod tests {
             println!("Current session key : {:?}", rootkey.1);
             println!("{:?}", lkhp);
             println!("{:?}", users);
+            println!("----------------------------------");
         }
 
         let rootkeyid = lkhp.get_session_key().expect("No session key").0;
