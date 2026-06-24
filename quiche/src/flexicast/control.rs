@@ -598,6 +598,7 @@ impl Connection {
                 // Transition to UcFallBack: triggers should_send_fc_state()
                 // to return true, causing MC_STATE(Sync) to be sent to the
                 // client on the next send() call.
+                
                 fc.mc_role =
                     McRole::ServerUnicast(McClientStatus::UcFallBack);
             },

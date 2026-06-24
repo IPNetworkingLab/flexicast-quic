@@ -1454,7 +1454,6 @@ mod tests {
         let mut lkhp = LKHPlus {
             unordered_users: HashMap::new(),
             max_unordered_count: 1,
-
             lkh,
         };
         for _ in 0..3 {

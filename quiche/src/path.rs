@@ -590,7 +590,7 @@ impl NetworkPath {
         self.rtt_stats.rtt_update_count()
     }
 }
-
+#[derive(Debug)]
 /// A QUIC path having its own packet space.
 pub struct Path {
     /// The explicit path ID in multipath.
@@ -1326,6 +1326,7 @@ impl PathMap {
                     .is_some_and(|np| p.active(p.network_path_id, np))
         })
     }
+
 
     /// Handles incoming PATH_RESPONSE data.
     pub fn on_response_received(&mut self, data: [u8; 8]) -> Result<()> {

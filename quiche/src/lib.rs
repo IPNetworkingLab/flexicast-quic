@@ -2575,15 +2575,9 @@ impl Connection {
         if is_closing {
             return Err(Error::Done);
         }
-        if let Some(fc) = &self.flexicast {
-            match fc.get_mc_role() {
-                McRole::Client(_) => {
-                    println!("----------------------------------");
-                    println!("Received a packet [{}]: {buf:?}", info.from_mc);
-                },
-                _ => (),
-            }
-        }
+
+        println!("----------------------------------");
+        println!("Received a packet [{}]: {buf:?}", info.from_mc);
 
         let buf_len = buf.len();
         let mut original_buf = buf.to_owned(); //TODO: faire mieux
@@ -3178,9 +3172,9 @@ impl Connection {
         }
 
         if info.from_mc {
-            println!("Packet decrypted from multicast");
+            println!("Packet {pn} decrypted from multicast");
         } else {
-            println!("Packet decrypted");
+            println!("Packet {pn} decrypted");
         }
 
         //println!("aead : {:?}",aead);
@@ -4193,6 +4187,10 @@ impl Connection {
         &mut self, out: &mut [u8], send_pid: InternalPathId,
         send_npid: path::NetworkPathId, has_initial: bool, now: time::Instant,
     ) -> Result<(packet::Type, usize)> {
+        if let Some(fc) = &self.flexicast {
+            println!("[{}]Start of send single", fc.get_mc_role());
+        }
+
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -4491,6 +4489,7 @@ impl Connection {
         }
 
         let has_other_active = paths.has_other_active_than(path_id);
+
         let (path, network_path) = paths.get_both_mut(send_pid, send_npid)?;
         let path_active = path.active(send_npid, network_path);
         let is_pmtud_enabled = network_path.pmtud.is_enabled();
@@ -4578,7 +4577,7 @@ impl Connection {
                                 flexicast.fc_lkh_highest_key_update_count_sent
                             );
                             println!(
-                                "\t Condition : PN : [{}] \t Keys : [{}]",
+                                "\t Session key change ? Condition : PN : [{}] \t Keys sent : [{}]",
                                 if min_pn <= pn { "OK" } else { "Not OK" },
                                 if counter
                                     <= flexicast
@@ -4593,10 +4592,15 @@ impl Connection {
                             if min_pn <= pn
                                 && (counter
                                     <= flexicast
-                                        .fc_lkh_highest_key_update_count_sent  )
+                                        .fc_lkh_highest_key_update_count_sent)
                             {
                                 println!("[LKH] dropping olds keys");
-                                flexicast.fc_lkh_highest_key_update_count_sent = max(counter,flexicast.fc_lkh_highest_key_update_count_sent);
+                                flexicast.fc_lkh_highest_key_update_count_sent =
+                                    max(
+                                        counter,
+                                        flexicast
+                                            .fc_lkh_highest_key_update_count_sent,
+                                    );
                                 let (algo, key, counter) = flexicast
                                     .fc_lkh_server_updates
                                     .remove(&min_pn)
@@ -5090,6 +5094,10 @@ impl Connection {
             }
         }
 
+        if let Some(fc) = &self.flexicast {
+            println!("[{}]Before Selection : open ?{}, active? {}, lost ? {} [{}], not active ? {}", fc.get_mc_role(),!is_closing,path_active,(path.potentially_lost()),path.recovery.pto_count(),!has_other_active);
+        }
+
         if pkt_type == packet::Type::Short
             && !is_closing
             && path_active
@@ -5345,8 +5353,8 @@ impl Connection {
                 if push_frame_to_pkt!(b, frames, frame, left) {
                     paths.on_path_status_sent();
 
-                    ack_eliciting = true;
                     in_flight = true;
+                    ack_eliciting = true;
                 } else {
                     break;
                 }
@@ -5533,7 +5541,7 @@ impl Connection {
 
             // Send, if necessary, MC_KEY_LKH key updates
             if let Some(flexicast) = self.flexicast.as_mut() {
-                //println!("Should send key ?");
+                println!("{} Should send key ?", flexicast.get_mc_role());
                 if flexicast.should_send_fc_lkh_key() {
                     println!(
                         "[LKH] I ({:?}) have keys to send : {:?}",
@@ -5600,11 +5608,11 @@ impl Connection {
 
                             match flexicast.get_mc_role() {
                                 /*McRole::ServerFlexicast => {
+                                    )?;
                                     println!("[LKH] MC session key change might be needed :");
                                     flexicast.lkh_server_update_key_backlog(
                                         last_update,
                                         first_pn,
-                                    )?;
 
                                 },*/
                                 _ => {
@@ -5615,8 +5623,14 @@ impl Connection {
                         }
                     }
                 } else {
-                    //println!("No");
+                    println!(
+                        "No, current role : {}, currents keys : {:?}",
+                        flexicast.get_mc_role(),
+                        flexicast.lkh_keys_to_send
+                    );
                 }
+            } else {
+                println!("No flexicast");
             }
         }
 
@@ -6352,7 +6366,7 @@ impl Connection {
         )?;
 
         if let Some(fc) = &self.flexicast {
-            println!("({:?}) Encrypted packet {pn} with {aead:?} \n [{}]packet : {frames:?}",payload_len,fc.get_mc_role());
+            println!("({:?}) [{}] Encrypted packet {pn} with {aead:?} \n packet : {frames:?}",payload_len,fc.get_mc_role());
         }
 
         let sent_pkt = recovery::Sent {
@@ -7658,7 +7672,7 @@ impl Connection {
             let fc_ack_delay = self.fc_timeout_instant();
 
             // Flexicast LKH
-            let fc_lkh_timer = if let Some(fc) = &self.flexicast {
+            /*let fc_lkh_timer = if let Some(fc) = &self.flexicast {
                 if fc.fc_uses_lkh {
                     fc.get_fc_key_update()
                         .as_ref()
@@ -7668,8 +7682,8 @@ impl Connection {
                 }
             } else {
                 None
-            };
-
+            };*/
+            let fc_lkh_timer = None;
             let timers = [
                 self.idle_timer,
                 path_timer,
@@ -7777,7 +7791,7 @@ impl Connection {
             }
             if let Some(timer) = p.recovery.loss_detection_timer() {
                 if timer <= now {
-                    trace!("{} loss detection timeout expired", self.trace_id);
+                    debug!("{} loss detection timeout expired", self.trace_id);
 
                     let (lost_packets, lost_bytes, network_path_ids) = p
                         .on_loss_detection_timeout(
@@ -7979,7 +7993,11 @@ impl Connection {
                     &self.recovery_config,
                 );
                 network_path.request_validation();
-                self.paths.insert_network_path(network_path, None, false)?
+                let npid =
+                    self.paths.insert_network_path(network_path, None, false)?;
+                println!("Added network path : {npid:?}");
+
+                npid
             },
         };
 
@@ -8104,6 +8122,7 @@ impl Connection {
                 Some(path_id),
                 false,
             )?;
+            println!("Added network path {npid:?}");
             // This takes care of setting DCID and other elements.
             self.set_active_network_path(pid, npid, time::Instant::now())?;
 
@@ -9338,6 +9357,9 @@ impl Connection {
                             &mut np.rtt_stats,
                             &self.trace_id,
                         )?;
+                    if let Some(fc) = &self.flexicast {
+                        println!("{} : PTO RESET", fc.get_mc_role());
+                    }
                     self.lost_count += lost_packets;
                     self.lost_bytes += lost_bytes as u64;
                     self.acked_bytes += acked_bytes as u64;
@@ -9857,6 +9879,9 @@ impl Connection {
                             &mut np.rtt_stats,
                             &self.trace_id,
                         )?;
+                    if let Some(fc) = &self.flexicast {
+                        println!("{} : PTO RESET", fc.get_mc_role());
+                    }
                     self.lost_count += lost_packets;
                     self.lost_bytes += lost_bytes as u64;
                     self.acked_bytes += acked_bytes as u64;
@@ -10104,10 +10129,14 @@ impl Connection {
                                     action_data,
                                 );
                             }
+                            println!("Fallback to UC");
                             flexicast.fc_uc_fallback = true;
                         },
 
-                        (McRole::Client(_), flexicast::FcClientAction::Rejoin) => {
+                        (
+                            McRole::Client(_),
+                            flexicast::FcClientAction::Rejoin,
+                        ) => {
                             // Server requests us to rejoin the flexicast flow.
                             // Clear the fallback flag and transition back to
                             // JoinedAndKey so should_send_fc_state() fires
@@ -10189,9 +10218,17 @@ impl Connection {
                 } else if let Some(flexicast) = &mut self.flexicast {
                     println!("[LKH] Received a McKeyLKH");
 
-                    flexicast
-                        .lkh_update_client_keys(algo, key_update, first_pn)?;
-
+                    match flexicast
+                        .lkh_update_client_keys(algo, key_update, first_pn)
+                    {
+                        Ok(_) => {
+                            println!("Successful update");
+                        },
+                        Err(Error::Flexicast(FcError::FcLKHKeyUnknown)) => {
+                            println!("LKH key unknown");
+                        },
+                        Err(e) => return Err(e),
+                    }
                     let keys = flexicast
                         .get_mc_announce_data_active()
                         .and_then(|mc| Some(&mc.fc_key_dict))
@@ -10527,7 +10564,7 @@ impl Connection {
                 Some(path_id),
                 self.is_server,
             )?;
-
+            println!("Added network path : {npid:?}");
             // See if the CID has not been assigned on another path, but only if
             // SCID is not zero-length.
             if !self.ids.zero_length_scid() {

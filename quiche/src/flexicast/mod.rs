@@ -630,21 +630,22 @@ impl FlexicastAttributes {
                 self.fc_path_id = Some(action_data.unwrap());
                 McClientStatus::Changing
             },
-            (McClientStatus::Changing, FcClientAction::DecryptionKey) =>
-                McClientStatus::ListenMcPath(true),
-            (McClientStatus::AwareUnjoined, FcClientAction::Leave) =>
-                McClientStatus::AwareUnjoined,
+            (McClientStatus::Changing, FcClientAction::DecryptionKey) => {
+                McClientStatus::ListenMcPath(true)
+            },
+            (McClientStatus::AwareUnjoined, FcClientAction::Leave) => {
+                McClientStatus::AwareUnjoined
+            },
 
             // Server: begin reintegration handshake.
-            (McClientStatus::UcFallBack, FcClientAction::Rejoin)
-                if is_server =>
-                McClientStatus::RejoiningFc,
+            (McClientStatus::UcFallBack, FcClientAction::Rejoin) if is_server => {
+                McClientStatus::RejoiningFc
+            },
 
             // Server: client confirmed reintegration via MC_STATE(McPath).
-            (
-                McClientStatus::RejoiningFc,
-                FcClientAction::McPath,
-            ) if action_data.is_some() && is_server => {
+            (McClientStatus::RejoiningFc, FcClientAction::McPath)
+                if action_data.is_some() && is_server =>
+            {
                 self.fc_path_id = Some(action_data.unwrap());
                 McClientStatus::ListenMcPath(true)
             },
@@ -653,7 +654,9 @@ impl FlexicastAttributes {
             // should_send_fc_state() fires MC_STATE(McPath).
             (McClientStatus::ListenMcPath(_), FcClientAction::Rejoin)
                 if !is_server =>
-                McClientStatus::JoinedAndKey,
+            {
+                McClientStatus::JoinedAndKey
+            },
 
             (McClientStatus::ListenMcPath(_), _) => current_status,
             (McClientStatus::JoinedAndKey, FcClientAction::Join) => {
@@ -828,9 +831,11 @@ impl FlexicastAttributes {
         &mut self, algo: Algorithm, packet: lkhlib::packet::FCKeyUpdate,
         first_pn: u64,
     ) -> Result<()> {
+        println!("Trying to update client keys");
         match self.mc_role {
             McRole::Client(_) => match packet {
                 lkhlib::packet::FCKeyUpdate::KeyUpdate(packet) => {
+                    println!("Key Update !");
                     self.process_lkh_update_packet(algo, packet, first_pn)
                 },
                 lkhlib::packet::FCKeyUpdate::KeylessWrappedKeyUpdate(packet) => {
@@ -840,7 +845,7 @@ impl FlexicastAttributes {
                     if let Some(ksk) = mc_data.fc_key_dict.get(&packet.ksk_id) {
                         let counter =
                             mc_data.fc_lkh_counters.get(&ksk_id).unwrap_or(&0);
-
+                        println!("Protected key update, expected counter > {counter}");
                         if *counter >= packet.counter {
                             println!("[LKH] Got a key with counter {} but last one was {}",packet.counter,*counter);
                             return Err(Error::Flexicast(
@@ -852,14 +857,23 @@ impl FlexicastAttributes {
 
                         println!("[LKH] Received a protected key update : ksk_id:{:?}, counter : {}",packet.ksk_id,packet.counter);
                         let decrypted = lkh_decrypt(packet, ksk.clone(), algo);
-                        if let Ok(clear) = decrypted {
+                        // It can fail if, for example, the new session key is encrypted with the old session key
+                        println!("Decrypted = {decrypted:?}");
+                        if decrypted.is_some() {
+                            println!("Successful decrypt");
                             mc_data.fc_lkh_counters.insert(ksk_id, new_counter);
-                            self.process_lkh_update_packet(algo, clear, first_pn)
+                            self.process_lkh_update_packet(
+                                algo,
+                                decrypted.unwrap(),
+                                first_pn,
+                            )
                         } else {
+                            println!("Dropping this key update");
                             Ok(())
                         }
                     } else {
-                        // We are unable to decrypt the packet so we drop it ?
+                        // We are unable to decrypt the packet so we drop it
+                        println!("Unknown ksk_id");
                         Ok(())
                     }
                 },
@@ -869,8 +883,12 @@ impl FlexicastAttributes {
                 },
                 //lkhlib::packet::FCKeyUpdate::WrappedKeyUpdate$(_) => Err(Error::Flexicast(FcError::McInvalidAsymKey) )
             },
-            role => Err(Error::Flexicast(FcError::McInvalidRole(role))),
+            role => {
+                println!("Invalid LKH Role");
+                Err(Error::Flexicast(FcError::McInvalidRole(role)))
+            },
         }
+        
     }
     /// Prepare for a mc key change on the clien side
     fn add_key_update(
@@ -1475,8 +1493,9 @@ impl FlexicastConnection for Connection {
             );
             println!("Created network path");
             network_path.verified_peer_address = true;
-            self.paths.insert_network_path(network_path, None, false)?;
-            println!("Added network path");
+            let nid =
+                self.paths.insert_network_path(network_path, None, false)?;
+            println!("Added network path : {nid:?}");
             let pid = match self.create_path_on_client(
                 next_available,
                 NetworkPathId(next_available as usize),
@@ -3057,7 +3076,11 @@ mod tests {
         fc_pipe.server_control_to_mc_source(now).unwrap();
 
         // Force receiver 0 to fall back.
-        fc_pipe.unicast_pipes[0].0.server.fc_do_uc_fallback().unwrap();
+        fc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .fc_do_uc_fallback()
+            .unwrap();
         fc_pipe.unicast_pipes[0].0.advance().unwrap();
         assert!(fc_pipe.unicast_pipes[0].0.client.fc_should_leave_mc());
 
@@ -3137,7 +3160,11 @@ mod tests {
         fc_pipe.server_control_to_mc_source(now).unwrap();
 
         // Server forces only receiver 0 to fall back.
-        fc_pipe.unicast_pipes[0].0.server.fc_do_uc_fallback().unwrap();
+        fc_pipe.unicast_pipes[0]
+            .0
+            .server
+            .fc_do_uc_fallback()
+            .unwrap();
 
         // Exchange packets for both pipes: pipe 0 gets MC_STATE(Sync),
         // pipe 1 gets nothing special.
@@ -3155,15 +3182,20 @@ mod tests {
         // Receiver 0 still receives data via unicast.
         fc_pipe.uc_server_send_single_stream(7, 0).unwrap();
         let mut buf = [0u8; 300];
-        let (read, fin) =
-            fc_pipe.unicast_pipes[0].0.client.stream_recv(7, &mut buf).unwrap();
+        let (read, fin) = fc_pipe.unicast_pipes[0]
+            .0
+            .client
+            .stream_recv(7, &mut buf)
+            .unwrap();
         assert!(read > 0);
         assert!(fin);
 
         // Simulate IGMP leave: receiver 0 no longer gets FC packets.
         let mut loss_recv_0 = RangeSet::default();
         loss_recv_0.insert(0..1);
-        fc_pipe.source_send_single_stream(true, Some(&loss_recv_0), 11).unwrap();
+        fc_pipe
+            .source_send_single_stream(true, Some(&loss_recv_0), 11)
+            .unwrap();
 
         // Receiver 0 must not get stream 11 via FC (stream was never opened).
         assert_eq!(
@@ -3172,8 +3204,11 @@ mod tests {
         );
 
         // Receiver 1 still receives stream 11 via flexicast.
-        let (read, fin) =
-            fc_pipe.unicast_pipes[1].0.client.stream_recv(11, &mut buf).unwrap();
+        let (read, fin) = fc_pipe.unicast_pipes[1]
+            .0
+            .client
+            .stream_recv(11, &mut buf)
+            .unwrap();
         assert!(read > 0);
         assert!(fin);
     }

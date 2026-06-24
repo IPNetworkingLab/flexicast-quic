@@ -396,6 +396,7 @@ impl FcController {
                 if matches!(self.controller_role, ControllerRole::Root(_)) {
                     return Ok(());
                 }
+                
                 self.do_recv_uc_fallback(id, fc_chan_id).await?;
             },
 
@@ -854,7 +855,7 @@ impl FcController {
                     acks_.get_missing_up_to(largest_pn_considered + 1);
                 info!("Largest={largest_pn:?}. Largest pn considered={largest_pn_considered:?}. ack_to_use={acks_:?}. Missing={missing:?}. Remove_until={pn_drain:?}");
                 if let Some(pn) = pn_drain {
-                    missing.remove_until(pn - 1);
+                    missing.remove_until(pn.saturating_sub(1));
                 }
                 info!(
                     "{} UC FB. Hack for {} missing: {:?}",
@@ -1075,7 +1076,7 @@ impl FcController {
             let should_check = self.last_bottleneck_check.map_or(true, |t| {
                 now.duration_since(t) >= time::Duration::from_secs(5)
             });
-            if should_check {
+            if  should_check {
                 self.last_bottleneck_check = Some(now);
                 if let Some(ratio) = self.fallback_gain_ratio {
                     if let Some((slowest_id, slowest, Some(new_bottleneck))) =

@@ -365,6 +365,7 @@ struct LossDetectionTimer {
 
 impl LossDetectionTimer {
     fn update(&mut self, timeout: Instant) {
+        trace!("Updating loss timeout : {timeout:?}");
         self.time = Some(timeout);
     }
 
@@ -646,7 +647,7 @@ impl Recovery {
         );
 
         self.bytes_in_flight -= acked_bytes;
-
+        
         self.pto_count = 0;
 
         self.set_loss_detection_timer(handshake_status, now, rtt_stats);
@@ -689,7 +690,7 @@ impl Recovery {
                 packet::Epoch::Initial
             }
         };
-
+        println!("PTO AUGMENT !");
         self.pto_count += 1;
 
         let rtt = rtt_stats.rtt();
@@ -726,7 +727,7 @@ impl Recovery {
             // Only return as many packets as the number of probe packets that
             // will be sent.
             .take(taken);
-
+        println!("UNACKED PACKETS  : {:?}",&unacked_iter);
         // Retransmit the frames from the oldest sent packets on PTO. However
         // the packets are not actually declared lost (so there is no effect to
         // congestion control), we just reschedule the data they carried.
@@ -734,10 +735,12 @@ impl Recovery {
         // This will also trigger sending an ACK and retransmitting frames like
         // HANDSHAKE_DONE and MAX_DATA / MAX_STREAM_DATA as well, in addition
         // to CRYPTO and STREAM, if the original packet carried them.
+        
         for unacked in unacked_iter {
+            println!("UNACKED  : {:?}",&unacked.frames);
             epoch.lost_frames.extend_from_slice(&unacked.frames);
         }
-
+        println!("Total lost : {:?}",epoch.lost_frames);
         self.set_loss_detection_timer(handshake_status, now, rtt_stats);
 
         trace!("{} {:?}", trace_id, self);

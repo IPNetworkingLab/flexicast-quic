@@ -27,16 +27,17 @@ pub fn lkh_encrypt(
 /// decrypt a key update received from the multicast
 pub fn lkh_decrypt(
     packet: KeylessWrappedKeyUpdatePacket, key: Vec<u8>, algo: Algorithm,
-) -> Result<KeyUpdatePacket,crate::Error> {
-    let open = Open::from_secret(algo, &key.clone())?;
+) -> Option<KeyUpdatePacket> {
+    println!("In lkh_decrypt : \n\n\n");
+    let open = Open::from_secret(algo, &key.clone()).ok()?;
     println!("[LKH] [Crypto] trying to decrypt with : {open:?}");
     let mut cipher = packet.cipher.to_owned();
     let ad = packet.ksk_id.to_be_bytes();
     
-    open.open_with_u64_counter(0, packet.counter, &ad, &mut cipher).map_err(|e| {println!("Error trying to decrypt with the key : {:?} ",key);e})?;
-    println!("In lkh_decrypt : \n\n\n");
-    let out = KeyUpdatePacket::from_bytes(cipher).ok_or(Error::CryptoFail).map_err(|e| {println!("Unable to decypher lkh update");e})?;
-    Ok(out)
+    open.open_with_u64_counter(0, packet.counter, &ad, &mut cipher).map_err(|e| {println!("Error trying to decrypt with the key : {:?} ",key);e}).ok()?;
+    
+    let out = KeyUpdatePacket::from_bytes(cipher).ok_or(Error::CryptoFail).map_err(|e| {println!("Unable to decypher lkh update");e}).ok()?;
+    Some(out)
 }
 
 #[cfg(test)]

@@ -296,6 +296,12 @@ impl FcFlowRun for FcFlowfileTransfer {
 
                 // Generate outgoing QUIC packets to send on the Flexicast path.
                 'fc: loop {
+                    let has_key_to_send = self
+                            .fc
+                            .fc_chan
+                            .channel
+                            .get_flexicast_attributes()
+                            .is_some_and(|fc| !fc.lkh_keys_to_send.is_empty());
                     // Ask quiche to generate the packets.
                     let (write, _send_info) =
                         match self.fc.fc_chan.mc_send(&mut buf[..]) {
@@ -317,12 +323,14 @@ impl FcFlowRun for FcFlowfileTransfer {
                                 break 'fc;
                             },
                         };
-                    println!("Buf state : {buf:?}");
+                    println!("Packet info? : {_send_info:?} [{write}]");
                     // Send the packets on the wire.
                     if !self.fc.must_wait {
                         println!("No waiting required");
                     }
-                    if !self.fc.must_wait || self.fc.has_control_packet_to_send {
+                    
+                    println!("[FC] Has keys to send ? : {has_key_to_send}");
+                    if true {
                         if self
                             .fc
                             .fc_chan
