@@ -454,6 +454,10 @@ impl FcController {
                     },
                 }
             },
+
+            MsgFcCtl::DelegateFcKeyLkh(lkh_frame) => {
+                todo!("TODO: DelegateFcKeyLkh");
+            }
         }
 
         Ok(())

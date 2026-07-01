@@ -8,6 +8,7 @@ use crate::Result;
 use crate::MAX_DATAGRAM_SIZE;
 use log::*;
 use quiche::fec::FecError;
+use quiche::flexicast::ack::FcDelegatedFrame;
 use quiche::flexicast::cca::FcFlowCwnd;
 use quiche::flexicast::reliable::FcUnicastRetransmission;
 use quiche::flexicast::FlexicastConnection;
@@ -97,11 +98,24 @@ impl FcFlowRun for FcFlowfileTransfer {
 
             // Delegate lost STREAM frames to the controller,
             // that will dispatch them to all unicast paths for retransmission.
-            let mut delegated_streams =
-                self.fc.fc_chan.channel.fc_get_delegated_stream(
+            let mut delegated_frames =
+                self.fc.fc_chan.channel.fc_get_delegated_frames(
                     FcUnicastRetransmission::Delegates(true),
                 )?;
-            if !delegated_streams.is_empty() {
+            
+            // Split the frames by STREAM and FC_KEY_LKH.
+            // FC-TODO: if we have more frames, it would be better to find another way to separate these frames than allocating new vectors.
+            let mut delegated_streams = Vec::with_capacity(delegated_frames.len());
+            let mut delefaged_lkh = Vec::new();
+
+            for frame in delegated_frames.drain(..) {
+                match frame {
+                    FcDelegatedFrame::Stream(s) => delegated_streams.push(s),
+                    FcDelegatedFrame::FcKeyLkh(l) => delefaged_lkh.push(l),
+                }
+            }
+
+            if !delegated_frames.is_empty() {
                 debug!(
                     "Delegates streams: {:?} offsets: {:?}",
                     delegated_streams.len(),
@@ -110,7 +124,6 @@ impl FcFlowRun for FcFlowfileTransfer {
                         .map(|d| (d.offset, d.payload.len()))
                         .collect::<Vec<_>>()
                 );
-
                 // Push with old ones.
                 self.fc.pending_stream_pieces.append(&mut delegated_streams);
 
@@ -129,6 +142,17 @@ impl FcFlowRun for FcFlowfileTransfer {
                         // We can do this because we are the only having the Arc.
                         self.fc.pending_stream_pieces =
                             Arc::try_unwrap(stream_pieces_arc).unwrap()
+                    },
+                }
+            }
+
+            if !delefaged_lkh.is_empty() {
+                let msg = MsgFcCtl::DelegateFcKeyLkh((self.fc.id, delefaged_lkh));
+                match self.fc.sync_tx.try_send(msg) {
+                    Ok(_) => (),
+                    Err(_e) => {
+                        // FC-TODO: what do we do if we need to buffer?
+                        todo!("Delegating FC_KEY_LKH: what do we do if we need to buffer?");
                     },
                 }
             }

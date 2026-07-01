@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
+use crate::crypto::Algorithm;
+use crate::flexicast::lkhlib::packet::FCKeyUpdate;
 use crate::ranges::RangeSet;
 use crate::Connection;
 
@@ -17,6 +19,17 @@ const MAX_RECV_BUFF_SIZE: u64 = 200_000;
 /// Key: offset of the stream.
 /// Value: (length of the stream, remaining number of clients that must ACK).
 type McStream = BTreeMap<u64, (u64, u64)>;
+
+/// Generalized delegated frames.
+/// These frames can be retransmitted through unicast.
+#[derive(Clone, Debug)]
+pub enum FcDelegatedFrame {
+    /// STREAM frame.
+    Stream(FcDelegatedStream),
+
+    /// FC_KEY_LKH.
+    FcKeyLkh(FcKeyLkh),
+}
 
 #[derive(Clone, Debug)]
 /// Shorthand for pieces of streams that are delegated.
@@ -50,6 +63,22 @@ pub type McStreamOff = Vec<(u64, RangeSet)>;
 
 /// Public representation of rangesets.
 pub type OpenRangeSet = RangeSet;
+
+#[derive(Clone, Debug)]
+/// Shorthand for pieces of FC_KEY_LKH frames being delegated.
+pub struct FcKeyLkh {
+    /// Multicast flow ID.
+    pub channel_id: Vec<u8>,
+
+    /// Encryption algorithm being used.
+    pub algo: Algorithm,
+
+    /// First packet number used for this new key.
+    pub first_pn: u64,
+
+    /// Packet update type.
+    pub key_update: FCKeyUpdate,
+}
 
 /// Multicast acknowledgment aggregation structure.
 /// This assumes that callers do not call twice with the same received ranges,
@@ -229,10 +258,8 @@ impl McAck {
         if let Some(fp) = late_joiner_first_pn {
             // Remove the most-recent matching threshold (rposition handles
             // multiple late joiners with the same first_pn gracefully).
-            if let Some(pos) = self
-                .late_joiner_thresholds
-                .iter()
-                .rposition(|&t| t == fp)
+            if let Some(pos) =
+                self.late_joiner_thresholds.iter().rposition(|&t| t == fp)
             {
                 self.late_joiner_thresholds.remove(pos);
             }
@@ -268,20 +295,20 @@ impl McAck {
                         continue;
                     } else if recv_range.start > range.end {
                         break;
-                    } else if recv_range.start <= range.start &&
-                        recv_range.end >= range.end
+                    } else if recv_range.start <= range.start
+                        && recv_range.end >= range.end
                     {
                         process_range = false;
                         break;
-                    } else if recv_range.start <= range.start &&
-                        recv_range.end > range.start
+                    } else if recv_range.start <= range.start
+                        && recv_range.end > range.start
                     {
                         range.start = recv_range.end;
                         continue;
                     } else if recv_range.end >= range.end {
                         range.end = recv_range.start;
-                    } else if recv_range.start > range.start &&
-                        recv_range.end < range.end
+                    } else if recv_range.start > range.start
+                        && recv_range.end < range.end
                     {
                         // We will have to split the two ranges... Do it the easy
                         // way lol.
@@ -310,8 +337,8 @@ impl McAck {
             if recv_pkt_num
                 .last()
                 .unwrap()
-                .saturating_sub(recv_pkt_num.first().unwrap()) >
-                MAX_RECV_BUFF_SIZE
+                .saturating_sub(recv_pkt_num.first().unwrap())
+                > MAX_RECV_BUFF_SIZE
             {
                 recv_pkt_num.remove_until(
                     recv_pkt_num
@@ -1031,7 +1058,7 @@ mod tests {
 
         {
             let (acked, _, _) = mc_ack.get_state();
-            assert_eq!(acked.get(&0),  Some(&(20, 2)));
+            assert_eq!(acked.get(&0), Some(&(20, 2)));
             assert_eq!(acked.get(&20), Some(&(30, 3)));
             assert_eq!(acked.get(&30), Some(&(50, 4)));
         }

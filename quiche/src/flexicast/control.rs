@@ -14,6 +14,7 @@ use super::FcError;
 use super::FlexicastConnection;
 use super::McClientStatus;
 use super::McRole;
+use crate::flexicast::ack::FcDelegatedFrame;
 use crate::flexicast::ack::FcDelegatedStream;
 use crate::flexicast::ack::McStreamOff;
 use crate::packet::Epoch;
@@ -228,9 +229,9 @@ impl Connection {
     /// The `early_retransmit` flag is set whenever the controller asks for
     /// the delegation of STREAM frames early in the process, i.e., frames that
     /// may not be lost will be delegated.
-    pub fn fc_get_delegated_stream(
+    pub fn fc_get_delegated_frames(
         &mut self, retr_kind: FcUnicastRetransmission,
-    ) -> Result<Vec<FcDelegatedStream>> {
+    ) -> Result<Vec<FcDelegatedFrame>> {
         if self.flexicast.is_none() {
             return Err(Error::Flexicast(FcError::McDisabled));
         }
@@ -248,7 +249,7 @@ impl Connection {
         let fc_path = self.paths.get_mut(InternalPathId(fc_path_id as usize))?;
 
         let streams = &mut self.streams;
-        fc_path.recovery.fc_get_delegated_stream(streams, retr_kind)
+        fc_path.recovery.fc_get_delegated_frames(streams, retr_kind)
     }
 
     /// Inserts in the unicast path delegated streams from the flexicast source.

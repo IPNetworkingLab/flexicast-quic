@@ -6,7 +6,9 @@ use smallvec::SmallVec;
 
 use crate::fca;
 use crate::fca_mut;
+use crate::flexicast::ack::FcDelegatedFrame;
 use crate::flexicast::ack::FcDelegatedStream;
+use crate::flexicast::ack::FcKeyLkh;
 use crate::flexicast::ack::McAck;
 use crate::flexicast::reliable::FcUnicastRetransmission;
 use crate::flexicast::FcError;
@@ -90,22 +92,29 @@ impl Recovery {
             _ => HashSet::new(),
         };
 
-        trace!("Here are the sent packets of the fc flow: {:?}", self.epochs[Epoch::Application].sent_packets.iter().map(|s| (s.pkt_num, s.time_acked, s.time_lost)).collect::<Vec<_>>());
+        trace!(
+            "Here are the sent packets of the fc flow: {:?}",
+            self.epochs[Epoch::Application]
+                .sent_packets
+                .iter()
+                .map(|s| (s.pkt_num, s.time_acked, s.time_lost))
+                .collect::<Vec<_>>()
+        );
 
         let mut nb_lost_mc_stream_frames = 0;
         let lost_iter = self.epochs[Epoch::Application]
             .sent_packets
             .iter_mut()
             .take_while(|p| {
-                p.time_lost.is_some() ||
-                    p.time_acked.is_some() ||
-                    retr_kind == FcUnicastRetransmission::FullRetransmit ||
-                    !recv_ack_rangeset.is_empty()
+                p.time_lost.is_some()
+                    || p.time_acked.is_some()
+                    || retr_kind == FcUnicastRetransmission::FullRetransmit
+                    || !recv_ack_rangeset.is_empty()
             })
             .filter(|p| {
-                p.time_lost.is_some() ||
-                    retr_kind == FcUnicastRetransmission::FullRetransmit ||
-                    recv_ack_rangeset.contains(&p.pkt_num)
+                p.time_lost.is_some()
+                    || retr_kind == FcUnicastRetransmission::FullRetransmit
+                    || recv_ack_rangeset.contains(&p.pkt_num)
             });
 
         let mut last_pkt_num = None;
@@ -127,8 +136,8 @@ impl Recovery {
             for r in recv_pn.iter() {
                 let lowest_recovered_in_block = r.start;
                 let largest_recovered_in_block = r.end - 1;
-                if packet.pkt_num >= lowest_recovered_in_block &&
-                    packet.pkt_num <= largest_recovered_in_block
+                if packet.pkt_num >= lowest_recovered_in_block
+                    && packet.pkt_num <= largest_recovered_in_block
                 {
                     is_lost = false;
                     break;
@@ -181,8 +190,9 @@ impl Recovery {
                                 .get_or_create_stream(*stream_id, stream_fc.local)
                             {
                                 Ok(v) => v,
-                                Err(Error::Done) if is_collected_on_uc =>
-                                    continue,
+                                Err(Error::Done) if is_collected_on_uc => {
+                                    continue
+                                },
                                 Err(e) => {
                                     return Err(e);
                                 },
@@ -282,8 +292,8 @@ impl Recovery {
                                 for r in rec.iter() {
                                     let lowest_recovered_in_block = r.start;
                                     let largest_recovered_in_block = r.end - 1;
-                                    if esi >= lowest_recovered_in_block &&
-                                        esi <= largest_recovered_in_block
+                                    if esi >= lowest_recovered_in_block
+                                        && esi <= largest_recovered_in_block
                                     {
                                         is_fec_recovered = true;
                                     }
@@ -373,9 +383,9 @@ impl Recovery {
     /// per-receiver reception of a STREAM frame, it will aggregate everything
     /// and forward all frames to the controller that will take the time to
     /// adjust to all receivers.
-    pub fn fc_get_delegated_stream(
+    pub fn fc_get_delegated_frames(
         &mut self, streams: &mut StreamMap, retr_kind: FcUnicastRetransmission,
-    ) -> Result<Vec<FcDelegatedStream>> {
+    ) -> Result<Vec<FcDelegatedFrame>> {
         let mut delegated_pieces = Vec::new();
 
         let mut lost_pn = RangeSet::default();
@@ -401,15 +411,15 @@ impl Recovery {
             .sent_packets
             .iter_mut()
             .take_while(|p| {
-                p.time_lost.is_some() ||
-                    p.time_acked.is_some() ||
-                    retr_kind == FcUnicastRetransmission::FullRetransmit ||
-                    !recv_ack_rangeset.is_empty()
+                p.time_lost.is_some()
+                    || p.time_acked.is_some()
+                    || retr_kind == FcUnicastRetransmission::FullRetransmit
+                    || !recv_ack_rangeset.is_empty()
             })
             .filter(|p| {
-                p.time_lost.is_some() ||
-                    retr_kind == FcUnicastRetransmission::FullRetransmit ||
-                    recv_ack_rangeset.contains(&p.pkt_num)
+                p.time_lost.is_some()
+                    || retr_kind == FcUnicastRetransmission::FullRetransmit
+                    || recv_ack_rangeset.contains(&p.pkt_num)
             });
 
         for packet in lost_iter {
@@ -467,14 +477,16 @@ impl Recovery {
                             continue;
                         }
 
-                        delegated_pieces.push(FcDelegatedStream {
-                            stream_id: *stream_id,
-                            offset: *offset,
-                            payload: buf,
-                            fin: *fin,
-                            pn: Some(packet.pkt_num),
-                            fec_md,
-                        });
+                        delegated_pieces.push(FcDelegatedFrame::Stream(
+                            FcDelegatedStream {
+                                stream_id: *stream_id,
+                                offset: *offset,
+                                payload: buf,
+                                fin: *fin,
+                                pn: Some(packet.pkt_num),
+                                fec_md,
+                            },
+                        ));
                     },
 
                     frame::Frame::SourceSymbolHeader { metadata, .. } => {
@@ -483,6 +495,17 @@ impl Recovery {
                                 *metadata,
                             ));
                     },
+
+                    frame::Frame::McKeyLKH { channel_id, algo, first_pn, key_update } => {
+                        let frame = FcDelegatedFrame::FcKeyLkh(FcKeyLkh {
+                            channel_id: channel_id.clone(),
+                            algo: *algo,
+                            first_pn: *first_pn,
+                            key_update: key_update.clone(),
+                        });
+
+                        delegated_pieces.push(frame);
+                    }
 
                     _ => (),
                 }
@@ -505,8 +528,9 @@ impl Recovery {
     /// Initiates flexicast state for the recovery.
     pub fn init_fc_recovery_state(&mut self, fc_role: McRole) {
         match fc_role {
-            McRole::ServerFlexicast =>
-                self.fc_recovery = Some(FcRecovery::new(true)),
+            McRole::ServerFlexicast => {
+                self.fc_recovery = Some(FcRecovery::new(true))
+            },
             McRole::ServerUnicast(_) => {
                 self.fc_recovery = Some(FcRecovery::new(false));
                 self.epochs.iter_mut().for_each(|e| {

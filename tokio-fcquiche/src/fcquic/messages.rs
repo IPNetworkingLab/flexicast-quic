@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use quiche::flexicast::ack::FcDelegatedStream;
+use quiche::flexicast::ack::FcKeyLkh;
 use quiche::flexicast::ack::McStreamOff;
 use quiche::flexicast::ack::OpenRangeSet;
 use quiche::flexicast::control::OpenSent;
-use quiche::RecvInfo;
 use quiche::flexicast::lkhlib::packet::FCKeyUpdate;
 use quiche::flexicast::lkhlib::packet::KeyUpdatePacket;
 use quiche::flexicast::lkhlib::packet::WrappedKeyUpdatePacket;
@@ -119,7 +119,10 @@ pub enum MsgFcCtl {
     /// Very similar to CollectRecv but should be transmitted to the root controller for each user that is leaving
     /// The first value is the client ID
     /// The second value is the flexicast flow ID.
-    LKHUserLeaving((u64, u64))
+    LKHUserLeaving((u64, u64)),
+
+    /// The multicast flow delegates FC_KEY_LKH frames for unicast retransmissions.
+    DelegateFcKeyLkh((u64, Vec<FcKeyLkh>)),
 }
 
 /// Messages sent to the receiver.
